@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="" />
+    <link
+      rel="stylesheet"
+      as="style"
+      onload="this.rel='stylesheet'"
+      href="https://fonts.googleapis.com/css2?display=swap&amp;family=Inter%3Awght%40400%3B500%3B700%3B900&amp;family=Noto+Sans%3Awght%40400%3B500%3B700%3B900"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <title>{% block title %}{% endblock %}</title>
+  </head>
+  <body>
+    <div class="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200" style="height:64px;">
+      <div class="flex items-center justify-between h-16 px-6">
+        <div class="flex items-center gap-4">
+          <a href="/dashboard" class="font-bold text-xl text-[#101419]">Home</a>
+          <a href="/create-appraisal" class="text-sm font-medium text-[#101419] hover:text-blue-700">+ New Appraisal</a>
+          <a href="/recent-appraisals" class="text-sm font-medium text-[#101419] hover:text-blue-700">Recent</a>
+          <a href="/reports" class="text-sm font-medium text-[#101419] hover:text-blue-700">Reports</a>
+        </div>
+        <div class="flex items-center gap-4">
+          <a href="/profile" class="text-sm font-medium text-[#101419] hover:text-blue-700">Profile</a>
+        </div>
+      </div>
+    </div>
+    {% block subnav %}{% endblock %}
+    <div class="pt-[64px]" id="main-content-wrapper">
+      <div
+        class="relative flex size-full min-h-screen flex-col bg-gray-50 group/design-root overflow-x-hidden"
+        style="font-family: Inter, 'Noto Sans', sans-serif"
+      >
+        <!-- Main Content -->
+        <div class="flex-1 overflow-y-auto">
+          <div class="p-6">
+            {% with messages = get_flashed_messages(with_categories=true) %} {% if
+            messages %} {% for category, message in messages %} {% if category ==
+            'error' %}
+            <div
+              class="alert alert-danger alter-dismissable fade show"
+              role="alert"
+            >
+              {{ message }}
+              <button type="button" class="close" data-dismiss="alert">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            {% else %}
+            <div
+              class="alert alert-success alter-dismissable fade show"
+              role="alert"
+            >
+              {{ message }}
+              <button type="button" class="close" data-dismiss="alert">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            {% endif %} {% endfor %} {% endif %} {% endwith %} {% block content
+            %}{% endblock %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

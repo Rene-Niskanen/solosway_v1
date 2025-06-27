@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %} Current Appraisal {% endblock %}
+
+{% block subnav %}
+  <div class="fixed top-[64px] left-0 right-0 z-40 bg-[#f8fafc] border-b border-gray-200" style="height:56px;">
+    <div class="flex flex-wrap justify-between items-center gap-2 px-6 h-14">
+      <p class="text-[#101419] tracking-light text-[22px] font-bold leading-tight min-w-60 my-0">
+        {{ appraisal.address }}
+      </p>
+      <div></div> <!-- Empty to keep spacing, nav moved below -->
+    </div>
+  </div>
+{% endblock %}
+
+{% block content %}
+<div style="display: flex; height: calc(100vh - 64px);">
+  <!-- Left panel: tab navigation and agent content/menu -->
+  <div style="flex: 1; background: #f8fafc; padding: 0 0 0 32px; min-width: 0; display: flex; flex-direction: column; height: 100%;">
+    <div style="padding-top: 88px; padding-bottom: 0;">
+      <div class="flex gap-4 mb-6">
+        <a class="text-sm font-bold leading-normal tracking-[0.015em] px-2 py-1 {{ 'border-b-2 border-blue-500 text-blue-900' if tab == 'overview' else 'text-[#58728d]' }}" href="{{ url_for('views.current_appraisal', id=appraisal.id, tab='overview') }}">Overview</a>
+        <a class="text-sm font-bold leading-normal tracking-[0.015em] px-2 py-1 {{ 'border-b-2 border-blue-500 text-blue-900' if tab == 'market_analysis' else 'text-[#58728d]' }}" href="{{ url_for('views.current_appraisal', id=appraisal.id, tab='market_analysis') }}">Market Analysis</a>
+        <a class="text-sm font-bold leading-normal tracking-[0.015em] px-2 py-1 {{ 'border-b-2 border-blue-500 text-blue-900' if tab == 'comparables' else 'text-[#58728d]' }}" href="{{ url_for('views.current_appraisal', id=appraisal.id, tab='comparables') }}">Comparables</a>
+        <a class="text-sm font-bold leading-normal tracking-[0.015em] px-2 py-1 {{ 'border-b-2 border-blue-500 text-blue-900' if tab == 'comparable_analysis' else 'text-[#58728d]' }}" href="{{ url_for('views.current_appraisal', id=appraisal.id, tab='comparable_analysis') }}">Comparable Analysis</a>
+        <a class="text-sm font-bold leading-normal tracking-[0.015em] px-2 py-1 {{ 'border-b-2 border-blue-500 text-blue-900' if tab == 'my_reports' else 'text-[#58728d]' }}" href="{{ url_for('views.current_appraisal', id=appraisal.id, tab='my_reports') }}">My Reports</a>
+      </div>
+      <div style="max-width: 600px;">
+        {% if tab == 'overview' %} {% include 'partials/overview.html' %}
+        {% elif tab == 'market_analysis' %} {% include 'partials/market_analysis.html' %}
+        {% elif tab == 'comparables' %} {% include 'partials/comparables.html' %}
+        {% elif tab == 'comparable_analysis' %} {% include 'partials/comparable_analysis.html' %}
+        {% elif tab == 'my_reports' %} {% include 'partials/my_reports.html' %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <!-- Right panel: chat area -->
+  <div style="flex: 1; background: #fff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; height: 100%; min-width: 0;">
+    <div class="flex border-b border-[#e5e7eb] px-6 py-4 bg-white">
+      <h2 class="text-xl font-bold text-[#4f46e5]">Agent Chat</h2>
+    </div>
+    <div class="flex-1 overflow-y-auto p-6 space-y-4" style="max-height: calc(100vh - 64px - 64px);">
+      {% if chat_messages %} {% for message in chat_messages %}
+      <div class="flex items-end gap-3 {% if message.is_user %}justify-end{% endif %}">
+        {% if not message.is_user %}
+        <div class="bg-center bg-no-repeat aspect-square bg-cover rounded-full w-8 shrink-0" style="background-image: url('{{ url_for('static', filename='images/ai-avatar.png') }}')"></div>
+        {% endif %}
+        <div class="flex flex-col gap-1 max-w-[70%]">
+          <div class="rounded-2xl px-4 py-2 {% if message.is_user %}bg-[#e0e7ff] text-[#3730a3]{% else %}bg-[#f3f4f6] text-[#111827]{% endif %}">
+            <p class="text-base font-normal">{{ message.content }}</p>
+          </div>
+          <p class="text-[#9ca3af] text-xs">{{ message.timestamp.strftime('%H:%M') }}</p>
+        </div>
+        {% if message.is_user %}
+        <div class="bg-center bg-no-repeat aspect-square bg-cover rounded-full w-8 shrink-0" style="background-image: url('{{ url_for('static', filename='images/user-avatar.png') }}')"></div>
+        {% endif %}
+      </div>
+      {% endfor %} {% endif %}
+    </div>
+    <div class="p-4 border-t border-[#e5e7eb] bg-[#f9fafb]" style="">
+      <form method="POST" class="flex gap-3">
+        <textarea
+          name="message"
+          placeholder="Type your message here..."
+          autocomplete="off"
+          rows="1"
+          style="resize:none; overflow:hidden; min-height:40px;"
+          class="flex-1 rounded-lg border border-[#e5e7eb] px-4 py-2 text-base text-[#111827] focus:outline-none focus:border-[#6366f1]"
+          oninput="this.style.height='40px';this.style.height=(this.scrollHeight)+'px';"
+        ></textarea>
+        <button type="submit" class="rounded-lg h-10 px-5 bg-[#6366f1] text-white text-base font-semibold hover:bg-[#4f46e5] transition-colors">Send</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
