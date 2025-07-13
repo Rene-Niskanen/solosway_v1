@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, flash, redirect, url_for
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
 from .models import User
 from werkzeug.security import generate_password_hash, check_password_hash
 from . import db
@@ -26,6 +26,18 @@ def login():
             
     return render_template("login.html", user=current_user)
 
+# API endpoint for React login
+@auth.route('/api/login', methods=['POST'])
+def api_login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+    user = User.query.filter_by(email=email).first()
+    if user and check_password_hash(user.password, password):
+        login_user(user, remember=True)
+        return jsonify({'success': True, 'message': 'Logged in successfully.'}), 200
+    return jsonify({'success': False, 'message': 'Invalid email or password.'}), 401
+
 @auth.route('/logout', methods=['GET', 'POST'])
 @login_required
 def logout():
@@ -40,6 +52,8 @@ def sign_up():
         first_name = request.form.get("first_name")
         password1 = request.form.get("password1")
         password2 = request.form.get("password2")
+        company_name = request.form.get("company_name")
+        company_website = request.form.get("company_website")
         special_characters = ['!@#$%^&*()_+-=[]{}|;:,.<>?']
         user = User.query.filter_by(email=email).first()
         if user:
@@ -53,7 +67,13 @@ def sign_up():
         elif len(password1) < 7:
             flash("The password must be atleast 7 characters long.", category="error")
         else:
-            new_user = User(email=email, first_name=first_name, password=generate_password_hash(password1, method='pbkdf2:sha256'))
+            new_user = User(
+                email=email, 
+                first_name=first_name, 
+                password=generate_password_hash(password1, method='pbkdf2:sha256'),
+                company_name=company_name,
+                company_website=company_website
+            )
             db.session.add(new_user)
             db.session.commit()
             login_user(new_user, remember=True)
@@ -61,5 +81,39 @@ def sign_up():
             return redirect(url_for('views.home'))
         
     return render_template("signup.html", user=current_user)
+
+# API endpoint for React signup
+@auth.route('/api/sign-up', methods=['POST'])
+def api_sign_up():
+    data = request.get_json()
+    email = data.get('email')
+    first_name = data.get('first_name')
+    password1 = data.get('password1')
+    password2 = data.get('password2')
+    company_name = data.get('company_name')
+    company_website = data.get('company_website')
+    user = User.query.filter_by(email=email).first()
+    if user:
+        return jsonify({'success': False, 'message': 'Email already exists.'}), 400
+    elif len(email) < 4:
+        return jsonify({'success': False, 'message': 'The email must be greater than 3 characters.'}), 400
+    elif len(first_name) < 2:
+        return jsonify({'success': False, 'message': 'Your name must be greater than 1 character.'}), 400
+    elif password1 != password2:
+        return jsonify({'success': False, 'message': 'The passwords do not match.'}), 400
+    elif len(password1) < 7:
+        return jsonify({'success': False, 'message': 'The password must be at least 7 characters long.'}), 400
+    else:
+        new_user = User(
+            email=email, 
+            first_name=first_name, 
+            password=generate_password_hash(password1, method='pbkdf2:sha256'),
+            company_name=company_name,
+            company_website=company_website
+        )
+        db.session.add(new_user)
+        db.session.commit()
+        login_user(new_user, remember=True)
+        return jsonify({'success': True, 'message': 'Account created successfully!'}), 200
 
 

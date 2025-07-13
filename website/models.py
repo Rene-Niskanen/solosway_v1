@@ -16,6 +16,8 @@ class User(db.Model, UserMixin):
     email = db.Column(db.String(150), unique=True)
     password = db.Column(db.String(150))
     first_name = db.Column(db.String(150))
+    company_name = db.Column(db.String(150))
+    company_website = db.Column(db.String(200))
     notes = db.relationship('Note') # the .relationship is used to link to the Note model ps. to link with the name of the class it needs to be capitalised 'Note'
     appraisals = db.relationship('Appraisal')
 
@@ -90,6 +92,7 @@ class PropertyData(db.Model):
     # Relationships
     appraisal = db.relationship('Appraisal', backref='property_data')
     user = db.relationship('User', backref='property_data')
+
 
 
 
