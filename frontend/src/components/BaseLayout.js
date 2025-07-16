@@ -20,7 +20,7 @@ export function MainHeader({ user }) {
           <nav className="flex space-x-6">
             <a href="/dashboard" className="text-gray-600 hover:text-gray-900">Dashboard</a>
             <a href="/create-appraisal" className="text-gray-900 font-medium">New Appraisal</a>
-            <a href="/reports" className="text-gray-600 hover:text-gray-900">Reports</a>
+            <a href="/data" className="text-gray-600 hover:text-gray-900">Data</a>
           </nav>
         </div>
         <div className="flex items-center space-x-4">

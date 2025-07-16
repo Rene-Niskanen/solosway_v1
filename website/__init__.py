@@ -2,9 +2,13 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from os import path
 from flask_login import LoginManager
+from dotenv import load_dotenv
+import os
 from flask_migrate import Migrate
 from flask_cors import CORS
 from .config import get_config
+
+load_dotenv()
 
 # once the dataabse is created we can then use the db. whatever to input into the database 
 db = SQLAlchemy()

@@ -6,6 +6,7 @@ import CreateAppraisal from './components/CreateAppraisal';
 import Login from './components/Login';
 import Signup from './components/Signup';
 import Landing from './components/Landing';
+import Data from './components/Data';
 import './App.css';
 
 function App() {
@@ -19,6 +20,7 @@ function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/appraisal/:id" element={<CurrentAppraisal />} />
           <Route path="/create-appraisal" element={<CreateAppraisal />} />
+          <Route path="/data" element={<Data />} />
         </Routes>
       </div>
     </Router>

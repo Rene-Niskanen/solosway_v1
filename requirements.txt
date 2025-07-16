@@ -8,4 +8,7 @@ SQLAlchemy==2.0.21
 requests==2.31.0
 alembic==1.12.0
 psycopg2-binary==2.9.7 
+boto3==1.35.100
+botocore==1.35.100
+s3transfer==0.7.0
 

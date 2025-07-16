@@ -3,6 +3,10 @@ from flask_login import login_user, login_required, logout_user, current_user
 from .models import Note, Appraisal, ComparableProperty, ChatMessage
 from . import db
 from datetime import datetime
+import os
+import boto3
+from werkzeug.utils import secure_filename
+import uuid
 
 views = Blueprint('views', __name__)
 
@@ -326,3 +330,91 @@ def api_chat(id):
         'ai_response': ai_response.content,
         'message_id': new_message.id
     })
+
+@views.route('/api/upload-files', methods=['POST'])
+@login_required
+def upload_files_to_s3():
+    """
+    Receives files and metadata from the frontend and uploads them to AWS S3.
+    """
+    # 1. Get data from the incoming request
+    uploaded_files = request.files.getlist("files")
+    user_id = request.form.get('user_id')
+    business_id = request.form.get('business_id')
+
+    # Security check: Ensure the user ID from the form matches the logged-in user
+    if str(current_user.id) != user_id:
+        return jsonify({'error': 'User authentication mismatch'}), 403
+
+    if not uploaded_files:
+        return jsonify({'error': 'No files were provided in the request'}), 400
+
+    # 2. Get AWS credentials from environment variables
+    s3_bucket = os.getenv('S3_BUCKET_NAME')
+    aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
+    aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    aws_region = os.getenv('AWS_REGION')
+
+    # --- Start of Debugging ---
+    print("--- S3 Upload Debug Info ---")
+    print(f"Bucket Name: {s3_bucket}")
+    print(f"AWS Region: {aws_region}")
+    print(f"Access Key ID: {'Exists' if aws_access_key_id else 'MISSING'}")
+    print(f"Secret Key: {'Exists' if aws_secret_access_key else 'MISSING'}")
+    print("-----------------------------")
+    # --- End of Debugging ---
+
+    if not all([s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region]):
+        print("ERROR: One or more required AWS environment variables are missing.")
+        return jsonify({'error': 'Server is not configured for file uploads. Missing AWS credentials.'}), 500
+
+    # 3. Create an S3 client
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            region_name=aws_region
+        )
+    except Exception as e:
+        # This could catch errors in client creation (e.g., invalid credentials format)
+        print(f"Error creating S3 client: {str(e)}")
+        return jsonify({'error': f'Failed to create AWS S3 client: {str(e)}'}), 500
+
+    uploaded_file_urls = []
+    for file in uploaded_files:
+        # It's good practice to secure the filename
+        safe_filename = secure_filename(file.filename)
+        # Create a unique filename to prevent overwrites in S3
+        unique_filename = f"uploads/{business_id}/{user_id}/{uuid.uuid4()}-{safe_filename}"
+
+        try:
+            # 4. Upload the file to S3
+            s3_client.upload_fileobj(
+                file,  # The file object itself
+                s3_bucket,
+                unique_filename,
+                ExtraArgs={
+                    'Metadata': {
+                        'user_id': str(user_id),
+                        'business_id': str(business_id),
+                        'original_filename': safe_filename
+                    },
+                    'ContentType': file.mimetype
+                }
+            )
+            # Construct the URL for the uploaded file
+            file_url = f"https://{s3_bucket}.s3.{aws_region}.amazonaws.com/{unique_filename}"
+            uploaded_file_urls.append(file_url)
+
+        except Exception as e:
+            # Handle potential upload errors
+            print(f"Error uploading '{safe_filename}': {str(e)}")
+            return jsonify({'error': f'Failed to upload {safe_filename}: {str(e)}'}), 500
+
+    return jsonify({
+        'success': True,
+        'message': f'{len(uploaded_file_urls)} files uploaded successfully.',
+        'file_urls': uploaded_file_urls
+    }), 200
+

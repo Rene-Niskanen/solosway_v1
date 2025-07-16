@@ -1,27 +1,113 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.[oa]
-*.so
+*.py[cod]
+*$py.class
 
 # C extensions
-*.pyd
-*.c
+*.so
 
-# Virtual environment
-/venv/
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Instance folder
-/instance/
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
 
-# IDE / Editor specific
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Other
-/node_modules/
-/uploads/
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
 *.log 
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtualenv
+.venv
+venv/
+VENV/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# pyenv
+.python-version
+
+# dotenv
+# Important: This line prevents your secrets from being committed!
+.env
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Mac specific
+.DS_Store 
