@@ -1,12 +1,14 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
-from flask_login import login_user, login_required, logout_user, current_user
-from .models import Note, Appraisal, ComparableProperty, ChatMessage
+from flask_login import login_required, current_user
+from .models import Appraisal, ComparableProperty, ChatMessage, Document
 from . import db
 from datetime import datetime
 import os
-import boto3
-from werkzeug.utils import secure_filename
 import uuid
+import requests
+from requests_aws4auth import AWS4Auth
+from werkzeug.utils import secure_filename
+import sys
 
 views = Blueprint('views', __name__)
 
@@ -15,142 +17,6 @@ views = Blueprint('views', __name__)
 def root():
     return redirect('http://localhost:3000')
 
-# Temporarily disabled HTML routes - using React frontend instead
-# @views.route('/')
-# def landing_page():
-#     return render_template("landing.html")
-
-# @views.route('/dashboard', methods=['GET', 'POST'])
-# @login_required
-# def home():
-#     if request.method == 'POST':
-#         note = request.form.get('note')
-#         if len(note) < 1:
-#             flash('Note is too short!', category='error')
-#         else:
-#             new_note = Note(data=note, user_id=current_user.id)
-#             db.session.add(new_note)
-#             db.session.commit()
-#             flash('Note added!', category='success')
-    
-#     # Get user's appraisals
-#     appraisals = Appraisal.query.filter_by(user_id=current_user.id).order_by(Appraisal.date_created.desc()).all()
-#     return render_template("home2.html", user=current_user, appraisals=appraisals)
-
-# @views.route('/create-appraisal', methods=['GET', 'POST'])
-# @login_required
-# def create_appraisal():
-#     if request.method == 'POST':
-#         address = request.form.get('address')
-#         bedrooms = request.form.get('bedrooms')
-#         bathrooms = request.form.get('bathrooms')
-#         property_type = request.form.get('property_type')
-#         land_size = request.form.get('land_size')
-#         floor_area = request.form.get('floor_area')
-#         condition = request.form.get('condition')
-#         features = request.form.getlist('features')  # Get list of selected features
-        
-#         if not address:
-#             flash('Address is required!', category='error')
-#         else:
-#             new_appraisal = Appraisal(
-#                 address=address,
-#                 bedrooms=bedrooms if bedrooms else None,
-#                 bathrooms=bathrooms if bathrooms else None,
-#                 property_type=property_type if property_type else None,
-#                 land_size=float(land_size) if land_size else None,
-#                 floor_area=float(floor_area) if floor_area else None,
-#                 condition=int(condition) if condition else None,
-#                 features=','.join(features) if features else None,
-#                 user_id=current_user.id,
-#                 status='In Progress'
-#             )
-#             db.session.add(new_appraisal)
-#             db.session.commit()
-#             flash('Appraisal created successfully!', category='success')
-#             return redirect(url_for('views.current_appraisal', id=new_appraisal.id))
-            
-#     return render_template("create_appraisal.html", user=current_user)
-
-# @views.route('/appraisal/<int:id>', methods=['GET', 'POST'])
-# @login_required
-# def current_appraisal(id):
-#     appraisal = Appraisal.query.get_or_404(id)
-#     if appraisal.user_id != current_user.id:
-#         flash('You do not have permission to view this appraisal.', category='error')
-#         return redirect(url_for('views.home'))
-
-#     tab = request.args.get('tab', 'overview')
-
-#     if request.method == 'POST':
-#         message_content = request.form.get('message')
-#         if message_content:
-#             new_message = ChatMessage(
-#                 content=message_content,
-#                 is_user=True,
-#                 appraisal_id=appraisal.id,
-#                 timestamp=datetime.utcnow()
-#             )
-#             db.session.add(new_message)
-#             db.session.commit()
-            
-#             # Here you would typically add your AI response logic
-#             # For now, we'll just add a placeholder response
-#             ai_response = ChatMessage(
-#                 content="I've received your message and will analyze the property details. Please give me a moment to process this information.",
-#                 is_user=False,
-#                 appraisal_id=appraisal.id,
-#                 timestamp=datetime.utcnow()
-#             )
-#             db.session.add(ai_response)
-#             db.session.commit()
-#             return redirect(url_for('views.current_appraisal', id=id, tab=tab))
-
-#     comparable_properties = ComparableProperty.query.filter_by(appraisal_id=id).all()
-#     chat_messages = ChatMessage.query.filter_by(appraisal_id=id).order_by(ChatMessage.timestamp).all()
-
-#     # For comparables tab, calculate metrics
-#     comparable_count = len(comparable_properties)
-#     average_price = sum(p.price for p in comparable_properties) / comparable_count if comparable_count > 0 else 0
-#     price_per_sqft = sum(p.price / p.square_feet for p in comparable_properties if p.square_feet) / comparable_count if comparable_count > 0 else 0
-
-#     return render_template(
-#         "current_appraisal.html",
-#         user=current_user,
-#         appraisal=appraisal,
-#         comparable_properties=comparable_properties,
-#         chat_messages=chat_messages,
-#         tab=tab,
-#         comparable_count=comparable_count,
-#         average_price=average_price,
-#         price_per_sqft=price_per_sqft
-#     )
-
-# @views.route('/appraisal/<int:id>/comparables')
-# @login_required
-# def comparables(id):
-#     appraisal = Appraisal.query.get_or_404(id)
-    
-#     # Ensure user can only access their own appraisals
-#     if appraisal.user_id != current_user.id:
-#         flash('You do not have permission to view this appraisal.', category='error')
-#         return redirect(url_for('views.home'))
-    
-#     # Get comparable properties
-#     comparable_properties = ComparableProperty.query.filter_by(appraisal_id=id).all()
-    
-#     # Calculate market analysis metrics
-#     comparable_count = len(comparable_properties)
-#     average_price = sum(p.price for p in comparable_properties) / comparable_count if comparable_count > 0 else 0
-#     price_per_sqft = sum(p.price / p.square_feet for p in comparable_properties) / comparable_count if comparable_count > 0 else 0
-    
-#     return render_template("comparables.html",
-#                          user=current_user,
-#                          appraisal=appraisal,
-#                          properties=comparable_properties,
-#                          comparable_count=comparable_count,
-#                          average_price=average_price,
-#                          price_per_sqft=price_per_sqft)
 
 # API endpoint for React dashboard
 @views.route('/api/dashboard', methods=['GET'])
@@ -183,7 +49,8 @@ def api_dashboard():
         'email': current_user.email,
         'first_name': current_user.first_name,
         'company_name': current_user.company_name,
-        'company_website': current_user.company_website
+        'company_website': current_user.company_website,
+        'role': current_user.role.name  # Add the user's role here
     }
     
     return jsonify({
@@ -331,90 +198,166 @@ def api_chat(id):
         'message_id': new_message.id
     })
 
-@views.route('/api/upload-files', methods=['POST'])
+@views.route('/dashboard')
 @login_required
-def upload_files_to_s3():
+def dashboard():
+    return render_template("dashboard.html", user=current_user)
+
+@views.route('/api/documents', methods=['GET'])
+@login_required
+def get_documents():
     """
-    Receives files and metadata from the frontend and uploads them to AWS S3.
+    Fetches all documents associated with the current user's business.
     """
-    # 1. Get data from the incoming request
-    uploaded_files = request.files.getlist("files")
-    user_id = request.form.get('user_id')
-    business_id = request.form.get('business_id')
+    if not current_user.company_name:
+        return jsonify({'error': 'User is not associated with a business'}), 400
 
-    # Security check: Ensure the user ID from the form matches the logged-in user
-    if str(current_user.id) != user_id:
-        return jsonify({'error': 'User authentication mismatch'}), 403
+    documents = Document.query.filter_by(business_id=current_user.company_name).order_by(Document.created_at.desc()).all()
+    
+    return jsonify([doc.serialize() for doc in documents])
 
-    if not uploaded_files:
-        return jsonify({'error': 'No files were provided in the request'}), 400
+@views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
+@login_required
+def delete_document(document_id):
+    """
+    Deletes a document from S3 and its metadata record from the database.
+    """
+    document = Document.query.get(document_id)
+    if not document:
+        return jsonify({'error': 'Document not found'}), 404
 
-    # 2. Get AWS credentials from environment variables
-    s3_bucket = os.getenv('S3_BUCKET_NAME')
-    aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
-    aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+    if document.business_id != current_user.company_name:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    # 1. Get AWS and API Gateway configuration from environment
+    try:
+        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
+        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
+        aws_region = os.environ['AWS_REGION']
+        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
+        bucket_name = os.environ['S3_BUCKET_NAME']
+    except KeyError as e:
+        error_message = f"Missing environment variable: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': 'Server is not configured for file deletion.'}), 500
+    
+    # 2. Delete the object from S3 by making a signed DELETE request
+    try:
+        # The S3 Key is the path to the file within the bucket
+        s3_key = document.s3_path
+        
+        # We will target a simpler API Gateway endpoint, e.g., /<bucket_name>/<s3_key>
+        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
+        service = 'execute-api'
+        aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
+
+        response = requests.delete(final_url, auth=aws_auth)
+        response.raise_for_status()
+
+    except requests.exceptions.RequestException as e:
+        error_message = f"Failed to delete file from S3: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': 'Failed to delete file from storage.'}), 502
+
+    # 3. If S3 deletion was successful, delete the database record
+    db.session.delete(document)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Document deleted successfully'}), 200
+
+
+@views.route('/api/upload-file', methods=['POST'])
+@login_required
+def upload_file_to_gateway():
+    """
+    Receives a file from the frontend and proxies it to a secure AWS API Gateway endpoint.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in the request'}), 400
+    
+    file = request.files['file']
+
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    # 1. Get AWS and API Gateway configuration from environment
+    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
     aws_region = os.getenv('AWS_REGION')
+    invoke_url = os.getenv('API_GATEWAY_INVOKE_URL')
+    bucket_name = os.getenv('S3_UPLOAD_BUCKET')
 
     # --- Start of Debugging ---
-    print("--- S3 Upload Debug Info ---")
-    print(f"Bucket Name: {s3_bucket}")
+    print("--- API Gateway Upload Debug Info ---")
+    print(f"Invoke URL: {invoke_url}")
+    print(f"Bucket Name: {bucket_name}")
     print(f"AWS Region: {aws_region}")
-    print(f"Access Key ID: {'Exists' if aws_access_key_id else 'MISSING'}")
-    print(f"Secret Key: {'Exists' if aws_secret_access_key else 'MISSING'}")
-    print("-----------------------------")
+    print(f"Access Key ID: {'Exists' if aws_access_key else 'MISSING'}")
+    print(f"Secret Key: {'Exists' if aws_secret_key else 'MISSING'}")
+    print("------------------------------------")
     # --- End of Debugging ---
 
-    if not all([s3_bucket, aws_access_key_id, aws_secret_access_key, aws_region]):
-        print("ERROR: One or more required AWS environment variables are missing.")
-        return jsonify({'error': 'Server is not configured for file uploads. Missing AWS credentials.'}), 500
+    if not all([aws_access_key, aws_secret_key, aws_region, invoke_url, bucket_name]):
+        print("ERROR: One or more required AWS/API Gateway environment variables are missing.")
+        return jsonify({'error': 'Server is not configured for file uploads'}), 500
 
-    # 3. Create an S3 client
+    # 2. Construct the full URL for the API Gateway
+    safe_filename = secure_filename(file.filename)
+    business_id = current_user.company_name or 'default-business'
+    
+    # Create the S3 object path (without the 'uploads/' prefix)
+    s3_path = f"{business_id}/{current_user.id}/{safe_filename}"
+    
+    # Example: https://.../solosway-s3-fileupload/soloswayofficialbucket/default-business/1/file.pdf
+    # Strip any trailing slash from invoke_url to prevent double slashes
+    final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_path}"
+    
+    # 3. Create the AWS Auth object
+    service = 'execute-api'
+    aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
+
+    # 4. Make the PUT request from the backend to the API Gateway
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-            region_name=aws_region
+        file_content = file.read()
+        
+        # The requests_aws4auth library, when passed to the `auth` param,
+        # will correctly sign the request payload (the file_content).
+        response = requests.put(
+            final_url,
+            auth=aws_auth,
+            data=file_content,
+            headers={'Content-Type': file.mimetype}
         )
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        # 5. Create a metadata record in our PostgreSQL database
+        new_document = Document(
+            original_filename=safe_filename,
+            s3_path=s3_path,
+            file_type=file.mimetype,
+            file_size=file.content_length,
+            business_id=business_id,
+            uploaded_by_user_id=current_user.id
+        )
+        db.session.add(new_document)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'File {safe_filename} uploaded successfully.',
+            'document_id': new_document.id,
+            'url': final_url
+        }), 200
+
+    except requests.exceptions.RequestException as e:
+        # Handle network errors or errors from the API Gateway
+        error_message = f"Failed to upload file to S3 via API Gateway: {e}"
+        print(error_message, file=sys.stderr) # Log the detailed error
+        return jsonify({'error': error_message}), 502 # 502 Bad Gateway
+
     except Exception as e:
-        # This could catch errors in client creation (e.g., invalid credentials format)
-        print(f"Error creating S3 client: {str(e)}")
-        return jsonify({'error': f'Failed to create AWS S3 client: {str(e)}'}), 500
-
-    uploaded_file_urls = []
-    for file in uploaded_files:
-        # It's good practice to secure the filename
-        safe_filename = secure_filename(file.filename)
-        # Create a unique filename to prevent overwrites in S3
-        unique_filename = f"uploads/{business_id}/{user_id}/{uuid.uuid4()}-{safe_filename}"
-
-        try:
-            # 4. Upload the file to S3
-            s3_client.upload_fileobj(
-                file,  # The file object itself
-                s3_bucket,
-                unique_filename,
-                ExtraArgs={
-                    'Metadata': {
-                        'user_id': str(user_id),
-                        'business_id': str(business_id),
-                        'original_filename': safe_filename
-                    },
-                    'ContentType': file.mimetype
-                }
-            )
-            # Construct the URL for the uploaded file
-            file_url = f"https://{s3_bucket}.s3.{aws_region}.amazonaws.com/{unique_filename}"
-            uploaded_file_urls.append(file_url)
-
-        except Exception as e:
-            # Handle potential upload errors
-            print(f"Error uploading '{safe_filename}': {str(e)}")
-            return jsonify({'error': f'Failed to upload {safe_filename}: {str(e)}'}), 500
-
-    return jsonify({
-        'success': True,
-        'message': f'{len(uploaded_file_urls)} files uploaded successfully.',
-        'file_urls': uploaded_file_urls
-    }), 200
+        # Handle other potential errors
+        error_message = f"An unexpected error occurred during file upload: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': error_message}), 500
 

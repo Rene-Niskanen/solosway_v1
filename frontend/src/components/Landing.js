@@ -33,10 +33,10 @@ const Landing = () => (
         </div>
         <div className="flex gap-2">
           <Link
-            to="/sign-up"
+            to="/book-demo"
             className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-10 px-4 bg-[#d2e2f3] text-[#101419] text-sm font-bold leading-normal tracking-[0.015em]"
           >
-            <span className="truncate">Get Started</span>
+            <span className="truncate">Book a Demo</span>
           </Link>
           <Link
             to="/login"
@@ -69,10 +69,10 @@ const Landing = () => (
               </h2>
             </div>
             <Link
-              to="/sign-up"
+              to="/book-demo"
               className="flex min-w-[84px] max-w-xs cursor-pointer items-center justify-center overflow-hidden rounded-full h-12 px-5 bg-[#d2e2f3] text-[#101419] text-base font-bold leading-normal tracking-[0.015em]"
             >
-              <span className="truncate">Get Started</span>
+              <span className="truncate">Book a Demo</span>
             </Link>
           </div>
         </div>
@@ -149,10 +149,10 @@ const Landing = () => (
           real estate.
         </p>
         <Link
-          to="/sign-up"
+          to="/book-demo"
           className="flex min-w-[84px] max-w-xs cursor-pointer items-center justify-center overflow-hidden rounded-full h-12 px-5 bg-[#d2e2f3] text-[#101419] text-base font-bold leading-normal tracking-[0.015em]"
         >
-          <span className="truncate">Get started</span>
+          <span className="truncate">Book a Demo</span>
         </Link>
       </div>
     </main>

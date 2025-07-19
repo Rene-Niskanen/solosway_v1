@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import os
 from flask_migrate import Migrate
 from flask_cors import CORS
-from .config import get_config
+from .config import Config
 
 load_dotenv()
 
@@ -15,18 +15,25 @@ db = SQLAlchemy()
 migrate = Migrate()
 
 def create_app():
-    app = Flask(__name__)
+    load_dotenv() # Load environment variables from .env file
+
+    app = Flask(__name__, template_folder='../frontend/public')
+    app.config['SECRET_KEY'] = 'hjshjhdjah kjshkjdhjs'
     
-    # Load configuration
-    config = get_config()
-    app.config.from_object(config)
+    # Ensure the DATABASE_URL is loaded correctly
+    database_url = os.environ.get('DATABASE_URL')
+    if not database_url:
+        raise ValueError("No DATABASE_URL set for Flask application")
     
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
     # Initialize extensions
     db.init_app(app)
     migrate.init_app(app, db)
 
     # Enable CORS for React frontend
-    CORS(app, origins=config.CORS_ORIGINS, supports_credentials=True)
+    CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
 
     login_manager = LoginManager()
     login_manager.login_view = 'auth.login'
@@ -42,7 +49,11 @@ def create_app():
     app.register_blueprint(auth, url_prefix='/')
     app.register_blueprint(views, url_prefix='/')
 
-    from .models import User, Note, Appraisal, ComparableProperty, ChatMessage, PropertyData
+    from .admin import admin
+    app.register_blueprint(admin, url_prefix='/')
+
+
+    from .models import User, Appraisal, ComparableProperty, ChatMessage, PropertyData, Document
     create_database(app)
 
     return app

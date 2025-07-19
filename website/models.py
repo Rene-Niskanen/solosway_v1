@@ -1,25 +1,75 @@
 from . import db
 from flask_login import UserMixin
 from sqlalchemy.sql import func
+import enum
+import uuid
+from sqlalchemy.dialects.postgresql import UUID
 
 
-# creating classes with one to many relationships
-class Note(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    data = db.Column(db.String(10000))
-    date = db.Column(db.DateTime(timezone=True), default=func.now())
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id')) # this ForreignKey is used to link to the User model via the user_id
+# Enum for user status
+class UserStatus(enum.Enum):
+    INVITED = 'invited'
+    ACTIVE = 'active'
+    DISABLED = 'disabled'
+
+# Enum for user role
+class UserRole(enum.Enum):
+    USER = 'user'
+    ADMIN = 'admin'
+
+# Enum for document processing status
+class DocumentStatus(enum.Enum):
+    UPLOADED = 'uploaded'
+    PROCESSING = 'processing'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
 
 
 class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(150), unique=True)
-    password = db.Column(db.String(150))
+    password = db.Column(db.String(150), nullable=True) # Password can be null until user registers
     first_name = db.Column(db.String(150))
     company_name = db.Column(db.String(150))
     company_website = db.Column(db.String(200))
-    notes = db.relationship('Note') # the .relationship is used to link to the Note model ps. to link with the name of the class it needs to be capitalised 'Note'
     appraisals = db.relationship('Appraisal')
+
+    # New fields for invite-only system
+    role = db.Column(db.Enum(UserRole), default=UserRole.USER, nullable=False)
+    status = db.Column(db.Enum(UserStatus), default=UserStatus.INVITED, nullable=False)
+    invitation_token = db.Column(db.String(100), unique=True)
+    invitation_token_expires = db.Column(db.DateTime(timezone=True))
+    documents = db.relationship('Document', backref='uploader', lazy=True)
+
+
+class Document(db.Model):
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    original_filename = db.Column(db.String(255), nullable=False)
+    s3_path = db.Column(db.String(1024), nullable=False, unique=True)
+    file_type = db.Column(db.String(100))
+    file_size = db.Column(db.Integer) # Size in bytes
+    business_id = db.Column(db.String(150), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=func.now())
+    status = db.Column(db.Enum(DocumentStatus), nullable=False, default=DocumentStatus.UPLOADED)
+    
+    # Foreign Key to User who uploaded the file
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    def __repr__(self):
+        return f'<Document {self.original_filename}>'
+
+    def serialize(self):
+        return {
+            'id': self.id,
+            'original_filename': self.original_filename,
+            's3_path': self.s3_path,
+            'file_type': self.file_type,
+            'file_size': self.file_size,
+            'business_id': self.business_id,
+            'created_at': self.created_at.isoformat(),
+            'status': self.status.name,
+            'uploaded_by_user_id': self.uploaded_by_user_id
+        }
 
 
 class Appraisal(db.Model):

@@ -3,12 +3,27 @@ import BaseLayout from './BaseLayout';
 
 const Data = () => {
   const [user, setUser] = useState(null);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [filesToUpload, setFilesToUpload] = useState([]);
+  const [uploadedDocuments, setUploadedDocuments] = useState([]);
+  const [uploadProgress, setUploadProgress] = useState({});
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState('');
 
+  const fetchDocuments = async () => {
+    try {
+        const response = await fetch('/api/documents');
+        if (response.ok) {
+            const data = await response.json();
+            setUploadedDocuments(data);
+        } else {
+            console.error('Failed to fetch documents');
+        }
+    } catch (error) {
+        console.error('Error fetching documents:', error);
+    }
+  };
+
   useEffect(() => {
-    // Fetch user data when the component mounts
     const fetchUserData = async () => {
       try {
         const response = await fetch('/api/dashboard');
@@ -24,10 +39,44 @@ const Data = () => {
     };
 
     fetchUserData();
-  }, []); // Empty dependency array means this runs once on mount
+    fetchDocuments();
+  }, []); 
 
-  const handleFileUpload = (files) => {
-    setUploadedFiles(prevFiles => [...prevFiles, ...files]);
+  const handleDelete = async (documentId) => {
+    if (window.confirm('Are you sure you want to delete this file?')) {
+        const originalDocuments = [...uploadedDocuments];
+        
+        // Optimistically remove the document from the UI
+        setUploadedDocuments(prevDocuments => prevDocuments.filter(doc => doc.id !== documentId));
+
+        try {
+            const response = await fetch(`/api/document/${documentId}`, {
+                method: 'DELETE',
+            });
+
+            if (!response.ok) {
+                // If the deletion fails, roll back the UI change
+                const errorData = await response.json();
+                alert(`Failed to delete file: ${errorData.error}`);
+                setUploadedDocuments(originalDocuments); // Rollback
+            }
+            // If successful, the UI is already updated, so we do nothing.
+
+        } catch (err) {
+            alert(`An error occurred: ${err.message}`);
+            // Rollback on network error
+            setUploadedDocuments(originalDocuments);
+        }
+    }
+  };
+
+  const handleFileSelect = (newFiles) => {
+    const filesWithStatus = newFiles.map(file => ({
+      file,
+      status: 'pending', // pending, uploading, success, error
+      id: `${file.name}-${file.lastModified}`
+    }));
+    setFilesToUpload(prevFiles => [...prevFiles, ...filesWithStatus]);
   };
 
   const onDragOver = useCallback((event) => {
@@ -45,59 +94,54 @@ const Data = () => {
     setIsDragging(false);
     const files = Array.from(event.dataTransfer.files);
     if (files && files.length > 0) {
-      handleFileUpload(files);
+      handleFileSelect(files);
     }
   }, []);
 
-  const onFileSelect = (event) => {
+  const onFileSelectChange = (event) => {
     const files = Array.from(event.target.files);
     if (files && files.length > 0) {
-      handleFileUpload(files);
+      handleFileSelect(files);
     }
   };
 
   const handleUpload = async () => {
-    if (uploadedFiles.length === 0) {
+    if (filesToUpload.length === 0) {
       alert("Please select files to upload first.");
       return;
     }
 
-    const formData = new FormData();
-    uploadedFiles.forEach(file => {
-      formData.append('files', file);
-    });
-
-    // Assuming user and business IDs are available in the user prop.
-    if (user?.id) formData.append('user_id', user.id);
-    if (user?.business_id) formData.append('business_id', user.business_id);
-    else {
-      // It's possible the user object doesn't have a business_id.
-      // We will look for company_name as a fallback.
-      const companyId = user?.company_name || 'default-business';
-      formData.append('business_id', companyId);
-    }
-
-
-    try {
-      // This sends the data to YOUR backend.
-      // We'll need to create this '/api/upload-files' endpoint in Python.
-      const response = await fetch('/api/upload-files', {
-        method: 'POST',
-        body: formData, // No 'Content-Type' header needed, browser sets it for FormData
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        alert('Upload successful!');
-        console.log('Server response:', result);
-        setUploadedFiles([]); // Clear files after successful upload
-      } else {
-        const errorData = await response.json();
-        alert(`Upload failed: ${errorData.message || response.statusText}`);
+    for (const fileObj of filesToUpload) {
+      if (fileObj.status === 'success' || fileObj.status === 'uploading') {
+        continue; // Skip already uploaded or currently uploading files
       }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('An error occurred during upload. See console for details.');
+
+      const { file, id } = fileObj;
+      setUploadProgress(prev => ({ ...prev, [id]: { status: 'uploading', percentage: 50 } }));
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/api/upload-file', {
+          method: 'POST',
+          body: formData,
+          // No 'Content-Type' header, browser sets it for FormData
+        });
+
+        if (response.ok) {
+          setUploadProgress(prev => ({ ...prev, [id]: { status: 'success', percentage: 100 } }));
+          setFilesToUpload(prev => prev.map(f => f.id === id ? { ...f, status: 'success' } : f));
+          fetchDocuments(); // Refresh the list of uploaded documents
+        } else {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Upload failed with status: ${response.status}`);
+        }
+      } catch (err) {
+        console.error('Upload error for file:', file.name, err);
+        setUploadProgress(prev => ({ ...prev, [id]: { status: 'error', percentage: 0, error: err.message } }));
+        setFilesToUpload(prev => prev.map(f => f.id === id ? { ...f, status: 'error' } : f));
+      }
     }
   };
 
@@ -150,7 +194,8 @@ const Data = () => {
     overflowY: 'auto',
     border: '1px solid #ddd',
     borderRadius: '10px',
-    padding: '10px'
+    padding: '10px',
+    marginBottom: '20px'
   };
 
   const fileInputStyle = {
@@ -192,40 +237,61 @@ const Data = () => {
               id="fileInput"
               type="file"
               multiple
-              onChange={onFileSelect}
+              onChange={onFileSelectChange}
               style={fileInputStyle}
             />
             <p>Drag & drop files here, or click to select files</p>
           </div>
           
-          {uploadedFiles.length > 0 && (
-            <div style={{width: '100%', maxWidth: '960px', marginBottom: '20px'}}>
-              <h3>Uploaded Files:</h3>
-              <ul>
-                {uploadedFiles.map((file, index) => (
-                  <li key={index}>
-                    {file.name} - {file.size} bytes
-                  </li>
-                ))}
-              </ul>
-              <button onClick={handleUpload} style={uploadButtonStyle}>
-                Upload
-              </button>
-            </div>
-          )}
-
-          <div style={mapPlaceholderStyle}>
-            <span>Google Map Placeholder</span>
+          <div style={dataRowsContainerStyle}>
+            {filesToUpload.length === 0 ? (
+              <p>No files selected.</p>
+            ) : (
+              filesToUpload.map(({ file, id, status }) => {
+                const progress = uploadProgress[id] || {};
+                return (
+                  <div key={id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
+                    <span>{file.name}</span>
+                    <span>
+                      {status === 'pending' && 'Pending...'}
+                      {progress.status === 'uploading' && `Uploading... ${progress.percentage}%`}
+                      {status === 'success' && '✅ Uploaded'}
+                      {status === 'error' && `❌ Error`}
+                    </span>
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          <div style={dataRowsContainerStyle}>
-            <h3>Data Rows</h3>
-            {/* Placeholder for data rows */}
-            {Array.from({ length: 40 }).map((_, index) => (
-              <div key={index} style={{ padding: '10px', borderBottom: '1px solid #eee' }}>
-                Row {index + 1} of data
-              </div>
-            ))}
+          <button onClick={handleUpload} style={uploadButtonStyle} disabled={filesToUpload.every(f => f.status === 'success' || f.status === 'uploading')}>
+            Upload Selected Files
+          </button>
+
+          <div style={{...dataRowsContainerStyle, marginTop: '20px'}}>
+            <h2>Uploaded Files</h2>
+            {uploadedDocuments.length === 0 ? (
+              <p>No documents uploaded yet.</p>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{textAlign: 'left'}}>Filename</th>
+                    <th style={{textAlign: 'center'}}>Status</th>
+                    <th style={{textAlign: 'right'}}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                {uploadedDocuments.map((doc) => (
+                  <tr key={doc.id}>
+                    <td>{doc.original_filename}</td>
+                    <td>{doc.status}</td>
+                    <td><button onClick={() => handleDelete(doc.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>
