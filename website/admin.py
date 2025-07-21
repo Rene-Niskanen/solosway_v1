@@ -37,7 +37,7 @@ def invite_user():
     db.session.commit()
 
     # For now, we return the link for testing.
-    # Later, this will be replaced with an email-sending service.
+    # Later, this will be replaced with an email-sending service like twilio, sendgrid or mailgun.
     registration_link = f"http://localhost:3000/register/{new_user.invitation_token}"
 
     return jsonify({

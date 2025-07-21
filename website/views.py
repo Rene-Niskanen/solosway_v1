@@ -1,7 +1,6 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
 from flask_login import login_required, current_user
-from .models import Appraisal, ComparableProperty, ChatMessage, Document
-from . import db
+from .models import Appraisal, ComparableProperty, ChatMessage, Document, db
 from datetime import datetime
 import os
 import uuid
@@ -9,6 +8,7 @@ import requests
 from requests_aws4auth import AWS4Auth
 from werkzeug.utils import secure_filename
 import sys
+from .tasks import process_document_task
 
 views = Blueprint('views', __name__)
 
@@ -235,7 +235,7 @@ def delete_document(document_id):
         aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
         aws_region = os.environ['AWS_REGION']
         invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
-        bucket_name = os.environ['S3_BUCKET_NAME']
+        bucket_name = os.environ['S3_UPLOAD_BUCKET']
     except KeyError as e:
         error_message = f"Missing environment variable: {e}"
         print(error_message, file=sys.stderr)
@@ -263,101 +263,90 @@ def delete_document(document_id):
     db.session.delete(document)
     db.session.commit()
 
-    return jsonify({'success': True, 'message': 'Document deleted successfully'}), 200
-
+    return jsonify({'message': 'Document deleted successfully'}), 200
 
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
 def upload_file_to_gateway():
     """
-    Receives a file from the frontend and proxies it to a secure AWS API Gateway endpoint.
+    Handles file upload by proxying to API Gateway. This function also creates a
+    Document record in the database and triggers a background task to process it.
     """
     if 'file' not in request.files:
-        return jsonify({'error': 'No file part in the request'}), 400
-    
+        return jsonify({'error': 'No file part'}), 400
     file = request.files['file']
-
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
     # 1. Get AWS and API Gateway configuration from environment
-    aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
-    aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
-    aws_region = os.getenv('AWS_REGION')
-    invoke_url = os.getenv('API_GATEWAY_INVOKE_URL')
-    bucket_name = os.getenv('S3_UPLOAD_BUCKET')
-
-    # --- Start of Debugging ---
-    print("--- API Gateway Upload Debug Info ---")
-    print(f"Invoke URL: {invoke_url}")
-    print(f"Bucket Name: {bucket_name}")
-    print(f"AWS Region: {aws_region}")
-    print(f"Access Key ID: {'Exists' if aws_access_key else 'MISSING'}")
-    print(f"Secret Key: {'Exists' if aws_secret_key else 'MISSING'}")
-    print("------------------------------------")
-    # --- End of Debugging ---
-
-    if not all([aws_access_key, aws_secret_key, aws_region, invoke_url, bucket_name]):
-        print("ERROR: One or more required AWS/API Gateway environment variables are missing.")
-        return jsonify({'error': 'Server is not configured for file uploads'}), 500
-
-    # 2. Construct the full URL for the API Gateway
-    safe_filename = secure_filename(file.filename)
-    business_id = current_user.company_name or 'default-business'
-    
-    # Create the S3 object path (without the 'uploads/' prefix)
-    s3_path = f"{business_id}/{current_user.id}/{safe_filename}"
-    
-    # Example: https://.../solosway-s3-fileupload/soloswayofficialbucket/default-business/1/file.pdf
-    # Strip any trailing slash from invoke_url to prevent double slashes
-    final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_path}"
-    
-    # 3. Create the AWS Auth object
-    service = 'execute-api'
-    aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
-
-    # 4. Make the PUT request from the backend to the API Gateway
     try:
-        file_content = file.read()
-        
-        # The requests_aws4auth library, when passed to the `auth` param,
-        # will correctly sign the request payload (the file_content).
-        response = requests.put(
-            final_url,
-            auth=aws_auth,
-            data=file_content,
-            headers={'Content-Type': file.mimetype}
-        )
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
+        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
+        aws_region = os.environ['AWS_REGION']
+        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
+        bucket_name = os.environ['S3_UPLOAD_BUCKET']
+    except KeyError as e:
+        error_message = f"Missing environment variable: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': 'Server is not configured for file uploads.'}), 500
 
-        # 5. Create a metadata record in our PostgreSQL database
+    # 2. Prepare file and S3 key
+    filename = secure_filename(file.filename)
+    # Generate a unique path for the file in S3 to avoid collisions
+    s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
+    
+    # 3. Create and save the Document record BEFORE uploading
+    try:
         new_document = Document(
-            original_filename=safe_filename,
-            s3_path=s3_path,
+            original_filename=filename,
+            s3_path=s3_key,
             file_type=file.mimetype,
             file_size=file.content_length,
-            business_id=business_id,
-            uploaded_by_user_id=current_user.id
+            uploaded_by_user_id=current_user.id,
+            business_id=current_user.company_name
         )
         db.session.add(new_document)
         db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"Database error: {e}", file=sys.stderr)
+        return jsonify({'error': 'Failed to create document record in database.'}), 500
 
-        return jsonify({
-            'success': True,
-            'message': f'File {safe_filename} uploaded successfully.',
-            'document_id': new_document.id,
-            'url': final_url
-        }), 200
+    # 4. Sign and send the request to API Gateway
+    try:
+        # The URL for API Gateway should be structured to accept the bucket and key
+        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
+        
+        # AWS V4 signing for the request
+        auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
+        
+        # Read file content
+        file_content = file.read()
+        
+        # Make the PUT request
+        response = requests.put(final_url, data=file_content, auth=auth)
+        response.raise_for_status() # Raise an exception for bad status codes
 
     except requests.exceptions.RequestException as e:
-        # Handle network errors or errors from the API Gateway
-        error_message = f"Failed to upload file to S3 via API Gateway: {e}"
-        print(error_message, file=sys.stderr) # Log the detailed error
-        return jsonify({'error': error_message}), 502 # 502 Bad Gateway
+        # If the upload fails, we should delete the record we created
+        db.session.delete(new_document)
+        db.session.commit()
+        print(f"Failed to upload file to S3 via API Gateway: {e}", file=sys.stderr)
+        return jsonify({'error': 'Failed to upload file.'}), 502
 
-    except Exception as e:
-        # Handle other potential errors
-        error_message = f"An unexpected error occurred during file upload: {e}"
-        print(error_message, file=sys.stderr)
-        return jsonify({'error': error_message}), 500
+    # 5. On successful upload, trigger the background processing task
+    process_document_task.delay(new_document.id)
+
+    # 6. Return the data of the newly created document to the client
+    return jsonify(new_document.serialize()), 201
+
+@views.route('/test-celery')
+def test_celery():
+    """A simple route to test if Celery is working."""
+    from .tasks import process_document_task
+    # This is a placeholder task, you might want to create a simpler task for testing
+    # For now, we can try to trigger the document processing with a fake ID
+    # In a real scenario, you'd have a test task that doesn't depend on a database object
+    task = process_document_task.delay(1) # Using a fake document ID
+    return jsonify({"message": "Test task sent to Celery!", "task_id": task.id})
 

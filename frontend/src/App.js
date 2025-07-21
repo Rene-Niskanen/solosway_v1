@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Dashboard from './components/Dashboard';
 import CurrentAppraisal from './components/CurrentAppraisal';
@@ -32,6 +32,9 @@ function App() {
     fetchUser();
   }, []);
 
+  const memoizedUser = useMemo(() => user, [user?.id]);
+
+
   return (
     <Router>
       <div className="App">
@@ -45,7 +48,7 @@ function App() {
           <Route path="/data" element={<Data />} />
 
           {/* Admin Routes */}
-          <Route element={<AdminProtectedRoute user={user} isLoading={isLoading} />}>
+          <Route element={<AdminProtectedRoute user={memoizedUser} isLoading={isLoading} />}>
             <Route path="/admin/users" element={<AdminPanel />} />
             {/* Add other admin routes here in the future */}
           </Route>

@@ -7,8 +7,8 @@ import os
 from flask_migrate import Migrate
 from flask_cors import CORS
 from .config import Config
+from .celery_utils import celery_init_app
 
-load_dotenv()
 
 # once the dataabse is created we can then use the db. whatever to input into the database 
 db = SQLAlchemy()
@@ -27,10 +27,23 @@ def create_app():
     
     app.config['SQLALCHEMY_DATABASE_URI'] = database_url
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
+    
+    # Celery Configuration
+    redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    app.config.from_mapping(
+        CELERY=dict(
+            broker_url=redis_url,
+            result_backend=redis_url,
+            task_ignore_result=True,
+        ),
+    )
+    
     # Initialize extensions
     db.init_app(app)
     migrate.init_app(app, db)
+    
+    # Celery initialization
+    celery_init_app(app)
 
     # Enable CORS for React frontend
     CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
@@ -41,6 +54,8 @@ def create_app():
 
     @login_manager.user_loader
     def load_user(id):
+        # This function needs the User model, so we import it here to avoid circular imports.
+        from .models import User
         return User.query.get(int(id))
 
     from .views import views
@@ -54,22 +69,15 @@ def create_app():
 
 
     from .models import User, Appraisal, ComparableProperty, ChatMessage, PropertyData, Document
-    create_database(app)
+    with app.app_context():
+        # db.create_all() is now handled by flask db migrate
+        pass
 
     return app
 
 def create_database(app):
-    # Only create database if it doesn't exist (for SQLite)
-    if app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite:///'):
-        db_path = app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')
-        if not path.exists(db_path):
-            with app.app_context():
-                db.create_all()
-                print('Created Database!')
-    else:
-        # For PostgreSQL, just ensure tables exist
-        with app.app_context():
-            db.create_all()
-            print('Database tables ensured!')
+    # This function is deprecated in favor of using Flask-Migrate.
+    # The database tables are now created and managed via migration scripts.
+    pass
 
 
