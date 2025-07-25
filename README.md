@@ -44,7 +44,7 @@ Follow these instructions to get the application running locally for development
 
 ```bash
 git clone https://github.com/Rene-Niskanen/solosway_v1
-cd solosway_mvp
+cd file_name
 ```
 
 ### 2. Set Up the Python Environment
