@@ -320,7 +320,7 @@ def upload_file_to_gateway():
         # AWS V4 signing for the request
         auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
         
-        # Read file content
+        # Read file content once
         file_content = file.read()
         
         # Make the PUT request
@@ -335,7 +335,13 @@ def upload_file_to_gateway():
         return jsonify({'error': 'Failed to upload file.'}), 502
 
     # 5. On successful upload, trigger the background processing task
-    process_document_task.delay(new_document.id)
+    # We now pass the file content directly to the task to avoid the S3 download step.
+    process_document_task.delay(
+        document_id=new_document.id,
+        file_content=file_content, 
+        original_filename=filename, 
+        business_id=current_user.company_name
+    )
 
     # 6. Return the data of the newly created document to the client
     return jsonify(new_document.serialize()), 201

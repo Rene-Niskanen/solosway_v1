@@ -10,7 +10,7 @@ from .config import Config
 from .celery_utils import celery_init_app
 
 
-# once the dataabse is created we can then use the db. whatever to input into the database 
+# Create the database connection
 db = SQLAlchemy()
 migrate = Migrate()
 
