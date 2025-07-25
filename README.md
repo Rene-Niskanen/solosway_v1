@@ -43,7 +43,7 @@ Follow these instructions to get the application running locally for development
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/Rene-Niskanen/solosway_v1
 cd solosway_mvp
 ```
 
@@ -71,7 +71,7 @@ Copy the following example and replace the placeholder values with your actual c
 ```env
 # Flask and Local Database
 SECRET_KEY='a_very_secret_and_long_random_string'
-DATABASE_URL='postgresql://user:password@localhost/solosway_mvp' # Your local PostgreSQL connection string
+DATABASE_URL='postgresql://user:password@localhost/database_name' # Your local PostgreSQL connection string
 REDIS_URL='redis://localhost:6379/0'
 ADMIN_EMAIL='your_admin_email@example.com' # Used by the make_admin.py script
 
