@@ -12,6 +12,7 @@ import uuid
 from pprint import pprint
 import requests
 from requests_aws4auth import AWS4Auth
+import sys
 
 # imports for LlamaIndex, LlamaParse, and LlamaExtract
 from llama_parse import LlamaParse
@@ -22,9 +23,6 @@ from llama_index.vector_stores.astra_db import AstraDBVectorStore
 from llama_index.core.storage.storage_context import StorageContext
 
 # --- Pydantic Schema Definition ---
-# This is the Python representation of the JSON schema you created.
-# It defines the structure for the data we want to extract from the documents.
-
 class ComparableProperty(BaseModel):
     """A single comparable property, with all available details extracted."""
     property_address: str = Field(description="Full address of the comparable property, including postcode.")
@@ -73,12 +71,16 @@ def process_document_task(self, document_id, file_content, original_filename, bu
     1. Receives file content directly.
     2. Saves content to a temporary file.
     3. Parses with LlamaParse.
-    4. (Future steps: Extract, Store, etc.)
+    4. Extracts structured data.
+    5. Stores data in AstraDB.
     """
     document = Document.query.get(document_id)
     if not document:
         print(f"Document with id {document_id} not found.")
         return
+
+    temp_dir = f"/tmp/{document.id}"
+    local_file_path = os.path.join(temp_dir, original_filename)
 
     try:
         print(f"Starting direct content processing for document_id: {document_id}")
@@ -86,71 +88,41 @@ def process_document_task(self, document_id, file_content, original_filename, bu
         db.session.commit()
 
         # --- 1. Save received file content to a temporary file ---
-        # This completely bypasses the need to download from S3 for parsing.
-        temp_dir = f"/tmp/{document.id}"
         os.makedirs(temp_dir, exist_ok=True)
-        local_file_path = os.path.join(temp_dir, original_filename)
-
         with open(local_file_path, 'wb') as f:
             f.write(file_content)
         
         print(f"Successfully saved direct content to {local_file_path}")
         print(f"Processing document for business_id: {business_id}")
 
-        # --- 2. Parse with LlamaParse using the robust SimpleDirectoryReader method ---
+        # --- 2. Parse with LlamaParse ---
         parser = LlamaParse(
             api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-            result_type="markdown", # Let's try markdown again, as this is the preferred format
+            result_type="markdown",
             verbose=True
         )
-
-        # Use SimpleDirectoryReader, pointing it to the directory containing the file.
-        file_extractor = {".pdf": parser}
+        file_extractor = {
+            ".pdf": parser,
+            ".docx": parser,
+            ".doc": parser,
+            ".pptx": parser,
+            ".ppt": parser
+        }
         reader = SimpleDirectoryReader(input_dir=temp_dir, file_extractor=file_extractor)
-        
-        # This is the correct, robust way to load the data
         parsed_docs = reader.load_data()
-        print("LlamaParse API call completed via SimpleDirectoryReader.")
+        print("LlamaParse API call completed.")
 
-        # --- Enhanced Logging & Inspection ---
-        print(f"LlamaParse returned {len(parsed_docs)} document chunks.")
-
-        has_content = False
-        for i, doc in enumerate(parsed_docs):
-            print(f"--- Chunk {i+1}/{len(parsed_docs)} ---")
-            pprint(f"Metadata: {doc.metadata}")
-            
-            # ALWAYS print the raw content for debugging, no matter what it is.
-            print("Raw content: (first 200 chars)")
-            pprint(doc.text[:200])
-
-            # Still check for content to decide if the task succeeded.
-            if doc.text and doc.text.strip() not in ['', 'NO_CONTENT_HERE']:
-                has_content = True
-            print("--------------------")
-
-        # --- For testing, we stop here to verify parsing ---
+        # --- Content Validation ---
+        has_content = any(doc.text and doc.text.strip() not in ['', 'NO_CONTENT_HERE'] for doc in parsed_docs)
         if not has_content:
-            print("Stopping processing: LlamaParse did not return any meaningful content.")
-            document.status = DocumentStatus.FAILED
-        else:
-            document.status = DocumentStatus.COMPLETED
-            print(f"Document processing (parsing only) completed for document_id: {document_id}")
+            raise ValueError("LlamaParse did not return any meaningful content.")
 
-        db.session.commit()
-        
-        # Clean up the temporary file and directory
-        os.remove(local_file_path)
-        os.rmdir(temp_dir)
-        return # Stop execution here for now to isolate parsing.
-
-
-        # Add the business_id to the metadata of each parsed document chunk.
-        # This is crucial for multi-tenancy filtering during queries.
+        # Add business_id to metadata for multi-tenancy
         for doc in parsed_docs:
             doc.metadata["business_id"] = business_id
 
-        # --- 3. Extract structured data (Corrected Implementation) ---
+        # --- 3. Extract structured data ---
+        print("--- Starting Pydantic Program for data extraction ---")
         prompt_template_str = (
             "Please extract the comparable properties from the following document. "
             "Look for sections like 'Comparable Evidence', 'Sales Comparables', etc. "
@@ -159,76 +131,33 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             "{input}\n"
             "---------------------\n"
         )
-
         program = OpenAIPydanticProgram.from_defaults(
             output_cls=AppraisalData,
             prompt_template_str=prompt_template_str,
             llm=OpenAI(model="gpt-4-turbo", api_key=os.environ['OPENAI_API_KEY']),
             verbose=True,
         )
-        
-        # Now call the program with the input
         extracted_data = program(input=parsed_docs[0].text)
         print(f"Successfully extracted data for {len(extracted_data.comparable_properties)} properties.")
         
-        # --- Print the extracted data for testing ---
-        print("--- EXTRACTED DATA (for testing) ---")
-        pprint(extracted_data.dict())
-        print("------------------------------------")
-
         # --- 4. Store structured data in AstraDB (Tabular) ---
-        # This section is temporarily commented out for testing purposes.
-        # session = get_astra_db_session()
-        # keyspace = os.environ['ASTRA_DB_KEYSPACE']
-        # table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
-        #
-        # # Ensure keyspace and table exist (this is idempotent)
-        # session.execute(f"""
-        #     CREATE KEYSPACE IF NOT EXISTS {keyspace} 
-        #     WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': '1'}}
-        # """)
-        # session.set_keyspace(keyspace)
-        # 
-        # # Create table with a schema that matches the Pydantic model
-        # session.execute(f"""
-        #     CREATE TABLE IF NOT EXISTS {table_name} (
-        #         id UUID PRIMARY KEY,
-        #         source_document_id INT,
-        #         business_id TEXT, # Added for multi-tenancy
-        #         property_address TEXT,
-        #         property_type TEXT,
-        #         size_sqft FLOAT,
-        #         size_unit TEXT,
-        #         number_bedrooms INT,
-        #         number_bathrooms INT,
-        #         tenure TEXT,
-        #         listed_building_grade TEXT,
-        #         transaction_date TEXT,
-        #         sold_price FLOAT,
-        #         asking_price FLOAT,
-        #         rent_pcm FLOAT,
-        #         yield_percentage FLOAT,
-        #         price_per_sqft FLOAT,
-        #         epc_rating TEXT,
-        #         condition TEXT,
-        #         other_amenities TEXT,
-        #         lease_details TEXT,
-        #         days_on_market INT,
-        #         distance_from_subject FLOAT,
-        #         notes TEXT
-        #     );
-        # """)
-        #
-        # # Insert each extracted property into the table
-        # for prop in extracted_data.comparable_properties:
-        #     session.execute(
-        #         f"""
-        #         INSERT INTO {table_name} (id, source_document_id, business_id, property_address, property_type, size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, listed_building_grade, transaction_date, sold_price, asking_price, rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, other_amenities, lease_details, days_on_market, distance_from_subject, notes)
-        #         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        #         """,
-        #         (uuid.uuid4(), document.id, business_id, prop.property_address, prop.property_type, prop.size_sqft, prop.size_unit, prop.number_bedrooms, prop.number_bathrooms, prop.tenure, prop.listed_building_grade, prop.transaction_date, prop.sold_price, prop.asking_price, prop.rent_pcm, prop.yield_percentage, prop.price_per_sqft, prop.epc_rating, prop.condition, prop.other_amenities, prop.lease_details, prop.days_on_market, prop.distance_from_subject, prop.notes)
-        #     )
-        # print(f"Stored {len(extracted_data.comparable_properties)} properties in AstraDB tabular collection.")
+        print("--- Connecting to AstraDB to store tabular data ---")
+        session = get_astra_db_session()
+        keyspace = os.environ['ASTRA_DB_KEYSPACE']
+        table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
+        
+        session.set_keyspace(keyspace)
+        
+        prepared_insert = session.prepare(
+            f"""
+            INSERT INTO {table_name} (id, source_document_id, business_id, property_address, property_type, size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, listed_building_grade, transaction_date, sold_price, asking_price, rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, other_amenities, lease_details, days_on_market, distance_from_subject, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+        )
+
+        for prop in extracted_data.comparable_properties:
+            session.execute(prepared_insert, (uuid.uuid4(), document.id, business_id, prop.property_address, prop.property_type, prop.size_sqft, prop.size_unit, prop.number_bedrooms, prop.number_bathrooms, prop.tenure, prop.listed_building_grade, prop.transaction_date, prop.sold_price, prop.asking_price, prop.rent_pcm, prop.yield_percentage, prop.price_per_sqft, prop.epc_rating, prop.condition, prop.other_amenities, prop.lease_details, prop.days_on_market, prop.distance_from_subject, prop.notes))
+        print(f"Stored {len(extracted_data.comparable_properties)} properties in AstraDB tabular collection.")
 
         # --- 5. Chunk, embed, and store in Vector DB ---
         print("Initializing AstraDB vector store...")
@@ -236,34 +165,32 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             token=os.environ["ASTRA_DB_APPLICATION_TOKEN"],
             api_endpoint=os.environ["ASTRA_DB_API_ENDPOINT"],
             collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"],
-            embedding_dimension=1536, # OpenAI's text-embedding-ada-002 uses 1536 dimensions
+            embedding_dimension=1536,
         )
-
-        print("Creating LlamaIndex VectorStoreIndex...")
         index = VectorStoreIndex.from_documents(
             parsed_docs,
             storage_context=StorageContext.from_defaults(vector_store=astra_db_store)
         )
         print("Document chunked, embedded, and stored in vector database.")
 
-        # After indexing, get the document summary and store the vector store's doc_id
         doc_summary = index.docstore.get_document_summary(parsed_docs[0].doc_id)
         document.vector_store_doc_id = doc_summary.doc_id
-        db.session.commit()
-        print(f"Stored vector store doc_id: {doc_summary.doc_id}")
         
         # --- Finalization ---
-        os.remove(local_file_path)
-        os.rmdir(temp_dir)
-        
         document.status = DocumentStatus.COMPLETED
         db.session.commit()
         print(f"Document processing completed for document_id: {document_id}")
 
     except Exception as e:
-        print(f"Error processing document {document_id}: {e}")
+        print(f"Error processing document {document_id}: {e}", file=sys.stderr)
         document.status = DocumentStatus.FAILED
         db.session.commit()
-        # We don't retry during this debug test
-        # raise self.retry(exc=e, countdown=60, max_retries=0) 
     
+    finally:
+        # --- Cleanup ---
+        # This will run whether the task succeeded or failed.
+        if os.path.exists(local_file_path):
+            os.remove(local_file_path)
+        if os.path.exists(temp_dir):
+            os.rmdir(temp_dir)
+        print("Cleanup of temporary files completed.") 

@@ -334,8 +334,9 @@ def upload_file_to_gateway():
         print(f"Failed to upload file to S3 via API Gateway: {e}", file=sys.stderr)
         return jsonify({'error': 'Failed to upload file.'}), 502
 
-    # 5. On successful upload, trigger the background processing task
-    # We now pass the file content directly to the task to avoid the S3 download step.
+    # 5. On successful upload, trigger the background processing task.
+    # We now pass the file content directly to the task to ensure it is not
+    # corrupted, while the pristine file remains stored in S3.
     process_document_task.delay(
         document_id=new_document.id,
         file_content=file_content, 
