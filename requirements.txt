@@ -7,7 +7,7 @@ Werkzeug==2.3.7
 SQLAlchemy==2.0.21
 requests==2.31.0
 alembic==1.12.0
-psycopg2-binary==2.9.7 
+psycopg2-binary
 boto3
 botocore
 s3transfer==0.7.0
@@ -17,7 +17,6 @@ python-dotenv
 requests-aws4auth
 llama-index>=0.10.0
 llama-parse>=0.1.3
-pydantic<2
 nest-asyncio
 beautifulsoup4
 pandas
@@ -25,4 +24,5 @@ numpy
 scipy
 cassandra-driver
 llama-index-vector-stores-astra-db
+llama-cloud-services
 
