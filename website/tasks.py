@@ -34,7 +34,7 @@ APPRAISAL_JSON_SCHEMA = {
         "comparable_properties": {
             "items": {
                 "additionalProperties": False,
-                "description": "🔥 CRITICAL: A single comparable property, with all available details extracted. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
+                "description": "CRITICAL: A single comparable property, with all available details extracted. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
                 "properties": {
                     "property_address": {
                         "description": "Full address of the comparable property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'.",
@@ -63,14 +63,14 @@ APPRAISAL_JSON_SCHEMA = {
                             {"type": "integer"},
                             {"type": "null"}
                         ],
-                        "description": "🔥 CRITICAL FIELD 🔥 Number of bedrooms - HIGH PRIORITY! Search ENTIRE document for: '5 Bed', '3 bedroom', '4-bed', 'X beds'. Look in headers, tables, descriptions everywhere. If you see '5 Bed' extract 5. ALWAYS extract this if visible."
+                        "description": "CRITICAL FIELD Number of bedrooms - HIGH PRIORITY! Search ENTIRE document for: '5 Bed', '3 bedroom', '4-bed', 'X beds'. Look in headers, tables, descriptions everywhere. If you see '5 Bed' extract 5. ALWAYS extract this if visible."
                     },
                     "number_bathrooms": {
                         "anyOf": [
                             {"type": "integer"},
                             {"type": "null"}
                         ],
-                        "description": "🔥 CRITICAL FIELD 🔥 Number of bathrooms - HIGH PRIORITY! Search ENTIRE document for: '4 Bath', '2 bathroom', '3-bath', 'X baths'. Look in headers, tables, descriptions everywhere. If you see '4 Bath' extract 4. ALWAYS extract this if visible."
+                        "description": "CRITICAL FIELD Number of bathrooms - HIGH PRIORITY! Search ENTIRE document for: '4 Bath', '2 bathroom', '3-bath', 'X baths'. Look in headers, tables, descriptions everywhere. If you see '4 Bath' extract 4. ALWAYS extract this if visible."
                     },
                     "tenure": {
                         "anyOf": [
@@ -187,18 +187,18 @@ APPRAISAL_JSON_SCHEMA = {
 
 
 def get_astra_db_session():
-    """Establishes a connection to the AstraDB database and returns a session object."""
-    # Validate secure connect bundle path
-    bundle_path = os.environ.get('ASTRA_DB_SECURE_CONNECT_BUNDLE_PATH', '').strip()
+    """Establishes a connection to the AstraDB tabular database and returns a session object."""
+    # Validate secure connect bundle path for tabular database
+    bundle_path = os.environ.get('ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH', '').strip()
     if not bundle_path or not os.path.exists(bundle_path):
-        raise ValueError(f"AstraDB secure connect bundle not found at: '{bundle_path}'. Please check ASTRA_DB_SECURE_CONNECT_BUNDLE_PATH environment variable.")
+        raise ValueError(f"AstraDB tabular secure connect bundle not found at: '{bundle_path}'. Please check ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH environment variable.")
     
     cloud_config = {
         'secure_connect_bundle': bundle_path
     }
     auth_provider = PlainTextAuthProvider(
         'token',
-        os.environ['ASTRA_DB_APPLICATION_TOKEN']
+        os.environ['ASTRA_DB_TABULAR_APPLICATION_TOKEN']
     )
     cluster = Cluster(cloud=cloud_config, auth_provider=auth_provider)
     return cluster.connect()
@@ -352,9 +352,9 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             print(f"Successfully extracted data for {len(comparable_properties)} properties.")
             
             # --- 4. Store structured data in AstraDB (Tabular) ---
-            print("--- Connecting to AstraDB to store tabular data ---")
+            print("--- Connecting to AstraDB tabular database ---")
             session = get_astra_db_session()
-            keyspace = os.environ['ASTRA_DB_KEYSPACE']
+            keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
             table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
             
             session.set_keyspace(keyspace)
@@ -400,8 +400,8 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             # --- 5. Chunk, embed, and store in Vector DB ---
             print("Initializing AstraDB vector store...")
             astra_db_store = AstraDBVectorStore(
-                token=os.environ["ASTRA_DB_APPLICATION_TOKEN"],
-                api_endpoint=os.environ["ASTRA_DB_API_ENDPOINT"],
+                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],
+                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"],
                 collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"],
                 embedding_dimension=1536,
             )
