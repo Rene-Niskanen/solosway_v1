@@ -270,25 +270,24 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             print("--- End of Markdown Content ---")
 
             # --- 3. Extract structured data using LlamaExtract (Stateless API) ---
-            print("--- Initializing LlamaExtract client with PREMIUM MODE ---")
+            print("--- Initializing LlamaExtract client with BALANCED MODE ---")
             extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
             
-            # Configure Premium mode for highest accuracy
+            # Configure Balanced mode for good accuracy with API efficiency
             config = ExtractConfig(
-                extraction_mode=ExtractMode.MULTIMODAL,  # Highest accuracy (60 credits/page)
+                extraction_mode=ExtractMode.BALANCED,  # Good accuracy with lower API usage
                 extraction_target=ExtractTarget.PER_DOC,  # Extract from entire document
                 high_resolution_mode=True,  # Better OCR for small text (bedroom/bathroom counts)
                 cite_sources=True,  # Track where data came from
                 use_reasoning=False,  # Get explanations for extraction decisions
-                confidence_scores=True,  # Get confidence levels (Premium only)
+                confidence_scores=False,  # Not available in BALANCED mode
                 system_prompt="Focus on extracting property comparable sales data with high precision. Pay special attention to bedroom and bathroom counts, property addresses, and transaction details. Look for patterns like '5 Bed', '4 Bath', etc."
             )
             
-            print("--- Starting PREMIUM data extraction (stateless API) ---")
-            print(f"Premium Mode: 60 credits/page for highest accuracy")
+            print("--- Starting BALANCED data extraction (stateless API) ---")
+            print(f"Balanced Mode: Lower API usage with good accuracy")
             print(f"High Resolution OCR: Better detection of small text")
-            print(f"Confidence Scores: Quantitative confidence measures")
-            print(f"Source Citations: Track extraction sources")
+            print(f"Source Citations: Track where data came from")
             
             # Use stateless extraction with raw document for best results
             # Based on GitHub docs: https://github.com/llamaindex/llamacloud-python/tree/main/docs/examples
