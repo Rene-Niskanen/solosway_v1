@@ -273,84 +273,53 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             print("--- Initializing LlamaExtract client with BALANCED MODE ---")
             extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
             
-            # Configure Balanced mode for good accuracy with API efficiency
             config = ExtractConfig(
-                extraction_mode=ExtractMode.BALANCED,  # Good accuracy with lower API usage
-                extraction_target=ExtractTarget.PER_DOC,  # Extract from entire document
-                high_resolution_mode=True,  # Better OCR for small text (bedroom/bathroom counts)
-                cite_sources=True,  # Track where data came from
-                use_reasoning=False,  # Get explanations for extraction decisions
-                confidence_scores=False,  # Not available in BALANCED mode
+                extraction_mode=ExtractMode.BALANCED,
+                extraction_target=ExtractTarget.PER_DOC,
+                high_resolution_mode=True,
+                cite_sources=True,
+                use_reasoning=False,
+                confidence_scores=False,
                 system_prompt="Focus on extracting property comparable sales data with high precision. Pay special attention to bedroom and bathroom counts, property addresses, and transaction details. Look for patterns like '5 Bed', '4 Bath', etc."
             )
             
             print("--- Starting BALANCED data extraction (stateless API) ---")
-            print(f"Balanced Mode: Lower API usage with good accuracy")
-            print(f"High Resolution OCR: Better detection of small text")
-            print(f"Source Citations: Track where data came from")
             
-            # Use stateless extraction with raw document for best results
-            # Based on GitHub docs: https://github.com/llamaindex/llamacloud-python/tree/main/docs/examples
             try:
-                # Try the stateless API approach from GitHub docs with JSON schema
                 result = extractor.extract(APPRAISAL_JSON_SCHEMA, config, temp_file_path)
                 extracted_data = result.data
             except AttributeError as e:
                 print(f"Direct extract method not available: {e}")
                 print("Falling back to agent-based approach...")
                 
-                # Fallback: Use agent-based approach with JSON schema for better integer support
                 agent_name = f"appraisal-extractor-{business_id}-json"
                 try:
-                    # Try to get existing agent first
                     agent = extractor.get_agent(name=agent_name)
-                    print(f"Using existing Premium JSON agent: {agent_name}")
+                    print(f"Using existing agent: {agent_name}")
                 except Exception:
-                    # Create new agent if it doesn't exist with JSON schema
                     agent = extractor.create_agent(
                         name=agent_name,
                         data_schema=APPRAISAL_JSON_SCHEMA,
                         config=config
                     )
-                    print(f"Created new Premium JSON agent: {agent_name}")
+                    print(f"Created new agent: {agent_name}")
                 
                 result = agent.extract(temp_file_path)
                 extracted_data = result.data
-            
-            # COMMENTED OUT: Original parsed text approach
-            # # Use SourceText to pass text content directly instead of file path
-            # try:
-            #     from llama_cloud_services import SourceText
-            #     source = SourceText(text_content=full_text)
-            #     result = agent.extract(source)
-            #     extracted_data = result.data
-            # except ImportError:
-            #     # Fallback: try alternative import or method
-            #     print("SourceText not available, trying direct text extraction...")
-            #     # Create a temporary file with the text content
-            #     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
-            #         temp_file.write(full_text)
-            #         temp_file_path = temp_file.name
-            #     
-            #     result = agent.extract(temp_file_path)
-            #     # Clean up the temporary file
-            #     os.unlink(temp_file_path)
-            #     extracted_data = result.data
 
             # --- DEBUG: Print the extracted data object ---
             print("--- Extracted Data Object ---")
             pprint(extracted_data)
             print("--- End of Extracted Data ---")
 
-            # Handle both dictionary and Pydantic model responses
             if isinstance(extracted_data, dict):
                 comparable_properties = extracted_data.get('comparable_properties', [])
             else:
-                comparable_properties = extracted_data.comparable_properties
+                comparable_properties = getattr(extracted_data, 'comparable_properties', [])
             
             print(f"Successfully extracted data for {len(comparable_properties)} properties.")
-            
-            # --- 4. Store structured data in AstraDB (Tabular) ---
+
+            # --- 4. Store structured data in AstraDB tabular database ---
             print("--- Connecting to AstraDB tabular database ---")
             session = get_astra_db_session()
             keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
@@ -358,59 +327,69 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             
             session.set_keyspace(keyspace)
             
-            prepared_insert = session.prepare(
-                f"""
-                INSERT INTO {table_name} (id, source_document_id, business_id, property_address, property_type, size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, listed_building_grade, transaction_date, sold_price, asking_price, rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, other_amenities, lease_details, days_on_market, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """
-            )
+            insert_query = f"""
+            INSERT INTO {table_name} (
+                id, source_document_id, business_id, property_address, property_type, 
+                size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
+                listed_building_grade, transaction_date, sold_price, asking_price, 
+                rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
+                other_amenities, lease_details, days_on_market, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            prepared_insert = session.prepare(insert_query)
             
-            # Handle dictionary format (current extraction returns dict)
-            for i, prop in enumerate(comparable_properties):
+            for i, prop in enumerate(comparable_properties, 1):
                 try:
-                    prop_address = prop.get('property_address')
-                    prop_type = prop.get('property_type')
-                    size_sqft = prop.get('size_sqft')
-                    size_unit = prop.get('size_unit')
-                    bedrooms = prop.get('number_bedrooms')
-                    bathrooms = prop.get('number_bathrooms')
-                    tenure = prop.get('tenure')
-                    listed_grade = prop.get('listed_building_grade')
-                    transaction_date = prop.get('transaction_date')
-                    sold_price = prop.get('sold_price')
-                    asking_price = prop.get('asking_price')
-                    rent_pcm = prop.get('rent_pcm')
-                    yield_pct = prop.get('yield_percentage')
-                    price_per_sqft = prop.get('price_per_sqft')
-                    epc_rating = prop.get('epc_rating')
-                    condition = prop.get('condition')
-                    amenities = prop.get('other_amenities')
-                    lease_details = prop.get('lease_details')
-                    days_on_market = prop.get('days_on_market')
-                    notes = prop.get('notes')
-                    
-                    session.execute(prepared_insert, (uuid.uuid4(), document.id, business_id, prop_address, prop_type, size_sqft, size_unit, bedrooms, bathrooms, tenure, listed_grade, transaction_date, sold_price, asking_price, rent_pcm, yield_pct, price_per_sqft, epc_rating, condition, amenities, lease_details, days_on_market, notes))
-                    print(f"Property {i+1} stored successfully in AstraDB.")
+                    session.execute(prepared_insert, (
+                        uuid.uuid4(),
+                        document_id,
+                        business_id,
+                        prop.get('property_address'),
+                        prop.get('property_type'),
+                        prop.get('size_sqft'),
+                        prop.get('size_unit'),
+                        prop.get('number_bedrooms'),
+                        prop.get('number_bathrooms'),
+                        prop.get('tenure'),
+                        prop.get('listed_building_grade'),
+                        prop.get('transaction_date'),
+                        prop.get('sold_price'),
+                        prop.get('asking_price'),
+                        prop.get('rent_pcm'),
+                        prop.get('yield_percentage'),
+                        prop.get('price_per_sqft'),
+                        prop.get('epc_rating'),
+                        prop.get('condition'),
+                        prop.get('other_amenities'),
+                        prop.get('lease_details'),
+                        prop.get('days_on_market'),
+                        prop.get('notes')
+                    ))
+                    print(f"Property {i} stored successfully in AstraDB.")
                 except Exception as e:
-                    print(f"Error storing property {i+1} in AstraDB: {e}")
+                    print(f"Error storing property {i} in AstraDB: {e}")
                     
             print(f"Stored {len(comparable_properties)} properties in AstraDB tabular collection.")
 
             # --- 5. Chunk, embed, and store in Vector DB ---
             print("Initializing AstraDB vector store...")
+            print(f"Vector API Endpoint: {os.environ['ASTRA_DB_VECTOR_API_ENDPOINT']}")
+            
             astra_db_store = AstraDBVectorStore(
-                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],
-                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"],
-                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"],
-                embedding_dimension=1536,
+                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  # your Astra application token
+                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"], # e.g. https://<db>-<region>.apps.astra.datastax.com
+                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"], 
+                embedding_dimension=1536  
             )
+            
+            storage_context = StorageContext.from_defaults(vector_store=astra_db_store)
+            
             index = VectorStoreIndex.from_documents(
                 parsed_docs,
-                storage_context=StorageContext.from_defaults(vector_store=astra_db_store)
+                storage_context=storage_context
             )
             print("Document chunked, embedded, and stored in vector database.")
-            
-            # --- Finalization ---
+
             document.status = DocumentStatus.COMPLETED
             db.session.commit()
             print(f"Document processing completed for document_id: {document_id}")
@@ -422,7 +401,6 @@ def process_document_task(self, document_id, file_content, original_filename, bu
                 db.session.commit()
         
         finally:
-            # --- Cleanup ---
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
                 print("Cleanup of temporary files completed.") 

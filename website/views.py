@@ -9,6 +9,7 @@ from requests_aws4auth import AWS4Auth
 from werkzeug.utils import secure_filename
 import sys
 from .tasks import process_document_task
+from .services.deletion_service import DeletionService
 
 views = Blueprint('views', __name__)
 
@@ -220,7 +221,7 @@ def get_documents():
 @login_required
 def delete_document(document_id):
     """
-    Deletes a document from S3 and its metadata record from the database.
+    Deletes a document from S3, AstraDB stores, and its metadata record from the database.
     """
     document = Document.query.get(document_id)
     if not document:
@@ -228,6 +229,13 @@ def delete_document(document_id):
 
     if document.business_id != current_user.company_name:
         return jsonify({'error': 'Unauthorized'}), 403
+
+    deletion_results = {
+        's3': False,
+        'astra_tabular': False,
+        'astra_vector': False,
+        'postgresql': False
+    }
 
     # 1. Get AWS and API Gateway configuration from environment
     try:
@@ -241,29 +249,71 @@ def delete_document(document_id):
         print(error_message, file=sys.stderr)
         return jsonify({'error': 'Server is not configured for file deletion.'}), 500
     
-    # 2. Delete the object from S3 by making a signed DELETE request
+    # 2. Delete the object from S3
     try:
-        # The S3 Key is the path to the file within the bucket
         s3_key = document.s3_path
-        
-        # We will target a simpler API Gateway endpoint, e.g., /<bucket_name>/<s3_key>
         final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
         service = 'execute-api'
         aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
 
         response = requests.delete(final_url, auth=aws_auth)
         response.raise_for_status()
+        deletion_results['s3'] = True
+        print(f"Successfully deleted S3 file: {s3_key}")
 
     except requests.exceptions.RequestException as e:
         error_message = f"Failed to delete file from S3: {e}"
         print(error_message, file=sys.stderr)
-        return jsonify({'error': 'Failed to delete file from storage.'}), 502
+        # Don't return error - continue with other deletions
 
-    # 3. If S3 deletion was successful, delete the database record
-    db.session.delete(document)
-    db.session.commit()
+    # 3. Delete from AstraDB stores
+    try:
+        deletion_service = DeletionService()
+        astra_success = deletion_service.delete_document_from_astra_stores(
+            str(document_id), 
+            document.business_id
+        )
+        deletion_results['astra_tabular'] = astra_success
+        deletion_results['astra_vector'] = astra_success
+        
+        if astra_success:
+            print(f"Successfully deleted AstraDB data for document {document_id}")
+        else:
+            print(f"Failed to delete some AstraDB data for document {document_id}")
+            
+    except Exception as e:
+        error_message = f"Failed to delete from AstraDB: {e}"
+        print(error_message, file=sys.stderr)
+        # Don't return error - continue with PostgreSQL deletion
 
-    return jsonify({'message': 'Document deleted successfully'}), 200
+    # 4. Delete the PostgreSQL record
+    try:
+        db.session.delete(document)
+        db.session.commit()
+        deletion_results['postgresql'] = True
+        print(f"Successfully deleted PostgreSQL record for document {document_id}")
+        
+    except Exception as e:
+        db.session.rollback()
+        error_message = f"Failed to delete database record: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': 'Failed to delete database record.'}), 500
+
+    # 5. Return comprehensive results
+    success_count = sum(deletion_results.values())
+    total_operations = len(deletion_results)
+    
+    response_data = {
+        'message': f'Deletion completed: {success_count}/{total_operations} operations successful',
+        'results': deletion_results,
+        'document_id': str(document_id)
+    }
+    
+    if success_count == total_operations:
+        return jsonify(response_data), 200
+    else:
+        response_data['warning'] = 'Some deletion operations failed'
+        return jsonify(response_data), 207  # 207 Multi-Status
 
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
