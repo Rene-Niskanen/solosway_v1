@@ -1,6 +1,6 @@
 import os
-from website import create_app, db
-from website.models import User, UserRole
+from backend import create_app, db
+from backend.models import User, UserRole
 from dotenv import load_dotenv
 
 load_dotenv()

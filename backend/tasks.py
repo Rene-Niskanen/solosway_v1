@@ -23,6 +23,7 @@ from llama_cloud import ExtractConfig, ExtractMode, ExtractTarget
 from llama_cloud_services.extract import SourceText
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
 from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.astra_db import AstraDBVectorStore
 from llama_index.core.storage.storage_context import StorageContext
 
@@ -374,21 +375,32 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             # --- 5. Chunk, embed, and store in Vector DB ---
             print("Initializing AstraDB vector store...")
             print(f"Vector API Endpoint: {os.environ['ASTRA_DB_VECTOR_API_ENDPOINT']}")
+
+            # Sep the embedding model to match 1536 dimensions
+            embed_model = OpenAIEmbedding(
+                model="text-embedding-ada-002",
+                api_key=os.environ["OPENAI_API_KEY"],
+            )
+            print("Using embedding model: text-embedding-ada-002")
             
             astra_db_store = AstraDBVectorStore(
-                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  # your Astra application token
-                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"], # e.g. https://<db>-<region>.apps.astra.datastax.com
-                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"], 
-                embedding_dimension=1536  
+                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  
+                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"], 
+                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"],
+                embedding_dimension=1536
             )
+            print("VectorDB initialised successfully")
             
             storage_context = StorageContext.from_defaults(vector_store=astra_db_store)
             
+            print(f"About to process {len(parsed_docs)} documents for embedding...")
             index = VectorStoreIndex.from_documents(
                 parsed_docs,
-                storage_context=storage_context
+                storage_context=storage_context,
+                embed_model=embed_model
             )
             print("Document chunked, embedded, and stored in vector database.")
+            print(f"Vector store index created successfully")
 
             document.status = DocumentStatus.COMPLETED
             db.session.commit()

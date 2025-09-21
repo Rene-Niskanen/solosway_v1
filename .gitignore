@@ -86,7 +86,6 @@ venv.bak/
 .python-version
 
 # dotenv
-# Important: This line prevents your secrets from being committed!
 .env
 
 # Spyder project settings
