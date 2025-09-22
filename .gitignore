@@ -110,3 +110,10 @@ yarn-error.log
 
 # Mac specific
 .DS_Store 
+
+astra-secure-bundles/
+*.zip
+
+# Development and migration files  
+backend/scripts/migrate_astradb_image_fields.py
+backend/PHASE1_IMPLEMENTATION_SUMMARY.md

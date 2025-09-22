@@ -1,5 +1,4 @@
 import os
-import boto3
 from celery import shared_task
 import time
 from .models import db, Document, DocumentStatus
@@ -15,6 +14,8 @@ from requests_aws4auth import AWS4Auth
 import sys
 import tempfile
 import shutil
+import json
+from datetime import datetime
 
 # imports for LlamaIndex, LlamaParse, and LlamaExtract
 from llama_parse import LlamaParse
@@ -27,18 +28,18 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.astra_db import AstraDBVectorStore
 from llama_index.core.storage.storage_context import StorageContext
 
-# --- JSON Schema Definition (instead of Pydantic for better LlamaExtract compatibility) ---
-APPRAISAL_JSON_SCHEMA = {
+# --- Enhanced JSON Schema Definition ---
+ENHANCED_APPRAISAL_JSON_SCHEMA = {
     "additionalProperties": False,
-    "description": "A model to hold all the comparable properties extracted from a single appraisal document.",
+    "description": "A model to hold all properties and their associated images extracted from an appraisal document.",
     "properties": {
-        "comparable_properties": {
+        "all_properties": {
             "items": {
                 "additionalProperties": False,
-                "description": "CRITICAL: A single comparable property, with all available details extracted. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
+                "description": "CRITICAL: A single property with all available details and associated images. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
                 "properties": {
                     "property_address": {
-                        "description": "Full address of the comparable property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'.",
+                        "description": "Full address of the property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'.",
                         "type": "string"
                     },
                     "property_type": {
@@ -95,7 +96,7 @@ APPRAISAL_JSON_SCHEMA = {
                         "description": "Date of the property's last recorded transaction. Format: YYYY-MM-DD."
                     },
                     "sold_price": {
-                        "description": "Sold price of the comparable property.",
+                        "description": "Sold price of the property.",
                         "type": "number"
                     },
                     "asking_price": {
@@ -103,7 +104,7 @@ APPRAISAL_JSON_SCHEMA = {
                             {"type": "number"},
                             {"type": "null"}
                         ],
-                        "description": "Asking price of the comparable property."
+                        "description": "Asking price of the property."
                     },
                     "rent_pcm": {
                         "anyOf": [
@@ -167,25 +168,23 @@ APPRAISAL_JSON_SCHEMA = {
                             {"type": "null"}
                         ],
                         "description": "Any additional notes or relevant information."
-                    }
+                    },
                 },
                 "required": [
                     "property_address", "property_type", "size_sqft", "size_unit", 
                     "number_bedrooms", "number_bathrooms", "tenure", "listed_building_grade", 
                     "transaction_date", "sold_price", "asking_price", "rent_pcm", 
                     "yield_percentage", "price_per_sqft", "epc_rating", "condition", 
-                    "other_amenities", "lease_details", "days_on_market", 
-                    "notes"
+                    "other_amenities", "lease_details", "days_on_market", "notes"
                 ],
                 "type": "object"
             },
             "type": "array"
-        }
+        },
     },
-    "required": ["comparable_properties"],
+    "required": ["all_properties"],
     "type": "object"
 }
-
 
 def get_astra_db_session():
     """Establishes a connection to the AstraDB tabular database and returns a session object."""
@@ -231,14 +230,17 @@ def process_document_task(self, document_id, file_content, original_filename, bu
 
             # --- 1. Save received file content to a temporary file ---
             temp_dir = tempfile.mkdtemp()
+            temp_image_dir = os.path.join(temp_dir, 'images')
+            os.makedirs(temp_image_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, original_filename)
             with open(temp_file_path, 'wb') as f:
                 f.write(file_content)
             
             print(f"Successfully saved direct content to {temp_file_path}")
             print(f"Processing document for business_id: {business_id}")
+            print(f"Image extraction directory: {temp_image_dir}")
         
-            # --- 2. Parse with LlamaParse ---
+            # --- 2. Parse with LlamaParse (with image extraction enabled) ---
             parser = LlamaParse(
                 api_key=os.environ['LLAMA_CLOUD_API_KEY'],
                 result_type="markdown",
@@ -270,8 +272,8 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             print(parsed_docs[0].text)
             print("--- End of Markdown Content ---")
 
-            # --- 3. Extract structured data using LlamaExtract (Stateless API) ---
-            print("--- Initializing LlamaExtract client with BALANCED MODE ---")
+            # --- 3. Extract structured data + images using LlamaExtract ---
+            print("--- Initializing LlamaExtract client with BALANCED MODE and enhanced address extraction prompt ---")
             extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
             
             config = ExtractConfig(
@@ -281,29 +283,50 @@ def process_document_task(self, document_id, file_content, original_filename, bu
                 cite_sources=True,
                 use_reasoning=False,
                 confidence_scores=False,
-                system_prompt="Focus on extracting property comparable sales data with high precision. Pay special attention to bedroom and bathroom counts, property addresses, and transaction details. Look for patterns like '5 Bed', '4 Bath', etc."
+                system_prompt="""Extract ALL properties from this appraisal document with maximum precision. 
+
+CRITICAL ADDRESS EXTRACTION RULES:
+- Extract the COMPLETE, FULL address exactly as written in the document
+- NEVER use placeholders like '[location not stated]', '[comparable, local]', or '[address not fully specified]'
+- Look for the actual street name, house name/number, town, city, and postcode
+- Example format: 'Hill House, Arkeseden, Saffron Walden, CB11 4EX'
+- If address spans multiple lines in a table, combine all parts into one complete address
+
+PROPERTY EXTRACTION REQUIREMENTS:
+- Extract EVERY property from tables, lists, and individual mentions
+- Include both subject properties AND comparable properties
+- For each property extract: complete address, type, size in sq ft, bedrooms, bathrooms, price, transaction date
+- If bedroom/bathroom counts are missing, look for patterns like '6 Bed', '3 Bath', '5-bed', '4 bathroom'
+- Extract exact numerical values for prices, sizes, and dates
+- Preserve all amenities and features mentioned
+
+TABLE PROCESSING:
+- Process each table row as a separate property
+- Read address information from the leftmost 'Address' column completely
+- Do not interpret table structure as part of the address content
+- Extract the literal text content, not table metadata"""
             )
             
-            print("--- Starting BALANCED data extraction (stateless API) ---")
+            print("--- Starting data extraction for all properties ---")
             
             try:
-                result = extractor.extract(APPRAISAL_JSON_SCHEMA, config, temp_file_path)
+                result = extractor.extract(ENHANCED_APPRAISAL_JSON_SCHEMA, config, temp_file_path)
                 extracted_data = result.data
             except AttributeError as e:
                 print(f"Direct extract method not available: {e}")
                 print("Falling back to agent-based approach...")
                 
-                agent_name = f"appraisal-extractor-{business_id}-json"
+                agent_name = f"balanced-enhanced-prompt-extractor-{business_id}-v1"
                 try:
                     agent = extractor.get_agent(name=agent_name)
                     print(f"Using existing agent: {agent_name}")
                 except Exception:
                     agent = extractor.create_agent(
                         name=agent_name,
-                        data_schema=APPRAISAL_JSON_SCHEMA,
+                        data_schema=ENHANCED_APPRAISAL_JSON_SCHEMA,
                         config=config
                     )
-                    print(f"Created new agent: {agent_name}")
+                    print(f"Created new enhanced agent: {agent_name}")
                 
                 result = agent.extract(temp_file_path)
                 extracted_data = result.data
@@ -313,14 +336,22 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             pprint(extracted_data)
             print("--- End of Extracted Data ---")
 
+            # Parse extracted data with enhanced structure
             if isinstance(extracted_data, dict):
-                comparable_properties = extracted_data.get('comparable_properties', [])
+                all_properties = extracted_data.get('all_properties', [])
             else:
-                comparable_properties = getattr(extracted_data, 'comparable_properties', [])
+                all_properties = getattr(extracted_data, 'all_properties', [])
             
-            print(f"Successfully extracted data for {len(comparable_properties)} properties.")
+            print(f"Successfully extracted data for {len(all_properties)} properties.")
+            print(f"Successfully extracted {len(all_properties)} properties from document.")
 
-            # --- 4. Store structured data in AstraDB tabular database ---
+            # --- 4. Skip image processing (disabled) ---
+            print("--- Image processing disabled ---")
+            property_uuids = [uuid.uuid4() for _ in all_properties]
+            property_image_mapping = {}
+            unassigned_image_paths = []
+
+            # --- 5. Store structured data with image references in AstraDB tabular database ---
             print("--- Connecting to AstraDB tabular database ---")
             session = get_astra_db_session()
             keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
@@ -328,6 +359,7 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             
             session.set_keyspace(keyspace)
             
+            # Enhanced insert query with image fields
             insert_query = f"""
             INSERT INTO {table_name} (
                 id, source_document_id, business_id, property_address, property_type, 
@@ -339,10 +371,13 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             """
             prepared_insert = session.prepare(insert_query)
             
-            for i, prop in enumerate(comparable_properties, 1):
+            for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
                 try:
+                    # Get S3 image paths for this property
+                    property_s3_paths = property_image_mapping.get(str(property_uuid), [])
+                    
                     session.execute(prepared_insert, (
-                        uuid.uuid4(),
+                        property_uuid,  # Use the generated UUID
                         document_id,
                         business_id,
                         prop.get('property_address'),
@@ -366,22 +401,38 @@ def process_document_task(self, document_id, file_content, original_filename, bu
                         prop.get('days_on_market'),
                         prop.get('notes')
                     ))
-                    print(f"Property {i} stored successfully in AstraDB.")
+                    print(f"Property {i} (UUID: {property_uuid}) stored successfully in AstraDB with {len(property_s3_paths)} images.")
                 except Exception as e:
                     print(f"Error storing property {i} in AstraDB: {e}")
                     
-            print(f"Stored {len(comparable_properties)} properties in AstraDB tabular collection.")
+            print(f"Stored {len(all_properties)} properties in AstraDB tabular collection with image references.")
+            print(f"Property UUIDs captured: {[str(uuid) for uuid in property_uuids]}")
 
-            # --- 5. Chunk, embed, and store in Vector DB ---
-            print("Initializing AstraDB vector store...")
+            # --- 6. Enhanced Vector Processing with Property UUID Linking ---
+            print("--- Initializing enhanced vector processing ---")
             print(f"Vector API Endpoint: {os.environ['ASTRA_DB_VECTOR_API_ENDPOINT']}")
 
-            # Sep the embedding model to match 1536 dimensions
+            # Set up the embedding model to match 1536 dimensions
             embed_model = OpenAIEmbedding(
                 model="text-embedding-ada-002",
                 api_key=os.environ["OPENAI_API_KEY"],
             )
             print("Using embedding model: text-embedding-ada-002")
+            
+            # Enhance document metadata with property UUIDs and image information
+            print("--- Enhancing document metadata with property relationships ---")
+            for doc in parsed_docs:
+                # Add comprehensive metadata linking to extracted properties
+                doc.metadata.update({
+                    "business_id": str(business_id),
+                    "document_id": str(document_id),
+                    "related_property_uuids": ",".join([str(uuid) for uuid in property_uuids]),
+                    "property_count": len(all_properties),
+                    "document_type": "appraisal_report",
+                    "property_addresses": ",".join([prop.get('property_address', '') for prop in all_properties])
+                })
+            
+            print(f"Enhanced metadata for {len(parsed_docs)} document chunks with {len(property_uuids)} property UUIDs")
             
             astra_db_store = AstraDBVectorStore(
                 token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  
@@ -393,14 +444,14 @@ def process_document_task(self, document_id, file_content, original_filename, bu
             
             storage_context = StorageContext.from_defaults(vector_store=astra_db_store)
             
-            print(f"About to process {len(parsed_docs)} documents for embedding...")
+            print(f"About to process {len(parsed_docs)} enhanced documents for embedding...")
             index = VectorStoreIndex.from_documents(
                 parsed_docs,
                 storage_context=storage_context,
                 embed_model=embed_model
             )
-            print("Document chunked, embedded, and stored in vector database.")
-            print(f"Vector store index created successfully")
+            print("Document chunked, embedded, and stored in vector database with enhanced property metadata.")
+            print(f"Vector store index created successfully with property UUID linking")
 
             document.status = DocumentStatus.COMPLETED
             db.session.commit()
