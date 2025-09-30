@@ -144,6 +144,74 @@ class PropertyData(db.Model):
     user = db.relationship('User', backref='property_data')
 
 
+class ExtractedProperty(db.Model):
+    """Enhanced property model for PostgreSQL with geocoding support"""
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Basic property info
+    property_address = db.Column(db.String(500), nullable=False)
+    property_type = db.Column(db.String(100))
+    number_bedrooms = db.Column(db.Integer)
+    number_bathrooms = db.Column(db.Float)
+    size_sqft = db.Column(db.Float)
+    size_unit = db.Column(db.String(50))
+    
+    # Pricing info
+    asking_price = db.Column(db.Float)
+    sold_price = db.Column(db.Float)
+    price_per_sqft = db.Column(db.Float)
+    rent_pcm = db.Column(db.Float)
+    yield_percentage = db.Column(db.Float)
+    
+    # Market info
+    condition = db.Column(db.String(100))
+    tenure = db.Column(db.String(100))
+    lease_details = db.Column(db.Text)
+    days_on_market = db.Column(db.Integer)
+    transaction_date = db.Column(db.Date)
+    
+    # Property features
+    epc_rating = db.Column(db.String(10))
+    listed_building_grade = db.Column(db.String(50))
+    other_amenities = db.Column(db.Text)
+    notes = db.Column(db.Text)
+    
+    # Geocoding
+    latitude = db.Column(db.Float)
+    longitude = db.Column(db.Float)
+    geocoded_address = db.Column(db.String(500))
+    geocoding_confidence = db.Column(db.Float)
+    geocoding_status = db.Column(db.String(50), default='pending')
+    
+    # Relationships
+    source_document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('document.id'))
+    business_id = db.Column(db.String(150), nullable=False, index=True)
+    extracted_at = db.Column(db.DateTime(timezone=True), default=func.now())
+    
+    # Relationships
+    source_document = db.relationship('Document', backref='extracted_properties')
+    
+    def __repr__(self):
+        return f'<ExtractedProperty {self.property_address}>'
+    
+    def serialize(self):
+        return {
+            'id': str(self.id),
+            'property_address': self.property_address,
+            'property_type': self.property_type,
+            'number_bedrooms': self.number_bedrooms,
+            'number_bathrooms': self.number_bathrooms,
+            'size_sqft': self.size_sqft,
+            'asking_price': self.asking_price,
+            'sold_price': self.sold_price,
+            'condition': self.condition,
+            'latitude': self.latitude,
+            'longitude': self.longitude,
+            'geocoded_address': self.geocoded_address,
+            'extracted_at': self.extracted_at.isoformat() if self.extracted_at else None
+        }
+
+
 
 
 

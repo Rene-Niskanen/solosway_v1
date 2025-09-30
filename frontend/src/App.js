@@ -4,6 +4,7 @@ import Dashboard from './components/Dashboard';
 import CurrentAppraisal from './components/CurrentAppraisal';
 import CreateAppraisal from './components/CreateAppraisal';
 import Login from './components/Login';
+import SignUp from './components/SignUp';
 import Landing from './components/Landing';
 import Data from './components/Data';
 import BookDemo from './components/BookDemo';
@@ -32,7 +33,7 @@ function App() {
     fetchUser();
   }, []);
 
-  const memoizedUser = useMemo(() => user, [user?.id]);
+  const memoizedUser = useMemo(() => user, [user]);
 
 
   return (
@@ -41,6 +42,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/sign-up" element={<SignUp />} />
           <Route path="/book-demo" element={<BookDemo />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/appraisal/:id" element={<CurrentAppraisal />} />

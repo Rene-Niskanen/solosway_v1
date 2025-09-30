@@ -24,11 +24,9 @@ const CurrentAppraisal = ({ user }) => {
   const { id } = useParams();
   const [activeTab, setActiveTab] = useState('overview');
   const [appraisal, setAppraisal] = useState(null);
-  const [comparableProperties, setComparableProperties] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [selectedComparables, setSelectedComparables] = useState([]);
 
   useEffect(() => {
     fetchAppraisalData();
@@ -41,7 +39,6 @@ const CurrentAppraisal = ({ user }) => {
       // Fetch appraisal data from Flask backend
       const response = await axios.get(`/api/appraisal/${id}`);
       setAppraisal(response.data.appraisal);
-      setComparableProperties(response.data.comparable_properties || []);
       setChatMessages(response.data.chat_messages || []);
     } catch (err) {
       if (err.response?.status === 403) {
@@ -83,12 +80,6 @@ const CurrentAppraisal = ({ user }) => {
     } catch (err) {
       console.error('Error sending message:', err);
     }
-  };
-
-  const handleSelectComparable = (id) => {
-    setSelectedComparables((prev) =>
-      prev.includes(id) ? prev.filter((compId) => compId !== id) : [...prev, id]
-    );
   };
 
   if (loading) {

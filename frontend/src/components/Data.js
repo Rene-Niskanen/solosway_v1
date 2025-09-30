@@ -174,19 +174,6 @@ const Data = () => {
     backgroundColor: isDragging ? '#f0f8ff' : '#fafafa'
   };
 
-  const mapPlaceholderStyle = {
-    width: '100%',
-    maxWidth: '960px',
-    height: '400px',
-    backgroundColor: '#e0e0e0',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: '10px',
-    marginBottom: '20px',
-    color: '#666'
-  };
-
   const dataRowsContainerStyle = {
     width: '100%',
     maxWidth: '960px',

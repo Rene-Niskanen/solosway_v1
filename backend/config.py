@@ -6,11 +6,11 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'a-very-secret-key'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
-    # This will be set in __init__.py after dotenv has loaded
-    SQLALCHEMY_DATABASE_URI = None 
+    # PostgreSQL database URI with fallback to SQLite
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///instance/database.db' 
     
     # CORS settings
-    CORS_ORIGINS = ['http://localhost:3000', 'https://your-frontend-domain.com']
+    CORS_ORIGINS = ['http://localhost:3000', 'http://localhost:5002', 'https://your-frontend-domain.com']
     
     # Session configuration
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)

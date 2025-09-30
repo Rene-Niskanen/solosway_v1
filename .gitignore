@@ -114,6 +114,25 @@ yarn-error.log
 astra-secure-bundles/
 *.zip
 
-# Development and migration files  
+# Development and temporary files
 backend/scripts/migrate_astradb_image_fields.py
-backend/PHASE1_IMPLEMENTATION_SUMMARY.md
+test_*.py
+*_test.py
+
+# Documentation files (keep only README.md)
+*.md
+!README.md
+
+# Obsolete templates (now using React frontend)
+backend/templates/admin_panel.html
+backend/templates/web_login.html
+backend/templates/web_signup.html
+
+# Old database files
+instance/
+*.db
+
+# Temporary and utility scripts
+fix_*.py
+check_*.py
+update_*.py

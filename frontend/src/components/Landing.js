@@ -22,14 +22,14 @@ const Landing = () => (
             ></path>
           </svg>
         </div>
-        <h2 className="text-[#101419] text-lg font-bold leading-tight tracking-[-0.015em]"></h2>
+        <h2 className="text-[#101419] text-lg font-bold leading-tight tracking-[-0.015em]">SoloSway</h2>
       </div>
       <div className="flex items-center gap-8">
         <div className="hidden md:flex items-center gap-9">
-          <a className="text-[#101419] text-sm font-medium leading-normal" href="#">Product</a>
-          <a className="text-[#101419] text-sm font-medium leading-normal" href="#">Solutions</a>
-          <a className="text-[#101419] text-sm font-medium leading-normal" href="#">Resources</a>
-          <a className="text-[#101419] text-sm font-medium leading-normal" href="#">Pricing</a>
+          <button className="text-[#101419] text-sm font-medium leading-normal bg-transparent border-none cursor-pointer">Product</button>
+          <button className="text-[#101419] text-sm font-medium leading-normal bg-transparent border-none cursor-pointer">Solutions</button>
+          <button className="text-[#101419] text-sm font-medium leading-normal bg-transparent border-none cursor-pointer">Resources</button>
+          <button className="text-[#101419] text-sm font-medium leading-normal bg-transparent border-none cursor-pointer">Pricing</button>
         </div>
         <div className="flex gap-2">
           <Link
@@ -160,9 +160,9 @@ const Landing = () => (
     <footer className="flex justify-center py-10">
       <div className="flex flex-col items-center gap-6 text-center">
         <div className="flex flex-wrap items-center justify-center gap-6">
-          <a className="text-[#58728d] text-base font-normal leading-normal" href="#">Terms of Service</a>
-          <a className="text-[#58728d] text-base font-normal leading-normal" href="#">Privacy Policy</a>
-          <a className="text-[#58728d] text-base font-normal leading-normal" href="#">Contact Us</a>
+          <button className="text-[#58728d] text-base font-normal leading-normal bg-transparent border-none cursor-pointer">Terms of Service</button>
+          <button className="text-[#58728d] text-base font-normal leading-normal bg-transparent border-none cursor-pointer">Privacy Policy</button>
+          <button className="text-[#58728d] text-base font-normal leading-normal bg-transparent border-none cursor-pointer">Contact Us</button>
         </div>
         <p className="text-[#58728d] text-sm font-normal leading-normal">
           © 2023 PropertyVal. All rights reserved.

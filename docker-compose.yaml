@@ -4,30 +4,51 @@ services:
     ports:
       - "6379:6379"
 
+  postgres:
+    image: "postgres:15"
+    environment:
+      POSTGRES_DB: solosway_properties
+      POSTGRES_USER: solosway_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    
   web:
     build: .
     env_file:
       - .env
     ports:
-      - "5001:5000"
+      - "5002:5000"
     volumes:
       - .:/app
     environment:
       - FLASK_ENV=development
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
     depends_on:
       - redis
+      - postgres
 
   worker:
     build: .
     env_file:
       - .env
-    command: celery -A main.celery worker --loglevel=info
+    command: python run_celery_worker.py
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
     depends_on:
       - redis
+      - postgres
+  
+volumes:
+  postgres_data:
+  
 
 

@@ -266,25 +266,27 @@ def delete_document(document_id):
         print(error_message, file=sys.stderr)
         # Don't return error - continue with other deletions
 
-    # 3. Delete from AstraDB stores
+    # 3. Delete from ALL database stores (AstraDB + PostgreSQL properties)
     try:
         deletion_service = DeletionService()
-        astra_success = deletion_service.delete_document_from_astra_stores(
+        all_stores_success, store_results = deletion_service.delete_document_from_all_stores(
             str(document_id), 
             document.business_id
         )
-        deletion_results['astra_tabular'] = astra_success
-        deletion_results['astra_vector'] = astra_success
         
-        if astra_success:
-            print(f"Successfully deleted AstraDB data for document {document_id}")
+        # Update deletion results with individual store statuses
+        deletion_results.update(store_results)
+        
+        if all_stores_success:
+            print(f"✅ Successfully deleted all data for document {document_id}")
         else:
-            print(f"Failed to delete some AstraDB data for document {document_id}")
+            print(f"⚠️  Partially deleted data for document {document_id}")
+            print(f"   Store results: {store_results}")
             
     except Exception as e:
-        error_message = f"Failed to delete from AstraDB: {e}"
+        error_message = f"Failed to delete from data stores: {e}"
         print(error_message, file=sys.stderr)
-        # Don't return error - continue with PostgreSQL deletion
+        # Don't return error - continue with PostgreSQL document deletion
 
     # 4. Delete the PostgreSQL record
     try:
@@ -344,6 +346,18 @@ def upload_file_to_gateway():
     filename = secure_filename(file.filename)
     # Generate a unique path for the file in S3 to avoid collisions
     s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
+    
+    # 2.5. Check for duplicate documents
+    existing_document = Document.query.filter_by(
+        original_filename=filename,
+        business_id=current_user.company_name
+    ).first()
+
+    if existing_document:
+        return jsonify({
+            'error': f'A document with the filename "{filename}" already exists in your account. Please rename the file or delete the existing document first.',
+            'existing_document_id': str(existing_document.id)
+        }), 409  # 409 Conflict
     
     # 3. Create and save the Document record BEFORE uploading
     try:
@@ -406,4 +420,56 @@ def test_celery():
     # In a real scenario, you'd have a test task that doesn't depend on a database object
     task = process_document_task.delay(1) # Using a fake document ID
     return jsonify({"message": "Test task sent to Celery!", "task_id": task.id})
+
+@views.route('/api/process-document/<uuid:document_id>', methods=['POST'])
+@login_required
+def process_document(document_id):
+    """
+    Manually trigger processing of an existing document.
+    """
+    document = Document.query.get(document_id)
+    if not document:
+        return jsonify({'error': 'Document not found'}), 404
+    
+    if document.business_id != current_user.company_name:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    if document.status == 'COMPLETED':
+        return jsonify({'error': 'Document already processed'}), 400
+    
+    # Get file content from S3
+    try:
+        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
+        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
+        aws_region = os.environ['AWS_REGION']
+        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
+        bucket_name = os.environ['S3_UPLOAD_BUCKET']
+        
+        # Download file from S3
+        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
+        auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
+        response = requests.get(final_url, auth=auth)
+        response.raise_for_status()
+        file_content = response.content
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
+    
+    # Trigger processing task
+    try:
+        task = process_document_task.delay(
+            document_id=document.id,
+            file_content=file_content,
+            original_filename=document.original_filename,
+            business_id=document.business_id
+        )
+        
+        return jsonify({
+            'message': 'Document processing started',
+            'task_id': task.id,
+            'document_id': str(document_id)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to start processing: {str(e)}'}), 500
 

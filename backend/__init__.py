@@ -43,7 +43,10 @@ def create_app():
     migrate.init_app(app, db)
     
     # Celery initialization
-    celery_init_app(app)
+    celery_app = celery_init_app(app)
+    
+    # Make celery_app available globally for worker
+    app.celery_app = celery_app
 
     # Enable CORS for React frontend
     CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
@@ -68,7 +71,11 @@ def create_app():
     app.register_blueprint(admin, url_prefix='/')
 
 
-    from .models import User, Appraisal, ComparableProperty, ChatMessage, PropertyData, Document
+    from .models import User, Appraisal, ComparableProperty, ChatMessage, PropertyData, Document, ExtractedProperty
+    
+    # Import tasks to register them with Celery
+    from . import tasks
+    
     with app.app_context():
         # db.create_all() is now handled by flask db migrate
         pass

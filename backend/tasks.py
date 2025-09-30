@@ -1,14 +1,13 @@
 import os
+import boto3
 from celery import shared_task
 import time
 from .models import db, Document, DocumentStatus
 from typing import List, Optional
 from pydantic import BaseModel, Field
-import cassandra
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 import uuid
-from pprint import pprint
 import requests
 from requests_aws4auth import AWS4Auth
 import sys
@@ -16,6 +15,13 @@ import tempfile
 import shutil
 import json
 from datetime import datetime
+from geopy.geocoders import Nominatim, GoogleV3
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import logging
 
 # imports for LlamaIndex, LlamaParse, and LlamaExtract
 from llama_parse import LlamaParse
@@ -25,8 +31,260 @@ from llama_cloud_services.extract import SourceText
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
+
+# Fix for astrapy import issue - patch the missing classes
+import astrapy.exceptions as astrapy_exceptions
+import astrapy.results as astrapy_results
+
+# Patch missing exception
+if not hasattr(astrapy_exceptions, 'InsertManyException'):
+    astrapy_exceptions.InsertManyException = astrapy_exceptions.CollectionInsertManyException
+
+# Patch missing result class
+if not hasattr(astrapy_results, 'UpdateResult'):
+    astrapy_results.UpdateResult = astrapy_results.CollectionUpdateResult
+
 from llama_index.vector_stores.astra_db import AstraDBVectorStore
 from llama_index.core.storage.storage_context import StorageContext
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Enhanced Configuration for dual vector store
+def get_property_vector_store(business_id: str):
+    """Create a separate vector store for individual properties using dedicated AstraDB instance"""
+    return AstraDBVectorStore(
+        token=os.environ["ASTRA_DB_COMP_APPLICATION_TOKEN"],
+        api_endpoint=os.environ["ASTRA_DB_COMP_API_ENDPOINT"],
+        collection_name=f"properties_vectorized_{business_id.lower()}",  # Separate collection
+        embedding_dimension=1536
+    )
+
+# Create enhanced geocoding function for addresses
+def geocode_address_parallel(addresses: list, max_workers: int = 3) -> list:
+    """Geocode multiple addresses in parallel for much faster processing"""
+    results = []
+    
+    def geocode_single(address):
+        return geocode_address(address)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all geocoding tasks
+        future_to_address = {executor.submit(geocode_single, addr): addr for addr in addresses}
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_address):
+            address = future_to_address[future]
+            try:
+                result = future.result()
+                results.append((address, result))
+            except Exception as e:
+                print(f"❌ Error geocoding {address}: {e}")
+                results.append((address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "error"}))
+    
+    return results
+
+def geocode_address(address: str, max_retries: int = 2) -> dict:
+    """Enhanced geocoding function with address preprocessing and fallback strategies"""
+    if not address or address.strip() == "":
+        return {"latitude": None, "longitude": None, "confidence": 0.0, "status": "empty_address"}
+    
+    # Clean and preprocess the address
+    cleaned_address = preprocess_address(address)
+    
+    # Try Google Geocoding API first (much faster and more accurate)
+    google_api_key = os.environ.get('GOOGLE_MAPS_API_KEY')
+    if google_api_key:
+        try:
+            geolocator = GoogleV3(api_key=google_api_key, timeout=5)
+            location = geolocator.geocode(cleaned_address, exactly_one=True, timeout=5)
+            
+            if location:
+                print(f"✅ Google geocoding successful for: '{cleaned_address}'")
+                return {
+                    "latitude": location.latitude,
+                    "longitude": location.longitude,
+                    "confidence": 0.9,  # Google is more accurate
+                    "status": "success",
+                    "geocoded_address": location.address,
+                    "original_address": address,
+                    "used_variation": cleaned_address
+                }
+        except Exception as e:
+            print(f"⚠️  Google geocoding failed: {e}, falling back to Nominatim")
+    
+    # Fallback to Nominatim (slower but free)
+    geolocator = Nominatim(user_agent="solosway_mvp", timeout=8)
+    
+    # Try multiple address variations for better success rate
+    address_variations = generate_address_variations(cleaned_address)
+    
+    for variation in address_variations:
+        print(f"🔍 Trying geocoding with: '{variation}'")
+        
+        for attempt in range(max_retries):
+            try:
+                location = geolocator.geocode(variation, exactly_one=True, timeout=8)
+                
+                if location:
+                    print(f"✅ Geocoding successful for: '{variation}'")
+                    return {
+                        "latitude": location.latitude,
+                        "longitude": location.longitude,
+                        "confidence": 0.8,  # Nominatim doesn't provide confidence scores
+                        "status": "success",
+                        "geocoded_address": location.address,
+                        "original_address": address,
+                        "used_variation": variation
+                    }
+                    
+            except (GeocoderTimedOut, GeocoderUnavailable) as e:
+                logger.warning(f"Geocoding attempt {attempt + 1} failed for '{variation}': {e}")
+                if attempt == max_retries - 1:
+                    continue  # Try next variation
+                time.sleep(0.5)  # Shorter wait before retry
+            
+            except Exception as e:
+                logger.warning(f"Unexpected error geocoding '{variation}': {e}")
+                break  # Move to next variation
+        
+        # Rate limiting - shorter wait between address variations
+        time.sleep(0.3)
+    
+    print(f"❌ All geocoding attempts failed for: '{address}'")
+    return {
+        "latitude": None,
+        "longitude": None,
+        "confidence": 0.0,
+        "status": "not_found",
+        "original_address": address,
+        "tried_variations": len(address_variations)
+    }
+
+def preprocess_address(address: str) -> str:
+    """Clean and preprocess address for better geocoding results"""
+    if not address:
+        return ""
+    
+    # Remove common formatting issues
+    cleaned = address.strip()
+    
+    # Remove bracketed content that might confuse geocoding
+    import re
+    cleaned = re.sub(r'\[.*?\]', '', cleaned)
+    cleaned = re.sub(r'\(.*?\)', '', cleaned)
+    
+    # Clean up extra whitespace and commas
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    cleaned = re.sub(r',\s*,', ',', cleaned)
+    cleaned = cleaned.strip(', ')
+    
+    return cleaned
+
+def generate_address_variations(address: str) -> list:
+    """Generate multiple address variations to improve geocoding success"""
+    variations = [address]  # Start with original
+    
+    # Extract postcode for UK addresses
+    import re
+    postcode_match = re.search(r'([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})', address, re.IGNORECASE)
+    postcode = postcode_match.group(1) if postcode_match else None
+    
+    if postcode:
+        # For UK addresses, add UK context to avoid US geocoding
+        parts = address.split(',')
+        if len(parts) >= 2:
+            # Try last two parts (usually town and postcode) + UK
+            town_postcode = ','.join(parts[-2:]).strip()
+            variations.append(f"{town_postcode}, UK")
+            
+            # Try just postcode + UK
+            variations.append(f"{postcode}, UK")
+    
+    # Try without specific house names/buildings
+    simplified = re.sub(r'^[^,]+,\s*', '', address)  # Remove first part (house name)
+    if simplified != address:
+        variations.append(simplified)
+    
+    # Try with just the main road and postcode + UK
+    if postcode:
+        road_match = re.search(r'([^,]+(?:Road|Street|Lane|Way|Drive|Avenue|Close|Gardens|Manor|House|Farm)[^,]*)', address, re.IGNORECASE)
+        if road_match:
+            road_name = road_match.group(1).strip()
+            variations.append(f"{road_name}, {postcode}, UK")
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_variations = []
+    for variation in variations:
+        if variation and variation not in seen:
+            seen.add(variation)
+            unique_variations.append(variation)
+    
+    return unique_variations
+
+def create_property_document(property_data: dict, geocoding_result: dict) -> str:
+    """Create a rich text document for property vector embedding"""
+    
+    # Build comprehensive property description
+    description_parts = []
+    
+    # Basic info
+    if property_data.get("property_address"):
+        description_parts.append(f"Address: {property_data['property_address']}")
+    
+    if property_data.get("property_type"):
+        description_parts.append(f"Property Type: {property_data['property_type']}")
+    
+    if property_data.get("number_bedrooms"):
+        description_parts.append(f"Bedrooms: {property_data['number_bedrooms']}")
+    
+    if property_data.get("number_bathrooms"):
+        description_parts.append(f"Bathrooms: {property_data['number_bathrooms']}")
+    
+    if property_data.get("size_sqft"):
+        description_parts.append(f"Size: {property_data['size_sqft']} sq ft")
+    
+    # Pricing info
+    pricing_info = []
+    if property_data.get("asking_price"):
+        pricing_info.append(f"Asking Price: £{property_data['asking_price']:,.0f}")
+    if property_data.get("sold_price"):
+        pricing_info.append(f"Sold Price: £{property_data['sold_price']:,.0f}")
+    if property_data.get("rent_pcm"):
+        pricing_info.append(f"Monthly Rent: £{property_data['rent_pcm']:,.0f}")
+    if property_data.get("price_per_sqft"):
+        pricing_info.append(f"Price per sq ft: £{property_data['price_per_sqft']:,.0f}")
+    
+    if pricing_info:
+        description_parts.append("Pricing: " + ", ".join(pricing_info))
+    
+    # Market info
+    market_info = []
+    if property_data.get("condition"):
+        market_info.append(f"Condition: {property_data['condition']}")
+    if property_data.get("epc_rating"):
+        market_info.append(f"EPC Rating: {property_data['epc_rating']}")
+    if property_data.get("days_on_market"):
+        market_info.append(f"Days on Market: {property_data['days_on_market']}")
+    if property_data.get("tenure"):
+        market_info.append(f"Tenure: {property_data['tenure']}")
+    
+    if market_info:
+        description_parts.append("Market Info: " + ", ".join(market_info))
+    
+    # Features
+    if property_data.get("other_amenities"):
+        description_parts.append(f"Amenities: {property_data['other_amenities']}")
+    
+    if property_data.get("notes"):
+        description_parts.append(f"Notes: {property_data['notes']}")
+    
+    # Location context
+    if geocoding_result.get("geocoded_address"):
+        description_parts.append(f"Location: {geocoding_result['geocoded_address']}")
+    
+    return "\n".join(description_parts)
 
 # --- Enhanced JSON Schema Definition ---
 ENHANCED_APPRAISAL_JSON_SCHEMA = {
@@ -204,7 +462,7 @@ def get_astra_db_session():
     return cluster.connect()
 
 @shared_task(bind=True)
-def process_document_task(self, document_id, file_content, original_filename, business_id):
+def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id):
     """
     Celery task to process an uploaded document:
     1. Receives file content directly.
@@ -267,13 +525,10 @@ def process_document_task(self, document_id, file_content, original_filename, bu
                 doc.metadata["business_id"] = str(business_id)
                 doc.metadata["document_id"] = str(document_id)
 
-            # --- DEBUG: Print the full parsed markdown ---
-            print("--- Full Parsed Markdown Content ---")
-            print(parsed_docs[0].text)
-            print("--- End of Markdown Content ---")
+            # Content validation completed
 
-            # --- 3. Extract structured data + images using LlamaExtract ---
-            print("--- Initializing LlamaExtract client with BALANCED MODE and enhanced address extraction prompt ---")
+            # --- 3. Extract structured data using LlamaExtract ---
+            print("Initializing LlamaExtract with BALANCED mode...")
             extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
             
             config = ExtractConfig(
@@ -283,7 +538,7 @@ def process_document_task(self, document_id, file_content, original_filename, bu
                 cite_sources=True,
                 use_reasoning=False,
                 confidence_scores=False,
-                system_prompt="""Extract ALL properties from this appraisal document with maximum precision. 
+                system_prompt="""Extract properties from this appraisal document with maximum precision. 
 
 CRITICAL ADDRESS EXTRACTION RULES:
 - Extract the COMPLETE, FULL address exactly as written in the document
@@ -293,7 +548,7 @@ CRITICAL ADDRESS EXTRACTION RULES:
 - If address spans multiple lines in a table, combine all parts into one complete address
 
 PROPERTY EXTRACTION REQUIREMENTS:
-- Extract EVERY property from tables, lists, and individual mentions
+- Extract properties from tables, lists, and individual mentions
 - Include both subject properties AND comparable properties
 - For each property extract: complete address, type, size in sq ft, bedrooms, bathrooms, price, transaction date
 - If bedroom/bathroom counts are missing, look for patterns like '6 Bed', '3 Bath', '5-bed', '4 bathroom'
@@ -307,7 +562,7 @@ TABLE PROCESSING:
 - Extract the literal text content, not table metadata"""
             )
             
-            print("--- Starting data extraction for all properties ---")
+            print("Starting property extraction...")
             
             try:
                 result = extractor.extract(ENHANCED_APPRAISAL_JSON_SCHEMA, config, temp_file_path)
@@ -331,10 +586,7 @@ TABLE PROCESSING:
                 result = agent.extract(temp_file_path)
                 extracted_data = result.data
 
-            # --- DEBUG: Print the extracted data object ---
-            print("--- Extracted Data Object ---")
-            pprint(extracted_data)
-            print("--- End of Extracted Data ---")
+            # Data extraction completed successfully
 
             # Parse extracted data with enhanced structure
             if isinstance(extracted_data, dict):
@@ -345,36 +597,46 @@ TABLE PROCESSING:
             print(f"Successfully extracted data for {len(all_properties)} properties.")
             print(f"Successfully extracted {len(all_properties)} properties from document.")
 
-            # --- 4. Skip image processing (disabled) ---
-            print("--- Image processing disabled ---")
+            # --- 4. Image processing (disabled) ---
+            print("Image processing disabled (properties only)")
             property_uuids = [uuid.uuid4() for _ in all_properties]
             property_image_mapping = {}
             unassigned_image_paths = []
 
-            # --- 5. Store structured data with image references in AstraDB tabular database ---
-            print("--- Connecting to AstraDB tabular database ---")
+            # --- 5. Store structured data in AstraDB tabular database ---
+            print("Connecting to AstraDB tabular database...")
             session = get_astra_db_session()
             keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
             table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
             
             session.set_keyspace(keyspace)
             
-            # Enhanced insert query with image fields
+            # Enhanced insert query with geocoding fields
             insert_query = f"""
             INSERT INTO {table_name} (
                 id, source_document_id, business_id, property_address, property_type, 
                 size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
                 listed_building_grade, transaction_date, sold_price, asking_price, 
                 rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
-                other_amenities, lease_details, days_on_market, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                other_amenities, lease_details, days_on_market, notes,
+                latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             prepared_insert = session.prepare(insert_query)
+            
+            # Get geocoding results for all properties (reuse from parallel processing)
+            addresses = [prop.get('property_address', '') for prop in all_properties]
+            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
+            geocoding_map = {addr: result for addr, result in geocoding_results}
             
             for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
                 try:
                     # Get S3 image paths for this property
                     property_s3_paths = property_image_mapping.get(str(property_uuid), [])
+                    
+                    # Get geocoding data for this property
+                    address = prop.get('property_address', '')
+                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
                     
                     session.execute(prepared_insert, (
                         property_uuid,  # Use the generated UUID
@@ -399,7 +661,13 @@ TABLE PROCESSING:
                         prop.get('other_amenities'),
                         prop.get('lease_details'),
                         prop.get('days_on_market'),
-                        prop.get('notes')
+                        prop.get('notes'),
+                        # Geocoding fields
+                        geocoding_result.get('latitude'),
+                        geocoding_result.get('longitude'),
+                        geocoding_result.get('geocoded_address'),
+                        geocoding_result.get('confidence'),
+                        geocoding_result.get('status')
                     ))
                     print(f"Property {i} (UUID: {property_uuid}) stored successfully in AstraDB with {len(property_s3_paths)} images.")
                 except Exception as e:
@@ -408,8 +676,77 @@ TABLE PROCESSING:
             print(f"Stored {len(all_properties)} properties in AstraDB tabular collection with image references.")
             print(f"Property UUIDs captured: {[str(uuid) for uuid in property_uuids]}")
 
-            # --- 6. Enhanced Vector Processing with Property UUID Linking ---
-            print("--- Initializing enhanced vector processing ---")
+            # --- 6. PostgreSQL Storage with Geocoding ---
+            print("Storing properties in PostgreSQL with geocoding...")
+            from .models import ExtractedProperty
+            
+            # Geocode all addresses in parallel for much faster processing
+            print("🚀 Geocoding addresses in parallel...")
+            addresses = [prop.get('property_address', '') for prop in all_properties]
+            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
+            
+            # Create a mapping of address to geocoding result
+            geocoding_map = {addr: result for addr, result in geocoding_results}
+            
+            for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
+                try:
+                    # Get the geocoding result from our parallel processing
+                    address = prop.get('property_address', '')
+                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
+                    
+                    # Create property document for embedding
+                    property_document = create_property_document(prop, geocoding_result)
+                    
+                    # Create ExtractedProperty record
+                    extracted_property = ExtractedProperty(
+                        id=property_uuid,
+                        property_address=prop.get('property_address'),
+                        property_type=prop.get('property_type'),
+                        number_bedrooms=prop.get('number_bedrooms'),
+                        number_bathrooms=prop.get('number_bathrooms'),
+                        size_sqft=prop.get('size_sqft'),
+                        size_unit=prop.get('size_unit'),
+                        asking_price=prop.get('asking_price'),
+                        sold_price=prop.get('sold_price'),
+                        price_per_sqft=prop.get('price_per_sqft'),
+                        rent_pcm=prop.get('rent_pcm'),
+                        yield_percentage=prop.get('yield_percentage'),
+                        condition=prop.get('condition'),
+                        tenure=prop.get('tenure'),
+                        lease_details=prop.get('lease_details'),
+                        days_on_market=prop.get('days_on_market'),
+                        transaction_date=prop.get('transaction_date'),
+                        epc_rating=prop.get('epc_rating'),
+                        listed_building_grade=prop.get('listed_building_grade'),
+                        other_amenities=prop.get('other_amenities'),
+                        notes=prop.get('notes'),
+                        source_document_id=document_id,
+                        business_id=business_id,
+                        # Geocoding fields
+                        latitude=geocoding_result.get('latitude'),
+                        longitude=geocoding_result.get('longitude'),
+                        geocoded_address=geocoding_result.get('geocoded_address'),
+                        geocoding_confidence=geocoding_result.get('confidence'),
+                        geocoding_status=geocoding_result.get('status')
+                    )
+                    
+                    db.session.add(extracted_property)
+                    print(f"Property {i} (UUID: {property_uuid}) added to PostgreSQL with geocoding: {geocoding_result.get('status')}")
+                    
+                except Exception as e:
+                    print(f"Error storing property {i} in PostgreSQL: {e}")
+                    continue
+            
+            # Commit all PostgreSQL changes
+            try:
+                db.session.commit()
+                print(f"Successfully committed {len(all_properties)} properties to PostgreSQL")
+            except Exception as e:
+                print(f"Error committing to PostgreSQL: {e}")
+                db.session.rollback()
+
+            # --- 7. Vector Processing with Property UUID Linking ---
+            print("Initializing vector processing...")
             print(f"Vector API Endpoint: {os.environ['ASTRA_DB_VECTOR_API_ENDPOINT']}")
 
             # Set up the embedding model to match 1536 dimensions
@@ -419,8 +756,8 @@ TABLE PROCESSING:
             )
             print("Using embedding model: text-embedding-ada-002")
             
-            # Enhance document metadata with property UUIDs and image information
-            print("--- Enhancing document metadata with property relationships ---")
+            # Enhance document metadata with property UUIDs
+            print("Enhancing document metadata with property relationships...")
             for doc in parsed_docs:
                 # Add comprehensive metadata linking to extracted properties
                 doc.metadata.update({
@@ -437,8 +774,8 @@ TABLE PROCESSING:
             astra_db_store = AstraDBVectorStore(
                 token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  
                 api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"], 
-                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"],
-                embedding_dimension=1536
+                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"], 
+                embedding_dimension=1536  
             )
             print("VectorDB initialised successfully")
             
@@ -452,6 +789,65 @@ TABLE PROCESSING:
             )
             print("Document chunked, embedded, and stored in vector database with enhanced property metadata.")
             print(f"Vector store index created successfully with property UUID linking")
+
+            # --- 8. Property Vector Store Processing (Separate AstraDB Instance) ---
+            print("Processing individual properties for property vector store...")
+            try:
+                property_vector_store = get_property_vector_store(business_id)
+                property_storage_context = StorageContext.from_defaults(vector_store=property_vector_store)
+                
+                property_documents = []
+                for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
+                    try:
+                        # Use the already computed geocoding result from parallel processing
+                        address = prop.get('property_address', '')
+                        geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
+                        
+                        # Create property document
+                        property_document = create_property_document(prop, geocoding_result)
+                        
+                        # Create LlamaIndex document
+                        from llama_index.core import Document as LlamaDocument
+                        property_doc = LlamaDocument(
+                            text=property_document,
+                            metadata={
+                                "property_uuid": str(property_uuid),
+                                "property_address": prop.get('property_address', ''),
+                                "property_type": prop.get('property_type', ''),
+                                "business_id": business_id,
+                                "source_document_id": document_id,
+                                "latitude": geocoding_result.get('latitude'),
+                                "longitude": geocoding_result.get('longitude'),
+                                "geocoded_address": geocoding_result.get('geocoded_address'),
+                                "geocoding_confidence": geocoding_result.get('confidence'),
+                                "geocoding_status": geocoding_result.get('status'),
+                                "asking_price": prop.get('asking_price'),
+                                "sold_price": prop.get('sold_price'),
+                                "size_sqft": prop.get('size_sqft'),
+                                "number_bedrooms": prop.get('number_bedrooms'),
+                                "number_bathrooms": prop.get('number_bathrooms')
+                            }
+                        )
+                        property_documents.append(property_doc)
+                        print(f"Property {i} prepared for vector embedding")
+                        
+                    except Exception as e:
+                        print(f"Error preparing property {i} for vector store: {e}")
+                        continue
+                
+                if property_documents:
+                    # Create property vector index
+                    property_index = VectorStoreIndex.from_documents(
+                        property_documents,
+                        storage_context=property_storage_context,
+                        embed_model=embed_model
+                    )
+                    print(f"Successfully created property vector store with {len(property_documents)} properties")
+                else:
+                    print("No properties were prepared for vector storage")
+                    
+            except Exception as e:
+                print(f"Error creating property vector store: {e}")
 
             document.status = DocumentStatus.COMPLETED
             db.session.commit()
@@ -467,3 +863,94 @@ TABLE PROCESSING:
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
                 print("Cleanup of temporary files completed.") 
+
+@shared_task(bind=True)
+def process_document_task(self, document_id, file_content, original_filename, business_id):
+    """
+    Legacy wrapper function that calls the new dual-store pipeline
+    """
+    return process_document_with_dual_stores.run(document_id, file_content, original_filename, business_id)
+
+def get_s3_client():
+    """Get S3 client with AWS credentials"""
+    return boto3.client(
+        's3',
+        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+        region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+    )
+
+def store_extracted_properties_in_astradb_tabular(extracted_data, business_id, document_id, property_uuids):
+    """Store extracted properties in AstraDB tabular database"""
+    try:
+        session = get_astra_db_session()
+        keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
+        table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
+        
+        session.set_keyspace(keyspace)
+        
+        # Insert query with geocoding fields
+        insert_query = f"""
+        INSERT INTO {table_name} (
+            id, source_document_id, business_id, property_address, property_type, 
+            size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
+            listed_building_grade, transaction_date, sold_price, asking_price, 
+            rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
+            other_amenities, lease_details, days_on_market, notes,
+            latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        prepared_insert = session.prepare(insert_query)
+        
+        if extracted_data and extracted_data.get("all_properties"):
+            properties = extracted_data["all_properties"]
+            
+            # Get geocoding results for all properties
+            addresses = [prop.get('property_address', '') for prop in properties]
+            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
+            geocoding_map = {addr: result for addr, result in geocoding_results}
+            
+            for prop, property_uuid in zip(properties, property_uuids):
+                try:
+                    # Get geocoding data for this property
+                    address = prop.get('property_address', '')
+                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
+                    
+                    session.execute(prepared_insert, (
+                        property_uuid,
+                        document_id,
+                        business_id,
+                        prop.get('property_address'),
+                        prop.get('property_type'),
+                        prop.get('size_sqft'),
+                        prop.get('size_unit'),
+                        prop.get('number_bedrooms'),
+                        prop.get('number_bathrooms'),
+                        prop.get('tenure'),
+                        prop.get('listed_building_grade'),
+                        prop.get('transaction_date'),
+                        prop.get('sold_price'),
+                        prop.get('asking_price'),
+                        prop.get('rent_pcm'),
+                        prop.get('yield_percentage'),
+                        prop.get('price_per_sqft'),
+                        prop.get('epc_rating'),
+                        prop.get('condition'),
+                        prop.get('other_amenities'),
+                        prop.get('lease_details'),
+                        prop.get('days_on_market'),
+                        prop.get('notes'),
+                        # Geocoding fields
+                        geocoding_result.get('latitude'),
+                        geocoding_result.get('longitude'),
+                        geocoding_result.get('geocoded_address'),
+                        geocoding_result.get('confidence'),
+                        geocoding_result.get('status')
+                    ))
+                except Exception as e:
+                    logger.error(f"Error storing property in AstraDB tabular: {e}")
+                    
+        logger.info(f"Stored {len(property_uuids)} properties in AstraDB tabular")
+        
+    except Exception as e:
+        logger.error(f"Error in store_extracted_properties_in_astradb_tabular: {e}")
