@@ -146,7 +146,7 @@ class DeletionService:
         try:
             api_endpoint = os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"]
             token = os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"]
-            collection_name = "doc_vectors"  # Match the collection you created
+            collection_name = os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"]  # Use the same collection name as in tasks.py
             
             headers = {
                 "Token": token,

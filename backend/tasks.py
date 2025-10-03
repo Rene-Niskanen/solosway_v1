@@ -289,15 +289,15 @@ def create_property_document(property_data: dict, geocoding_result: dict) -> str
 # --- Enhanced JSON Schema Definition ---
 ENHANCED_APPRAISAL_JSON_SCHEMA = {
     "additionalProperties": False,
-    "description": "A model to hold all properties and their associated images extracted from an appraisal document.",
+    "description": "A model to hold all comparable properties & subject property and their associated images extracted from an appraisal document. EXCLUDE individual apartment units, flats, or units within the same building.",
     "properties": {
         "all_properties": {
             "items": {
                 "additionalProperties": False,
-                "description": "CRITICAL: A single property with all available details and associated images. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
+                "description": "CRITICAL: A single STANDALONE property used for comparison or the main subject property. EXCLUDE individual apartments, flats, or units within buildings. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
                 "properties": {
                     "property_address": {
-                        "description": "Full address of the property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'.",
+                        "description": "Full address of the STANDALONE property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'. EXCLUDE addresses with apartment numbers, flat numbers, or unit numbers (e.g., 'Apartment 710', 'Flat 12', 'Unit A').",
                         "type": "string"
                     },
                     "property_type": {
@@ -538,7 +538,14 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 cite_sources=True,
                 use_reasoning=False,
                 confidence_scores=False,
-                system_prompt="""Extract properties from this appraisal document with maximum precision. 
+                system_prompt="""Extract COMPARABLE PROPERTIES and SUBJECT PROPERTIES from this appraisal document with maximum precision. 
+
+CRITICAL PROPERTY FILTERING:
+- ONLY extract properties that are used for comparison purposes (comparable properties) or the main subject property
+- EXCLUDE individual apartment units, flats, or units within the same building (e.g., "Apartment 710", "Flat 12", "Unit A")
+- EXCLUDE council tax bandings, planning applications, or administrative data
+- EXCLUDE individual rooms, floors, or internal spaces
+- Focus on standalone properties that would be used for valuation comparison
 
 CRITICAL ADDRESS EXTRACTION RULES:
 - Extract the COMPLETE, FULL address exactly as written in the document
@@ -548,15 +555,15 @@ CRITICAL ADDRESS EXTRACTION RULES:
 - If address spans multiple lines in a table, combine all parts into one complete address
 
 PROPERTY EXTRACTION REQUIREMENTS:
-- Extract properties from tables, lists, and individual mentions
-- Include both subject properties AND comparable properties
+- Extract ONLY comparable properties and subject properties with complete addresses
 - For each property extract: complete address, type, size in sq ft, bedrooms, bathrooms, price, transaction date
 - If bedroom/bathroom counts are missing, look for patterns like '6 Bed', '3 Bath', '5-bed', '4 bathroom'
 - Extract exact numerical values for prices, sizes, and dates
 - Preserve all amenities and features mentioned
 
 TABLE PROCESSING:
-- Process each table row as a separate property
+- Process each table row as a separate property ONLY if it represents a standalone comparable property
+- Skip rows that contain apartment numbers, unit numbers, or individual units within buildings
 - Read address information from the leftmost 'Address' column completely
 - Do not interpret table structure as part of the address content
 - Extract the literal text content, not table metadata"""
@@ -849,15 +856,29 @@ TABLE PROCESSING:
             except Exception as e:
                 print(f"Error creating property vector store: {e}")
 
-            document.status = DocumentStatus.COMPLETED
-            db.session.commit()
-            print(f"Document processing completed for document_id: {document_id}")
+            # Check if document still exists before updating status
+            document = Document.query.get(document_id)
+            if document:
+                document.status = DocumentStatus.COMPLETED
+                db.session.commit()
+                print(f"Document processing completed for document_id: {document_id}")
+            else:
+                print(f"Document {document_id} no longer exists - processing completed but document was deleted")
 
         except Exception as e:
             print(f"Error processing document {document_id}: {e}", file=sys.stderr)
-            if document:
-                document.status = DocumentStatus.FAILED
-                db.session.commit()
+            try:
+                # Check if document still exists before updating status
+                document = Document.query.get(document_id)
+                if document:
+                    document.status = DocumentStatus.FAILED
+                    db.session.commit()
+                    print(f"Updated document status to FAILED for document_id: {document_id}")
+                else:
+                    print(f"Document {document_id} no longer exists - skipping status update")
+            except Exception as status_error:
+                print(f"Error updating document status: {status_error}", file=sys.stderr)
+                db.session.rollback()
         
         finally:
             if temp_dir and os.path.exists(temp_dir):

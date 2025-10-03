@@ -241,7 +241,7 @@ def delete_document(document_id):
     try:
         aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
         aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-        aws_region = os.environ['AWS_REGION']
+        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
         invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
         bucket_name = os.environ['S3_UPLOAD_BUCKET']
     except KeyError as e:
@@ -334,7 +334,7 @@ def upload_file_to_gateway():
     try:
         aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
         aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-        aws_region = os.environ['AWS_REGION']
+        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
         invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
         bucket_name = os.environ['S3_UPLOAD_BUCKET']
     except KeyError as e:
@@ -441,7 +441,7 @@ def process_document(document_id):
     try:
         aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
         aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-        aws_region = os.environ['AWS_REGION']
+        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
         invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
         bucket_name = os.environ['S3_UPLOAD_BUCKET']
         
