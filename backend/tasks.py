@@ -353,6 +353,27 @@ ENHANCED_APPRAISAL_JSON_SCHEMA = {
                         ],
                         "description": "Date of the property's last recorded transaction. Format: YYYY-MM-DD."
                     },
+                    "sold_date": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"}
+                        ],
+                        "description": "Date when the property was sold. Format: YYYY-MM-DD."
+                    },
+                    "rented_date": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"}
+                        ],
+                        "description": "Date when the property was rented. Format: YYYY-MM-DD."
+                    },
+                    "leased_date": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "null"}
+                        ],
+                        "description": "Date when the property was leased. Format: YYYY-MM-DD."
+                    },
                     "sold_price": {
                         "description": "Sold price of the property.",
                         "type": "number"
@@ -431,7 +452,7 @@ ENHANCED_APPRAISAL_JSON_SCHEMA = {
                 "required": [
                     "property_address", "property_type", "size_sqft", "size_unit", 
                     "number_bedrooms", "number_bathrooms", "tenure", "listed_building_grade", 
-                    "transaction_date", "sold_price", "asking_price", "rent_pcm", 
+                    "transaction_date", "sold_date", "rented_date", "leased_date", "sold_price", "asking_price", "rent_pcm", 
                     "yield_percentage", "price_per_sqft", "epc_rating", "condition", 
                     "other_amenities", "lease_details", "days_on_market", "notes"
                 ],
@@ -578,7 +599,7 @@ TABLE PROCESSING:
                 print(f"Direct extract method not available: {e}")
                 print("Falling back to agent-based approach...")
                 
-                agent_name = f"balanced-enhanced-prompt-extractor-{business_id}-v1"
+                agent_name = "official-solosway-extraction"
                 try:
                     agent = extractor.get_agent(name=agent_name)
                     print(f"Using existing agent: {agent_name}")
@@ -623,11 +644,11 @@ TABLE PROCESSING:
             INSERT INTO {table_name} (
                 id, source_document_id, business_id, property_address, property_type, 
                 size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
-                listed_building_grade, transaction_date, sold_price, asking_price, 
+                listed_building_grade, transaction_date, sold_date, rented_date, leased_date, sold_price, asking_price, 
                 rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
                 other_amenities, lease_details, days_on_market, notes,
                 latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             prepared_insert = session.prepare(insert_query)
             
@@ -658,6 +679,9 @@ TABLE PROCESSING:
                         prop.get('tenure'),
                         prop.get('listed_building_grade'),
                         prop.get('transaction_date'),
+                        prop.get('sold_date'),        # NEW
+                        prop.get('rented_date'),      # NEW
+                        prop.get('leased_date'),      # NEW
                         prop.get('sold_price'),
                         prop.get('asking_price'),
                         prop.get('rent_pcm'),
@@ -723,6 +747,9 @@ TABLE PROCESSING:
                         lease_details=prop.get('lease_details'),
                         days_on_market=prop.get('days_on_market'),
                         transaction_date=prop.get('transaction_date'),
+                        sold_date=prop.get('sold_date'),        # NEW
+                        rented_date=prop.get('rented_date'),    # NEW
+                        leased_date=prop.get('leased_date'),    # NEW
                         epc_rating=prop.get('epc_rating'),
                         listed_building_grade=prop.get('listed_building_grade'),
                         other_amenities=prop.get('other_amenities'),
@@ -832,7 +859,11 @@ TABLE PROCESSING:
                                 "sold_price": prop.get('sold_price'),
                                 "size_sqft": prop.get('size_sqft'),
                                 "number_bedrooms": prop.get('number_bedrooms'),
-                                "number_bathrooms": prop.get('number_bathrooms')
+                                "number_bathrooms": prop.get('number_bathrooms'),
+                                "transaction_date": prop.get('transaction_date'),
+                                "sold_date": prop.get('sold_date'),        # NEW
+                                "rented_date": prop.get('rented_date'),    # NEW
+                                "leased_date": prop.get('leased_date')     # NEW
                             }
                         )
                         property_documents.append(property_doc)
@@ -843,18 +874,44 @@ TABLE PROCESSING:
                         continue
                 
                 if property_documents:
-                    # Create property vector index
-                    property_index = VectorStoreIndex.from_documents(
-                        property_documents,
-                        storage_context=property_storage_context,
-                        embed_model=embed_model
-                    )
-                    print(f"Successfully created property vector store with {len(property_documents)} properties")
+                    print(f"Creating property vector store with {len(property_documents)} properties...")
+                    print("⚠️  This may take a few minutes for large property sets...")
+                    
+                    # Process properties in smaller batches to avoid timeouts
+                    batch_size = 5
+                    total_batches = (len(property_documents) + batch_size - 1) // batch_size
+                    
+                    for batch_num in range(total_batches):
+                        start_idx = batch_num * batch_size
+                        end_idx = min(start_idx + batch_size, len(property_documents))
+                        batch_docs = property_documents[start_idx:end_idx]
+                        
+                        print(f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_docs)} properties)...")
+                        
+                        try:
+                            # Create property vector index for this batch
+                            property_index = VectorStoreIndex.from_documents(
+                                batch_docs,
+                                storage_context=property_storage_context,
+                                embed_model=embed_model
+                            )
+                            print(f"✅ Batch {batch_num + 1} processed successfully")
+                            
+                            # Small delay between batches to avoid overwhelming the API
+                            if batch_num < total_batches - 1:
+                                time.sleep(2)
+                                
+                        except Exception as batch_error:
+                            print(f"❌ Error processing batch {batch_num + 1}: {batch_error}")
+                            continue
+                    
+                    print(f"🎉 Property vector store processing completed!")
                 else:
                     print("No properties were prepared for vector storage")
                     
             except Exception as e:
                 print(f"Error creating property vector store: {e}")
+                print(f"Error details: {type(e).__name__}: {str(e)}")
 
             # Check if document still exists before updating status
             document = Document.query.get(document_id)
@@ -915,11 +972,11 @@ def store_extracted_properties_in_astradb_tabular(extracted_data, business_id, d
         INSERT INTO {table_name} (
             id, source_document_id, business_id, property_address, property_type, 
             size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
-            listed_building_grade, transaction_date, sold_price, asking_price, 
+            listed_building_grade, transaction_date, sold_date, rented_date, leased_date, sold_price, asking_price, 
             rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
             other_amenities, lease_details, days_on_market, notes,
             latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         prepared_insert = session.prepare(insert_query)
         
@@ -950,6 +1007,9 @@ def store_extracted_properties_in_astradb_tabular(extracted_data, business_id, d
                         prop.get('tenure'),
                         prop.get('listed_building_grade'),
                         prop.get('transaction_date'),
+                        prop.get('sold_date'),        # NEW
+                        prop.get('rented_date'),      # NEW
+                        prop.get('leased_date'),      # NEW
                         prop.get('sold_price'),
                         prop.get('asking_price'),
                         prop.get('rent_pcm'),

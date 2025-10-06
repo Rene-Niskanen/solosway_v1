@@ -169,6 +169,9 @@ class ExtractedProperty(db.Model):
     lease_details = db.Column(db.Text)
     days_on_market = db.Column(db.Integer)
     transaction_date = db.Column(db.Date)
+    sold_date = db.Column(db.Date)
+    rented_date = db.Column(db.Date)
+    leased_date = db.Column(db.Date)
     
     # Property features
     epc_rating = db.Column(db.String(10))
