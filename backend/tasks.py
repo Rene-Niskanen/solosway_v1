@@ -273,6 +273,20 @@ def create_property_document(property_data: dict, geocoding_result: dict) -> str
     if market_info:
         description_parts.append("Market Info: " + ", ".join(market_info))
     
+    # Transaction dates info
+    transaction_info = []
+    if property_data.get("transaction_date"):
+        transaction_info.append(f"Transaction Date: {property_data['transaction_date']}")
+    if property_data.get("sold_date"):
+        transaction_info.append(f"Date of Sale: {property_data['sold_date']}")
+    if property_data.get("rented_date"):
+        transaction_info.append(f"Date Rented: {property_data['rented_date']}")
+    if property_data.get("leased_date"):
+        transaction_info.append(f"Date Leased: {property_data['leased_date']}")
+    
+    if transaction_info:
+        description_parts.append("Transaction Info: " + ", ".join(transaction_info))
+    
     # Features
     if property_data.get("other_amenities"):
         description_parts.append(f"Amenities: {property_data['other_amenities']}")

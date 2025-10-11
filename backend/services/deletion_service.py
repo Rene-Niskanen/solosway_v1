@@ -1,6 +1,7 @@
 import os
 import requests
 import uuid
+import logging
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
 
@@ -18,10 +19,16 @@ if not hasattr(astrapy_results, 'UpdateResult'):
 
 from llama_index.vector_stores.astra_db import AstraDBVectorStore
 
+# Set up logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 class DeletionService:
     def __init__(self):
         self.tabular_session = None
         self.vector_store = None
+        self.document_vector_index = None
+        self.property_vector_index = None
     
     def delete_document_from_all_stores(self, document_id, business_id):
         """
@@ -33,7 +40,11 @@ class DeletionService:
         
         Note: S3 and PostgreSQL Document table are handled separately in views.py
         """
-        print(f"🗑️  Starting complete deletion for document {document_id}, business {business_id}")
+        logger.info("=" * 80)
+        logger.info(f"DELETION SERVICE - Starting complete deletion")
+        logger.info(f"Document ID: {document_id}")
+        logger.info(f"Business ID: {business_id}")
+        logger.info("=" * 80)
         
         deletion_results = {
             'astra_tabular': False,
@@ -42,33 +53,80 @@ class DeletionService:
             'postgresql_properties': False
         }
         
+        deletion_errors = {
+            'astra_tabular': None,
+            'astra_document_vector': None,
+            'astra_property_vector': None,
+            'postgresql_properties': None
+        }
+        
         try:
             # 1. Delete from AstraDB tabular store
-            deletion_results['astra_tabular'] = self.delete_tabular_data(document_id, business_id)
-            print(f"✅ Tabular deletion: {deletion_results['astra_tabular']}")
+            logger.info("[1/4] Deleting from AstraDB Tabular Store...")
+            try:
+                deletion_results['astra_tabular'] = self.delete_tabular_data(document_id, business_id)
+                if deletion_results['astra_tabular']:
+                    logger.info("    SUCCESS: Tabular deletion")
+                else:
+                    logger.warning("    FAILED: Tabular deletion (returned False)")
+            except Exception as e:
+                deletion_errors['astra_tabular'] = str(e)
+                logger.error(f"    ERROR: Tabular deletion - {e}")
             
-            # 2. Delete from document vector store  
-            deletion_results['astra_document_vector'] = self.delete_document_vector_data(document_id, business_id)
-            print(f"✅ Document vector deletion: {deletion_results['astra_document_vector']}")
+            # 2. Delete from document vector store
+            logger.info("[2/4] Deleting from Document Vector Store...")
+            try:
+                deletion_results['astra_document_vector'] = self.delete_document_vector_data(document_id, business_id)
+                if deletion_results['astra_document_vector']:
+                    logger.info("    SUCCESS: Document vector deletion")
+                else:
+                    logger.warning("    FAILED: Document vector deletion (returned False)")
+            except Exception as e:
+                deletion_errors['astra_document_vector'] = str(e)
+                logger.error(f"    ERROR: Document vector deletion - {e}")
             
             # 3. Delete from property vector store
-            deletion_results['astra_property_vector'] = self.delete_property_vector_data(document_id, business_id)
-            print(f"✅ Property vector deletion: {deletion_results['astra_property_vector']}")
+            logger.info("[3/4] Deleting from Property Vector Store...")
+            try:
+                deletion_results['astra_property_vector'] = self.delete_property_vector_data(document_id, business_id)
+                if deletion_results['astra_property_vector']:
+                    logger.info("    SUCCESS: Property vector deletion")
+                else:
+                    logger.warning("    FAILED: Property vector deletion (returned False)")
+            except Exception as e:
+                deletion_errors['astra_property_vector'] = str(e)
+                logger.error(f"    ERROR: Property vector deletion - {e}")
             
             # 4. Delete from PostgreSQL ExtractedProperty
-            deletion_results['postgresql_properties'] = self.delete_postgresql_properties(document_id)
-            print(f"✅ PostgreSQL properties deletion: {deletion_results['postgresql_properties']}")
+            logger.info("[4/4] Deleting from PostgreSQL ExtractedProperty...")
+            try:
+                deletion_results['postgresql_properties'] = self.delete_postgresql_properties(document_id)
+                if deletion_results['postgresql_properties']:
+                    logger.info("    SUCCESS: PostgreSQL properties deletion")
+                else:
+                    logger.warning("    FAILED: PostgreSQL properties deletion (returned False)")
+            except Exception as e:
+                deletion_errors['postgresql_properties'] = str(e)
+                logger.error(f"    ERROR: PostgreSQL properties deletion - {e}")
             
             overall_success = all(deletion_results.values())
             success_count = sum(deletion_results.values())
             total_count = len(deletion_results)
             
-            print(f"🎯 Overall deletion: {success_count}/{total_count} successful")
+            logger.info("=" * 80)
+            logger.info(f"DELETION SUMMARY:")
+            logger.info(f"   Success: {success_count}/{total_count}")
+            logger.info(f"   Results: {deletion_results}")
+            if any(deletion_errors.values()):
+                logger.error(f"   Errors: {deletion_errors}")
+            logger.info("=" * 80)
             
             return overall_success, deletion_results
             
         except Exception as e:
-            print(f"❌ Error in complete deletion: {e}")
+            logger.error(f"CRITICAL ERROR in complete deletion: {e}")
+            import traceback
+            traceback.print_exc()
             return False, deletion_results
     
     def delete_document_from_astra_stores(self, document_id, business_id):
@@ -142,126 +200,75 @@ class DeletionService:
             return False
     
     def delete_document_vector_data(self, document_id, business_id):
-        """Delete document chunks from AstraDB document vector store using Data API"""
+        """Delete document chunks from AstraDB document vector store using REST API"""
         try:
-            api_endpoint = os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"]
-            token = os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"]
-            collection_name = os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"]  # Use the same collection name as in tasks.py
+            logger.info(f"Attempting to delete document vectors for document_id: {document_id}, business_id: {business_id}")
             
-            headers = {
-                "Token": token,
-                "Content-Type": "application/json"
-            }
+            # Use REST API directly for reliable deletion of ALL matching documents
+            from .astra_utils import get_document_vector_client
             
-            # Find documents with matching metadata
-            find_url = f"{api_endpoint}/api/json/v1/collections/{collection_name}/find"
-            find_payload = {
-                "filter": {
-                    "metadata.document_id": str(document_id),
-                    "metadata.business_id": str(business_id)
-                },
-                "options": {
-                    "limit": 1000  # Adjust based on expected chunk count
-                }
-            }
+            collection_name = os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"]
+            client = get_document_vector_client()
             
-            print(f"Searching for vector documents with filter: {find_payload['filter']}")
-            response = requests.post(find_url, json=find_payload, headers=headers)
+            # Try multiple filter formats to find the correct one
+            filter_variations = [
+                {"document_id": str(document_id), "business_id": str(business_id)},
+                {"metadata": {"document_id": str(document_id), "business_id": str(business_id)}},
+                {"metadata.document_id": str(document_id), "metadata.business_id": str(business_id)}
+            ]
             
-            if response.status_code != 200:
-                print(f"Error finding vector documents: {response.status_code} - {response.text}")
-                return False
+            for i, filter_dict in enumerate(filter_variations, 1):
+                logger.info(f"Trying filter variation {i}: {filter_dict}")
+                deleted_count, total_found = client.delete_documents_by_filter(collection_name, filter_dict)
+                
+                if total_found > 0:
+                    logger.info(f"SUCCESS with filter variation {i}: deleted {deleted_count}/{total_found} chunks")
+                    return deleted_count == total_found
             
-            documents = response.json().get("data", {}).get("documents", [])
-            print(f"Found {len(documents)} vector documents to delete")
-            
-            if not documents:
-                print("No vector documents found - deletion successful (nothing to delete)")
-                return True
-            
-            # Delete each document by ID
-            delete_count = 0
-            delete_url_base = f"{api_endpoint}/api/json/v1/collections/{collection_name}"
-            
-            for doc in documents:
-                doc_id = doc.get("_id")
-                if doc_id:
-                    delete_url = f"{delete_url_base}/{doc_id}"
-                    delete_response = requests.delete(delete_url, headers=headers)
-                    if delete_response.status_code == 200:
-                        delete_count += 1
-                        print(f"Deleted vector document {doc_id}")
-                    else:
-                        print(f"Failed to delete vector document {doc_id}: {delete_response.status_code}")
-            
-            print(f"Successfully deleted {delete_count}/{len(documents)} vector documents")
-            return delete_count == len(documents)
+            logger.warning("No documents found with any filter variation - nothing to delete")
+            return True  # Nothing to delete is considered success
             
         except Exception as e:
-            print(f"Error deleting vector data: {e}")
+            logger.error(f"Error deleting document vector data: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def delete_property_vector_data(self, document_id, business_id):
-        """Delete individual property embeddings from AstraDB property vector store using Data API"""
+        """Delete individual property embeddings from AstraDB property vector store using REST API"""
         try:
-            api_endpoint = os.environ["ASTRA_DB_COMP_API_ENDPOINT"]
-            token = os.environ["ASTRA_DB_COMP_APPLICATION_TOKEN"]
             collection_name = f"properties_vectorized_{business_id.lower()}"
+            logger.info(f"Attempting to delete property vectors for document_id: {document_id}")
             
-            headers = {
-                "Token": token,
-                "Content-Type": "application/json"
-            }
+            # Use REST API directly for reliable deletion
+            from .astra_utils import get_property_vector_client
             
-            # Find properties with matching source document
-            find_url = f"{api_endpoint}/api/json/v1/default_keyspace/{collection_name}/find"
-            find_payload = {
-                "filter": {
-                    "metadata.source_document_id": str(document_id)
-                },
-                "options": {
-                    "limit": 1000  # Adjust based on expected property count
-                }
-            }
+            client = get_property_vector_client()
             
-            print(f"🔍 Searching for property vectors with document_id: {document_id}")
-            response = requests.post(find_url, json=find_payload, headers=headers)
-            
-            if response.status_code != 200:
-                print(f"⚠️  Error finding property vectors: {response.status_code} - {response.text}")
-                # Don't fail if collection doesn't exist yet
-                if "does not exist" in response.text.lower():
-                    print("✅ Property vector collection doesn't exist yet - skipping")
-                    return True
-                return False
-            
-            documents = response.json().get("data", {}).get("documents", [])
-            print(f"📋 Found {len(documents)} property vectors to delete")
-            
-            if not documents:
-                print("✅ No property vectors found - deletion successful (nothing to delete)")
+            # Check if collection exists
+            if not client.collection_exists(collection_name):
+                logger.info("Property vector collection doesn't exist yet - skipping")
                 return True
             
-            # Delete each property by ID
-            delete_count = 0
-            delete_url_base = f"{api_endpoint}/api/json/v1/default_keyspace/{collection_name}"
+            # Delete ALL properties matching filter
+            filter_dict = {
+                "metadata.source_document_id": str(document_id)
+            }
             
-            for doc in documents:
-                doc_id = doc.get("_id")
-                if doc_id:
-                    delete_url = f"{delete_url_base}/{doc_id}"
-                    delete_response = requests.delete(delete_url, headers=headers)
-                    if delete_response.status_code == 200:
-                        delete_count += 1
-                        print(f"✅ Deleted property vector {doc_id}")
-                    else:
-                        print(f"❌ Failed to delete property vector {doc_id}: {delete_response.status_code}")
+            logger.info(f"Searching for property vectors with filter: {filter_dict}")
+            deleted_count, total_found = client.delete_documents_by_filter(collection_name, filter_dict)
             
-            print(f"📊 Successfully deleted {delete_count}/{len(documents)} property vectors")
-            return delete_count == len(documents)
+            if total_found == 0:
+                logger.info("No property vectors found - deletion successful (nothing to delete)")
+                return True
+            
+            logger.info(f"Property vector deletion: deleted {deleted_count}/{total_found} properties")
+            return deleted_count == total_found
             
         except Exception as e:
-            print(f"❌ Error deleting property vector data: {e}")
+            logger.error(f"Error deleting property vector data: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def delete_postgresql_properties(self, document_id):

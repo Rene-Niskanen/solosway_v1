@@ -8,10 +8,14 @@ import requests
 from requests_aws4auth import AWS4Auth
 from werkzeug.utils import secure_filename
 import sys
+import logging
 from .tasks import process_document_task
 from .services.deletion_service import DeletionService
 
 views = Blueprint('views', __name__)
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Redirect root to React app
 @views.route('/')
@@ -233,7 +237,6 @@ def delete_document(document_id):
     deletion_results = {
         's3': False,
         'astra_tabular': False,
-        'astra_vector': False,
         'postgresql': False
     }
 
@@ -249,24 +252,35 @@ def delete_document(document_id):
         print(error_message, file=sys.stderr)
         return jsonify({'error': 'Server is not configured for file deletion.'}), 500
     
+    logger.info("=" * 100)
+    logger.info(f"VIEWS.PY - DELETE DOCUMENT ENDPOINT CALLED")
+    logger.info(f"Document ID: {document_id}")
+    logger.info(f"Filename: {document.original_filename}")
+    logger.info(f"Business ID: {document.business_id}")
+    logger.info(f"User: {current_user.email}")
+    logger.info("=" * 100)
+
     # 2. Delete the object from S3
+    logger.info("[S3 DELETION]")
     try:
         s3_key = document.s3_path
         final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
         service = 'execute-api'
         aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
 
+        logger.info(f"   S3 Key: {s3_key}")
         response = requests.delete(final_url, auth=aws_auth)
         response.raise_for_status()
         deletion_results['s3'] = True
-        print(f"Successfully deleted S3 file: {s3_key}")
+        logger.info(f"   SUCCESS: Deleted S3 file: {s3_key}")
 
     except requests.exceptions.RequestException as e:
         error_message = f"Failed to delete file from S3: {e}"
-        print(error_message, file=sys.stderr)
+        logger.error(f"   FAILED: S3 deletion - {e}")
         # Don't return error - continue with other deletions
 
     # 3. Delete from ALL database stores (AstraDB + PostgreSQL properties)
+    logger.info("[DATABASE STORES DELETION]")
     try:
         deletion_service = DeletionService()
         all_stores_success, store_results = deletion_service.delete_document_from_all_stores(
@@ -278,32 +292,44 @@ def delete_document(document_id):
         deletion_results.update(store_results)
         
         if all_stores_success:
-            print(f"✅ Successfully deleted all data for document {document_id}")
+            logger.info(f"SUCCESS: All database stores deleted for document {document_id}")
         else:
-            print(f"⚠️  Partially deleted data for document {document_id}")
-            print(f"   Store results: {store_results}")
+            logger.warning(f"PARTIAL: Some stores failed for document {document_id}")
+            logger.warning(f"   Store results: {store_results}")
             
     except Exception as e:
         error_message = f"Failed to delete from data stores: {e}"
-        print(error_message, file=sys.stderr)
+        logger.error(f"   FAILED: Database stores deletion - {e}")
+        import traceback
+        traceback.print_exc()
         # Don't return error - continue with PostgreSQL document deletion
 
     # 4. Delete the PostgreSQL record
+    logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
     try:
+        logger.info(f"   Deleting document record: {document_id}")
         db.session.delete(document)
         db.session.commit()
         deletion_results['postgresql'] = True
-        print(f"Successfully deleted PostgreSQL record for document {document_id}")
+        logger.info(f"   SUCCESS: Deleted PostgreSQL record")
         
     except Exception as e:
         db.session.rollback()
         error_message = f"Failed to delete database record: {e}"
-        print(error_message, file=sys.stderr)
+        logger.error(f"   FAILED: PostgreSQL record deletion - {e}")
         return jsonify({'error': 'Failed to delete database record.'}), 500
 
     # 5. Return comprehensive results
     success_count = sum(deletion_results.values())
     total_operations = len(deletion_results)
+    
+    logger.info("=" * 100)
+    logger.info(f"FINAL DELETION RESULTS:")
+    logger.info(f"   Total operations: {total_operations}")
+    logger.info(f"   Successful: {success_count}")
+    logger.info(f"   Failed: {total_operations - success_count}")
+    logger.info(f"   Details: {deletion_results}")
+    logger.info("=" * 100)
     
     response_data = {
         'message': f'Deletion completed: {success_count}/{total_operations} operations successful',
