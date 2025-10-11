@@ -10,7 +10,7 @@ class Config:
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///instance/database.db' 
     
     # CORS settings
-    CORS_ORIGINS = ['http://localhost:3000', 'http://localhost:5002', 'https://your-frontend-domain.com']
+    CORS_ORIGINS = ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5002', 'https://your-frontend-domain.com']
     
     # Session configuration
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)

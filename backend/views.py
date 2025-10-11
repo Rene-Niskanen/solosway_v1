@@ -11,11 +11,368 @@ import sys
 import logging
 from .tasks import process_document_task
 from .services.deletion_service import DeletionService
+from sqlalchemy import text
+import json
 
 views = Blueprint('views', __name__)
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# HEALTH & STATUS ENDPOINTS
+# ============================================================================
+
+@views.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for frontend connection testing"""
+    try:
+        # Quick database checks
+        db.session.execute(text('SELECT 1'))
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'status': 'healthy',
+                'timestamp': datetime.utcnow().isoformat(),
+                'version': '1.0.0'
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================================================
+# AI & LLM ENDPOINTS
+# ============================================================================
+
+@views.route('/api/llm/analyze-query', methods=['POST'])
+@login_required
+def analyze_query():
+    """Analyze user query for intent and criteria extraction"""
+    data = request.get_json()
+    query = data.get('query', '')
+    message_history = data.get('messageHistory', [])
+    
+    try:
+        from .services.llm_service import LLMService
+        llm = LLMService()
+        result = llm.analyze_query(query, message_history)
+        
+        return jsonify({
+            'success': True,
+            'data': json.loads(result)
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/llm/chat', methods=['POST'])
+@login_required
+def chat_completion():
+    """Generate AI chat response"""
+    data = request.get_json()
+    messages = data.get('messages', [])
+    
+    try:
+        from .services.llm_service import LLMService
+        llm = LLMService()
+        result = llm.chat_completion(messages)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================================================
+# PROPERTY SEARCH & ANALYSIS ENDPOINTS
+# ============================================================================
+
+@views.route('/api/properties/search', methods=['POST'])
+@login_required
+def search_properties():
+    """Search properties with query and filters"""
+    data = request.get_json()
+    query = data.get('query', '')
+    filters = data.get('filters', {})
+    
+    try:
+        from .services.property_search_service import PropertySearchService
+        service = PropertySearchService()
+        results = service.search_properties(
+            current_user.company_name,
+            query,
+            filters
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': results
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/properties/analyze', methods=['POST'])
+@login_required
+def analyze_property_query():
+    """Analyze property query to refine search"""
+    data = request.get_json()
+    query = data.get('query', '')
+    previous_results = data.get('previousResults', [])
+    
+    try:
+        from .services.property_search_service import PropertySearchService
+        service = PropertySearchService()
+        analysis = service.analyze_property_query(query, previous_results)
+        
+        return jsonify({
+            'success': True,
+            'data': analysis
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/properties/<uuid:property_id>/comparables', methods=['POST'])
+@login_required
+def get_property_comparables(property_id):
+    """Get comparable properties"""
+    data = request.get_json()
+    criteria = data.get('criteria', {})
+    
+    try:
+        from .services.property_search_service import PropertySearchService
+        service = PropertySearchService()
+        comparables = service.find_comparables(str(property_id), criteria)
+        
+        return jsonify({
+            'success': True,
+            'data': comparables
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================================================
+# OCR & DOCUMENT PROCESSING ENDPOINTS
+# ============================================================================
+
+@views.route('/api/ocr/extract', methods=['POST'])
+@login_required
+def extract_text_from_image():
+    """Extract text from uploaded image"""
+    if 'image' not in request.files:
+        return jsonify({
+            'success': False,
+            'error': 'No image file provided'
+        }), 400
+    
+    image_file = request.files['image']
+    
+    try:
+        from .services.ocr_service import OCRService
+        ocr = OCRService()
+        result = ocr.extract_text_from_image(image_file)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/documents/upload', methods=['POST'])
+@login_required
+def upload_property_document():
+    """Upload property document (wrapper for existing upload-file)"""
+    # Redirect to existing upload-file endpoint
+    return upload_file_to_gateway()
+
+# ============================================================================
+# LOCATION & GEOCODING ENDPOINTS
+# ============================================================================
+
+@views.route('/api/location/geocode', methods=['POST'])
+@login_required
+def geocode_address_endpoint():
+    """Forward geocoding: address to coordinates"""
+    data = request.get_json()
+    address = data.get('address', '')
+    
+    try:
+        from .services.geocoding_service import GeocodingService
+        geo = GeocodingService()
+        result = geo.geocode_address(address)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/location/reverse-geocode', methods=['POST'])
+@login_required
+def reverse_geocode_endpoint():
+    """Reverse geocoding: coordinates to address"""
+    data = request.get_json()
+    lat = data.get('lat')
+    lng = data.get('lng')
+    
+    try:
+        from .services.geocoding_service import GeocodingService
+        geo = GeocodingService()
+        result = geo.reverse_geocode(lat, lng)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/location/search', methods=['POST'])
+@login_required
+def search_location():
+    """Search for locations"""
+    data = request.get_json()
+    query = data.get('query', '')
+    
+    try:
+        from .services.geocoding_service import GeocodingService
+        geo = GeocodingService()
+        results = geo.search_location(query)
+        
+        return jsonify({
+            'success': True,
+            'data': results
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================================================
+# ANALYTICS ENDPOINTS
+# ============================================================================
+
+@views.route('/api/analytics/activity', methods=['POST'])
+@login_required
+def log_activity():
+    """Log user activity"""
+    data = request.get_json()
+    
+    try:
+        from .services.analytics_service import AnalyticsService
+        analytics = AnalyticsService()
+        result = analytics.log_activity(
+            current_user.id,
+            data.get('type'),
+            data.get('details', {})
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/analytics', methods=['GET'])
+@login_required
+def get_analytics():
+    """Get analytics summary"""
+    filters = dict(request.args)
+    
+    try:
+        from .services.analytics_service import AnalyticsService
+        analytics = AnalyticsService()
+        result = analytics.get_analytics(current_user.company_name, filters)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================================================
+# MULTI-AGENT SYSTEM ENDPOINTS
+# ============================================================================
+
+@views.route('/api/agents/execute', methods=['POST'])
+@login_required
+def execute_agent_task():
+    """Execute multi-agent task"""
+    data = request.get_json()
+    task_type = data.get('taskType', '')
+    task_data = data.get('taskData', {})
+    
+    try:
+        from .services.agent_service import AgentService
+        agent = AgentService()
+        result = agent.execute_agent_task(task_type, task_data)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/agents/status/<task_id>', methods=['GET'])
+@login_required
+def get_agent_status(task_id):
+    """Get agent task status"""
+    try:
+        from .services.agent_service import AgentService
+        agent = AgentService()
+        result = agent.get_task_status(task_id)
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # Redirect root to React app
 @views.route('/')

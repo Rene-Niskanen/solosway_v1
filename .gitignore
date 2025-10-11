@@ -136,3 +136,27 @@ instance/
 fix_*.py
 check_*.py
 update_*.py
+
+# Additional project-specific cleanup
+plan.md
+DELETION_DEBUGGING_GUIDE.md
+DELETION_TEST_COMMANDS.md
+TESTING_DELETION.md
+
+# Instance folder (local database)
+instance/
+
+# Migration cache
+migrations/__pycache__/
+migrations/versions/__pycache__/
+
+# Frontend TypeScript build
+frontend-ts/
+frontend-ts/dist/
+frontend-ts/.vite/
+frontend-ts/.env.local
+frontend-ts/.env.production.local
+
+# Frontend React build
+frontend/build/
+frontend/.env.local
