@@ -1,165 +1,331 @@
 # SoloSway MVP - Intelligent Property Appraisal Platform
 
-This is a project for the SoloSway Velora Platform, a web application designed to help property appraisers streamline their workflow by intelligently parsing valuation documents, extracting key data, and storing it for analysis and LLM interpretation.
+A comprehensive web application designed to revolutionize property appraisal workflows through intelligent document processing, AI-powered data extraction, and advanced property analytics.
 
-The platform is built with a Python Flask backend, a Celery worker for asynchronous task processing, and a React frontend. It leverages a powerful data pipeline including LlamaParse for document analysis, LlamaExtract (via OpenAI) for structured data extraction, and AstraDB for both tabular and vector data storage.
+## 🚀 Features
 
-## Features
+### Core Platform
+- **🔐 Secure Authentication**: User and business-level accounts with role-based access
+- **📁 File Management**: Secure document upload and management via AWS S3
+- **🗺️ Interactive Property Map**: Real-time property visualization with Mapbox integration
+- **📊 Analytics Dashboard**: Comprehensive property and document analytics
+- **💬 AI Chat Interface**: Intelligent property analysis and insights
 
-- **Secure User Authentication:** User and business-level accounts.
-- **File Upload & Management:** Securely upload and manage valuation documents via AWS S3.
-- **Intelligent Data Pipeline:** Asynchronous processing of documents to:
-    - Parse PDF content using LlamaParse.
-    - Extract structured comparable property data using an OpenAI-powered extractor.
-    - Store structured data in an AstraDB tabular collection.
-    - Create and store vector embeddings of documents in an AstraDB vector store for future semantic search and RAG capabilities.
-- **Multi-tenancy:** Data is sandboxed on a per-business basis using a `business_id`.
+### Intelligent Data Pipeline
+- **📄 Document Processing**: Asynchronous processing of valuation documents
+- **🤖 AI-Powered Extraction**: 
+  - LlamaParse for document parsing
+  - LlamaExtract for structured data extraction
+  - OpenAI-powered analysis
+- **🏠 Property Intelligence**:
+  - Automatic address geocoding
+  - Property linking and deduplication
+  - Comparable property analysis
+- **🔍 Vector Search**: Semantic search capabilities with AstraDB vector store
+- **🏢 Multi-tenancy**: Business-isolated data with `business_id` sandboxing
 
-## Tech Stack
+## 🛠️ Tech Stack
 
-- **Backend:** Flask
-- **Database:** PostgreSQL (for metadata), AstraDB (for tabular and vector data)
-- **Task Queue:** Celery with Redis as the message broker
-- **File Storage:** AWS S3 with API Gateway for secure access
-- **AI / Data Processing:**
-    - LlamaParse (LlamaCloud)
-    - OpenAI API (for LlamaExtract)
-    - LlamaIndex
-- **Containerization:** Docker & Docker Compose
+### Backend
+- **Framework**: Flask (Python 3.11)
+- **Database**: PostgreSQL + AstraDB (Tabular & Vector)
+- **Task Queue**: Celery with Redis
+- **File Storage**: AWS S3 with API Gateway
+- **AI Services**: LlamaCloud, OpenAI, LlamaIndex
 
----
+### Frontend
+- **Framework**: React 18 + TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui components
+- **Maps**: Mapbox GL JS
+- **Build Tool**: Vite
+- **State Management**: React Context + Hooks
 
-## Getting Started
+### Infrastructure
+- **Containerization**: Docker & Docker Compose
+- **Development**: Hot reload, TypeScript strict mode
+- **Deployment**: Production-ready container setup
 
-Follow these instructions to get the application running locally for development.
+## 📁 Project Structure
+
+├── backend/ # Flask API server
+│ ├── services/ # Business logic services
+│ ├── models.py # Database models
+│ ├── views.py # API endpoints
+│ ├── tasks.py # Celery background tasks
+│ └── auth.py # Authentication logic
+├── frontend-ts/ # TypeScript React frontend
+│ ├── src/
+│ │ ├── components/ # React components
+│ │ ├── services/ # API service layer
+│ │ ├── config/ # Environment configuration
+│ │ └── hooks/ # Custom React hooks
+│ ├── package.json # Frontend dependencies
+│ └── vite.config.ts # Vite configuration
+├── migrations/ # Database migrations
+├── docker-compose.yaml # Container orchestration
+└── requirements.txt # Python dependencies
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
 - [Docker](https://www.docker.com/products/docker-desktop/) and Docker Compose
-- [Python 3.11](https://www.python.org/downloads/release/python-3110/) (It's recommended to manage Python versions with `pyenv`)
-- An active AWS account with an S3 bucket and API Gateway configured.
-- API keys for LlamaCloud, OpenAI, and AstraDB.
+- [Python 3.11](https://www.python.org/downloads/release/python-3110/)
+- [Node.js 18+](https://nodejs.org/) (for frontend development)
+- AWS account with S3 bucket and API Gateway
+- API keys for LlamaCloud, OpenAI, and AstraDB
 
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/Rene-Niskanen/solosway_v1
-cd file_name
+cd solosway_mvp
 ```
 
-### 2. Set Up the Python Environment
-
-It is highly recommended to use a virtual environment.
+### 2. Backend Setup
 
 ```bash
-# Create a virtual environment
+# Create and activate virtual environment
 python3.11 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Activate it
-source .venv/bin/activate
-
-# Install the required dependencies
+# Install Python dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment Variables
+### 3. Frontend Setup
 
-Create a `.env` file in the root of the project. This file stores all your secret keys and configuration variables. **Do not commit this file to source control.**
+```bash
+# Navigate to frontend directory
+cd frontend-ts
 
-Copy the following example and replace the placeholder values with your actual credentials.
+# Install dependencies
+npm install
+
+# Create environment file
+cp .env.example .env.local
+```
+
+### 4. Environment Configuration
+
+Create a `.env` file in the root directory:
 
 ```env
-# Flask and Local Database
-SECRET_KEY='a_very_secret_and_long_random_string'
-DATABASE_URL='postgresql://user:password@localhost/database_name' # Your local PostgreSQL connection string
+# Flask Configuration
+SECRET_KEY='your-secret-key-here'
+DATABASE_URL='postgresql://user:password@localhost/database_name'
 REDIS_URL='redis://localhost:6379/0'
-ADMIN_EMAIL='your_admin_email@example.com' # Used by the make_admin.py script
 
-# AWS S3 & API Gateway
-# Ensure your API Gateway endpoint for uploads is configured correctly
-AWS_ACCESS_KEY_ID='YOUR_AWS_ACCESS_KEY'
-AWS_SECRET_ACCESS_KEY='YOUR_AWS_SECRET_KEY'
-AWS_REGION='us-east-1' # e.g., us-east-1
+# AWS Configuration
+AWS_ACCESS_KEY_ID='your-aws-access-key'
+AWS_SECRET_ACCESS_KEY='your-aws-secret-key'
+AWS_REGION='us-east-1'
 S3_UPLOAD_BUCKET='your-s3-bucket-name'
-API_GATEWAY_INVOKE_URL='https://yourapi.execute-api.your-region.amazonaws.com/your-stage'
+API_GATEWAY_INVOKE_URL='https://yourapi.execute-api.region.amazonaws.com/stage'
 
-# LlamaIndex / LlamaCloud
-# Your API key for the LlamaParse service
-LLAMA_CLOUD_API_KEY='llx-...'
+# AI Services
+LLAMA_CLOUD_API_KEY='llx-your-llama-key'
+OPENAI_API_KEY='sk-your-openai-key'
 
-# OpenAI
-# Your API key for accessing models like GPT-4 for data extraction
-OPENAI_API_KEY='sk-...'
+# AstraDB Configuration
+ASTRA_DB_VECTOR_API_ENDPOINT='https://your-db-id.region.apps.astra.datastax.com'
+ASTRA_DB_VECTOR_APPLICATION_TOKEN='AstraCS:your-token'
+ASTRA_DB_VECTOR_COLLECTION_NAME='property_appraisals_vectors'
 
-# AstraDB (DataStax)
-# All these credentials come from a single Vector Database instance on Astra
-ASTRA_DB_API_ENDPOINT='https://<db-id>-<db-region>.apps.astra.datastax.com'
-ASTRA_DB_APPLICATION_TOKEN='AstraCS:...'
-# NOTE: The secure connect bundle path should be the path *inside the container* if you
-# plan to use it directly. For now, we are connecting via the API endpoint.
-# ASTRA_DB_SECURE_CONNECT_BUNDLE_PATH="/path/to/your/secure-connect-bundle.zip" 
-ASTRA_DB_KEYSPACE="your_keyspace_name" # e.g., solosway
-ASTRA_DB_VECTOR_COLLECTION_NAME="property_appraisals_vectors"
-ASTRA_DB_TABULAR_COLLECTION_NAME="property_appraisals_tabular"
+ASTRA_DB_TABULAR_API_ENDPOINT='https://your-tabular-db-id.region.apps.astra.datastax.com'
+ASTRA_DB_TABULAR_APPLICATION_TOKEN='AstraCS:your-tabular-token'
+ASTRA_DB_TABULAR_KEYSPACE='your_keyspace'
+ASTRA_DB_TABULAR_COLLECTION_NAME='comparable_properties'
 
+# Google Maps (for geocoding)
+GOOGLE_MAPS_API_KEY='your-google-maps-key'
 ```
 
-### 4. Running the Application with Docker
+Configure `frontend-ts/.env.local`:
 
-The easiest way to run the entire stack (Flask web server, Redis, and the Celery worker) is with Docker Compose.
+```env
+VITE_BACKEND_URL=http://localhost:5002
+VITE_MAPBOX_TOKEN=your-mapbox-token
+VITE_OPENAI_API_KEY=your-openai-key
+VITE_GOOGLE_MAPS_API_KEY=your-google-maps-key
+```
+
+### 5. Database Setup
 
 ```bash
-# Build and start the services in the background
+# Initialize database
+flask db init
+flask db migrate -m "Initial migration"
+flask db upgrade
+
+# Create admin user (optional)
+python make_admin.py
+```
+
+### 6. Running the Application
+
+#### Option A: Full Docker Setup (Recommended)
+
+```bash
+# Start all services
 docker-compose up --build -d
-```
 
-- The Flask application will be available at `http://localhost:5001`.
-- The React frontend (if running separately) should be configured to proxy API requests to this address.
-- The Celery worker will automatically start and begin watching for tasks.
-
-To view the logs from all services:
-```bash
+# View logs
 docker-compose logs -f
 ```
 
-To view logs for a specific service (e.g., the worker):
+#### Option B: Hybrid Development
+
 ```bash
+# Terminal 1: Start backend services
+docker-compose up redis db -d
+python main.py
+
+# Terminal 2: Start Celery worker
+celery -A backend.celery_utils worker --loglevel=info
+
+# Terminal 3: Start frontend
+cd frontend-ts
+npm run dev
+```
+
+### 7. Access the Application
+
+- **Frontend**: http://localhost:8080
+- **Backend API**: http://localhost:5002
+- **Admin Panel**: http://localhost:5002/admin (if admin user created)
+
+## 📖 API Documentation
+
+### Authentication Endpoints
+- `POST /api/login` - User login
+- `POST /api/signup` - User registration
+- `GET /api/dashboard` - Get user dashboard data
+
+### Document Management
+- `POST /api/upload-file` - Upload document
+- `GET /api/files` - List user documents
+- `DELETE /api/files/{id}` - Delete document
+
+### Property Analysis
+- `GET /api/properties` - Get all properties
+- `POST /api/properties/search` - Search properties
+- `POST /api/properties/{id}/comparables` - Get property comparables
+
+### AI Services
+- `POST /api/llm/analyze-query` - Analyze user query
+- `POST /api/llm/chat` - AI chat completion
+- `POST /api/ocr/extract` - Extract text from images
+
+## 🧪 Development
+
+### Running Tests
+
+```bash
+# Backend tests
+python -m pytest tests/
+
+# Frontend tests
+cd frontend-ts
+npm test
+```
+
+### Code Quality
+
+```bash
+# Backend linting
+flake8 backend/
+black backend/
+
+# Frontend linting
+cd frontend-ts
+npm run lint
+npm run type-check
+```
+
+### Database Migrations
+
+```bash
+# Create migration
+flask db migrate -m "Description of changes"
+
+# Apply migration
+flask db upgrade
+```
+
+## 🚀 Deployment
+
+### Production Environment Variables
+
+Ensure all production secrets are set:
+- Database connection strings
+- AWS credentials
+- API keys
+- CORS origins
+
+### Docker Production Build
+
+```bash
+# Build production images
+docker-compose -f docker-compose.prod.yml build
+
+# Deploy
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+## 📊 Data Pipeline
+
+The application processes documents through a sophisticated pipeline:
+
+1. **Upload**: Documents uploaded to S3 via secure API Gateway
+2. **Parse**: LlamaParse extracts text and structure
+3. **Extract**: LlamaExtract identifies properties and attributes
+4. **Geocode**: Google Maps API provides location data
+5. **Store**: Data stored in AstraDB (tabular + vector)
+6. **Index**: Vector embeddings enable semantic search
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**Frontend not connecting to backend:**
+- Check `VITE_BACKEND_URL` in `.env.local`
+- Verify backend is running on correct port
+- Check CORS configuration in `backend/config.py`
+
+**Document processing failing:**
+- Verify all API keys are valid
+- Check Celery worker logs: `docker-compose logs worker`
+- Ensure AstraDB credentials are correct
+
+**Database connection issues:**
+- Verify PostgreSQL is running
+- Check connection string format
+- Run migrations: `flask db upgrade`
+
+### Logs and Debugging
+
+```bash
+# View all logs
+docker-compose logs -f
+
+# View specific service logs
+docker-compose logs -f web
 docker-compose logs -f worker
+
+# Debug frontend
+cd frontend-ts
+npm run dev -- --debug
 ```
 
-### 5. Stopping the Application
+## 🤝 Contributing
 
-To stop all running containers:
-```bash
-docker-compose down
-```
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Commit changes: `git commit -am 'Add feature'`
+4. Push to branch: `git push origin feature-name`
+5. Submit a Pull Request
 
----
+## 📄 License
 
-## Database Migrations
-
-This project uses Flask-Migrate to handle database schema changes.
-
-To initialize the database for the first time:
-```bash
-# Make sure your Docker container is running so the DB is accessible
-flask db init 
-flask db migrate -m "Initial migration."
-flask db upgrade
-```
-
-To create a new migration after changing the models in `website/models.py`:
-```bash
-flask db migrate -m "A short description of the changes."
-flask db upgrade
-```
-
-## Making a User an Admin
-
-A script is provided to grant a user admin privileges.
-1.  Ensure the user has already registered through the application.
-2.  Make sure the `ADMIN_EMAIL` in your `.env` file is set to the email of the user you want to promote.
-3.  Run the script:
-    ```bash
-    python make_admin.py
-    ```
+This project is proprietary software. All rights reserved.
