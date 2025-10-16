@@ -1,0 +1,327 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* PropertyAI Design System - Modern real estate platform with sophisticated gradients and glass morphism */
+
+@layer base {
+  :root {
+    /* Core Brand Colors - Real Estate Professional Palette */
+    --background: 248 250 252;
+    --foreground: 221 39% 11%;
+
+    --card: 255 255 255;
+    --card-foreground: 221 39% 11%;
+
+    --popover: 255 255 255;
+    --popover-foreground: 221 39% 11%;
+
+    /* Primary - Professional Blue */
+    --primary: 238 75% 59%;
+    --primary-foreground: 255 255 255;
+    --primary-glow: 238 85% 70%;
+
+    /* Secondary - Elegant Purple */
+    --secondary: 262 83% 58%;
+    --secondary-foreground: 255 255 255;
+
+    /* Muted - Sophisticated Grays */
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* Accent - Luxury Gradient Base */
+    --accent: 235 89% 70%;
+    --accent-foreground: 255 255 255;
+
+    /* Property Success Green */
+    --success: 142 76% 36%;
+    --success-foreground: 255 255 255;
+
+    /* Warning Orange */
+    --warning: 25 95% 53%;
+    --warning-foreground: 255 255 255;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 255 255 255;
+
+    /* UI Elements */
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 238 75% 59%;
+
+    --radius: 0.75rem;
+
+    /* Glass Morphism Properties */
+    --glass-bg: 255 255 255 / 0.8;
+    --glass-border: 255 255 255 / 0.2;
+    --glass-shadow: 0 8 32 rgba(31, 38, 135, 0.15);
+
+    /* Gradient Definitions */
+    --gradient-primary: linear-gradient(135deg, hsl(238, 75%, 59%), hsl(262, 83%, 58%));
+    --gradient-secondary: linear-gradient(135deg, hsl(262, 83%, 58%), hsl(290, 70%, 65%));
+    --gradient-property: linear-gradient(135deg, hsl(142, 76%, 36%), hsl(168, 70%, 40%));
+    --gradient-luxury: linear-gradient(135deg, hsl(235, 89%, 70%), hsl(238, 75%, 59%), hsl(262, 83%, 58%));
+    --gradient-hero: linear-gradient(135deg, hsl(220, 100%, 97%) 0%, hsl(235, 100%, 98%) 50%, hsl(262, 100%, 98%) 100%);
+    
+    /* Animated Gradients */
+    --gradient-animated: linear-gradient(270deg, hsl(238, 75%, 59%), hsl(262, 83%, 58%), hsl(290, 70%, 65%), hsl(238, 75%, 59%));
+    
+    /* Shadows */
+    --shadow-soft: 0 2px 20px rgba(0, 0, 0, 0.08);
+    --shadow-medium: 0 4px 30px rgba(0, 0, 0, 0.12);
+    --shadow-strong: 0 8px 50px rgba(0, 0, 0, 0.15);
+    --shadow-glow: 0 0 40px hsl(238, 75%, 59%, 0.3);
+    --shadow-property: 0 8px 32px rgba(99, 102, 241, 0.15);
+
+    /* Sidebar Variables - Professional Blue Gradient */
+    --sidebar-background: linear-gradient(180deg, hsl(215, 20%, 65%) 0%, hsl(220, 25%, 55%) 25%, hsl(225, 30%, 45%) 50%, hsl(230, 35%, 35%) 75%, hsl(235, 40%, 25%) 100%);
+    --sidebar-foreground: 255 255 255;
+    --sidebar-primary: 255 255 255;
+    --sidebar-primary-foreground: 255 255 255;
+    --sidebar-accent: 255 255 255 / 0.1;
+    --sidebar-accent-foreground: 255 255 255;
+    --sidebar-border: transparent;
+    --sidebar-ring: 255 255 255;
+    --sidebar-active: 120 100% 60%; /* Bright distinct green for active state */
+
+    /* Animation Easings */
+    --ease-smooth: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-snap: cubic-bezier(0.6, 0, 0.4, 1);
+    --ease-precise: cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  .dark {
+    /* Dark Mode - Sophisticated Dark Theme */
+    --background: 222 47% 7%;
+    --foreground: 210 40% 98%;
+
+    --card: 222 47% 9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 47% 9%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Dark Primary */
+    --primary: 238 75% 65%;
+    --primary-foreground: 222 47% 7%;
+    --primary-glow: 238 85% 75%;
+
+    /* Dark Secondary */
+    --secondary: 262 83% 65%;
+    --secondary-foreground: 222 47% 7%;
+
+    /* Dark Muted */
+    --muted: 217 32% 17%;
+    --muted-foreground: 215 20% 65%;
+
+    /* Dark Accent */
+    --accent: 235 89% 75%;
+    --accent-foreground: 222 47% 7%;
+
+    --success: 142 76% 40%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 25 95% 58%;
+    --warning-foreground: 222 47% 7%;
+
+    --destructive: 0 84% 65%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 32% 17%;
+    --input: 217 32% 17%;
+    --ring: 238 75% 65%;
+
+    /* Dark Glass Morphism */
+    --glass-bg: 222 47% 9% / 0.8;
+    --glass-border: 255 255 255 / 0.1;
+    --glass-shadow: 0 8 32 rgba(0, 0, 0, 0.3);
+
+    /* Dark Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%));
+    --gradient-secondary: linear-gradient(135deg, hsl(262, 83%, 65%), hsl(290, 70%, 70%));
+    --gradient-property: linear-gradient(135deg, hsl(142, 76%, 40%), hsl(168, 70%, 45%));
+    --gradient-luxury: linear-gradient(135deg, hsl(235, 89%, 75%), hsl(238, 75%, 65%), hsl(262, 83%, 65%));
+    --gradient-hero: linear-gradient(135deg, hsl(222, 47%, 8%) 0%, hsl(235, 30%, 10%) 50%, hsl(262, 30%, 12%) 100%);
+    
+    /* Dark Animated Gradients */
+    --gradient-animated: linear-gradient(270deg, hsl(238, 75%, 65%), hsl(262, 83%, 65%), hsl(290, 70%, 70%), hsl(238, 75%, 65%));
+    
+    /* Dark Shadows */
+    --shadow-soft: 0 2px 20px rgba(0, 0, 0, 0.4);
+    --shadow-medium: 0 4px 30px rgba(0, 0, 0, 0.5);
+    --shadow-strong: 0 8px 50px rgba(0, 0, 0, 0.6);
+    --shadow-glow: 0 0 40px hsl(238, 75%, 65%, 0.4);
+    --shadow-property: 0 8px 32px rgba(99, 102, 241, 0.25);
+
+    /* Dark Sidebar - Professional Blue Gradient */
+    --sidebar-background: linear-gradient(180deg, hsl(215, 20%, 55%) 0%, hsl(220, 25%, 45%) 25%, hsl(225, 30%, 35%) 50%, hsl(230, 35%, 25%) 75%, hsl(235, 40%, 18%) 100%);
+    --sidebar-foreground: 255 255 255;
+    --sidebar-primary: 255 255 255;
+    --sidebar-primary-foreground: 255 255 255;
+    --sidebar-accent: 255 255 255 / 0.1;
+    --sidebar-accent-foreground: 255 255 255;
+    --sidebar-border: transparent;
+    --sidebar-ring: 255 255 255;
+    --sidebar-active: 120 100% 65%; /* Bright distinct green for active state */
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20 text-foreground min-h-screen;
+    background-attachment: fixed;
+  }
+
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--primary) / 0.5);
+  }
+
+  /* Thin scrollbar utilities */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+
+  .scrollbar-track-slate-100 {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) hsl(220 14% 96%);
+  }
+
+  .scrollbar-thumb-slate-300::-webkit-scrollbar-thumb {
+    background: hsl(220 9% 75%);
+  }
+
+  .scrollbar-thumb-slate-400:hover::-webkit-scrollbar-thumb {
+    background: hsl(220 9% 60%);
+  }
+}
+
+@layer components {
+  /* Glass Morphism Utilities */
+  .glass {
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .glass-dark {
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Gradient Text */
+  .gradient-text {
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Animated Gradient Background */
+  .animated-gradient {
+    background: var(--gradient-animated);
+    background-size: 400% 400%;
+    animation: gradientShift 8s ease-in-out infinite;
+  }
+
+  /* Property Card Hover Effects */
+  .property-card {
+    transition: all 0.3s var(--ease-smooth);
+  }
+
+  .property-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-strong);
+  }
+
+  /* Floating Animation */
+  @keyframes float {
+    0%, 100% { transform: translateY(0px) translateX(0px); }
+    25% { transform: translateY(-10px) translateX(5px); }
+    50% { transform: translateY(-5px) translateX(-5px); }
+    75% { transform: translateY(-15px) translateX(3px); }
+  }
+
+  .float-animation {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  /* Gradient Shift Animation */
+  @keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  /* Pulse Glow */
+  @keyframes pulseGlow {
+    0%, 100% { 
+      box-shadow: 0 0 20px hsl(var(--primary) / 0.3);
+    }
+    50% { 
+      box-shadow: 0 0 40px hsl(var(--primary) / 0.5);
+    }
+  }
+
+  /* Flow Animation */
+  @keyframes flow {
+    0% {
+      transform: translateX(-20px) translateY(10px);
+    }
+    50% {
+      transform: translateX(20px) translateY(-5px);
+    }
+    100% {
+      transform: translateX(-20px) translateY(10px);
+    }
+  }
+
+  .pulse-glow {
+    animation: pulseGlow 3s ease-in-out infinite;
+  }
+
+  /* Custom Scrollbar Styles */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: rgb(203 213 225);
+    border-radius: 3px;
+    transition: background-color 0.2s ease;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(148 163 184);
+  }
+
+  /* Firefox scrollbar */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(203 213 225) transparent;
+  }
+}
