@@ -48,8 +48,12 @@ def create_app():
     # Make celery_app available globally for worker
     app.celery_app = celery_app
 
-    # Enable CORS for React frontend
-    CORS(app, origins=Config.CORS_ORIGINS, supports_credentials=True)
+    # Enable CORS for React frontend with explicit methods
+    CORS(app, 
+         resources={r"/api/*": {"origins": Config.CORS_ORIGINS}},
+         supports_credentials=True,
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+         allow_headers=['Content-Type', 'Authorization'])
 
     login_manager = LoginManager()
     login_manager.login_view = 'auth.login'

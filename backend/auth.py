@@ -41,14 +41,87 @@ def login():
 # API endpoint for React login
 @auth.route('/api/login', methods=['POST'])
 def api_login():
+    try:
+        # Debug logging
+        logger.info(f"Login attempt from: {request.remote_addr}")
+        logger.info(f"Request headers: {dict(request.headers)}")
+        
+        data = request.get_json()
+        if not data:
+            logger.error("No JSON data received")
+            return jsonify({'success': False, 'message': 'No data received.'}), 400
+            
+        logger.info(f"Login data received: {data}")
+        
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not email or not password:
+            logger.error(f"Missing credentials: email={email}, password={'*' if password else None}")
+            return jsonify({'success': False, 'message': 'Email and password required.'}), 400
+        
+        user = User.query.filter_by(email=email).first()
+        logger.info(f"User found: {user is not None}")
+        
+        if user and check_password_hash(user.password, password):
+            login_user(user, remember=True)
+            logger.info(f"Login successful for user: {email}")
+            return jsonify({'success': True, 'message': 'Logged in successfully.'}), 200
+        else:
+            logger.warning(f"Login failed for email: {email}")
+            return jsonify({'success': False, 'message': 'Invalid email or password.'}), 401
+            
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Server error.'}), 500
+
+# API endpoint for signup
+@auth.route('/api/signup', methods=['POST'])
+def api_signup():
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-    user = User.query.filter_by(email=email).first()
-    if user and check_password_hash(user.password, password):
-        login_user(user, remember=True)
-        return jsonify({'success': True, 'message': 'Logged in successfully.'}), 200
-    return jsonify({'success': False, 'message': 'Invalid email or password.'}), 401
+    first_name = data.get('firstName')
+    company_name = data.get('companyName')
+    
+    # Validate input
+    if not all([email, password, first_name, company_name]):
+        return jsonify({'success': False, 'error': 'All fields are required'}), 400
+    
+    # Check if user exists
+    if User.query.filter_by(email=email).first():
+        return jsonify({'success': False, 'error': 'User already exists'}), 409
+    
+    try:
+        # Create user
+        new_user = User(
+            email=email,
+            password=generate_password_hash(password),
+            first_name=first_name,
+            company_name=company_name,
+            role=UserRole.USER,
+            status=UserStatus.ACTIVE  # Auto-activate for now
+        )
+        
+        db.session.add(new_user)
+        db.session.commit()
+        
+        # Automatically log in the user after successful signup
+        login_user(new_user, remember=True)
+        logger.info(f"User {email} signed up and automatically logged in")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Account created successfully'
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating user: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to create account. Please try again.'
+        }), 500
 
 @auth.route('/logout', methods=['GET', 'POST'])
 @login_required

@@ -3,31 +3,183 @@ from sqlalchemy import or_, and_, func
 import json
 import logging
 from typing import List, Dict, Any, Optional
+import os
+from cassandra.cluster import Cluster
+from cassandra.auth import PlainTextAuthProvider
+import uuid
 
 logger = logging.getLogger(__name__)
 
 class PropertySearchService:
+    def __init__(self):
+        """Initialize with AstraDB Tabular connection"""
+        self.session = None
+    
+    def _get_astra_session(self):
+        """Get or create AstraDB Tabular session"""
+        if not self.session:
+            try:
+                bundle_path = os.environ['ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH']
+                token = os.environ['ASTRA_DB_TABULAR_APPLICATION_TOKEN']
+                
+                if not os.path.exists(bundle_path):
+                    raise ValueError(f"AstraDB bundle not found: {bundle_path}")
+                
+                auth_provider = PlainTextAuthProvider('token', token)
+                cluster = Cluster(
+                    cloud={'secure_connect_bundle': bundle_path}, 
+                    auth_provider=auth_provider
+                )
+                self.session = cluster.connect()
+                self.session.set_keyspace(os.environ['ASTRA_DB_TABULAR_KEYSPACE'])
+                
+                logger.info("✅ Connected to AstraDB Tabular")
+            except Exception as e:
+                logger.error(f"❌ Failed to connect to AstraDB Tabular: {e}")
+                raise
+        
+        return self.session
+    
     def search_properties(self, business_id: str, query: str = "", filters: dict = None) -> List[Dict[str, Any]]:
         """
-        Search properties in PostgreSQL ExtractedProperty table.
+        Search properties in AstraDB Tabular store (primary source of truth).
         
         Args:
             business_id: Business identifier for multi-tenancy
-            query: Text search query
+            query: Text search query (optional - returns ALL if empty)
             filters: Additional filters (price, bedrooms, etc.)
             
         Returns:
-            List of property dictionaries
+            List of property dictionaries with full geocoded data
         """
-        logger.info(f"PropertySearchService: Searching properties for business {business_id} with query '{query}' and filters {filters}")
+        logger.info(f"🔍 PropertySearchService: Querying AstraDB Tabular for business '{business_id}'")
+        logger.info(f"   Query: '{query}', Filters: {filters}")
         
         try:
-            # Base query filtered by business
+            session = self._get_astra_session()
+            table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
+            
+            # Query ALL properties for this business from AstraDB Tabular
+            cql_query = f"""
+                SELECT 
+                    id, property_address, property_type, 
+                    number_bedrooms, number_bathrooms, 
+                    size_sqft, size_unit,
+                    sold_price, asking_price, rent_pcm,
+                    price_per_sqft, yield_percentage,
+                    tenure, listed_building_grade,
+                    transaction_date, sold_date, rented_date, leased_date,
+                    epc_rating, condition, other_amenities,
+                    lease_details, days_on_market, notes,
+                    latitude, longitude, geocoded_address,
+                    geocoding_confidence, geocoding_status,
+                    source_document_id, business_id
+                FROM {table_name}
+                WHERE business_id = %s
+                ALLOW FILTERING
+            """
+            
+            logger.info(f"📋 Executing CQL query for business: {business_id}")
+            result = session.execute(cql_query, [business_id])
+            
+            # Convert rows to dictionaries
+            properties = []
+            total_rows = 0
+            geocoded_rows = 0
+            
+            for row in result:
+                total_rows += 1
+                
+                # Only include successfully geocoded properties (required for map)
+                if row.latitude and row.longitude and row.geocoding_status == 'success':
+                    geocoded_rows += 1
+                    
+                    prop_dict = {
+                        'id': str(row.id),
+                        'property_address': row.property_address,
+                        'property_type': row.property_type,
+                        'number_bedrooms': row.number_bedrooms,
+                        'number_bathrooms': row.number_bathrooms,
+                        'size_sqft': float(row.size_sqft) if row.size_sqft else None,
+                        'size_unit': row.size_unit,
+                        'sold_price': float(row.sold_price) if row.sold_price else None,
+                        'asking_price': float(row.asking_price) if row.asking_price else None,
+                        'rent_pcm': float(row.rent_pcm) if row.rent_pcm else None,
+                        'price_per_sqft': float(row.price_per_sqft) if row.price_per_sqft else None,
+                        'yield_percentage': float(row.yield_percentage) if row.yield_percentage else None,
+                        'tenure': row.tenure,
+                        'listed_building_grade': row.listed_building_grade,
+                        'transaction_date': str(row.transaction_date) if row.transaction_date else None,
+                        'sold_date': str(row.sold_date) if row.sold_date else None,
+                        'rented_date': str(row.rented_date) if row.rented_date else None,
+                        'leased_date': str(row.leased_date) if row.leased_date else None,
+                        'epc_rating': row.epc_rating,
+                        'condition': row.condition,
+                        'other_amenities': row.other_amenities,
+                        'lease_details': row.lease_details,
+                        'days_on_market': row.days_on_market,
+                        'notes': row.notes,
+                        'latitude': float(row.latitude),
+                        'longitude': float(row.longitude),
+                        'geocoded_address': row.geocoded_address,
+                        'geocoding_confidence': float(row.geocoding_confidence) if row.geocoding_confidence else 0.0,
+                        'geocoding_status': row.geocoding_status,
+                        'source_document_id': str(row.source_document_id)
+                    }
+                    properties.append(prop_dict)
+                    
+                    # 🔍 PHASE 1 DEBUG: Log price data for first 3 properties
+                    if len(properties) <= 3:
+                        logger.info(f"🔍 PHASE 1 DEBUG Property {len(properties)} - {row.property_address[:50]}...")
+                        logger.info(f"   💰 Raw Price Data: sold_price={row.sold_price}, rent_pcm={row.rent_pcm}, asking_price={row.asking_price}")
+                        logger.info(f"   📊 Type Check: sold_price type={type(row.sold_price)}, rent_pcm type={type(row.rent_pcm)}")
+                        logger.info(f"   🔄 Converted Data: sold_price={prop_dict.get('sold_price')}, rent_pcm={prop_dict.get('rent_pcm')}, asking_price={prop_dict.get('asking_price')}")
+            
+            logger.info(f"📊 AstraDB Tabular Results:")
+            logger.info(f"   Total rows: {total_rows}")
+            logger.info(f"   Geocoded: {geocoded_rows}")
+            logger.info(f"   Returned: {len(properties)}")
+            
+            # 🔍 PHASE 1 DEBUG: Comprehensive price data analysis
+            if properties:
+                price_analysis = {
+                    'has_sold_price': sum(1 for p in properties if p.get('sold_price') and p['sold_price'] > 0),
+                    'has_rent_pcm': sum(1 for p in properties if p.get('rent_pcm') and p['rent_pcm'] > 0),
+                    'has_asking_price': sum(1 for p in properties if p.get('asking_price') and p['asking_price'] > 0),
+                    'no_price_data': sum(1 for p in properties if not (p.get('sold_price') or p.get('rent_pcm') or p.get('asking_price')))
+                }
+                
+                logger.info(f"🔍 PHASE 1 DEBUG - Price Data Analysis:")
+                logger.info(f"   Properties with sold_price: {price_analysis['has_sold_price']}")
+                logger.info(f"   Properties with rent_pcm: {price_analysis['has_rent_pcm']}")
+                logger.info(f"   Properties with asking_price: {price_analysis['has_asking_price']}")
+                logger.info(f"   Properties with no price data: {price_analysis['no_price_data']}")
+                
+                # Sample price values
+                sample_props = properties[:3]
+                for i, prop in enumerate(sample_props, 1):
+                    logger.info(f"   Sample {i}: {prop['property_address'][:40]}... - sold: {prop.get('sold_price')}, rent: {prop.get('rent_pcm')}, asking: {prop.get('asking_price')}")
+            
+            return properties
+            
+        except Exception as e:
+            logger.error(f"❌ Error searching AstraDB Tabular: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Fallback to PostgreSQL if AstraDB fails
+            logger.warning("⚠️ Falling back to PostgreSQL...")
+            return self._search_postgresql_fallback(business_id, query, filters)
+    
+    def _search_postgresql_fallback(self, business_id: str, query: str, filters: dict) -> List[Dict[str, Any]]:
+        """Fallback to PostgreSQL if AstraDB fails"""
+        try:
+            logger.info("🔄 Using PostgreSQL fallback...")
             base_query = ExtractedProperty.query.filter(
                 ExtractedProperty.business_id == business_id
             )
             
-            # Text search across multiple fields
+            # Text search
             if query and query.strip():
                 search_filter = or_(
                     ExtractedProperty.property_address.ilike(f'%{query}%'),
@@ -37,82 +189,15 @@ class PropertySearchService:
                 )
                 base_query = base_query.filter(search_filter)
             
-            # Apply filters
-            if filters:
-                # Price filters
-                if filters.get('min_price'):
-                    base_query = base_query.filter(
-                        or_(
-                            ExtractedProperty.sold_price >= filters['min_price'],
-                            ExtractedProperty.asking_price >= filters['min_price']
-                        )
-                    )
-                if filters.get('max_price'):
-                    base_query = base_query.filter(
-                        or_(
-                            ExtractedProperty.sold_price <= filters['max_price'],
-                            ExtractedProperty.asking_price <= filters['max_price']
-                        )
-                    )
-                
-                # Bedroom filters
-                if filters.get('bedrooms'):
-                    if isinstance(filters['bedrooms'], int):
-                        base_query = base_query.filter(
-                            ExtractedProperty.number_bedrooms >= filters['bedrooms']
-                        )
-                    elif isinstance(filters['bedrooms'], dict):
-                        if filters['bedrooms'].get('min'):
-                            base_query = base_query.filter(
-                                ExtractedProperty.number_bedrooms >= filters['bedrooms']['min']
-                            )
-                        if filters['bedrooms'].get('max'):
-                            base_query = base_query.filter(
-                                ExtractedProperty.number_bedrooms <= filters['bedrooms']['max']
-                            )
-                
-                # Bathroom filters
-                if filters.get('bathrooms'):
-                    if isinstance(filters['bathrooms'], (int, float)):
-                        base_query = base_query.filter(
-                            ExtractedProperty.number_bathrooms >= filters['bathrooms']
-                        )
-                    elif isinstance(filters['bathrooms'], dict):
-                        if filters['bathrooms'].get('min'):
-                            base_query = base_query.filter(
-                                ExtractedProperty.number_bathrooms >= filters['bathrooms']['min']
-                            )
-                        if filters['bathrooms'].get('max'):
-                            base_query = base_query.filter(
-                                ExtractedProperty.number_bathrooms <= filters['bathrooms']['max']
-                            )
-                
-                # Property type filter
-                if filters.get('property_type'):
-                    base_query = base_query.filter(
-                        ExtractedProperty.property_type.ilike(f'%{filters["property_type"]}%')
-                    )
-                
-                # Location radius filter (if coordinates provided)
-                if filters.get('location') and filters.get('radius_km'):
-                    # This would require implementing distance calculation
-                    # For now, we'll just filter by geocoded address containing the location
-                    base_query = base_query.filter(
-                        ExtractedProperty.geocoded_address.ilike(f'%{filters["location"]}%')
-                    )
-            
-            # Order by most recent first
-            base_query = base_query.order_by(ExtractedProperty.extracted_at.desc())
-            
             # Limit results
-            limit = filters.get('limit', 50) if filters else 50
+            limit = filters.get('limit', 1000) if filters else 1000
             results = base_query.limit(limit).all()
             
-            logger.info(f"PropertySearchService: Found {len(results)} properties")
+            logger.info(f"✅ PostgreSQL fallback found {len(results)} properties")
             return [prop.serialize() for prop in results]
             
         except Exception as e:
-            logger.error(f"PropertySearchService: Error searching properties: {e}")
+            logger.error(f"❌ PostgreSQL fallback also failed: {e}")
             return []
     
     def analyze_property_query(self, query: str, previous_results: List[Dict] = None) -> Dict[str, Any]:

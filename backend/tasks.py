@@ -563,11 +563,11 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             # Content validation completed
 
             # --- 3. Extract structured data using LlamaExtract ---
-            print("Initializing LlamaExtract with BALANCED mode...")
+            print("Initializing LlamaExtract with multimodal mode...")
             extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
             
             config = ExtractConfig(
-                extraction_mode=ExtractMode.BALANCED,
+                extraction_mode=ExtractMode.MULTIMODAL,
                 extraction_target=ExtractTarget.PER_DOC,
                 high_resolution_mode=True,
                 cite_sources=True,

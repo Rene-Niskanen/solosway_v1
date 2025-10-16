@@ -97,6 +97,50 @@ def chat_completion():
 # PROPERTY SEARCH & ANALYSIS ENDPOINTS
 # ============================================================================
 
+@views.route('/api/properties', methods=['GET'])
+@login_required
+def get_all_properties():
+    """Get all properties for the current user's business"""
+    try:
+        from .services.property_search_service import PropertySearchService
+        service = PropertySearchService()
+        
+        # Get all properties (no query, no filters)
+        results = service.search_properties(
+            current_user.company_name,
+            query="",
+            filters={'limit': 1000}  # Get up to 1000 properties
+        )
+        
+        # 🔍 PHASE 1 DEBUG: Log API response data
+        logger.info(f"🔍 PHASE 1 DEBUG - API Response:")
+        logger.info(f"   User business: {current_user.company_name}")
+        logger.info(f"   Properties returned: {len(results)}")
+        
+        if results:
+            sample_prop = results[0]
+            logger.info(f"   Sample property structure: {list(sample_prop.keys())}")
+            logger.info(f"   Sample property prices: sold_price={sample_prop.get('sold_price')}, rent_pcm={sample_prop.get('rent_pcm')}, asking_price={sample_prop.get('asking_price')}")
+            
+            # Count properties with different price types
+            price_counts = {
+                'sold_price': sum(1 for p in results if p.get('sold_price') and p['sold_price'] > 0),
+                'rent_pcm': sum(1 for p in results if p.get('rent_pcm') and p['rent_pcm'] > 0),
+                'asking_price': sum(1 for p in results if p.get('asking_price') and p['asking_price'] > 0),
+                'no_price': sum(1 for p in results if not (p.get('sold_price') or p.get('rent_pcm') or p.get('asking_price')))
+            }
+            logger.info(f"   Price type counts: {price_counts}")
+        
+        return jsonify({
+            'success': True,
+            'data': results
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @views.route('/api/properties/search', methods=['POST'])
 @login_required
 def search_properties():
@@ -374,10 +418,10 @@ def get_agent_status(task_id):
             'error': str(e)
         }), 500
 
-# Redirect root to React app
+# Redirect root to TypeScript app
 @views.route('/')
 def root():
-    return redirect('http://localhost:3000')
+    return redirect('http://localhost:8080')
 
 
 # API endpoint for React dashboard
@@ -577,6 +621,39 @@ def get_documents():
     documents = Document.query.filter_by(business_id=current_user.company_name).order_by(Document.created_at.desc()).all()
     
     return jsonify([doc.serialize() for doc in documents])
+
+@views.route('/api/files', methods=['GET'])
+@login_required
+def get_files():
+    """
+    Alias for /api/documents - TypeScript frontend compatibility.
+    Fetches all documents associated with the current user's business.
+    """
+    if not current_user.company_name:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+
+    documents = Document.query.filter_by(business_id=current_user.company_name).order_by(Document.created_at.desc()).all()
+    
+    return jsonify({
+        'success': True,
+        'data': [doc.serialize() for doc in documents]
+    })
+
+@views.route('/api/files/<uuid:file_id>', methods=['DELETE', 'OPTIONS'])
+def delete_file(file_id):
+    """
+    Alias for /api/document/<uuid:document_id> DELETE - TypeScript frontend compatibility.
+    Deletes a document from S3, AstraDB stores, and its metadata record from the database.
+    """
+    if request.method == 'OPTIONS':
+        # Handle CORS preflight - no auth needed
+        return '', 200
+    
+    # Apply login_required check for actual DELETE
+    if not current_user.is_authenticated:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    return delete_document(file_id)
 
 @views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
 @login_required

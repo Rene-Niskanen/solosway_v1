@@ -151,7 +151,7 @@ migrations/__pycache__/
 migrations/versions/__pycache__/
 
 # Frontend TypeScript build
-frontend-ts/
+#frontend-ts/
 frontend-ts/dist/
 frontend-ts/.vite/
 frontend-ts/.env.local
@@ -160,3 +160,9 @@ frontend-ts/.env.production.local
 # Frontend React build
 frontend/build/
 frontend/.env.local
+
+
+# Session and cookie files
+cookies.txt
+*.cookies
+session.txtcookies.txt
