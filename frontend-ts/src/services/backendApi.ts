@@ -150,6 +150,34 @@ class BackendApiService {
     });
   }
 
+  /**
+   * Property Hub API Methods (New)
+   */
+  async getAllPropertyHubs(): Promise<ApiResponse<any[]>> {
+    return this.fetchApi<any[]>('/api/property-hub', {
+      method: 'GET',
+    });
+  }
+
+  async getPropertyHub(propertyId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi<any>(`/api/property-hub/${propertyId}`, {
+      method: 'GET',
+    });
+  }
+
+  async searchPropertyHubs(query: string, filters?: any): Promise<ApiResponse<any[]>> {
+    return this.fetchApi<any[]>('/api/property-hub/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, filters }),
+    });
+  }
+
+  async getPropertyHubDocuments(propertyId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi<any>(`/api/property-hub/${propertyId}/documents`, {
+      method: 'GET',
+    });
+  }
+
   async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {
     return this.fetchApi('/api/properties/analyze', {
       method: 'POST',

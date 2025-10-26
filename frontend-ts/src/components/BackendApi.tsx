@@ -28,6 +28,11 @@ interface BackendApiContextType {
   getAnalytics: () => Promise<any>;
   getActivityFeed: () => Promise<any>;
   runMultiAgentAnalysis: (data: any) => Promise<any>;
+  // New Property Hub methods
+  getAllPropertyHubs: () => Promise<any[]>;
+  getPropertyHub: (propertyId: string) => Promise<any>;
+  searchPropertyHubs: (query: string, filters?: any) => Promise<any[]>;
+  getPropertyHubDocuments: (propertyId: string) => Promise<any>;
 }
 
 const BackendApiContext = createContext<BackendApiContextType | undefined>(undefined);
@@ -118,8 +123,8 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
           });
         }
         
-        // Handle double-nested response structure
-        const actualData = response.data?.data || response.data || [];
+        // Handle response structure
+        const actualData = response.data || [];
         console.log(`🏠 Actual data array:`, actualData);
         console.log(`🏠 Fetched ${actualData.length || 0} properties from backend`);
         return actualData;
@@ -140,7 +145,7 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
   const getPropertyById = async (id: number): Promise<any> => {
     try {
       if (status.isConnected) {
-        const response = await backendApi.getPropertyDetails(id);
+        const response = await backendApi.getPropertyNodeDetails(id.toString());
         return response.data;
       } else {
         console.warn('⚠️ Backend not connected, using fallback data');
@@ -310,8 +315,9 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
   const getActivityFeed = async (): Promise<any> => {
     try {
       if (status.isConnected) {
-        const response = await backendApi.getActivityFeed();
-        return response.data;
+        // TODO: Implement getActivityFeed in backendApi
+        console.warn('⚠️ getActivityFeed not implemented in backendApi');
+        return [];
       } else {
         console.warn('⚠️ Backend not connected, using fallback activity feed');
         return [];
@@ -325,8 +331,12 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
   const runMultiAgentAnalysis = async (data: any): Promise<any> => {
     try {
       if (status.isConnected) {
-        const response = await backendApi.runMultiAgentAnalysis(data);
-        return response.data;
+        // TODO: Implement runMultiAgentAnalysis in backendApi
+        console.warn('⚠️ runMultiAgentAnalysis not implemented in backendApi');
+        return {
+          analysis: 'Multi-agent analysis not available - backend not connected',
+          confidence: 0
+        };
       } else {
         console.warn('⚠️ Backend not connected, multi-agent analysis not available');
         return {
@@ -336,6 +346,77 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
       }
     } catch (error) {
       console.error('Error running multi-agent analysis:', error);
+      return null;
+    }
+  };
+
+  // New Property Hub methods
+  const getAllPropertyHubs = async (): Promise<any[]> => {
+    try {
+      if (status.isConnected) {
+        const response = await backendApi.getAllPropertyHubs();
+        console.log('🏠 Property Hubs response:', response);
+        // Backend response is wrapped by fetchApi, so we need response.data.properties
+        if (response.data && typeof response.data === 'object' && 'properties' in response.data) {
+          return Array.isArray(response.data.properties) ? response.data.properties : [];
+        }
+        return Array.isArray(response.data) ? response.data : [];
+      } else {
+        console.warn('⚠️ Backend not connected, using fallback property hubs');
+        return [];
+      }
+    } catch (error) {
+      console.error('Error fetching property hubs:', error);
+      return [];
+    }
+  };
+
+  const getPropertyHub = async (propertyId: string): Promise<any> => {
+    try {
+      if (status.isConnected) {
+        const response = await backendApi.getPropertyHub(propertyId);
+        // Backend response is wrapped by fetchApi, so we need response.data.property
+        return response.data?.property || response.data;
+      } else {
+        console.warn('⚠️ Backend not connected, property hub not available');
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching property hub:', error);
+      return null;
+    }
+  };
+
+  const searchPropertyHubs = async (query: string, filters?: any): Promise<any[]> => {
+    try {
+      if (status.isConnected) {
+        const response = await backendApi.searchPropertyHubs(query, filters);
+        // Backend response is wrapped by fetchApi, so we need response.data.properties
+        if (response.data && typeof response.data === 'object' && 'properties' in response.data) {
+          return Array.isArray(response.data.properties) ? response.data.properties : [];
+        }
+        return Array.isArray(response.data) ? response.data : [];
+      } else {
+        console.warn('⚠️ Backend not connected, using fallback property hub search');
+        return [];
+      }
+    } catch (error) {
+      console.error('Error searching property hubs:', error);
+      return [];
+    }
+  };
+
+  const getPropertyHubDocuments = async (propertyId: string): Promise<any> => {
+    try {
+      if (status.isConnected) {
+        const response = await backendApi.getPropertyHubDocuments(propertyId);
+        return response.data;
+      } else {
+        console.warn('⚠️ Backend not connected, property hub documents not available');
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching property hub documents:', error);
       return null;
     }
   };
@@ -358,7 +439,12 @@ export const BackendApiProvider: React.FC<BackendApiProviderProps> = ({ children
     reverseGeocode,
     getAnalytics,
     getActivityFeed,
-    runMultiAgentAnalysis
+    runMultiAgentAnalysis,
+    // New Property Hub methods
+    getAllPropertyHubs,
+    getPropertyHub,
+    searchPropertyHubs,
+    getPropertyHubDocuments
   };
 
   return (

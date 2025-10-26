@@ -136,11 +136,6 @@ fix_*.py
 check_*.py
 update_*.py
 
-# Additional project-specific cleanup
-plan.md
-DELETION_DEBUGGING_GUIDE.md
-DELETION_TEST_COMMANDS.md
-TESTING_DELETION.md
 
 # Instance folder (local database)
 instance/
@@ -165,3 +160,6 @@ frontend/.env.local
 cookies.txt
 *.cookies
 session.txtcookies.txt
+
+NEXT_STEPS.md
+
