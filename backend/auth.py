@@ -3,6 +3,7 @@ from .models import User, UserRole, UserStatus
 from werkzeug.security import generate_password_hash, check_password_hash
 from . import db
 from flask_login import login_user, login_required, logout_user, current_user
+from .services.supabase_auth_service import SupabaseAuthService
 import logging
 
 auth = Blueprint('auth', __name__)
@@ -13,10 +14,13 @@ logger = logging.getLogger(__name__)
 @auth.route('/api/test-db', methods=['GET'])
 def test_db():
     try:
-        user_count = User.query.count()
-        return jsonify({'success': True, 'message': f'Database connected. User count: {user_count}'}), 200
+        # Test Supabase connection
+        auth_service = SupabaseAuthService()
+        # Try to get a user to test connection
+        test_user = auth_service.get_user_by_email('admin@solosway.com')
+        return jsonify({'success': True, 'message': f'Supabase connected. Test user found: {test_user is not None}'}), 200
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Database error: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Supabase error: {str(e)}'}), 500
 
 
 @auth.route('/login', methods=['GET', 'POST'])
@@ -25,16 +29,26 @@ def login():
         email = request.form.get('email')
         password = request.form.get('password')
         
-        user = User.query.filter_by(email=email).first()
-        if user:
-            if check_password_hash(user.password, password):
-                flash('Logged in successfully!', category='success')
-                login_user(user, remember=True)
-                return redirect(url_for('views.home'))
-            else:
-                flash('Incorrect password, try again.', category='error')
+        # Use Supabase for authentication
+        auth_service = SupabaseAuthService()
+        user_data = auth_service.get_user_by_email(email)
+        
+        if user_data and auth_service.verify_password(user_data, password):
+            # Create User object for Flask-Login
+            user = User()
+            user.id = user_data['id']
+            user.email = user_data['email']
+            user.first_name = user_data['first_name']
+            user.company_name = user_data['company_name']
+            user.company_website = user_data['company_website']
+            user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
+            user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+            
+            flash('Logged in successfully!', category='success')
+            login_user(user, remember=True)
+            return redirect(url_for('views.home'))
         else:
-            flash('Email does not exist.', category='error')
+            flash('Invalid email or password.', category='error')
             
     return render_template("login.html", user=current_user)
 
@@ -60,10 +74,22 @@ def api_login():
             logger.error(f"Missing credentials: email={email}, password={'*' if password else None}")
             return jsonify({'success': False, 'message': 'Email and password required.'}), 400
         
-        user = User.query.filter_by(email=email).first()
-        logger.info(f"User found: {user is not None}")
+        # Use Supabase for authentication
+        auth_service = SupabaseAuthService()
+        user_data = auth_service.get_user_by_email(email)
+        logger.info(f"User found: {user_data is not None}")
         
-        if user and check_password_hash(user.password, password):
+        if user_data and auth_service.verify_password(user_data, password):
+            # Create User object for Flask-Login
+            user = User()
+            user.id = user_data['id']
+            user.email = user_data['email']
+            user.first_name = user_data['first_name']
+            user.company_name = user_data['company_name']
+            user.company_website = user_data['company_website']
+            user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
+            user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+            
             login_user(user, remember=True)
             logger.info(f"Login successful for user: {email}")
             return jsonify({'success': True, 'message': 'Logged in successfully.'}), 200
@@ -88,26 +114,40 @@ def api_signup():
     if not all([email, password, first_name, company_name]):
         return jsonify({'success': False, 'error': 'All fields are required'}), 400
     
-    # Check if user exists
-    if User.query.filter_by(email=email).first():
+    # Check if user exists in Supabase
+    auth_service = SupabaseAuthService()
+    if auth_service.get_user_by_email(email):
         return jsonify({'success': False, 'error': 'User already exists'}), 409
     
     try:
-        # Create user
-        new_user = User(
-            email=email,
-            password=generate_password_hash(password),
-            first_name=first_name,
-            company_name=company_name,
-            role=UserRole.USER,
-            status=UserStatus.ACTIVE  # Auto-activate for now
-        )
+        # Create user in Supabase
+        user_data = {
+            'email': email,
+            'password': generate_password_hash(password),
+            'first_name': first_name,
+            'company_name': company_name,
+            'role': 'user',
+            'status': 'active',
+            'created_at': 'now()',
+            'updated_at': 'now()'
+        }
         
-        db.session.add(new_user)
-        db.session.commit()
+        new_user_data = auth_service.create_user(user_data)
+        if not new_user_data:
+            return jsonify({'success': False, 'error': 'Failed to create user in Supabase'}), 500
+        
+        # Create User object for Flask-Login
+        user = User()
+        user.id = new_user_data['id']
+        user.email = new_user_data['email']
+        user.first_name = new_user_data['first_name']
+        user.company_name = new_user_data['company_name']
+        user.company_website = new_user_data.get('company_website')
+        user.role = UserRole.USER
+        user.status = UserStatus.ACTIVE
         
         # Automatically log in the user after successful signup
-        login_user(new_user, remember=True)
+        login_user(user, remember=True)
         logger.info(f"User {email} signed up and automatically logged in")
         
         return jsonify({
@@ -116,7 +156,6 @@ def api_signup():
         }), 201
         
     except Exception as e:
-        db.session.rollback()
         logger.error(f"Error creating user: {e}")
         return jsonify({
             'success': False,

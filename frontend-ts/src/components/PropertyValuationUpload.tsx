@@ -16,7 +16,7 @@ interface UploadedFile {
   name: string;
   size: string;
   type: string;
-  status: 'uploading' | 'completed' | 'error';
+  status: 'uploading' | 'processing' | 'completed' | 'error';
   file: File;
   preview?: string;
 }
@@ -117,19 +117,87 @@ export default function PropertyValuationUpload({
         status: 'uploading' as const
       } : f));
 
-      // Upload to backend using the existing upload endpoint
-      const response = await backendApi.uploadPropertyDocument(file);
+      // Use proxy upload directly (more reliable than presigned URLs)
+      console.log(`🔄 Using proxy upload for: ${file.name}`);
+      const response = await backendApi.uploadPropertyDocumentViaProxy(file);
       
       if (response.success) {
         console.log(`✅ File uploaded successfully: ${file.name}`, response.data);
+        const documentId = (response.data as any).document_id;
         
-        // Update status to completed
-        setUploadedFiles(prev => prev.map(f => f.id === fileId ? {
-          ...f,
-          status: 'completed' as const
-        } : f));
-
-        // Show success toast
+        // Start polling for status
+        const pollStatus = async () => {
+          try {
+            const statusResponse = await backendApi.getDocumentStatus(documentId);
+            
+            // FIXED: Add more detailed logging and error handling
+            console.log(`📊 [POLL] Document ${documentId}:`, {
+              success: statusResponse.success,
+              status: statusResponse.data ? (statusResponse.data as any).status : 'NO DATA',
+              fullResponse: statusResponse
+            });
+            
+            if (statusResponse.success && statusResponse.data) {
+              // FIXED: The response is double-nested: statusResponse.data.data.status
+              const responseData = (statusResponse.data as any).data || statusResponse.data;
+              const status = responseData.status;
+              const progress = responseData.pipeline_progress;
+              
+              console.log(`📊 Document ${documentId} status: "${status}" (type: ${typeof status})`);
+              
+              // Update file status
+              setUploadedFiles(prev => prev.map(f => f.id === fileId ? {
+                ...f,
+                status: status === 'completed' ? 'completed' as const : 'processing' as const
+              } : f));
+              
+              // FIXED: Use strict equality check and add more conditions
+              const isComplete = status === 'completed';
+              const isFailed = status === 'failed';
+              
+              console.log(`📊 Polling decision: complete=${isComplete}, failed=${isFailed}`);
+              
+              // Continue polling if not complete
+              if (!isComplete && !isFailed) {
+                console.log(`🔄 Continuing poll in 5 seconds...`);
+                setTimeout(pollStatus, 5000); // Poll every 5 seconds
+              } else if (isComplete) {
+                console.log(`✅ Polling stopped - document completed`);
+                toast({
+                  title: "Processing Complete",
+                  description: `${file.name} has been processed successfully.`,
+                  duration: 3000,
+                  className: "border-emerald-200 bg-gradient-to-r from-emerald-50 to-green-50"
+                });
+              } else if (isFailed) {
+                console.log(`❌ Polling stopped - document failed`);
+                toast({
+                  title: "Processing Failed",
+                  description: `${file.name} failed to process.`,
+                  variant: "destructive",
+                  duration: 5000
+                });
+              }
+            } else {
+              console.error(`❌ Status response error:`, statusResponse);
+              // Stop polling on error
+              toast({
+                title: "Status Check Failed",
+                description: `Unable to check status for ${file.name}`,
+                variant: "destructive",
+                duration: 3000
+              });
+            }
+          } catch (error) {
+            console.error(`❌ Polling error:`, error);
+            // Stop polling on error
+          }
+        };
+        
+        // Start polling after 2 seconds
+        setTimeout(pollStatus, 2000);
+        
+        // Show initial upload toast
         toast({
           title: "File Uploaded Successfully",
           description: `${file.name} has been uploaded and is being processed.`,
@@ -338,7 +406,7 @@ export default function PropertyValuationUpload({
                       {isDragOver ? 'Drop your files here' : 'Choose files or drag and drop'}
                     </h3>
                     <p className="text-sm text-slate-500">
-                      PDF, JPG, PNG files up to 10MB each
+                      PDF, JPG, PNG files up to 100MB each
                     </p>
                   </div>
 

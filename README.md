@@ -21,14 +21,14 @@ A comprehensive web application designed to revolutionize property appraisal wor
   - Automatic address geocoding
   - Property linking and deduplication
   - Comparable property analysis
-- **🔍 Vector Search**: Semantic search capabilities with AstraDB vector store
+- **🔍 Vector Search**: Semantic search capabilities with Supabase pgvector
 - **🏢 Multi-tenancy**: Business-isolated data with `business_id` sandboxing
 
 ## 🛠️ Tech Stack
 
 ### Backend
 - **Framework**: Flask (Python 3.11)
-- **Database**: PostgreSQL + AstraDB (Tabular & Vector)
+- **Database**: PostgreSQL + Supabase (Document Storage & Vector)
 - **Task Queue**: Celery with Redis
 - **File Storage**: AWS S3 with API Gateway
 - **AI Services**: LlamaCloud, OpenAI, LlamaIndex
@@ -73,7 +73,7 @@ A comprehensive web application designed to revolutionize property appraisal wor
 - [Python 3.11](https://www.python.org/downloads/release/python-3110/)
 - [Node.js 18+](https://nodejs.org/) (for frontend development)
 - AWS account with S3 bucket and API Gateway
-- API keys for LlamaCloud, OpenAI, and AstraDB
+- API keys for LlamaCloud, OpenAI, and Supabase
 
 ### 1. Clone the Repository
 
@@ -127,15 +127,9 @@ API_GATEWAY_INVOKE_URL='https://yourapi.execute-api.region.amazonaws.com/stage'
 LLAMA_CLOUD_API_KEY='llx-your-llama-key'
 OPENAI_API_KEY='sk-your-openai-key'
 
-# AstraDB Configuration
-ASTRA_DB_VECTOR_API_ENDPOINT='https://your-db-id.region.apps.astra.datastax.com'
-ASTRA_DB_VECTOR_APPLICATION_TOKEN='AstraCS:your-token'
-ASTRA_DB_VECTOR_COLLECTION_NAME='property_appraisals_vectors'
-
-ASTRA_DB_TABULAR_API_ENDPOINT='https://your-tabular-db-id.region.apps.astra.datastax.com'
-ASTRA_DB_TABULAR_APPLICATION_TOKEN='AstraCS:your-tabular-token'
-ASTRA_DB_TABULAR_KEYSPACE='your_keyspace'
-ASTRA_DB_TABULAR_COLLECTION_NAME='comparable_properties'
+# Supabase Configuration (replaces AstraDB)
+SUPABASE_URL='https://your-project.supabase.co'
+SUPABASE_SERVICE_KEY='your-service-key'
 
 # Google Maps (for geocoding)
 GOOGLE_MAPS_API_KEY='your-google-maps-key'
@@ -281,7 +275,7 @@ The application processes documents through a sophisticated pipeline:
 2. **Parse**: LlamaParse extracts text and structure
 3. **Extract**: LlamaExtract identifies properties and attributes
 4. **Geocode**: Google Maps API provides location data
-5. **Store**: Data stored in AstraDB (tabular + vector)
+5. **Store**: Data stored in Supabase (document storage + vector)
 6. **Index**: Vector embeddings enable semantic search
 
 ## 🔧 Troubleshooting
@@ -296,7 +290,7 @@ The application processes documents through a sophisticated pipeline:
 **Document processing failing:**
 - Verify all API keys are valid
 - Check Celery worker logs: `docker-compose logs worker`
-- Ensure AstraDB credentials are correct
+- Ensure Supabase credentials are correct
 
 **Database connection issues:**
 - Verify PostgreSQL is running

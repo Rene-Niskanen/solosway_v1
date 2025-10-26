@@ -5,8 +5,6 @@ import time
 from .models import db, Document, DocumentStatus
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from cassandra.cluster import Cluster
-from cassandra.auth import PlainTextAuthProvider
 import uuid
 import requests
 from requests_aws4auth import AWS4Auth
@@ -31,34 +29,37 @@ from llama_cloud_services.extract import SourceText
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
+from .services.extraction_schemas import SUBJECT_PROPERTY_EXTRACTION_SCHEMA
 
-# Fix for astrapy import issue - patch the missing classes
-import astrapy.exceptions as astrapy_exceptions
-import astrapy.results as astrapy_results
-
-# Patch missing exception
-if not hasattr(astrapy_exceptions, 'InsertManyException'):
-    astrapy_exceptions.InsertManyException = astrapy_exceptions.CollectionInsertManyException
-
-# Patch missing result class
-if not hasattr(astrapy_results, 'UpdateResult'):
-    astrapy_results.UpdateResult = astrapy_results.CollectionUpdateResult
-
-from llama_index.vector_stores.astra_db import AstraDBVectorStore
-from llama_index.core.storage.storage_context import StorageContext
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Enhanced Configuration for dual vector store
-def get_property_vector_store(business_id: str):
-    """Create a separate vector store for individual properties using dedicated AstraDB instance"""
-    return AstraDBVectorStore(
-        token=os.environ["ASTRA_DB_COMP_APPLICATION_TOKEN"],
-        api_endpoint=os.environ["ASTRA_DB_COMP_API_ENDPOINT"],
-        collection_name=f"properties_vectorized_{business_id.lower()}",  # Separate collection
-        embedding_dimension=1536
-    )
+# Helper function to sync document status to Supabase
+def sync_document_to_supabase(document_id, status=None, additional_data=None):
+    """
+    Helper function to keep Supabase documents table in sync with PostgreSQL.
+    This ensures both databases have the same document status and metadata.
+    """
+    try:
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        
+        if status:
+            success = doc_service.update_document_status(
+                str(document_id), 
+                status, 
+                additional_data=additional_data
+            )
+            if success:
+                logger.info(f"✅ Synced status '{status}' to Supabase for document {document_id}")
+            else:
+                logger.warning(f"⚠️ Failed to sync status to Supabase")
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Supabase sync failed (non-fatal): {e}")
+        return False
+
 
 # Create enhanced geocoding function for addresses
 def geocode_address_parallel(addresses: list, max_workers: int = 3) -> list:
@@ -300,201 +301,925 @@ def create_property_document(property_data: dict, geocoding_result: dict) -> str
     
     return "\n".join(description_parts)
 
-# --- Enhanced JSON Schema Definition ---
-ENHANCED_APPRAISAL_JSON_SCHEMA = {
-    "additionalProperties": False,
-    "description": "A model to hold all comparable properties & subject property and their associated images extracted from an appraisal document. EXCLUDE individual apartment units, flats, or units within the same building.",
-    "properties": {
-        "all_properties": {
-            "items": {
-                "additionalProperties": False,
-                "description": "CRITICAL: A single STANDALONE property used for comparison or the main subject property. EXCLUDE individual apartments, flats, or units within buildings. Pay special attention to bedroom/bathroom counts which are HIGH PRIORITY fields.",
-                "properties": {
-                    "property_address": {
-                        "description": "Full address of the STANDALONE property, including postcode. Extract complete address like 'Great Barwick Manor, Barwick High Cross, Ware, SG11 1DB'. EXCLUDE addresses with apartment numbers, flat numbers, or unit numbers (e.g., 'Apartment 710', 'Flat 12', 'Unit A').",
-                        "type": "string"
-                    },
-                    "property_type": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Type of property (e.g., 'Detached House', 'Flat', 'Office')."
-                    },
-                    "size_sqft": {
-                        "description": "Total size of the property in square feet. Look for measurements like '4,550 sq ft' or '3,315 ft²'.",
-                        "type": "number"
-                    },
-                    "size_unit": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Original unit of measurement for 'size_sqft' if conversion occurred."
-                    },
-                    "number_bedrooms": {
-                        "anyOf": [
-                            {"type": "integer"},
-                            {"type": "null"}
-                        ],
-                        "description": "CRITICAL FIELD Number of bedrooms - HIGH PRIORITY! Search ENTIRE document for: '5 Bed', '3 bedroom', '4-bed', 'X beds'. Look in headers, tables, descriptions everywhere. If you see '5 Bed' extract 5. ALWAYS extract this if visible."
-                    },
-                    "number_bathrooms": {
-                        "anyOf": [
-                            {"type": "integer"},
-                            {"type": "null"}
-                        ],
-                        "description": "CRITICAL FIELD Number of bathrooms - HIGH PRIORITY! Search ENTIRE document for: '4 Bath', '2 bathroom', '3-bath', 'X baths'. Look in headers, tables, descriptions everywhere. If you see '4 Bath' extract 4. ALWAYS extract this if visible."
-                    },
-                    "tenure": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Tenure of the property (e.g., 'Freehold', 'Leasehold')."
-                    },
-                    "listed_building_grade": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "If the property is a listed building, its grade."
-                    },
-                    "transaction_date": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Date of the property's last recorded transaction. Format: YYYY-MM-DD."
-                    },
-                    "sold_date": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Date when the property was sold. Format: YYYY-MM-DD."
-                    },
-                    "rented_date": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Date when the property was rented. Format: YYYY-MM-DD."
-                    },
-                    "leased_date": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Date when the property was leased. Format: YYYY-MM-DD."
-                    },
-                    "sold_price": {
-                        "description": "Sold price of the property.",
-                        "type": "number"
-                    },
-                    "asking_price": {
-                        "anyOf": [
-                            {"type": "number"},
-                            {"type": "null"}
-                        ],
-                        "description": "Asking price of the property."
-                    },
-                    "rent_pcm": {
-                        "anyOf": [
-                            {"type": "number"},
-                            {"type": "null"}
-                        ],
-                        "description": "Monthly rent. Convert annual rent to monthly if necessary."
-                    },
-                    "yield_percentage": {
-                        "anyOf": [
-                            {"type": "number"},
-                            {"type": "null"}
-                        ],
-                        "description": "Investment yield as a percentage."
-                    },
-                    "price_per_sqft": {
-                        "anyOf": [
-                            {"type": "number"},
-                            {"type": "null"}
-                        ],
-                        "description": "Price per square foot."
-                    },
-                    "epc_rating": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Energy Performance Certificate (EPC) rating."
-                    },
-                    "condition": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Condition of the property."
-                    },
-                    "other_amenities": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "A comma-separated list of other amenities and features."
-                    },
-                    "lease_details": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Detailed lease information."
-                    },
-                    "days_on_market": {
-                        "anyOf": [
-                            {"type": "integer"},
-                            {"type": "null"}
-                        ],
-                        "description": "Number of days the property was on the market."
-                    },
-                    "notes": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "null"}
-                        ],
-                        "description": "Any additional notes or relevant information."
-                    },
-                },
-                "required": [
-                    "property_address", "property_type", "size_sqft", "size_unit", 
-                    "number_bedrooms", "number_bathrooms", "tenure", "listed_building_grade", 
-                    "transaction_date", "sold_date", "rented_date", "leased_date", "sold_price", "asking_price", "rent_pcm", 
-                    "yield_percentage", "price_per_sqft", "epc_rating", "condition", 
-                    "other_amenities", "lease_details", "days_on_market", "notes"
-                ],
-                "type": "object"
-            },
-            "type": "array"
-        },
-    },
-    "required": ["all_properties"],
-    "type": "object"
-}
+def _check_llamaextract_api() -> bool:
+    """Check if LlamaExtract API is accessible"""
+    try:
+        import requests
+        api_key = os.environ.get('LLAMA_CLOUD_API_KEY')
+        if not api_key:
+            print("   API Key not found in environment")
+            return False
+        
+        # Try multiple endpoints to check API accessibility
+        endpoints = [
+            'https://api.cloud.llamaindex.ai/api/v1/health',
+            'https://api.cloud.llamaindex.ai/api/health',
+            'https://api.cloud.llamaindex.ai/health'
+        ]
+        
+        headers = {'Authorization': f'Bearer {api_key}'}
+        
+        for endpoint in endpoints:
+            try:
+                response = requests.get(endpoint, headers=headers, timeout=5)
+                if response.status_code == 200:
+                    print(f"   API accessible via {endpoint}")
+                    return True
+            except Exception as e:
+                print(f"   Endpoint {endpoint} failed: {e}")
+                continue
+        
+        print("   All API endpoints failed")
+        return False
+        
+    except Exception as e:
+        print(f"   API health check failed: {e}")
+        return False
 
-def get_astra_db_session():
-    """Establishes a connection to the AstraDB tabular database and returns a session object."""
-    # Validate secure connect bundle path for tabular database
-    bundle_path = os.environ.get('ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH', '').strip()
-    if not bundle_path or not os.path.exists(bundle_path):
-        raise ValueError(f"AstraDB tabular secure connect bundle not found at: '{bundle_path}'. Please check ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH environment variable.")
+def _enhanced_fallback_extraction(document_text: str, filename: str) -> dict:
+    """Enhanced fallback text-based extraction when LlamaExtract fails"""
+    import re
+    from datetime import datetime
     
-    cloud_config = {
-        'secure_connect_bundle': bundle_path
+    logger.info("🔄 Using enhanced fallback text-based extraction...")
+    
+    # PRIORITY 1: Extract address from filename first (most reliable)
+    extracted_address = None
+    postcode = None
+    
+    if filename:
+        logger.info(f"🔍 Extracting address from filename: {filename}")
+        
+        # Extract postcode from filename first
+        postcode_match = re.search(r'([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})', filename, re.IGNORECASE)
+        if postcode_match:
+            postcode = postcode_match.group(1).upper()
+            logger.info(f"📍 Found postcode in filename: {postcode}")
+        
+        # Extract full address from filename (more comprehensive patterns)
+        filename_patterns = [
+            # Full address with postcode: "Highlands, Berden Road, Berden, Bishop's Stortford, CM23 1AB"
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm)[^,]*,\s*[^,]+,\s*[^,]+,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',
+            # Address with road name and postcode: "Highlands Berden Road Berden Bishops Stortford CM23 1AB"
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm)[^,]*,\s*[^,]+,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',
+            # Simple road name with postcode: "Berden Road, CM23 1AB"
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm)[^,]*,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',
+            # Just road name: "Berden Road"
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm))'
+        ]
+        
+        for pattern in filename_patterns:
+            match = re.search(pattern, filename, re.IGNORECASE)
+            if match:
+                extracted_address = match.group(1).strip()
+                # Clean up the address
+                extracted_address = re.sub(r'\s+', ' ', extracted_address)
+                extracted_address = re.sub(r'[^\w\s,.-]', '', extracted_address)
+                logger.info(f"✅ Extracted address from filename: {extracted_address}")
+                break
+    
+    # PRIORITY 2: If no address from filename, try document content
+    if not extracted_address and document_text:
+        logger.info("🔍 Extracting address from document content...")
+        
+        # Extract postcode from document if not found in filename
+        if not postcode:
+            postcode_match = re.search(r'([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})', document_text, re.IGNORECASE)
+            if postcode_match:
+                postcode = postcode_match.group(1).upper()
+                logger.info(f"📍 Found postcode in document: {postcode}")
+        
+        # More comprehensive address patterns for document content
+        content_patterns = [
+            # Full UK address with postcode
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm)[^,]*,\s*[^,]+,\s*[^,]+,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',
+            # Address with road and postcode
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm)[^,]*,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',
+            # Simple road name
+            r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm))'
+        ]
+        
+        for pattern in content_patterns:
+            match = re.search(pattern, document_text, re.IGNORECASE)
+            if match:
+                extracted_address = match.group(1).strip()
+                # Clean up the address
+                extracted_address = re.sub(r'\s+', ' ', extracted_address)
+                extracted_address = re.sub(r'[^\w\s,.-]', '', extracted_address)
+                logger.info(f"✅ Extracted address from document: {extracted_address}")
+                break
+    
+    # PRIORITY 3: If still no address, try to construct from available parts
+    if not extracted_address and filename:
+        logger.info("🔍 Attempting to construct address from filename parts...")
+        
+        # Extract property name and road from filename
+        property_name_match = re.search(r'([A-Za-z]+)', filename)
+        road_match = re.search(r'([A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl|Close|Crescent|Gardens|Manor|House|Farm))', filename, re.IGNORECASE)
+        
+        if property_name_match and road_match:
+            property_name = property_name_match.group(1)
+            road_name = road_match.group(1).strip()
+            extracted_address = f"{property_name}, {road_name}"
+            if postcode:
+                extracted_address += f", {postcode}"
+            logger.info(f"✅ Constructed address: {extracted_address}")
+    
+    # Extract basic property info
+    bedrooms_match = re.search(r'(\d+)\s*(?:bed|bedroom|bedrooms)', document_text, re.IGNORECASE) if document_text else None
+    bathrooms_match = re.search(r'(\d+)\s*(?:bath|bathroom|bathrooms)', document_text, re.IGNORECASE) if document_text else None
+    size_match = re.search(r'(\d+(?:,\d+)*)\s*(?:sq\s*ft|sqft|square\s*feet)', document_text, re.IGNORECASE) if document_text else None
+    
+    # Extract price information (rental and purchase)
+    price_patterns = [
+        r'£(\d+(?:,\d+)*)',
+        r'(\d+(?:,\d+)*)\s*(?:pounds?|GBP)',
+        r'asking\s*(?:price|value)[:\s]*£?(\d+(?:,\d+)*)',
+        r'valuation[:\s]*£?(\d+(?:,\d+)*)',
+        r'market\s*value[:\s]*£?(\d+(?:,\d+)*)',
+        r'assessed\s*value[:\s]*£?(\d+(?:,\d+)*)',
+        r'rent[:\s]*£?(\d+(?:,\d+)*)',
+        r'(\d+(?:,\d+)*)\s*per\s*(?:month|calendar\s*month|pcm)'
+    ]
+    
+    extracted_price = None
+    if document_text:
+        for pattern in price_patterns:
+            match = re.search(pattern, document_text, re.IGNORECASE)
+            if match:
+                try:
+                    extracted_price = float(match.group(1).replace(',', ''))
+                    break
+                except ValueError:
+                    continue
+    
+    # Extract property type
+    property_types = ['house', 'flat', 'apartment', 'detached', 'semi-detached', 'terraced', 'bungalow', 'cottage', 'mansion', 'townhouse']
+    extracted_type = None
+    if document_text:
+        for prop_type in property_types:
+            if prop_type.lower() in document_text.lower():
+                extracted_type = prop_type.title()
+                break
+    
+    # Final validation - ensure we have a reasonable address
+    if extracted_address and len(extracted_address) < 5:
+        logger.warning(f"⚠️ Address too short, rejecting: {extracted_address}")
+        extracted_address = None
+    
+    logger.info(f"🎯 Final extraction result:")
+    logger.info(f"   Address: {extracted_address or 'NOT FOUND'}")
+    logger.info(f"   Postcode: {postcode or 'NOT FOUND'}")
+    logger.info(f"   Property Type: {extracted_type or 'NOT FOUND'}")
+    logger.info(f"   Price: {extracted_price or 'NOT FOUND'}")
+    
+    return {
+        'properties': [{
+            'property_address': extracted_address or 'Address not found',
+            'property_type': extracted_type or 'Property',
+            'number_bedrooms': int(bedrooms_match.group(1)) if bedrooms_match else None,
+            'number_bathrooms': int(bathrooms_match.group(1)) if bathrooms_match else None,
+            'size_sqft': int(size_match.group(1).replace(',', '')) if size_match else None,
+            'asking_price': extracted_price,
+            'postcode': postcode,
+            'notes': f'Extracted using enhanced fallback text analysis from {filename}',
+            'extraction_method': 'enhanced_fallback',
+            'document_date': datetime.utcnow().isoformat()
+        }]
     }
-    auth_provider = PlainTextAuthProvider(
-        'token',
-        os.environ['ASTRA_DB_TABULAR_APPLICATION_TOKEN']
-    )
-    cluster = Cluster(cloud=cloud_config, auth_provider=auth_provider)
-    return cluster.connect()
+
+def _fallback_text_extraction(document_text: str, filename: str) -> dict:
+    """Fallback text-based extraction when LlamaExtract fails"""
+    import re
+    from datetime import datetime
+    
+    print("🔄 Using fallback text-based extraction...")
+    
+    # Extract address from text using multiple patterns
+    address_patterns = [
+        r'\d+\s+[\w\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl)',
+        r'[A-Za-z\s]+,\s*[A-Za-z\s]+,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}',
+        r'[A-Za-z\s]+,\s*[A-Za-z\s]+'
+    ]
+    
+    extracted_address = None
+    for pattern in address_patterns:
+        match = re.search(pattern, document_text, re.IGNORECASE)
+        if match:
+            extracted_address = match.group(0).strip()
+            break
+    
+    # Extract basic property info
+    bedrooms_match = re.search(r'(\d+)\s*(?:bed|bedroom|bedrooms)', document_text, re.IGNORECASE)
+    bathrooms_match = re.search(r'(\d+)\s*(?:bath|bathroom|bathrooms)', document_text, re.IGNORECASE)
+    size_match = re.search(r'(\d+(?:,\d+)*)\s*(?:sq\s*ft|sqft|square\s*feet)', document_text, re.IGNORECASE)
+    
+    # Extract price information
+    price_patterns = [
+        r'£(\d+(?:,\d+)*)',
+        r'(\d+(?:,\d+)*)\s*(?:pounds?|GBP)',
+        r'asking\s*(?:price|value)[:\s]*£?(\d+(?:,\d+)*)',
+        r'valuation[:\s]*£?(\d+(?:,\d+)*)'
+    ]
+    
+    extracted_price = None
+    for pattern in price_patterns:
+        match = re.search(pattern, document_text, re.IGNORECASE)
+        if match:
+            try:
+                extracted_price = float(match.group(1).replace(',', ''))
+                break
+            except ValueError:
+                continue
+    
+    # Extract property type
+    property_types = ['house', 'flat', 'apartment', 'detached', 'semi-detached', 'terraced', 'bungalow', 'cottage']
+    extracted_type = None
+    for prop_type in property_types:
+        if prop_type.lower() in document_text.lower():
+            extracted_type = prop_type.title()
+            break
+    
+    return {
+        'subject_property': {
+            'property_address': extracted_address or 'Address not found',
+            'property_type': extracted_type or 'Property',
+            'number_bedrooms': int(bedrooms_match.group(1)) if bedrooms_match else None,
+            'number_bathrooms': int(bathrooms_match.group(1)) if bathrooms_match else None,
+            'size_sqft': int(size_match.group(1).replace(',', '')) if size_match else None,
+            'asking_price': extracted_price,
+            'notes': f'Extracted using fallback text analysis from {filename}'
+        }
+    }
+
+def clean_extracted_property(property_data):
+    """Clean extracted data to ensure proper data types"""
+    cleaned = {}
+    
+    # Clean numeric fields
+    numeric_fields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm', 'price_per_sqft', 'yield_percentage']
+    for field in numeric_fields:
+        value = property_data.get(field)
+        if value:
+            # Extract first number from strings like "5 (all en-suites)"
+            import re
+            if isinstance(value, str):
+                match = re.search(r'(\d+(?:\.\d+)?)', value)
+                if field in ['number_bedrooms', 'number_bathrooms']:
+                    cleaned[field] = int(match.group(1)) if match else None
+                else:
+                    cleaned[field] = float(match.group(1)) if match else None
+            else:
+                cleaned[field] = value
+        else:
+            cleaned[field] = None
+    
+    # Copy other fields as-is
+    for key, value in property_data.items():
+        if key not in numeric_fields:
+            cleaned[key] = value
+    
+    return cleaned
+
+
+def extract_images_from_document(temp_file_path, document_id, business_id):
+    """Extract images from document and upload using unified storage service"""
+    from .services.storage_service import StorageService
+    from datetime import datetime
+    
+    try:
+        # Initialize storage service
+        storage_service = StorageService()
+        
+        # Use LlamaParse to extract images
+        parser = LlamaParse(
+            api_key=os.environ['LLAMA_CLOUD_API_KEY'],
+            result_type="markdown",
+            verbose=True
+        )
+        
+        # Extract images from document
+        parsed_docs = parser.load_data(temp_file_path)
+        
+        extracted_images = []
+        image_count = 0
+        
+        for doc in parsed_docs:
+            if hasattr(doc, 'images') and doc.images:
+                for i, image_data in enumerate(doc.images):
+                    try:
+                        # Generate unique image filename
+                        image_filename = f"property_{document_id}_{image_count}_{i}.jpg"
+                        
+                        # Upload using storage service (prefers Supabase, falls back to S3)
+                        upload_result = storage_service.upload_property_image(
+                            image_data=image_data,
+                            filename=image_filename,
+                            business_id=business_id,
+                            document_id=document_id,
+                            preferred_storage='supabase'  # Prefer Supabase Storage
+                        )
+                        
+                        if upload_result['success']:
+                            # Store image metadata
+                            image_metadata = {
+                                'url': upload_result['url'],
+                                'filename': image_filename,
+                                'extracted_at': datetime.utcnow().isoformat(),
+                                'document_id': str(document_id),
+                                'image_index': i,
+                                'size_bytes': len(image_data),
+                                'storage_provider': upload_result['storage_provider'],
+                                'storage_path': upload_result['path']
+                            }
+                            
+                            extracted_images.append(image_metadata)
+                            image_count += 1
+                            
+                            print(f"✅ Extracted image {i+1}: {image_filename} (stored in {upload_result['storage_provider']})")
+                        else:
+                            print(f"❌ Failed to upload image {i+1}: {upload_result['error']}")
+                        
+                    except Exception as e:
+                        print(f"❌ Error processing image {i}: {e}")
+                        continue
+        
+        return {
+            'images': extracted_images,
+            'image_count': image_count,
+            'primary_image_url': extracted_images[0]['url'] if extracted_images else None
+        }
+        
+    except Exception as e:
+        print(f"❌ Error extracting images: {e}")
+        return {
+            'images': [],
+            'image_count': 0,
+            'primary_image_url': None
+        }
+
+# Old schema removed - using extraction_schemas.py instead
+
+# AstraDB session function removed - using Supabase only
+
+@shared_task(bind=True)
+def process_document_classification(self, document_id, file_content, original_filename, business_id):
+    """
+    Step 1: Document Classification with Event Logging
+    """
+    from . import create_app
+    from .models import db, Document, DocumentStatus
+    from .services.classification_service import DocumentClassificationService
+    from .services.processing_history_service import ProcessingHistoryService
+    from .services.filename_address_service import FilenameAddressService
+    from llama_parse import LlamaParse
+    import tempfile
+    import os
+    
+    app = create_app()
+    
+    with app.app_context():
+        document = Document.query.get(document_id)
+        if not document:
+            logger.error(f"Document with id {document_id} not found.")
+            return {"error": "Document not found"}
+        
+        # Initialize processing history service
+        history_service = ProcessingHistoryService()
+        
+        try:
+            logger.info(f"Starting document classification for document_id: {document_id}")
+            
+            # NEW: Extract address from filename FIRST (before document extraction)
+            logger.info(f"🔍 Attempting to extract address from filename: {original_filename}")
+            filename_service = FilenameAddressService()
+            filename_address = filename_service.extract_address_from_filename(original_filename)
+            
+            if filename_address:
+                filename_confidence = filename_service.confidence_score(filename_address)
+                logger.info(f"📍 Extracted address from filename: '{filename_address}' (confidence: {filename_confidence:.2f})")
+                
+                # Store filename address in document metadata for later use
+                document.metadata_json = json.dumps({
+                    'filename_address': filename_address,
+                    'filename_address_confidence': filename_confidence,
+                    'address_source': 'filename'
+                })
+                db.session.commit()
+                logger.info(f"✅ Saved filename address to document metadata")
+            else:
+                logger.info(f"ℹ️  No address found in filename, will rely on document content extraction")
+            
+            # Log step start
+            history_id = history_service.log_step_start(
+                document_id=str(document_id),
+                step_name='classification',
+                step_metadata={
+                    'filename': original_filename,
+                    'file_size': len(file_content),
+                    'business_id': business_id
+                }
+            )
+            
+            # Update document status
+            document.status = DocumentStatus.PROCESSING
+            db.session.commit()
+            
+            # Create document in Supabase if it doesn't exist
+            try:
+                from .services.supabase_document_service import SupabaseDocumentService
+                doc_service = SupabaseDocumentService()
+                
+                # Check if document exists in Supabase
+                existing_doc = doc_service.get_document_by_id(str(document_id))
+                if not existing_doc:
+                    # Create document in Supabase
+                    doc_data = {
+                        'id': str(document_id),
+                        'original_filename': original_filename,
+                        's3_path': document.s3_path,
+                        'file_type': document.file_type,
+                        'file_size': document.file_size,
+                        'uploaded_by_user_id': str(document.uploaded_by_user_id),
+                        'business_id': business_id,
+                        'status': 'processing',
+                        'created_at': document.created_at.isoformat() if document.created_at else None,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }
+                    doc_service.create_document(doc_data)
+                    logger.info(f"✅ Created document in Supabase: {document_id}")
+                else:
+                    # Update existing document status
+                    doc_service.update_document_status(str(document_id), 'processing')
+                    logger.info(f"✅ Updated document status in Supabase: {document_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to sync document to Supabase: {e}")
+                # Continue processing - don't fail the task
+            
+            # Save file temporarily for parsing
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Extract text using LlamaParse
+                logger.info(f"Extracting text from: {original_filename}")
+                parser = LlamaParse(
+                    api_key=os.environ['LLAMA_CLOUD_API_KEY'],
+                    result_type="text"
+                )
+                parsed_docs = parser.load_data(temp_file_path)
+                document_text = "\n".join([doc.text for doc in parsed_docs])
+                
+                logger.info(f"Extracted {len(document_text)} characters of text")
+                
+                # Store parsed text
+                document.parsed_text = document_text
+                db.session.commit()
+                
+                # Log text extraction success
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Text extraction completed: {len(document_text)} characters",
+                    step_metadata={'text_length': len(document_text)}
+                )
+                
+            except Exception as e:
+                logger.error(f"LlamaParse extraction failed: {e}")
+                # Use fallback text extraction
+                document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
+                document.parsed_text = document_text
+                
+                # Log text extraction with fallback
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
+                    step_metadata={
+                        'text_length': len(document_text),
+                        'fallback_used': True,
+                        'extraction_error': str(e)
+                    }
+                )
+            
+            # Classify the document
+            logger.info(f"Classification document: {original_filename}")
+            from .services.classification_service import classify_document_sync
+
+            try:
+                classification_result = classify_document_sync(temp_file_path, document_text)
+                logger.info(f"Document classified as: {classification_result['type']} (confidence: {classification_result['confidence']:.2f})")
+            except Exception as e:
+                logger.error(f"Error in classification: {e}")
+                raise
+            
+            
+            # Classes the document with classification results
+            document.classification_type = classification_result['type']
+            document.classification_confidence = classification_result['confidence']
+            document.classification_reasoning = classification_result['reasoning']
+            document.classification_timestamp = datetime.utcnow()
+            document.status = DocumentStatus.COMPLETED
+            db.session.commit()
+            
+            # Sync classification to Supabase
+            try:
+                from .services.supabase_document_service import SupabaseDocumentService
+                doc_service = SupabaseDocumentService()
+                
+                additional_data = {
+                'classification_type': classification_result['type'],
+                'classification_confidence': classification_result['confidence'],
+                'classification_timestamp': document.classification_timestamp.isoformat()
+                }
+                
+                doc_service.update_document_status(str(document_id), 'completed', additional_data)
+                logger.info(f"✅ Updated classification in Supabase: {document_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to sync classification to Supabase: {e}")
+            
+            # Log classification completion
+            history_service.log_step_completion(
+                history_id=history_id,
+                step_message=f"Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}",
+                step_metadata={
+                    'classification_type': classification_result['type'],
+                    'classification_confidence': classification_result['confidence'],
+                    'classification_reasoning': classification_result['reasoning']
+                }
+            )
+            
+            logger.info(f"✅ Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}")
+            
+            # Trigger appropriate extraction pipeline based on classification
+            if classification_result['type'] in ['valuation_report', 'market_appraisal']:
+                logger.info(f"🎯 CLASSIFICATION COMPLETE: {classification_result['type']}")
+                logger.info(f"🔄 TRIGGERING FULL EXTRACTION: process_document_with_dual_stores")
+                logger.info(f"   Document ID: {document_id}")
+                logger.info(f"   Business ID: {business_id}")
+                logger.info(f"   Filename: {original_filename}")
+                
+                task = process_document_with_dual_stores.delay(
+                    document_id=document_id,
+                    file_content=file_content,
+                    original_filename=original_filename,
+                    business_id=business_id
+                )
+                
+                logger.info(f"✅ EXTRACTION TASK QUEUED: {task.id}")
+                return task
+            else:
+                logger.info(f"🎯 CLASSIFICATION COMPLETE: {classification_result['type']}")
+                logger.info(f"🔄 TRIGGERING MINIMAL EXTRACTION: process_document_minimal_extraction")
+                
+                task = process_document_minimal_extraction.delay(
+                    document_id=document_id,
+                    file_content=file_content,
+                    original_filename=original_filename,
+                    business_id=business_id
+                )
+                
+                logger.info(f"✅ MINIMAL EXTRACTION TASK QUEUED: {task.id}")
+                return task
+            
+            return {
+                "status": "classified",
+                "type": classification_result['type'],
+                "confidence": classification_result['confidence'],
+                "reasoning": classification_result['reasoning'],
+                "history_id": history_id
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error in document classification: {e}")
+            
+            # Log failure if we have a history_id
+            if 'history_id' in locals():
+                history_service.log_step_failure(
+                    history_id=history_id,
+                    error_message=str(e),
+                    step_metadata={'error_type': type(e).__name__}
+                )
+            
+            try:
+                document.status = DocumentStatus.FAILED
+                db.session.commit()
+            except:
+                pass
+            return {"error": str(e)}
+        
+        finally:
+            # Clean up temporary file
+            try:
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except:
+                pass
+
+@shared_task(bind=True)
+def process_document_minimal_extraction(self, document_id, file_content, original_filename, business_id):
+    """
+    Minimal extraction pipeline for non-valuation documents.
+    Only extracts basic property information if available, and document metadata.
+    """
+    from . import create_app
+    from .models import db, Document, DocumentStatus
+    from .services.processing_history_service import ProcessingHistoryService
+    from llama_parse import LlamaParse
+    from .services.extraction_schemas import MINIMAL_EXTRACTION_SCHEMA
+    import tempfile
+    import os
+
+    app = create_app()
+
+    with app.app_context():
+        document = Document.query.get(document_id)
+        if not document:
+            logger.error(f"Document with id {document_id} not found.")
+            return {'error': 'Document not found'}
+
+        # Initialise processing history service 
+        history_service = ProcessingHistoryService()
+
+        try:
+            logger.info(f"Starting minimal extraction for document: {document_id}")
+
+            # log the step start
+            history_id = history_service.log_step_start(
+                document_id=str(document_id),
+                step_name='minimal_extraction',
+                step_metadata={
+                    'filename': original_filename,
+                    'file_size': len(file_content),
+                    'business_id': business_id
+                }
+            )
+
+            # update the document status
+            document.status = DocumentStatus.PROCESSING
+            db.session.commit()
+
+            # save file temporarily for parsing
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Extract the text using Llamaparse
+                logger.info(f"Extracting text from: {original_filename}")
+                parser = LlamaParse(
+                    api_key=os.environ['LLAMA_CLOUD_API_KEY'],
+                    result_type="text"
+                )
+                parsed_docs = parser.load_data(temp_file_path)
+                document_text = "\n".join([doc.text for doc in parsed_docs])
+
+                # store parsed text
+                document.parsed_text = document_text
+                db.session.commit()
+
+                # Extract the minimal information using dedicated LlamaExtract agent for other_documents
+                extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
+                
+                # Get the appropriate schema based on document classification
+                from .services.extraction_schemas import get_extraction_schema
+                classification_type = document.classification_type or 'other_documents'
+                extraction_schema = get_extraction_schema(classification_type)
+                
+                logger.info(f"🎯 Using extraction schema for: {classification_type}")
+                
+                # Add timeout handling for minimal extraction
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("LlamaExtract job timed out after 3 minutes")
+                
+                # Set timeout to 3 minutes for minimal extraction
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(180)
+                
+                try:
+                    # Create or get dedicated agent for other_documents
+                    if classification_type == 'other_documents':
+                        agent_name = "other-documents-property-extraction"
+                        logger.info(f"🔄 Creating/getting dedicated agent for other_documents: {agent_name}")
+                        
+                        try:
+                            # Try to get existing agent first
+                            agent = extractor.get_agent(name=agent_name)
+                            logger.info(f"✅ Found existing agent: {agent_name}")
+                        except Exception as get_error:
+                            logger.info(f"⚠️ Agent '{agent_name}' not found: {get_error}")
+                            logger.info(f"🔄 Creating new agent: {agent_name}")
+                            
+                            # Create new agent with specialized schema
+                            from llama_cloud import ExtractConfig, ExtractMode, ExtractTarget
+                            config = ExtractConfig(
+                                extraction_mode=ExtractMode.MULTIMODAL,
+                                extraction_target=ExtractTarget.PER_DOC,
+                                high_resolution_mode=True,
+                                cite_sources=True,
+                                use_reasoning=False,
+                                confidence_scores=True,
+                            )
+                            
+                            agent = extractor.create_agent(
+                                name=agent_name,
+                                data_schema=extraction_schema,
+                                config=config
+                            )
+                            logger.info(f"✅ Successfully created new agent: {agent_name}")
+                        
+                        # Use the agent for extraction
+                        logger.info(f"🔄 Using agent extraction for other_documents...")
+                        result = agent.extract(temp_file_path)
+                        extracted_data = result.data
+                        logger.info("✅ Agent extraction completed successfully")
+                        
+                    else:
+                        # For non-other_documents, use direct extraction
+                        logger.info("🔄 Using direct extraction for non-other_documents...")
+                        
+                        # Try different LlamaExtract methods
+                        if hasattr(extractor, 'extract_from_file'):
+                            extraction_result = extractor.extract_from_file(
+                                schema=extraction_schema,
+                                file_path=temp_file_path
+                            )
+                            extracted_data = extraction_result
+                            logger.info("✅ LlamaExtract completed using extract_from_file")
+                        
+                        elif hasattr(extractor, 'extract'):
+                            extraction_result = extractor.extract(
+                                schema=extraction_schema,
+                                file_path=temp_file_path
+                            )
+                            extracted_data = extraction_result
+                            logger.info("✅ LlamaExtract completed using extract")
+                        
+                        elif hasattr(extractor, 'extract_from_text'):
+                            extraction_result = extractor.extract_from_text(
+                                schema=extraction_schema,
+                                text=document_text
+                            )
+                            extracted_data = extraction_result
+                            logger.info("✅ LlamaExtract completed using extract_from_text")
+                        
+                        else:
+                            raise AttributeError("No suitable LlamaExtract method found")
+                    
+                    signal.alarm(0)  # Cancel the alarm
+                    
+                except AttributeError as e:
+                    signal.alarm(0)  # Cancel the alarm
+                    logger.warning(f"⚠️ LlamaExtract method not available: {e}")
+                    logger.info("🔄 Falling back to enhanced text extraction...")
+                    
+                    # Enhanced fallback extraction
+                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
+                    
+                except TimeoutError:
+                    signal.alarm(0)  # Cancel the alarm
+                    logger.warning("⚠️ LlamaExtract timed out, using enhanced fallback")
+                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
+                    
+                except Exception as e:
+                    signal.alarm(0)  # Cancel the alarm
+                    logger.warning(f"⚠️ LlamaExtract failed: {e}, using enhanced fallback")
+                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
+
+                # store the extracted data
+                document.extracted_json = json.dumps(extracted_data)
+                document.status = DocumentStatus.COMPLETED  # FIXED: EXTRACTED doesn't exist in enum
+                db.session.commit()
+                
+                # Sync completion to Supabase
+                sync_document_to_supabase(document_id, 'completed')
+
+                # ========================================================================
+                # PROPERTY LINKING FOR MINIMAL EXTRACTION
+                # ========================================================================
+                
+                logger.info("🔗 Starting property linking for minimal extraction...")
+                
+                # Handle different extraction data formats
+                extracted_properties = []
+                
+                if classification_type == 'other_documents' and 'subject_property' in extracted_data:
+                    # New format: subject_property object
+                    subject_prop = extracted_data['subject_property']
+                    if subject_prop and subject_prop.get('property_address'):
+                        extracted_properties = [subject_prop]
+                        logger.info(f"📍 Found subject property in other_documents format")
+                elif 'properties' in extracted_data:
+                    # Legacy format: properties array
+                    extracted_properties = extracted_data.get('properties', [])
+                    logger.info(f"📍 Found {len(extracted_properties)} properties in legacy format")
+                
+                if extracted_properties:
+                    logger.info(f"📍 Processing {len(extracted_properties)} extracted properties")
+                    
+                    from .services.address_service import AddressNormalizationService
+                    from .services.supabase_property_hub_service import SupabasePropertyHubService
+                    
+                    address_service = AddressNormalizationService()
+                    property_hub_service = SupabasePropertyHubService()
+                    
+                    # Process each extracted property
+                    for i, prop in enumerate(extracted_properties):
+                        property_address = prop.get('property_address')
+                        if property_address and property_address != 'Address not found':
+                            logger.info(f"📍 Processing property {i+1}: {property_address}")
+                            
+                            try:
+                                # Normalize address and compute hash
+                                normalized = address_service.normalize_address(property_address)
+                                address_hash = address_service.compute_address_hash(normalized)
+                                geocoding_result = address_service.geocode_address(property_address)
+                                
+                                address_data = {
+                                    'original_address': property_address,
+                                    'normalized_address': normalized,
+                                    'address_hash': address_hash,
+                                    'latitude': geocoding_result.get('latitude'),
+                                    'longitude': geocoding_result.get('longitude'),
+                                    'formatted_address': geocoding_result.get('formatted_address'),
+                                    'geocoding_status': geocoding_result.get('status'),
+                                    'geocoding_confidence': geocoding_result.get('confidence'),
+                                    'geocoder_used': geocoding_result.get('geocoder', 'none')
+                                }
+                                
+                                logger.info(f"✅ Address processed: {address_data['formatted_address']}")
+                                
+                                # Create property hub using enhanced matching
+                                hub_result = property_hub_service.create_property_with_relationships(
+                                    address_data=address_data,
+                                    document_id=str(document_id),
+                                    business_id=business_id,
+                                    extracted_data=prop
+                                )
+                                
+                                if hub_result['success']:
+                                    logger.info(f"✅ Property linked successfully: {hub_result['property_id']}")
+                                    logger.info(f"   Match type: {hub_result['match_type']}")
+                                    logger.info(f"   Confidence: {hub_result['confidence']:.2f}")
+                                    logger.info(f"   Action: {hub_result['action']}")
+                                else:
+                                    logger.warning(f"⚠️ Property linking failed: {hub_result.get('error', 'Unknown error')}")
+                                    
+                            except Exception as e:
+                                logger.error(f"❌ Error processing property {i+1}: {e}")
+                                continue
+                        else:
+                            logger.info(f"⚠️ Property {i+1} has no valid address: {property_address}")
+                else:
+                    logger.info("ℹ️ No properties found in minimal extraction - skipping property linking")
+
+                # log history completion
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Minimal extraction completed with property linking",
+                    step_metadata={
+                        'extracted_properties': len(extracted_data.get('properties', [])),
+                        'text_length': len(document_text),
+                        'property_linking_attempted': len(extracted_properties) > 0
+                    }
+                )
+
+                return {
+                    'status': 'completed',  # FIXED: Return 'completed' instead of 'extracted'
+                    'properties': extracted_data.get('properties', []),
+                    'history_id': history_id
+                }
+
+            except Exception as e:
+                logger.error(f"Error in minimal extraction: {e}")
+                document.status = DocumentStatus.FAILED
+                db.session.commit()
+
+                if 'history_id' in locals():
+                    history_service.log_step_failure(
+                        history_id=history_id,
+                        error_message=str(e)
+                    )
+
+                return {"error": str(e)}
+
+            finally:
+                # clean up temp file
+                try:
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                except:
+                    pass
+        
+        except Exception as e:
+            logger.error(f"❌ Error in minimal extraction task: {e}")
+            try:
+                document.status = DocumentStatus.FAILED
+                db.session.commit()
+            except:
+                pass
+            return {"error": str(e)}
 
 @shared_task(bind=True)
 def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id):
@@ -504,20 +1229,28 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
     2. Saves content to a temporary file.
     3. Parses with LlamaParse.
     4. Extracts structured data using LlamaExtract.
-    5. Stores data in AstraDB.
+    5. Stores data in Supabase.
     """
     from . import create_app
     app = create_app()
     
     with app.app_context():
+        print("=" * 80)
+        print("🚀 EXTRACTION TASK STARTED: process_document_with_dual_stores")
+        print(f"   Document ID: {document_id}")
+        print(f"   Business ID: {business_id}")
+        print(f"   Filename: {original_filename}")
+        print(f"   File size: {len(file_content)} bytes")
+        print("=" * 80)
+        
         document = Document.query.get(document_id)
         if not document:
-            print(f"Document with id {document_id} not found.")
+            print(f"❌ Document with id {document_id} not found.")
             return
 
         temp_dir = None
         try:
-            print(f"Starting direct content processing for document_id: {document_id}")
+            print(f"🔄 Starting direct content processing for document_id: {document_id}")
             document.status = DocumentStatus.PROCESSING
             db.session.commit()
 
@@ -562,290 +1295,532 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
 
             # Content validation completed
 
-            # --- 3. Extract structured data using LlamaExtract ---
-            print("Initializing LlamaExtract with multimodal mode...")
-            extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
+            # Extract text from parsed documents for fallback
+            document_text = "\n".join([doc.text for doc in parsed_docs])
+            print(f"📄 Extracted {len(document_text)} characters of text for processing")
+
+            # --- 3. Extract structured data using LlamaExtract with timeout handling ---
+            print("🔄 Starting property extraction with timeout protection...")
             
-            config = ExtractConfig(
-                extraction_mode=ExtractMode.MULTIMODAL,
-                extraction_target=ExtractTarget.PER_DOC,
-                high_resolution_mode=True,
-                cite_sources=True,
-                use_reasoning=False,
-                confidence_scores=False,
-                system_prompt="""Extract COMPARABLE PROPERTIES and SUBJECT PROPERTIES from this appraisal document with maximum precision. 
-
-CRITICAL PROPERTY FILTERING:
-- ONLY extract properties that are used for comparison purposes (comparable properties) or the main subject property
-- EXCLUDE individual apartment units, flats, or units within the same building (e.g., "Apartment 710", "Flat 12", "Unit A")
-- EXCLUDE council tax bandings, planning applications, or administrative data
-- EXCLUDE individual rooms, floors, or internal spaces
-- Focus on standalone properties that would be used for valuation comparison
-
-CRITICAL ADDRESS EXTRACTION RULES:
-- Extract the COMPLETE, FULL address exactly as written in the document
-- NEVER use placeholders like '[location not stated]', '[comparable, local]', or '[address not fully specified]'
-- Look for the actual street name, house name/number, town, city, and postcode
-- Example format: 'Hill House, Arkeseden, Saffron Walden, CB11 4EX'
-- If address spans multiple lines in a table, combine all parts into one complete address
-
-PROPERTY EXTRACTION REQUIREMENTS:
-- Extract ONLY comparable properties and subject properties with complete addresses
-- For each property extract: complete address, type, size in sq ft, bedrooms, bathrooms, price, transaction date
-- If bedroom/bathroom counts are missing, look for patterns like '6 Bed', '3 Bath', '5-bed', '4 bathroom'
-- Extract exact numerical values for prices, sizes, and dates
-- Preserve all amenities and features mentioned
-
-TABLE PROCESSING:
-- Process each table row as a separate property ONLY if it represents a standalone comparable property
-- Skip rows that contain apartment numbers, unit numbers, or individual units within buildings
-- Read address information from the leftmost 'Address' column completely
-- Do not interpret table structure as part of the address content
-- Extract the literal text content, not table metadata"""
-            )
+            # Add timeout and error handling for LlamaExtract
+            import signal
             
-            print("Starting property extraction...")
+            def timeout_handler(signum, frame):
+                raise TimeoutError("LlamaExtract job timed out after 5 minutes")
+            
+            # Set timeout to 5 minutes (300 seconds)
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(300)
             
             try:
-                result = extractor.extract(ENHANCED_APPRAISAL_JSON_SCHEMA, config, temp_file_path)
-                extracted_data = result.data
-            except AttributeError as e:
-                print(f"Direct extract method not available: {e}")
-                print("Falling back to agent-based approach...")
+                # Environment validation and debugging
+                print("🔍 LlamaExtract Configuration Check:")
+                print(f"   API Key present: {'✅' if os.environ.get('LLAMA_CLOUD_API_KEY') else '❌'}")
+                print(f"   File path: {temp_file_path}")
+                print(f"   File exists: {'✅' if os.path.exists(temp_file_path) else '❌'}")
+                print(f"   File size: {os.path.getsize(temp_file_path) if os.path.exists(temp_file_path) else 'N/A'} bytes")
                 
-                agent_name = "official-solosway-extraction"
-                try:
-                    agent = extractor.get_agent(name=agent_name)
-                    print(f"Using existing agent: {agent_name}")
-                except Exception:
-                    agent = extractor.create_agent(
-                        name=agent_name,
-                        data_schema=ENHANCED_APPRAISAL_JSON_SCHEMA,
-                        config=config
+                # Check API accessibility
+                api_accessible = _check_llamaextract_api()
+                print(f"   API accessible: {'✅' if api_accessible else '❌'}")
+                
+                if not api_accessible:
+                    print("⚠️ LlamaExtract API not accessible, using fallback immediately")
+                    signal.alarm(0)  # Cancel the alarm
+                    extracted_data = _fallback_text_extraction(document_text, original_filename)
+                else:
+                    print("Initializing LlamaExtract with multimodal mode...")
+                    extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
+                    
+                    # Use the correct pattern from documentation
+                    config = ExtractConfig(
+                        extraction_mode=ExtractMode.MULTIMODAL,
+                        extraction_target=ExtractTarget.PER_DOC,
+                        high_resolution_mode=True,
+                        cite_sources=True,
+                        use_reasoning=False,
+                        confidence_scores=False,
                     )
-                    print(f"Created new enhanced agent: {agent_name}")
+                    
+                    agent_name = f"advanced-pipeline-extraction"
+                    
+                    try:
+                        # Step 1: Try to get existing agent first (most efficient)
+                        print(f"🔍 Looking for existing agent: {agent_name}")
+                        agent = extractor.get_agent(name=agent_name)
+                        print(f"✅ Found existing agent: {agent_name}")
+                        
+                    except Exception as get_error:
+                        print(f"⚠️ Agent '{agent_name}' not found: {get_error}")
+                        print(f"🔄 Creating new agent: {agent_name}")
+                        
+                        try:
+                            # Step 2: Create new agent with schema-based name
+                            agent = extractor.create_agent(
+                                name=agent_name,
+                                data_schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA,
+                                config=config
+                            )
+                            print(f"✅ Successfully created new agent: {agent_name}")
+                            
+                        except Exception as create_error:
+                            print(f"❌ Failed to create agent '{agent_name}': {create_error}")
+                            print("🔄 Falling back to direct extraction...")
+                            
+                            # Step 3: Fallback to direct extraction
+                            try:
+                                result = extractor.extract_from_file(
+                                    file_path=temp_file_path,
+                                    schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA
+                                )
+                                extracted_data = result.data
+                                print("✅ Direct extraction completed successfully")
+                                
+                                # Skip agent extraction and continue
+                                signal.alarm(0)
+                                # Continue to agent extraction
+                                
+                            except Exception as direct_error:
+                                print(f"❌ Direct extraction also failed: {direct_error}")
+                                print("🔄 Using text fallback...")
+                                extracted_data = _fallback_text_extraction(document_text, original_filename)
+                                signal.alarm(0)
+                                # Continue to agent extraction
+                    
+                    # Step 4: Use the agent (either existing or newly created)
+                    try:
+                        print(f"🔄 Using agent extraction with: {agent_name}")
+                        result = agent.extract(temp_file_path)
+                        extracted_data = result.data
+                        print("✅ Agent extraction completed successfully")
+                        
+                    except Exception as agent_error:
+                        print(f"❌ Agent extraction failed: {agent_error}")
+                        print("🔄 Falling back to direct extraction...")
+                        
+                        try:
+                            result = extractor.extract_from_file(
+                                file_path=temp_file_path,
+                                schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA
+                            )
+                            extracted_data = result.data
+                            print("✅ Direct extraction completed successfully")
+                            
+                        except Exception as direct_error:
+                            print(f"❌ Direct extraction also failed: {direct_error}")
+                            print("🔄 Using text fallback...")
+                            extracted_data = _fallback_text_extraction(document_text, original_filename)
+                    
+                            # Cancel the alarm
+                            signal.alarm(0)
                 
-                result = agent.extract(temp_file_path)
-                extracted_data = result.data
+            except Exception as e:
+                print(f"❌ LlamaExtract failed: {e}")
+                signal.alarm(0)  # Cancel the alarm
+                # Fallback to text-based extraction
+                extracted_data = _fallback_text_extraction(document_text, original_filename)
+                
+            except TimeoutError:
+                print("❌ LlamaExtract job timed out after 5 minutes")
+                signal.alarm(0)  # Cancel the alarm
+                # Fallback to text-based extraction
+                extracted_data = _fallback_text_extraction(document_text, original_filename)
+                
+            except AttributeError as e:
+                print(f"❌ Direct extract method not available: {e}")
+                signal.alarm(0)  # Cancel the alarm
+                print("🔄 Falling back to agent-based approach...")
+                
+                try:
+                    agent_name = "advanced-pipeline-extraction"
+                    agent = extractor.get_agent(name=agent_name)
+                    print(f"✅ Using existing Velora extraction agent: {agent_name}")
+                    
+                    # Set timeout for agent extraction too
+                    signal.alarm(300)
+                    result = agent.extract(temp_file_path)
+                    extracted_data = result.data
+                    signal.alarm(0)
+                    print("✅ Agent extraction completed successfully")
+                    
+                except Exception as agent_error:
+                    print(f"❌ Agent extraction failed: {agent_error}")
+                    signal.alarm(0)  # Cancel the alarm
+                    # Fallback to text-based extraction
+                    extracted_data = _fallback_text_extraction(document_text, original_filename)
+                    
+            except Exception as e:
+                print(f"❌ LlamaExtract failed: {e}")
+                signal.alarm(0)  # Cancel the alarm
+                # Fallback to text-based extraction
+                extracted_data = _fallback_text_extraction(document_text, original_filename)
 
             # Data extraction completed successfully
 
-            # Parse extracted data with enhanced structure
+            # Parse extracted data from Velora agent
             if isinstance(extracted_data, dict):
-                all_properties = extracted_data.get('all_properties', [])
+                # Handle the new subject_property schema format
+                if 'data' in extracted_data:
+                    # Match llama extract output
+                    subject_property = extracted_data['data'].get('subject_property')
+                else:
+                    # Match direct format
+                    subject_property = extracted_data.get('subject_property')
+                
+                if subject_property:
+                    # Clean the data before processing
+                    subject_property = clean_extracted_property(subject_property)
+                    subject_properties = [subject_property]
+                    
+                    print(f"✅ Successfully extracted and cleaned subject property")
+                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
+                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
+                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
+                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
+                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
+                else:
+                    print("   ❌ No subject property found in extraction results")
+                    subject_properties = []
+                
+                # Clean up the extracted address
+                if subject_properties and subject_properties[0]:
+                    raw_address = subject_properties[0].get('property_address', '')
+                    if raw_address:
+                        # Remove apartment numbers from the beginning
+                        import re
+                        # Pattern to match apartment numbers at the start
+                        apartment_pattern = r'^[\d\s,]+(?=[A-Za-z])'
+                        cleaned_address = re.sub(apartment_pattern, '', raw_address).strip()
+                        # Remove leading comma if present
+                        cleaned_address = re.sub(r'^,\s*', '', cleaned_address).strip()
+                        
+                        print(f"🧹 Address cleaning:")
+                        print(f"   Original: {raw_address}")
+                        print(f"   Cleaned:  {cleaned_address}")
+                        
+                        # Update the property with cleaned address
+                        subject_properties[0]['property_address'] = cleaned_address
+                
+                        print(f"📄 Extraction Results:")
+                        print(f"   Subject property: {subject_property}")
+                if subject_property:
+                    print(f"   ✅ Successfully extracted subject property")
+                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
+                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
+                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
+                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
+                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
+                else:
+                    print("   ❌ No subject property found in extraction results")
             else:
-                all_properties = getattr(extracted_data, 'all_properties', [])
+                # Handle object-style response
+                subject_property = getattr(extracted_data, 'subject_property', None)
+                
+                if subject_property:
+                    # Clean the data before processing
+                    subject_property = clean_extracted_property(subject_property)
+                    subject_properties = [subject_property]
+                    
+                    print(f"✅ Successfully extracted and cleaned subject property")
+                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
+                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
+                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
+                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
+                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
+                else:
+                    print("   ❌ No subject property found in extraction results")
+                    subject_properties = []
             
-            print(f"Successfully extracted data for {len(all_properties)} properties.")
-            print(f"Successfully extracted {len(all_properties)} properties from document.")
+            print(f"Successfully extracted data for {len(subject_properties)} properties.")
+            print(f"Successfully extracted {len(subject_properties)} properties from document.")
+            
+            # ========================================================================
+            # PHASE 2: PROPERTY LINKING
+            # ========================================================================
+            
+            print("=" * 80)
+            print("🔗 STARTING PROPERTY LINKING PHASE")
+            print("=" * 80)
+            
+            from .services.address_service import AddressNormalizationService
+            import asyncio
+            
+            address_service = AddressNormalizationService()
+            
+            # Step 1: Determine which address to use (Priority: Filename > Content)
+            property_address = None
+            address_source = None
+            subject_property = subject_properties[0] if subject_properties else None
+            
+            # Priority 1: Try to use filename address if available
+            try:
+                if document.metadata_json:
+                    metadata = json.loads(document.metadata_json)
+                    filename_address = metadata.get('filename_address')
+                    
+                    if filename_address:
+                        property_address = filename_address
+                        address_source = 'filename'
+                        print(f"🎯 Using address from FILENAME: '{property_address}'")
+                        print(f"   Confidence: {metadata.get('filename_address_confidence', 0.0):.2f}")
+            except Exception as e:
+                print(f"⚠️  Error parsing document metadata: {e}")
+            
+            # Priority 2: Use extracted subject property address if filename didn't have one
+            if not property_address and subject_property:
+                property_address = subject_property.get('property_address')
+                if property_address:
+                    address_source = 'extraction'
+                    print(f"🎯 Using address from CONTENT EXTRACTION: '{property_address}'")
+            
+            # Step 2: Process address and link to property node
+            if property_address:
+                print(f"📍 Processing property linking for address: '{property_address}'")
+                print(f"   Address source: {address_source}")
+                
+                try:
+                    # Normalize address and compute hash
+                    print(f"🔄 Normalizing address and geocoding...")
+                    
+                    normalized = address_service.normalize_address(property_address)
+                    address_hash = address_service.compute_address_hash(normalized)
+                    geocoding_result = address_service.geocode_address(property_address)
+                    
+                    address_data = {
+                        'original_address': property_address,
+                        'normalized_address': normalized,
+                        'address_hash': address_hash,
+                        'latitude': geocoding_result.get('latitude'),
+                        'longitude': geocoding_result.get('longitude'),
+                        'formatted_address': geocoding_result.get('formatted_address'),
+                        'geocoding_status': geocoding_result.get('status'),
+                        'geocoding_confidence': geocoding_result.get('confidence'),
+                        'geocoder_used': geocoding_result.get('geocoder', 'none')
+                    }
+                    
+                    print(f"✅ Address normalized:")
+                    print(f"   Original: {address_data['original_address']}")
+                    print(f"   Normalized: {address_data['normalized_address']}")
+                    print(f"   Hash: {address_data['address_hash'][:16]}...")
+                    print(f"   Geocoded: {address_data.get('formatted_address', 'N/A')}")
+                    print(f"   Coordinates: ({address_data.get('latitude', 'N/A')}, {address_data.get('longitude', 'N/A')})")
+                    
+                    # Create property hub using new Property Hub Service
+                    print(f"🔄 Creating property hub with new service...")
+                    try:
+                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+                        property_hub_service = SupabasePropertyHubService()
+                        
+                        # Validate required data before processing
+                        if not address_data.get('original_address'):
+                            print("❌ No address data available for property creation")
+                            print("   Document will be processed without property association")
+                            return
+                        
+                        if not business_id:
+                            print("❌ No business ID provided for property creation")
+                            print("   Document will be processed without property association")
+                            return
+                        
+                        # Prepare extracted data for the service
+                        extracted_data = subject_properties[0] if subject_properties else {}
+                        
+                        print(f"   📍 Address: {address_data.get('original_address', 'N/A')}")
+                        print(f"   🏢 Business: {business_id}")
+                        print(f"   📄 Document: {document_id}")
+                        print(f"   🏠 Extracted data: {len(extracted_data)} fields")
+                        
+                        # Create complete property hub with enhanced error handling
+                        hub_result = property_hub_service.create_property_with_relationships(
+                            address_data=address_data,
+                            document_id=str(document_id),
+                            business_id=business_id,
+                            extracted_data=extracted_data
+                        )
+                        
+                        if hub_result['success']:
+                            print(f"✅ Property hub created successfully: {hub_result['property_id']}")
+                            print(f"   Property: {hub_result.get('property', {}).get('id', 'N/A')}")
+                            print(f"   Relationship: {hub_result.get('relationship', {}).get('id', 'N/A')}")
+                            print(f"   Property Details: {'✅' if hub_result.get('property_details') else '❌'}")
+                            print(f"   Comparable Data: {'✅' if hub_result.get('comparable_data') else '❌'}")
+                        else:
+                            error_msg = hub_result.get('error', 'Unknown error')
+                            print(f"❌ Failed to create property hub: {error_msg}")
+                            
+                            # Log detailed error information
+                            if 'duplicate key' in str(error_msg).lower():
+                                print("   💡 This appears to be a duplicate property - this is expected behavior")
+                                print("   📝 Document will be processed without creating new property")
+                            elif 'foreign key' in str(error_msg).lower():
+                                print("   💡 This appears to be a foreign key constraint issue")
+                                print("   📝 Check if document exists in Supabase")
+                            else:
+                                print("   💡 Unknown error - check logs for details")
+                            
+                            # Don't return here - continue processing without property association
+                            print("   ⚠️  Continuing document processing without property association")
+                            
+                    except ImportError as e:
+                        print(f"❌ Import error for Property Hub Service: {e}")
+                        print("   📝 Check if supabase_property_hub_service.py exists and is properly configured")
+                        print("   ⚠️  Continuing document processing without property association")
+                    except Exception as e:
+                        print(f"❌ Unexpected error creating property hub: {e}")
+                        print(f"   Error type: {type(e).__name__}")
+                        import traceback
+                        traceback.print_exc()
+                        print("   ⚠️  Continuing document processing without property association")
+                    
+                    # Only show success message if property hub was created successfully
+                    if 'hub_result' in locals() and hub_result.get('success'):
+                        print(f"✅ Document linked to property successfully")
+                        print(f"   Property ID: {hub_result['property_id']}")
+                        print(f"   Property Address: {address_data['formatted_address']}")
+                        print(f"   Relationship created: {hub_result['relationship']['id']}")
+                    else:
+                        print(f"⚠️  Document processed without property association")
+                        print(f"   Address: {address_data.get('formatted_address', 'N/A')}")
+                        print(f"   Reason: Property hub creation failed or skipped")
+                    
+                except Exception as e:
+                    print(f"❌ Error in property linking: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            else:
+                print("⚠️  No property address found - skipping property linking")
+                print("   Document will be processed without property association")
+            
+                print("=" * 80)
+                print("🔄 Property linking completed")
+                print("=" * 80)
 
-            # --- 4. Image processing (disabled) ---
-            print("Image processing disabled (properties only)")
-            property_uuids = [uuid.uuid4() for _ in all_properties]
+            # --- 4. Image processing (enabled) ---
+            print("🖼️ Starting property image extraction...")
+            
+            try:
+                image_extraction_result = extract_images_from_document(temp_file_path, document_id, business_id)
+                
+                if image_extraction_result['image_count'] > 0:
+                    print(f"✅ Extracted {image_extraction_result['image_count']} property images")
+                    
+                    # Store images in property data
+                    for prop in subject_properties:
+                        prop['property_images'] = image_extraction_result['images']
+                        prop['image_count'] = image_extraction_result['image_count']
+                        prop['primary_image_url'] = image_extraction_result['primary_image_url']
+                        prop['image_metadata'] = {
+                            'extraction_method': 'llamaparse',
+                            'total_images': image_extraction_result['image_count'],
+                            'extraction_timestamp': datetime.utcnow().isoformat()
+                        }
+                else:
+                    print("ℹ️ No images found in document")
+                    # Set default empty values
+                    for prop in subject_properties:
+                        prop['property_images'] = []
+                        prop['image_count'] = 0
+                        prop['primary_image_url'] = None
+                        prop['image_metadata'] = {}
+                        
+            except Exception as e:
+                print(f"⚠️ Image extraction failed: {e}")
+                # Continue without images - set default empty values
+                for prop in subject_properties:
+                    prop['property_images'] = []
+                    prop['image_count'] = 0
+                    prop['primary_image_url'] = None
+                    prop['image_metadata'] = {}
+            
+            property_uuids = [uuid.uuid4() for _ in subject_properties]
             property_image_mapping = {}
             unassigned_image_paths = []
 
-            # --- 5. Store structured data in AstraDB tabular database ---
-            print("Connecting to AstraDB tabular database...")
-            session = get_astra_db_session()
-            keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
-            table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
-            
-            session.set_keyspace(keyspace)
-            
-            # Enhanced insert query with geocoding fields
-            insert_query = f"""
-            INSERT INTO {table_name} (
-                id, source_document_id, business_id, property_address, property_type, 
-                size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
-                listed_building_grade, transaction_date, sold_date, rented_date, leased_date, sold_price, asking_price, 
-                rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
-                other_amenities, lease_details, days_on_market, notes,
-                latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            prepared_insert = session.prepare(insert_query)
+            # --- 5. Store structured data in Supabase ---
+            print("Storing structured data in Supabase...")
             
             # Get geocoding results for all properties (reuse from parallel processing)
-            addresses = [prop.get('property_address', '') for prop in all_properties]
+            addresses = [prop.get('property_address', '') for prop in subject_properties]
             geocoding_results = geocode_address_parallel(addresses, max_workers=3)
             geocoding_map = {addr: result for addr, result in geocoding_results}
             
-            for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
-                try:
-                    # Get S3 image paths for this property
-                    property_s3_paths = property_image_mapping.get(str(property_uuid), [])
-                    
-                    # Get geocoding data for this property
-                    address = prop.get('property_address', '')
-                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
-                    
-                    session.execute(prepared_insert, (
-                        property_uuid,  # Use the generated UUID
-                        document_id,
+            # Add debug logging before Supabase storage
+            print(f"🔍 DEBUG: About to store in Supabase:")
+            print(f"   subject_properties count: {len(subject_properties)}")
+            if subject_properties:
+                print(f"   First property address: {subject_properties[0].get('property_address', 'N/A')}")
+                print(f"   First property type: {subject_properties[0].get('property_type', 'N/A')}")
+            print(f"   property_uuids: {property_uuids}")
+            print(f"   business_id: {business_id}")
+            print(f"   document_id: {document_id}")
+            
+            # Store in Supabase - use correct key for the storage function
+            supabase_success = store_extracted_properties_in_supabase(
+                {"subject_property": subject_properties[0] if subject_properties else None}, 
                         business_id,
-                        prop.get('property_address'),
-                        prop.get('property_type'),
-                        prop.get('size_sqft'),
-                        prop.get('size_unit'),
-                        prop.get('number_bedrooms'),
-                        prop.get('number_bathrooms'),
-                        prop.get('tenure'),
-                        prop.get('listed_building_grade'),
-                        prop.get('transaction_date'),
-                        prop.get('sold_date'),        # NEW
-                        prop.get('rented_date'),      # NEW
-                        prop.get('leased_date'),      # NEW
-                        prop.get('sold_price'),
-                        prop.get('asking_price'),
-                        prop.get('rent_pcm'),
-                        prop.get('yield_percentage'),
-                        prop.get('price_per_sqft'),
-                        prop.get('epc_rating'),
-                        prop.get('condition'),
-                        prop.get('other_amenities'),
-                        prop.get('lease_details'),
-                        prop.get('days_on_market'),
-                        prop.get('notes'),
-                        # Geocoding fields
-                        geocoding_result.get('latitude'),
-                        geocoding_result.get('longitude'),
-                        geocoding_result.get('geocoded_address'),
-                        geocoding_result.get('confidence'),
-                        geocoding_result.get('status')
-                    ))
-                    print(f"Property {i} (UUID: {property_uuid}) stored successfully in AstraDB with {len(property_s3_paths)} images.")
-                except Exception as e:
-                    print(f"Error storing property {i} in AstraDB: {e}")
-                    
-            print(f"Stored {len(all_properties)} properties in AstraDB tabular collection with image references.")
-            print(f"Property UUIDs captured: {[str(uuid) for uuid in property_uuids]}")
+                document_id, 
+                property_uuids, 
+                geocoding_map
+            )
+            
+            print(f"📊 Storage Results:")
+            print(f"   Supabase: {'✅ Success' if supabase_success else '❌ Failed'}")
+            print(f"   Subject Property UUIDs captured: {[str(uuid) for uuid in property_uuids]}")
 
-            # --- 6. PostgreSQL Storage with Geocoding ---
-            print("Storing properties in PostgreSQL with geocoding...")
-            from .models import ExtractedProperty
+
+            # --- 7. Vector Processing with Supabase pgvector ---
+            print("🔄 Starting document vector embedding...")
             
-            # Geocode all addresses in parallel for much faster processing
-            print("🚀 Geocoding addresses in parallel...")
-            addresses = [prop.get('property_address', '') for prop in all_properties]
-            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
-            
-            # Create a mapping of address to geocoding result
-            geocoding_map = {addr: result for addr, result in geocoding_results}
-            
-            for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
-                try:
-                    # Get the geocoding result from our parallel processing
-                    address = prop.get('property_address', '')
-                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
-                    
-                    # Create property document for embedding
-                    property_document = create_property_document(prop, geocoding_result)
-                    
-                    # Create ExtractedProperty record
-                    extracted_property = ExtractedProperty(
-                        id=property_uuid,
-                        property_address=prop.get('property_address'),
-                        property_type=prop.get('property_type'),
-                        number_bedrooms=prop.get('number_bedrooms'),
-                        number_bathrooms=prop.get('number_bathrooms'),
-                        size_sqft=prop.get('size_sqft'),
-                        size_unit=prop.get('size_unit'),
-                        asking_price=prop.get('asking_price'),
-                        sold_price=prop.get('sold_price'),
-                        price_per_sqft=prop.get('price_per_sqft'),
-                        rent_pcm=prop.get('rent_pcm'),
-                        yield_percentage=prop.get('yield_percentage'),
-                        condition=prop.get('condition'),
-                        tenure=prop.get('tenure'),
-                        lease_details=prop.get('lease_details'),
-                        days_on_market=prop.get('days_on_market'),
-                        transaction_date=prop.get('transaction_date'),
-                        sold_date=prop.get('sold_date'),        # NEW
-                        rented_date=prop.get('rented_date'),    # NEW
-                        leased_date=prop.get('leased_date'),    # NEW
-                        epc_rating=prop.get('epc_rating'),
-                        listed_building_grade=prop.get('listed_building_grade'),
-                        other_amenities=prop.get('other_amenities'),
-                        notes=prop.get('notes'),
-                        source_document_id=document_id,
-                        business_id=business_id,
-                        # Geocoding fields
-                        latitude=geocoding_result.get('latitude'),
-                        longitude=geocoding_result.get('longitude'),
-                        geocoded_address=geocoding_result.get('geocoded_address'),
-                        geocoding_confidence=geocoding_result.get('confidence'),
-                        geocoding_status=geocoding_result.get('status')
-                    )
-                    
-                    db.session.add(extracted_property)
-                    print(f"Property {i} (UUID: {property_uuid}) added to PostgreSQL with geocoding: {geocoding_result.get('status')}")
-                    
-                except Exception as e:
-                    print(f"Error storing property {i} in PostgreSQL: {e}")
-                    continue
-            
-            # Commit all PostgreSQL changes
             try:
-                db.session.commit()
-                print(f"Successfully committed {len(all_properties)} properties to PostgreSQL")
-            except Exception as e:
-                print(f"Error committing to PostgreSQL: {e}")
-                db.session.rollback()
-
-            # --- 7. Vector Processing with Property UUID Linking ---
-            print("Initializing vector processing...")
-            print(f"Vector API Endpoint: {os.environ['ASTRA_DB_VECTOR_API_ENDPOINT']}")
-
-            # Set up the embedding model to match 1536 dimensions
-            embed_model = OpenAIEmbedding(
-                model="text-embedding-ada-002",
-                api_key=os.environ["OPENAI_API_KEY"],
-            )
-            print("Using embedding model: text-embedding-ada-002")
-            
-            # Enhance document metadata with property UUIDs
-            print("Enhancing document metadata with property relationships...")
-            for doc in parsed_docs:
-                # Add comprehensive metadata linking to extracted properties
-                doc.metadata.update({
-                    "business_id": str(business_id),
-                    "document_id": str(document_id),
-                    "related_property_uuids": ",".join([str(uuid) for uuid in property_uuids]),
-                    "property_count": len(all_properties),
-                    "document_type": "appraisal_report",
-                    "property_addresses": ",".join([prop.get('property_address', '') for prop in all_properties])
-                })
-            
-            print(f"Enhanced metadata for {len(parsed_docs)} document chunks with {len(property_uuids)} property UUIDs")
-            
-            astra_db_store = AstraDBVectorStore(
-                token=os.environ["ASTRA_DB_VECTOR_APPLICATION_TOKEN"],  
-                api_endpoint=os.environ["ASTRA_DB_VECTOR_API_ENDPOINT"], 
-                collection_name=os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"], 
-                embedding_dimension=1536  
-            )
-            print("VectorDB initialised successfully")
-            
-            storage_context = StorageContext.from_defaults(vector_store=astra_db_store)
-            
-            print(f"About to process {len(parsed_docs)} enhanced documents for embedding...")
-            index = VectorStoreIndex.from_documents(
-                parsed_docs,
-                storage_context=storage_context,
-                embed_model=embed_model
-            )
-            print("Document chunked, embedded, and stored in vector database with enhanced property metadata.")
-            print(f"Vector store index created successfully with property UUID linking")
-
-            # --- 8. Property Vector Store Processing (Separate AstraDB Instance) ---
-            print("Processing individual properties for property vector store...")
-            try:
-                property_vector_store = get_property_vector_store(business_id)
-                property_storage_context = StorageContext.from_defaults(vector_store=property_vector_store)
+                from .services.vector_service import SupabaseVectorService
+                vector_service = SupabaseVectorService()
                 
-                property_documents = []
-                for i, (prop, property_uuid) in enumerate(zip(all_properties, property_uuids), 1):
+                # Process document chunks with minimal logging
+                document_vectors_stored = 0
+                for i, doc in enumerate(parsed_docs):
+                    try:
+                        # Chunk the document text
+                        chunks = vector_service.chunk_text(doc.text, chunk_size=512, overlap=50)
+                        
+                        # Prepare metadata
+                        metadata = {
+                            'business_id': business_id,
+                            'document_id': str(document_id),
+                            'property_id': str(property_uuids[0]) if property_uuids else None,
+                            'classification_type': 'valuation_report',  # Default for now
+                            'address_hash': None  # Will be set if available
+                        }
+                        
+                        # Store document vectors
+                        success = vector_service.store_document_vectors(
+                            str(document_id), 
+                            chunks, 
+                            metadata
+                        )
+                        
+                        if success:
+                            document_vectors_stored += len(chunks)
+                            
+                    except Exception as e:
+                        continue
+                
+                print(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
+                
+            except Exception as e:
+                print(f"❌ Vector service failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print("⚠️ Continuing without vector storage...")
+
+            # --- 8. Property Vector Store Processing with Supabase ---
+            print("🔄 Starting property vector embedding...")
+            try:
+                from .services.vector_service import SupabaseVectorService
+                vector_service = SupabaseVectorService()
+                
+                property_vectors_stored = 0
+                for i, (prop, property_uuid) in enumerate(zip(subject_properties, property_uuids), 1):
                     try:
                         # Use the already computed geocoding result from parallel processing
                         address = prop.get('property_address', '')
@@ -854,84 +1829,60 @@ TABLE PROCESSING:
                         # Create property document
                         property_document = create_property_document(prop, geocoding_result)
                         
-                        # Create LlamaIndex document
-                        from llama_index.core import Document as LlamaDocument
-                        property_doc = LlamaDocument(
-                            text=property_document,
-                            metadata={
-                                "property_uuid": str(property_uuid),
-                                "property_address": prop.get('property_address', ''),
-                                "property_type": prop.get('property_type', ''),
-                                "business_id": business_id,
-                                "source_document_id": document_id,
-                                "latitude": geocoding_result.get('latitude'),
-                                "longitude": geocoding_result.get('longitude'),
-                                "geocoded_address": geocoding_result.get('geocoded_address'),
-                                "geocoding_confidence": geocoding_result.get('confidence'),
-                                "geocoding_status": geocoding_result.get('status'),
-                                "asking_price": prop.get('asking_price'),
-                                "sold_price": prop.get('sold_price'),
-                                "size_sqft": prop.get('size_sqft'),
-                                "number_bedrooms": prop.get('number_bedrooms'),
-                                "number_bathrooms": prop.get('number_bathrooms'),
-                                "transaction_date": prop.get('transaction_date'),
-                                "sold_date": prop.get('sold_date'),        # NEW
-                                "rented_date": prop.get('rented_date'),    # NEW
-                                "leased_date": prop.get('leased_date')     # NEW
-                            }
+                        # Prepare metadata for property vector
+                        metadata = {
+                            'business_id': business_id,
+                            'property_id': str(property_uuid),
+                            'property_address': prop.get('property_address', ''),
+                            'address_hash': None,  # Will be computed if needed
+                            'source_document_id': str(document_id),
+                            'latitude': geocoding_result.get('latitude'),
+                            'longitude': geocoding_result.get('longitude'),
+                            'geocoded_address': geocoding_result.get('geocoded_address'),
+                            'geocoding_confidence': geocoding_result.get('confidence'),
+                            'geocoding_status': geocoding_result.get('status'),
+                            'asking_price': prop.get('asking_price'),
+                            'sold_price': prop.get('sold_price'),
+                            'rent_pcm': prop.get('rent_pcm'),
+                            'size_sqft': prop.get('size_sqft'),
+                            'number_bedrooms': prop.get('number_bedrooms'),
+                            'number_bathrooms': prop.get('number_bathrooms'),
+                            'transaction_date': prop.get('transaction_date'),
+                            'sold_date': prop.get('sold_date'),
+                            'rented_date': prop.get('rented_date'),
+                            'leased_date': prop.get('leased_date')
+                        }
+                        
+                        # Store property vectors
+                        success = vector_service.store_property_vectors(
+                            str(property_uuid),
+                            property_document,
+                            metadata
                         )
-                        property_documents.append(property_doc)
-                        print(f"Property {i} prepared for vector embedding")
+                        
+                        if success:
+                            property_vectors_stored += 1
                         
                     except Exception as e:
-                        print(f"Error preparing property {i} for vector store: {e}")
                         continue
                 
-                if property_documents:
-                    print(f"Creating property vector store with {len(property_documents)} properties...")
-                    print("⚠️  This may take a few minutes for large property sets...")
-                    
-                    # Process properties in smaller batches to avoid timeouts
-                    batch_size = 5
-                    total_batches = (len(property_documents) + batch_size - 1) // batch_size
-                    
-                    for batch_num in range(total_batches):
-                        start_idx = batch_num * batch_size
-                        end_idx = min(start_idx + batch_size, len(property_documents))
-                        batch_docs = property_documents[start_idx:end_idx]
-                        
-                        print(f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_docs)} properties)...")
-                        
-                        try:
-                            # Create property vector index for this batch
-                            property_index = VectorStoreIndex.from_documents(
-                                batch_docs,
-                                storage_context=property_storage_context,
-                                embed_model=embed_model
-                            )
-                            print(f"✅ Batch {batch_num + 1} processed successfully")
-                            
-                            # Small delay between batches to avoid overwhelming the API
-                            if batch_num < total_batches - 1:
-                                time.sleep(2)
-                                
-                        except Exception as batch_error:
-                            print(f"❌ Error processing batch {batch_num + 1}: {batch_error}")
-                            continue
-                    
-                    print(f"🎉 Property vector store processing completed!")
-                else:
-                    print("No properties were prepared for vector storage")
+                print(f"✅ Property vector embedding completed: {property_vectors_stored}/{len(subject_properties)} properties stored")
                     
             except Exception as e:
-                print(f"Error creating property vector store: {e}")
-                print(f"Error details: {type(e).__name__}: {str(e)}")
+                print(f"❌ Property vector service failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print("⚠️ Continuing without property vector storage...")
 
             # Check if document still exists before updating status
             document = Document.query.get(document_id)
             if document:
                 document.status = DocumentStatus.COMPLETED
                 db.session.commit()
+                
+                # Sync completion to Supabase
+                sync_document_to_supabase(document_id, 'completed')
+                
                 print(f"Document processing completed for document_id: {document_id}")
             else:
                 print(f"Document {document_id} no longer exists - processing completed but document was deleted")
@@ -957,11 +1908,59 @@ TABLE PROCESSING:
                 print("Cleanup of temporary files completed.") 
 
 @shared_task(bind=True)
+def process_document_simple(self, document_id, file_content, original_filename, business_id):
+    """
+    Simplified document processing that focuses on basic functionality
+    without heavy AI processing to avoid memory issues
+    """
+    from . import create_app
+    from .models import db, Document, DocumentStatus
+    
+    app = create_app()
+    
+    with app.app_context():
+        document = Document.query.get(document_id)
+        if not document:
+            print(f"Document with id {document_id} not found.")
+            return
+
+        try:
+            print(f"Starting simplified processing for document_id: {document_id}")
+            document.status = DocumentStatus.PROCESSING
+            db.session.commit()
+            
+            # Basic processing - just store the file info and mark as completed
+            print(f"Processing document: {original_filename}")
+            print(f"File size: {len(file_content)} bytes")
+            print(f"Business ID: {business_id}")
+            
+            # Simulate some processing time
+            import time
+            time.sleep(2)
+            
+            # Update document status to completed
+            document.status = DocumentStatus.COMPLETED
+            db.session.commit()
+            
+            print(f"✅ Simplified document processing completed for document_id: {document_id}")
+            return "Document processed successfully"
+            
+        except Exception as e:
+            print(f"❌ Error in simplified document processing: {e}")
+            try:
+                document.status = DocumentStatus.FAILED
+                db.session.commit()
+            except:
+                pass
+            return f"Error: {e}"
+
+@shared_task(bind=True)
 def process_document_task(self, document_id, file_content, original_filename, business_id):
     """
-    Legacy wrapper function that calls the new dual-store pipeline
+    Main document processing task that starts with classification
     """
-    return process_document_with_dual_stores.run(document_id, file_content, original_filename, business_id)
+    return process_document_classification.delay(document_id, file_content, original_filename, business_id)
+
 
 def get_s3_client():
     """Get S3 client with AWS credentials"""
@@ -972,80 +1971,85 @@ def get_s3_client():
         region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
     )
 
-def store_extracted_properties_in_astradb_tabular(extracted_data, business_id, document_id, property_uuids):
-    """Store extracted properties in AstraDB tabular database"""
+# AstraDB tabular storage function removed - using Supabase only
+
+def store_extracted_properties_in_supabase(extracted_data, business_id, document_id, property_uuids, geocoding_map=None):
+    """Store extracted properties using the new Property Hub Service"""
     try:
-        session = get_astra_db_session()
-        keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
-        table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
+        from .services.supabase_property_hub_service import SupabasePropertyHubService
+        property_hub_service = SupabasePropertyHubService()
         
-        session.set_keyspace(keyspace)
+        # Handle both old and new schema formats
+        properties = []
+        if extracted_data:
+            if "subject_property" in extracted_data:
+                # New Velora agent format
+                subject_prop = extracted_data["subject_property"]
+                if subject_prop:
+                    properties = [subject_prop]
+                    logger.info("✅ Found subject property in new Velora format")
+            elif "subject_properties" in extracted_data:
+                # Transitional format
+                properties = extracted_data["subject_properties"]
+                logger.info("✅ Found properties in subject_properties format")
+            elif "all_properties" in extracted_data:
+                # Legacy format
+                properties = extracted_data["all_properties"]
+                logger.info("✅ Found properties in legacy format")
+            else:
+                logger.warning("❌ No properties found in any format")
+                return True  # Not an error, just no data to store
         
-        # Insert query with geocoding fields
-        insert_query = f"""
-        INSERT INTO {table_name} (
-            id, source_document_id, business_id, property_address, property_type, 
-            size_sqft, size_unit, number_bedrooms, number_bathrooms, tenure, 
-            listed_building_grade, transaction_date, sold_date, rented_date, leased_date, sold_price, asking_price, 
-            rent_pcm, yield_percentage, price_per_sqft, epc_rating, condition, 
-            other_amenities, lease_details, days_on_market, notes,
-            latitude, longitude, geocoded_address, geocoding_confidence, geocoding_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-        prepared_insert = session.prepare(insert_query)
+        if not properties:
+            logger.warning("No valid property records to store")
+            return True
         
-        if extracted_data and extracted_data.get("all_properties"):
-            properties = extracted_data["all_properties"]
-            
-            # Get geocoding results for all properties
-            addresses = [prop.get('property_address', '') for prop in properties]
-            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
-            geocoding_map = {addr: result for addr, result in geocoding_results}
-            
-            for prop, property_uuid in zip(properties, property_uuids):
-                try:
-                    # Get geocoding data for this property
-                    address = prop.get('property_address', '')
-                    geocoding_result = geocoding_map.get(address, {"latitude": None, "longitude": None, "confidence": 0.0, "status": "not_found"})
+        # Use the new property hub service for each property
+        results = []
+        for i, prop in enumerate(properties):
+            try:
+                # Prepare address data from geocoding map
+                address = prop.get('property_address', '')
+                geocoding_result = geocoding_map.get(address, {}) if geocoding_map else {}
+                
+                address_data = {
+                    'original_address': address,
+                    'normalized_address': geocoding_result.get('normalized_address', address),
+                    'address_hash': geocoding_result.get('address_hash', f'hash_{address}'),
+                    'formatted_address': geocoding_result.get('formatted_address', address),
+                    'latitude': geocoding_result.get('latitude'),
+                    'longitude': geocoding_result.get('longitude'),
+                    'geocoding_status': geocoding_result.get('status', 'unknown'),
+                    'geocoding_confidence': geocoding_result.get('confidence', 0.0),
+                    'address_source': 'extraction'
+                }
+                
+                # Create property hub using the service
+                hub_result = property_hub_service.create_property_with_relationships(
+                    address_data=address_data,
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    extracted_data=prop
+                )
+                
+                if hub_result['success']:
+                    results.append(hub_result)
+                    logger.info(f"✅ Property hub {i+1} created: {hub_result['property_id']}")
+                else:
+                    logger.error(f"❌ Failed to create property hub {i+1}: {hub_result.get('error')}")
                     
-                    session.execute(prepared_insert, (
-                        property_uuid,
-                        document_id,
-                        business_id,
-                        prop.get('property_address'),
-                        prop.get('property_type'),
-                        prop.get('size_sqft'),
-                        prop.get('size_unit'),
-                        prop.get('number_bedrooms'),
-                        prop.get('number_bathrooms'),
-                        prop.get('tenure'),
-                        prop.get('listed_building_grade'),
-                        prop.get('transaction_date'),
-                        prop.get('sold_date'),        # NEW
-                        prop.get('rented_date'),      # NEW
-                        prop.get('leased_date'),      # NEW
-                        prop.get('sold_price'),
-                        prop.get('asking_price'),
-                        prop.get('rent_pcm'),
-                        prop.get('yield_percentage'),
-                        prop.get('price_per_sqft'),
-                        prop.get('epc_rating'),
-                        prop.get('condition'),
-                        prop.get('other_amenities'),
-                        prop.get('lease_details'),
-                        prop.get('days_on_market'),
-                        prop.get('notes'),
-                        # Geocoding fields
-                        geocoding_result.get('latitude'),
-                        geocoding_result.get('longitude'),
-                        geocoding_result.get('geocoded_address'),
-                        geocoding_result.get('confidence'),
-                        geocoding_result.get('status')
-                    ))
-                except Exception as e:
-                    logger.error(f"Error storing property in AstraDB tabular: {e}")
-                    
-        logger.info(f"Stored {len(property_uuids)} properties in AstraDB tabular")
+            except Exception as e:
+                logger.error(f"Error processing property {i+1}: {e}")
+                continue
         
+        if results:
+            logger.info(f"✅ Stored {len(results)} property hubs using new service")
+            return True
+        else:
+            logger.error("❌ Failed to store any property hubs")
+            return False
+            
     except Exception as e:
-        logger.error(f"Error in store_extracted_properties_in_astradb_tabular: {e}")
+        logger.error(f"Error in store_extracted_properties_in_supabase: {e}")
+        return False
+

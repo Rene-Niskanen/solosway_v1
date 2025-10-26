@@ -1,4 +1,4 @@
-from ..models import Document, ExtractedProperty, db
+from ..models import Document, db
 from datetime import datetime, timedelta
 from sqlalchemy import func, desc
 import logging
@@ -54,15 +54,28 @@ class AnalyticsService:
             
             # Base queries
             doc_query = Document.query.filter_by(business_id=business_id)
-            prop_query = ExtractedProperty.query.filter_by(business_id=business_id)
             
             if date_filter:
                 doc_query = doc_query.filter(Document.created_at >= date_filter)
-                prop_query = prop_query.filter(ExtractedProperty.extracted_at >= date_filter)
             
             # Basic counts
             doc_count = doc_query.count()
-            prop_count = prop_query.count()
+            
+            # Get Supabase property count
+            try:
+                from supabase import create_client
+                import os
+                
+                supabase = create_client(
+                    os.environ['SUPABASE_URL'],
+                    os.environ['SUPABASE_SERVICE_KEY']
+                )
+                
+                supabase_result = supabase.table('property_details').select('property_id', count='exact').eq('business_id', business_id).execute()
+                prop_count = supabase_result.count if supabase_result.count is not None else 0
+                
+            except Exception as e:
+                prop_count = 0
             
             # Document statistics
             recent_docs = doc_query.order_by(desc(Document.created_at)).limit(5).all()
@@ -74,75 +87,77 @@ class AnalyticsService:
                     Document.status == status
                 ).count()
             
-            # Property statistics
+            # Property statistics from Supabase
             property_stats = {}
+            price_ranges = {}
+            property_type_counts = {}
+            bedroom_distribution = {}
+            geocoding_success_rate = 0
+            recent_properties = 0
             
-            # Average prices
-            avg_sold_price = db.session.query(func.avg(ExtractedProperty.sold_price)).filter(
-                ExtractedProperty.business_id == business_id,
-                ExtractedProperty.sold_price.isnot(None)
-            ).scalar()
-            
-            avg_asking_price = db.session.query(func.avg(ExtractedProperty.asking_price)).filter(
-                ExtractedProperty.business_id == business_id,
-                ExtractedProperty.asking_price.isnot(None)
-            ).scalar()
-            
-            property_stats['average_sold_price'] = float(avg_sold_price) if avg_sold_price else 0
-            property_stats['average_asking_price'] = float(avg_asking_price) if avg_asking_price else 0
-            
-            # Price ranges
-            price_ranges = {
-                'under_100k': prop_query.filter(ExtractedProperty.sold_price < 100000).count(),
-                '100k_to_250k': prop_query.filter(
-                    ExtractedProperty.sold_price >= 100000,
-                    ExtractedProperty.sold_price < 250000
-                ).count(),
-                '250k_to_500k': prop_query.filter(
-                    ExtractedProperty.sold_price >= 250000,
-                    ExtractedProperty.sold_price < 500000
-                ).count(),
-                '500k_to_1m': prop_query.filter(
-                    ExtractedProperty.sold_price >= 500000,
-                    ExtractedProperty.sold_price < 1000000
-                ).count(),
-                'over_1m': prop_query.filter(ExtractedProperty.sold_price >= 1000000).count()
-            }
-            
-            # Property type breakdown
-            property_types = db.session.query(
-                ExtractedProperty.property_type,
-                func.count(ExtractedProperty.id)
-            ).filter(
-                ExtractedProperty.business_id == business_id,
-                ExtractedProperty.property_type.isnot(None)
-            ).group_by(ExtractedProperty.property_type).all()
-            
-            property_type_counts = {pt[0]: pt[1] for pt in property_types}
-            
-            # Bedroom distribution
-            bedroom_counts = db.session.query(
-                ExtractedProperty.number_bedrooms,
-                func.count(ExtractedProperty.id)
-            ).filter(
-                ExtractedProperty.business_id == business_id,
-                ExtractedProperty.number_bedrooms.isnot(None)
-            ).group_by(ExtractedProperty.number_bedrooms).order_by(ExtractedProperty.number_bedrooms).all()
-            
-            bedroom_distribution = {str(bd[0]): bd[1] for bd in bedroom_counts}
-            
-            # Geocoding success rate
-            total_props_with_coords = prop_query.filter(
-                ExtractedProperty.latitude.isnot(None),
-                ExtractedProperty.longitude.isnot(None)
-            ).count()
-            
-            geocoding_success_rate = (total_props_with_coords / prop_count * 100) if prop_count > 0 else 0
-            
-            # Recent activity (last 7 days)
-            week_ago = datetime.utcnow() - timedelta(days=7)
-            recent_uploads = doc_query.filter(Document.created_at >= week_ago).count()
-            recent_properties = prop_query.filter(ExtractedProperty.extracted_at >= week_ago).count()
+            try:
+                # Get property data from Supabase
+                # First get properties, then get their details
+                properties_result = supabase.table('properties').select('*').eq('business_id', business_id).execute()
+                properties = []
+                if properties_result.data:
+                    for prop in properties_result.data:
+                        details_result = supabase.table('property_details').select('*').eq('property_id', prop['id']).execute()
+                        if details_result.data:
+                            properties.extend(details_result.data)
+                
+                if properties:
+                    # Calculate average prices
+                    sold_prices = [p.get('sold_price') for p in properties if p.get('sold_price')]
+                    asking_prices = [p.get('asking_price') for p in properties if p.get('asking_price')]
+                    
+                    property_stats['average_sold_price'] = sum(sold_prices) / len(sold_prices) if sold_prices else 0
+                    property_stats['average_asking_price'] = sum(asking_prices) / len(asking_prices) if asking_prices else 0
+                    
+                    # Price ranges
+                    price_ranges = {
+                        'under_100k': len([p for p in properties if p.get('sold_price', 0) < 100000]),
+                        '100k_to_250k': len([p for p in properties if 100000 <= p.get('sold_price', 0) < 250000]),
+                        '250k_to_500k': len([p for p in properties if 250000 <= p.get('sold_price', 0) < 500000]),
+                        '500k_to_1m': len([p for p in properties if 500000 <= p.get('sold_price', 0) < 1000000]),
+                        'over_1m': len([p for p in properties if p.get('sold_price', 0) >= 1000000])
+                    }
+                    
+                    # Property type breakdown
+                    property_types = {}
+                    for prop in properties:
+                        prop_type = prop.get('property_type')
+                        if prop_type:
+                            property_types[prop_type] = property_types.get(prop_type, 0) + 1
+                    property_type_counts = property_types
+                    
+                    # Bedroom distribution
+                    bedrooms = {}
+                    for prop in properties:
+                        bedroom_count = prop.get('number_bedrooms')
+                        if bedroom_count is not None:
+                            bedrooms[str(bedroom_count)] = bedrooms.get(str(bedroom_count), 0) + 1
+                    bedroom_distribution = bedrooms
+                    
+                    # Geocoding success rate
+                    props_with_coords = len([p for p in properties if p.get('latitude') and p.get('longitude')])
+                    geocoding_success_rate = (props_with_coords / len(properties) * 100) if properties else 0
+                    
+                    # Recent activity (last 7 days)
+                    week_ago = datetime.utcnow() - timedelta(days=7)
+                    recent_uploads = doc_query.filter(Document.created_at >= week_ago).count()
+                    # Note: Supabase doesn't have extracted_at field, so we'll use document count as proxy
+                    recent_properties = recent_uploads
+                    
+            except Exception as e:
+                logger.warning(f"Failed to get Supabase property data: {e}")
+                # Set defaults
+                property_stats = {'average_sold_price': 0, 'average_asking_price': 0}
+                price_ranges = {'under_100k': 0, '100k_to_250k': 0, '250k_to_500k': 0, '500k_to_1m': 0, 'over_1m': 0}
+                property_type_counts = {}
+                bedroom_distribution = {}
+                geocoding_success_rate = 0
+                recent_properties = 0
             
             analytics_data = {
                 "summary": {

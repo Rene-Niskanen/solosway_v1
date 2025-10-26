@@ -15,6 +15,60 @@ interface ApiResponse<T = any> {
   message?: string;
 }
 
+// Property image interface
+interface PropertyImage {
+  url: string;
+  filename: string;
+  extracted_at: string;
+  image_index: number;
+  size_bytes: number;
+}
+
+// Enhanced property interface with image support
+interface PropertyData {
+  id: string;
+  property_address: string;
+  property_type?: string;
+  number_bedrooms?: number;
+  number_bathrooms?: number;
+  size_sqft?: number;
+  asking_price?: number;
+  sold_price?: number;
+  rent_pcm?: number;
+  price_per_sqft?: number;
+  yield_percentage?: number;
+  condition?: string;
+  tenure?: string;
+  epc_rating?: string;
+  other_amenities?: string;
+  notes?: string;
+  latitude?: number;
+  longitude?: number;
+  geocoded_address?: string;
+  geocoding_confidence?: number;
+  geocoding_status?: string;
+  // Property images
+  property_images?: PropertyImage[];
+  image_count?: number;
+  primary_image_url?: string;
+  has_images?: boolean;
+  total_images?: number;
+  image_metadata?: {
+    extraction_method?: string;
+    total_images?: number;
+    extraction_timestamp?: string;
+  };
+  // Property linking
+  property_id?: string;
+  normalized_address?: string;
+  address_hash?: string;
+  address_source?: string;
+  // Timestamps
+  extracted_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 class BackendApiService {
   private baseUrl: string;
 
@@ -31,13 +85,17 @@ class BackendApiService {
   ): Promise<ApiResponse<T>> {
     try {
       const url = `${this.baseUrl}${endpoint}`;
+      
+      // Don't set Content-Type for FormData - let browser set it with boundary
+      const isFormData = options.body instanceof FormData;
+      const headers = isFormData 
+        ? { ...options.headers } 
+        : { 'Content-Type': 'application/json', ...options.headers };
+      
       const response = await fetch(url, {
         ...options,
         credentials: 'include', // ← CRITICAL: Include session cookies
-        headers: {
-          'Content-Type': 'application/json',
-          ...options.headers,
-        },
+        headers,
       });
 
       if (!response.ok) {
@@ -79,30 +137,71 @@ class BackendApiService {
   /**
    * Property Search & Analysis
    */
-  async getAllProperties() {
-    return this.fetchApi('/api/properties', {
+  async getAllProperties(): Promise<ApiResponse<PropertyData[]>> {
+    return this.fetchApi<PropertyData[]>('/api/properties', {
       method: 'GET',
     });
   }
 
-  async searchProperties(query: string, filters?: any) {
-    return this.fetchApi('/api/properties/search', {
+  async searchProperties(query: string, filters?: any): Promise<ApiResponse<PropertyData[]>> {
+    return this.fetchApi<PropertyData[]>('/api/properties/search', {
       method: 'POST',
       body: JSON.stringify({ query, filters }),
     });
   }
 
-  async analyzePropertyQuery(query: string, previousResults: any[] = []) {
+  async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {
     return this.fetchApi('/api/properties/analyze', {
       method: 'POST',
       body: JSON.stringify({ query, previousResults }),
     });
   }
 
-  async getPropertyComparables(propertyId: string, criteria?: any) {
-    return this.fetchApi(`/api/properties/${propertyId}/comparables`, {
+  async getPropertyComparables(propertyId: string, criteria?: any): Promise<ApiResponse<PropertyData[]>> {
+    return this.fetchApi<PropertyData[]>(`/api/properties/${propertyId}/comparables`, {
       method: 'POST',
       body: JSON.stringify({ criteria }),
+    });
+  }
+
+  /**
+   * Property Node Management (for property-centric view)
+   */
+  async getPropertyNodes(): Promise<ApiResponse<any[]>> {
+    return this.fetchApi('/api/property-nodes', {
+      method: 'GET',
+    });
+  }
+
+  async getPropertyNodeDetails(propertyId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi(`/api/property-nodes/${propertyId}`, {
+      method: 'GET',
+    });
+  }
+
+  /**
+   * Property Image Management
+   */
+  async getPropertyImages(propertyId: string): Promise<ApiResponse<PropertyImage[]>> {
+    return this.fetchApi<PropertyImage[]>(`/api/properties/${propertyId}/images`, {
+      method: 'GET',
+    });
+  }
+
+  async uploadPropertyImage(propertyId: string, imageFile: File): Promise<ApiResponse<any>> {
+    const formData = new FormData();
+    formData.append('image', imageFile);
+    formData.append('property_id', propertyId);
+
+    return this.fetchApi(`/api/properties/${propertyId}/images`, {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
+  async deletePropertyImage(propertyId: string, imageId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi(`/api/properties/${propertyId}/images/${imageId}`, {
+      method: 'DELETE',
     });
   }
 
@@ -120,6 +219,49 @@ class BackendApiService {
     });
   }
 
+  /**
+   * Get presigned URL for direct S3 upload (bypasses API Gateway size limits)
+   */
+  async getPresignedUploadUrl(filename: string, fileType: string) {
+    return this.fetchApi('/api/documents/presigned-url', {
+      method: 'POST',
+      body: JSON.stringify({ filename, file_type: fileType }),
+    });
+  }
+
+  /**
+   * Confirm successful upload and trigger processing
+   */
+  async confirmUpload(documentId: string, fileSize: number) {
+    return this.fetchApi(`/api/documents/${documentId}/confirm-upload`, {
+      method: 'POST',
+      body: JSON.stringify({ file_size: fileSize }),
+    });
+  }
+
+  /**
+   * Upload file directly to S3 using presigned URL
+   */
+  async uploadToS3(presignedUrl: string, file: File): Promise<boolean> {
+    try {
+      const response = await fetch(presignedUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'Content-Type': file.type,
+        },
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error('S3 upload error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Legacy upload method (kept for backward compatibility)
+   */
   async uploadPropertyDocument(file: File, metadata?: any) {
     const formData = new FormData();
     formData.append('file', file);  // Changed from 'document' to 'file'
@@ -148,6 +290,148 @@ class BackendApiService {
       };
     } catch (error) {
       console.error(`API Error [/api/documents/upload]:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+
+  async getDocumentStatus(documentId: string) {
+    try {
+        const response = await this.fetchApi(`/api/documents/${documentId}/status`);
+        return response;
+    } catch (error) {
+        console.error(`❌ Failed to get document status: ${error}`);
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error occurred'
+        };
+    }
+  }
+  /**
+   * New upload method using presigned URLs (recommended for large files)
+   */
+  async uploadPropertyDocumentWithPresignedUrl(file: File, metadata?: any) {
+    try {
+      console.log(`🚀 Starting presigned upload for: ${file.name}`);
+      
+      // Step 1: Get presigned URL
+      const presignedResponse = await this.getPresignedUploadUrl(file.name, file.type);
+      
+      if (!presignedResponse.success) {
+        throw new Error(presignedResponse.error || 'Failed to get presigned URL');
+      }
+
+      const { document_id, presigned_url } = presignedResponse.data as any;
+      console.log(`✅ Got presigned URL for document: ${document_id}`);
+
+      // Step 2: Upload directly to S3
+      console.log(`📤 Uploading to S3: ${file.name} (${file.size} bytes)`);
+      const s3UploadSuccess = await this.uploadToS3(presigned_url, file);
+      
+      if (!s3UploadSuccess) {
+        throw new Error('Failed to upload file to S3');
+      }
+      
+      console.log(`✅ File uploaded to S3 successfully`);
+
+      // Step 3: Confirm upload and trigger processing
+      console.log(`🔄 Confirming upload and starting processing...`);
+      const confirmResponse = await this.confirmUpload(document_id, file.size);
+      
+      if (!confirmResponse.success) {
+        throw new Error(confirmResponse.error || 'Failed to confirm upload');
+      }
+
+      console.log(`✅ Upload confirmed and processing started`);
+      
+      return {
+        success: true,
+        data: {
+          document_id,
+          task_id: (confirmResponse.data as any)?.task_id,
+          message: 'File uploaded successfully and processing started'
+        }
+      };
+
+    } catch (error) {
+      console.error(`❌ Presigned upload failed for ${file.name}:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+  /**
+   * Upload file via backend proxy (fallback for CORS issues)
+   */
+  async uploadPropertyDocumentViaProxy(file: File, metadata?: any) {
+    try {
+      console.log(`🚀 Starting proxy upload for: ${file.name}`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      if (metadata) {
+        Object.keys(metadata).forEach(key => {
+          formData.append(key, metadata[key]);
+        });
+      }
+
+      const response = await this.fetchApi('/api/documents/proxy-upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.success) {
+        console.log(`✅ Proxy upload successful: ${file.name}`);
+        return {
+          success: true,
+          data: response.data
+        };
+      } else {
+        throw new Error(response.error || 'Upload failed');
+      }
+
+    } catch (error) {
+      console.error(`❌ Proxy upload failed for ${file.name}:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+      };
+    }
+  }
+
+  /**
+   * Test S3 upload (simple test without database record)
+   */
+  async testS3Upload(file: File) {
+    try {
+      console.log(`🧪 Testing S3 upload for: ${file.name}`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await this.fetchApi('/api/documents/test-s3', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.success) {
+        console.log(`✅ S3 test upload successful: ${file.name}`);
+        return {
+          success: true,
+          data: response.data
+        };
+      } else {
+        throw new Error(response.error || 'S3 test upload failed');
+      }
+
+    } catch (error) {
+      console.error(`❌ S3 test upload failed for ${file.name}:`, error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred',
@@ -294,9 +578,92 @@ class BackendApiService {
   }
 }
 
+// Property-related interfaces
+export interface PropertyNode {
+  id: string;
+  address_hash: string;
+  normalized_address: string;
+  formatted_address: string;
+  latitude: number;
+  longitude: number;
+  business_id: string;
+  created_at: string;
+  updated_at: string;
+  document_count: number;
+}
+
+export interface PropertyWithDocuments {
+  property: PropertyNode;
+  documents: Array<{
+    id: string;
+    original_filename: string;
+    status: string;
+    classification_type: string;
+    created_at: string;
+  }>;
+  extracted_properties: Array<any>;
+  document_count: number;
+  extracted_property_count: number;
+}
+
+export interface PropertyStatistics {
+  total_properties: number;
+  total_documents: number;
+  total_extracted_properties: number;
+  properties_with_documents: number;
+  properties_geocoded: number;
+  geocoding_percentage: number;
+  document_linkage_percentage: number;
+}
+
+// Property API methods
+export const getAllPropertyNodes = async (): Promise<PropertyNode[]> => {
+  const response = await fetch('/api/property-nodes', {
+    credentials: 'include'
+  });
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Failed to fetch property nodes');
+  }
+  return data.data;
+};
+
+export const getPropertyNodeDetails = async (propertyId: string): Promise<PropertyWithDocuments> => {
+  const response = await fetch(`/api/property-nodes/${propertyId}`, {
+    credentials: 'include'
+  });
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Failed to fetch property node details');
+  }
+  return data.data;
+};
+
+export const searchPropertyNodes = async (query: string, limit: number = 10): Promise<PropertyNode[]> => {
+  const response = await fetch(`/api/property-nodes/search?q=${encodeURIComponent(query)}&limit=${limit}`, {
+    credentials: 'include'
+  });
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Failed to search property nodes');
+  }
+  return data.data;
+};
+
+export const getPropertyNodeStatistics = async (): Promise<PropertyStatistics> => {
+  const response = await fetch('/api/property-nodes/statistics', {
+    credentials: 'include'
+  });
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Failed to fetch property node statistics');
+  }
+  return data.data;
+};
+
 // Export singleton instance
 export const backendApi = new BackendApiService();
 
 // Export types
-export type { ApiResponse };
+export type { ApiResponse, PropertyData, PropertyImage };
 

@@ -1,8 +1,8 @@
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env file
+load_dotenv()
 
 from backend import create_app
-from backend.models import Document # Make sure all models are imported
+from backend.models import Document, Property, PropertyDetails, DocumentRelationship
 
 app = create_app()
 celery = app.extensions["celery"]

@@ -119,9 +119,8 @@ backend/scripts/migrate_astradb_image_fields.py
 test_*.py
 *_test.py
 
-# Documentation files (keep only README.md)
-*.md
-!README.md
+# Documentation folder (temporary exclusion)
+documentation/
 
 # Obsolete templates (now using React frontend)
 backend/templates/admin_panel.html

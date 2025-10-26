@@ -2,22 +2,6 @@ import os
 import requests
 import uuid
 import logging
-from cassandra.cluster import Cluster
-from cassandra.auth import PlainTextAuthProvider
-
-# Fix for astrapy import issue - patch the missing classes
-import astrapy.exceptions as astrapy_exceptions
-import astrapy.results as astrapy_results
-
-# Patch missing exception
-if not hasattr(astrapy_exceptions, 'InsertManyException'):
-    astrapy_exceptions.InsertManyException = astrapy_exceptions.CollectionInsertManyException
-
-# Patch missing result class
-if not hasattr(astrapy_results, 'UpdateResult'):
-    astrapy_results.UpdateResult = astrapy_results.CollectionUpdateResult
-
-from llama_index.vector_stores.astra_db import AstraDBVectorStore
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -25,20 +9,19 @@ logging.basicConfig(level=logging.INFO)
 
 class DeletionService:
     def __init__(self):
-        self.tabular_session = None
-        self.vector_store = None
-        self.document_vector_index = None
-        self.property_vector_index = None
+        pass
     
     def delete_document_from_all_stores(self, document_id, business_id):
         """
-        Delete document data from ALL databases in the 5-database architecture:
-        1. AstraDB Tabular (comparable properties)
-        2. AstraDB Document Vector Store (whole document chunks)
-        3. AstraDB Property Vector Store (individual property embeddings)
-        4. PostgreSQL ExtractedProperty (structured property data with geocoding)
+        Delete document data from ALL databases in the 6-database architecture:
+        1. Supabase Documents table (document metadata & central registry)
+        2. Supabase Comparable Properties (extracted property data)
+        3. Supabase Document Vectors (document chunk embeddings)
+        4. Supabase Property Vectors (property embeddings)
+        5. Supabase Processing History (audit trail)
+        6. PostgreSQL Property nodes (linking only)
         
-        Note: S3 and PostgreSQL Document table are handled separately in views.py
+        Note: S3 and local PostgreSQL Document table are handled separately in views.py
         """
         logger.info("=" * 80)
         logger.info(f"DELETION SERVICE - Starting complete deletion")
@@ -47,67 +30,109 @@ class DeletionService:
         logger.info("=" * 80)
         
         deletion_results = {
-            'astra_tabular': False,
-            'astra_document_vector': False,
-            'astra_property_vector': False,
+            'supabase_documents': False,
+            'supabase_property_details': False,
+            'supabase_document_vectors': False,
+            'supabase_property_vectors': False,
+            'supabase_processing_history': False,
+            'supabase_document_access_logs': False,
             'postgresql_properties': False
         }
         
         deletion_errors = {
-            'astra_tabular': None,
-            'astra_document_vector': None,
-            'astra_property_vector': None,
+            'supabase_documents': None,
+            'supabase_property_details': None,
+            'supabase_document_vectors': None,
+            'supabase_property_vectors': None,
+            'supabase_processing_history': None,
+            'supabase_document_access_logs': None,
             'postgresql_properties': None
         }
         
         try:
-            # 1. Delete from AstraDB tabular store
-            logger.info("[1/4] Deleting from AstraDB Tabular Store...")
+            # 1. Delete from Supabase property_vectors FIRST (before deleting properties!)
+            logger.info("[1/6] Deleting from Supabase property_vectors...")
             try:
-                deletion_results['astra_tabular'] = self.delete_tabular_data(document_id, business_id)
-                if deletion_results['astra_tabular']:
-                    logger.info("    SUCCESS: Tabular deletion")
+                deletion_results['supabase_property_vectors'] = self.delete_supabase_property_vectors(document_id)
+                if deletion_results['supabase_property_vectors']:
+                    logger.info("    SUCCESS: Property vectors deletion")
                 else:
-                    logger.warning("    FAILED: Tabular deletion (returned False)")
+                    logger.warning("    FAILED: Property vectors deletion")
             except Exception as e:
-                deletion_errors['astra_tabular'] = str(e)
-                logger.error(f"    ERROR: Tabular deletion - {e}")
+                deletion_errors['supabase_property_vectors'] = str(e)
+                logger.error(f"    ERROR: Property vectors deletion - {e}")
             
-            # 2. Delete from document vector store
-            logger.info("[2/4] Deleting from Document Vector Store...")
+            # 2. Delete from Supabase document_vectors
+            logger.info("[2/6] Deleting from Supabase document_vectors...")
             try:
-                deletion_results['astra_document_vector'] = self.delete_document_vector_data(document_id, business_id)
-                if deletion_results['astra_document_vector']:
-                    logger.info("    SUCCESS: Document vector deletion")
+                deletion_results['supabase_document_vectors'] = self.delete_supabase_document_vectors(document_id)
+                if deletion_results['supabase_document_vectors']:
+                    logger.info("    SUCCESS: Document vectors deletion")
                 else:
-                    logger.warning("    FAILED: Document vector deletion (returned False)")
+                    logger.warning("    FAILED: Document vectors deletion")
             except Exception as e:
-                deletion_errors['astra_document_vector'] = str(e)
-                logger.error(f"    ERROR: Document vector deletion - {e}")
+                deletion_errors['supabase_document_vectors'] = str(e)
+                logger.error(f"    ERROR: Document vectors deletion - {e}")
             
-            # 3. Delete from property vector store
-            logger.info("[3/4] Deleting from Property Vector Store...")
+            # 3. Delete from Supabase property_details (AFTER property vectors!)
+            logger.info("[3/6] Deleting from Supabase property_details...")
             try:
-                deletion_results['astra_property_vector'] = self.delete_property_vector_data(document_id, business_id)
-                if deletion_results['astra_property_vector']:
-                    logger.info("    SUCCESS: Property vector deletion")
+                deletion_results['supabase_property_details'] = self.delete_supabase_property_details(document_id)
+                if deletion_results['supabase_property_details']:
+                    logger.info("    SUCCESS: Property details deletion")
                 else:
-                    logger.warning("    FAILED: Property vector deletion (returned False)")
+                    logger.warning("    FAILED: Property details deletion")
             except Exception as e:
-                deletion_errors['astra_property_vector'] = str(e)
-                logger.error(f"    ERROR: Property vector deletion - {e}")
+                deletion_errors['supabase_property_details'] = str(e)
+                logger.error(f"    ERROR: Property details deletion - {e}")
             
-            # 4. Delete from PostgreSQL ExtractedProperty
-            logger.info("[4/4] Deleting from PostgreSQL ExtractedProperty...")
+            # 4. Delete from Supabase document_processing_history
+            logger.info("[4/7] Deleting from Supabase document_processing_history...")
             try:
-                deletion_results['postgresql_properties'] = self.delete_postgresql_properties(document_id)
+                deletion_results['supabase_processing_history'] = self.delete_supabase_processing_history(document_id)
+                if deletion_results['supabase_processing_history']:
+                    logger.info("    SUCCESS: Processing history deletion")
+                else:
+                    logger.warning("    FAILED: Processing history deletion")
+            except Exception as e:
+                deletion_errors['supabase_processing_history'] = str(e)
+                logger.error(f"    ERROR: Processing history deletion - {e}")
+            
+            # 5. Delete from Supabase document_access_logs
+            logger.info("[5/7] Deleting from Supabase document_access_logs...")
+            try:
+                deletion_results['supabase_document_access_logs'] = self.delete_supabase_document_access_logs(document_id)
+                if deletion_results['supabase_document_access_logs']:
+                    logger.info("    SUCCESS: Document access logs deletion")
+                else:
+                    logger.warning("    FAILED: Document access logs deletion")
+            except Exception as e:
+                deletion_errors['supabase_document_access_logs'] = str(e)
+                logger.error(f"    ERROR: Document access logs deletion - {e}")
+            
+            # 6. Delete from PostgreSQL Property nodes (linking only)
+            logger.info("[6/7] Deleting from PostgreSQL Property nodes...")
+            try:
+                deletion_results['postgresql_properties'] = self.delete_postgresql_property_nodes(document_id)
                 if deletion_results['postgresql_properties']:
-                    logger.info("    SUCCESS: PostgreSQL properties deletion")
+                    logger.info("    SUCCESS: PostgreSQL property nodes deletion")
                 else:
-                    logger.warning("    FAILED: PostgreSQL properties deletion (returned False)")
+                    logger.warning("    FAILED: PostgreSQL property nodes deletion")
             except Exception as e:
                 deletion_errors['postgresql_properties'] = str(e)
-                logger.error(f"    ERROR: PostgreSQL properties deletion - {e}")
+                logger.error(f"    ERROR: PostgreSQL property nodes deletion - {e}")
+            
+            # 7. Delete from Supabase documents table (central registry)
+            logger.info("[7/7] Deleting from Supabase documents table...")
+            try:
+                deletion_results['supabase_documents'] = self.delete_supabase_document(document_id, business_id)
+                if deletion_results['supabase_documents']:
+                    logger.info("    SUCCESS: Supabase document deletion")
+                else:
+                    logger.warning("    FAILED: Supabase document deletion")
+            except Exception as e:
+                deletion_errors['supabase_documents'] = str(e)
+                logger.error(f"    ERROR: Supabase document deletion - {e}")
             
             overall_success = all(deletion_results.values())
             success_count = sum(deletion_results.values())
@@ -129,194 +154,231 @@ class DeletionService:
             traceback.print_exc()
             return False, deletion_results
     
-    def delete_document_from_astra_stores(self, document_id, business_id):
-        """
-        Legacy method for backward compatibility
-        Delete document data from AstraDB tabular and document vector stores only
-        """
-        print(f"Starting AstraDB deletion for document {document_id}, business {business_id}")
-        
+    def delete_postgresql_property_nodes(self, document_id):
+        """Delete property nodes from PostgreSQL (only if no other documents linked)"""
         try:
-            # Delete from tabular store
-            tabular_success = self.delete_tabular_data(document_id, business_id)
-            print(f"Tabular deletion result: {tabular_success}")
-            
-            # Delete from document vector store  
-            vector_success = self.delete_document_vector_data(document_id, business_id)
-            print(f"Vector deletion result: {vector_success}")
-            
-            overall_success = tabular_success and vector_success
-            print(f"Overall AstraDB deletion success: {overall_success}")
-            
-            return overall_success
-            
-        except Exception as e:
-            print(f"Error in AstraDB deletion: {e}")
-            return False
-    
-    def delete_tabular_data(self, document_id, business_id):
-        """Delete comparable properties from AstraDB tabular collection"""
-        try:
-            session = self._get_astra_db_session()
-            keyspace = os.environ['ASTRA_DB_TABULAR_KEYSPACE']
-            table_name = os.environ['ASTRA_DB_TABULAR_COLLECTION_NAME']
-            
-            session.set_keyspace(keyspace)
-            
-            # First, find all record IDs that match our criteria
-            find_query = f"SELECT id FROM {table_name} WHERE source_document_id = %s AND business_id = %s ALLOW FILTERING"
-            result = session.execute(find_query, [uuid.UUID(str(document_id)), business_id])
-            record_ids = [row.id for row in result]
-            
-            print(f"Found {len(record_ids)} records to delete from tabular store")
-            
-            if len(record_ids) == 0:
-                print("No tabular records found - deletion successful (nothing to delete)")
-                return True
-            
-            # Delete each record by its ID (partition key)
-            delete_query = f"DELETE FROM {table_name} WHERE id = ?"
-            prepared_delete = session.prepare(delete_query)
-            
-            deleted_count = 0
-            for record_id in record_ids:
-                try:
-                    session.execute(prepared_delete, [record_id])
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"Error deleting record {record_id}: {e}")
-            
-            print(f"Successfully deleted {deleted_count} out of {len(record_ids)} records")
-            
-            # Verify deletion
-            count_after = session.execute(find_query, [uuid.UUID(str(document_id)), business_id])
-            remaining_count = len([row.id for row in count_after])
-            print(f"Records remaining after deletion: {remaining_count}")
-            
-            return remaining_count == 0
-            
-        except Exception as e:
-            print(f"Error deleting tabular data: {e}")
-            return False
-    
-    def delete_document_vector_data(self, document_id, business_id):
-        """Delete document chunks from AstraDB document vector store using REST API"""
-        try:
-            logger.info(f"Attempting to delete document vectors for document_id: {document_id}, business_id: {business_id}")
-            
-            # Use REST API directly for reliable deletion of ALL matching documents
-            from .astra_utils import get_document_vector_client
-            
-            collection_name = os.environ["ASTRA_DB_VECTOR_COLLECTION_NAME"]
-            client = get_document_vector_client()
-            
-            # Try multiple filter formats to find the correct one
-            filter_variations = [
-                {"document_id": str(document_id), "business_id": str(business_id)},
-                {"metadata": {"document_id": str(document_id), "business_id": str(business_id)}},
-                {"metadata.document_id": str(document_id), "metadata.business_id": str(business_id)}
-            ]
-            
-            for i, filter_dict in enumerate(filter_variations, 1):
-                logger.info(f"Trying filter variation {i}: {filter_dict}")
-                deleted_count, total_found = client.delete_documents_by_filter(collection_name, filter_dict)
-                
-                if total_found > 0:
-                    logger.info(f"SUCCESS with filter variation {i}: deleted {deleted_count}/{total_found} chunks")
-                    return deleted_count == total_found
-            
-            logger.warning("No documents found with any filter variation - nothing to delete")
-            return True  # Nothing to delete is considered success
-            
-        except Exception as e:
-            logger.error(f"Error deleting document vector data: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def delete_property_vector_data(self, document_id, business_id):
-        """Delete individual property embeddings from AstraDB property vector store using REST API"""
-        try:
-            collection_name = f"properties_vectorized_{business_id.lower()}"
-            logger.info(f"Attempting to delete property vectors for document_id: {document_id}")
-            
-            # Use REST API directly for reliable deletion
-            from .astra_utils import get_property_vector_client
-            
-            client = get_property_vector_client()
-            
-            # Check if collection exists
-            if not client.collection_exists(collection_name):
-                logger.info("Property vector collection doesn't exist yet - skipping")
-                return True
-            
-            # Delete ALL properties matching filter
-            filter_dict = {
-                "metadata.source_document_id": str(document_id)
-            }
-            
-            logger.info(f"Searching for property vectors with filter: {filter_dict}")
-            deleted_count, total_found = client.delete_documents_by_filter(collection_name, filter_dict)
-            
-            if total_found == 0:
-                logger.info("No property vectors found - deletion successful (nothing to delete)")
-                return True
-            
-            logger.info(f"Property vector deletion: deleted {deleted_count}/{total_found} properties")
-            return deleted_count == total_found
-            
-        except Exception as e:
-            logger.error(f"Error deleting property vector data: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def delete_postgresql_properties(self, document_id):
-        """Delete extracted properties from PostgreSQL"""
-        try:
-            from ..models import ExtractedProperty, db
+            from ..models import db, Property, Document
             from .. import create_app
             
-            # Count properties before deletion
-            properties = ExtractedProperty.query.filter_by(source_document_id=document_id).all()
-            count_before = len(properties)
-            print(f"📋 Found {count_before} properties to delete from PostgreSQL")
-            
-            if count_before == 0:
-                print("✅ No PostgreSQL properties found - deletion successful (nothing to delete)")
+            # Get the document to find its property_id
+            document = Document.query.get(document_id)
+            if not document or not document.property_id:
+                print("✅ No property node linked to this document")
                 return True
             
-            # Delete all properties
-            for prop in properties:
-                db.session.delete(prop)
+            property_id = document.property_id
             
-            db.session.commit()
+            # Check if other documents are linked to this property
+            other_documents = Document.query.filter(
+                Document.property_id == property_id,
+                Document.id != document_id
+            ).count()
             
-            # Verify deletion
-            count_after = ExtractedProperty.query.filter_by(source_document_id=document_id).count()
-            print(f"📊 Properties remaining after deletion: {count_after}")
+            if other_documents > 0:
+                print(f"✅ Property node {property_id} has {other_documents} other documents - keeping property node")
+                return True
             
-            return count_after == 0
+            # No other documents linked, safe to delete property node
+            property_node = Property.query.get(property_id)
+            if property_node:
+                db.session.delete(property_node)
+                db.session.commit()
+                print(f"✅ Deleted property node {property_id}")
+            else:
+                print(f"✅ Property node {property_id} not found (already deleted)")
+            
+            return True
             
         except Exception as e:
-            print(f"❌ Error deleting PostgreSQL properties: {e}")
+            print(f"❌ Error deleting PostgreSQL property nodes: {e}")
             try:
                 db.session.rollback()
             except:
                 pass
             return False
     
-    def _get_astra_db_session(self):
-        """Get AstraDB session (reuse logic from tasks.py)"""
-        if not self.tabular_session:
-            bundle_path = os.environ['ASTRA_DB_TABULAR_SECURE_CONNECT_BUNDLE_PATH']
-            token = os.environ['ASTRA_DB_TABULAR_APPLICATION_TOKEN']
-            
-            if not os.path.exists(bundle_path):
-                raise ValueError(f"AstraDB secure connect bundle not found at: {bundle_path}")
-            
-            auth_provider = PlainTextAuthProvider('token', token)
-            cluster = Cluster(cloud={'secure_connect_bundle': bundle_path}, auth_provider=auth_provider)
-            self.tabular_session = cluster.connect()
+    def _get_supabase_client(self):
+        """Get Supabase client"""
+        from supabase import create_client, Client
+        supabase_url = os.environ.get('SUPABASE_URL')
+        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
         
-        return self.tabular_session
+        if not supabase_url or not supabase_key:
+            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required")
+        
+        return create_client(supabase_url, supabase_key)
+    
+    def delete_supabase_property_details(self, document_id):
+        """Delete property details from Supabase"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying property_details for document_id: {document_id}")
+            
+            # First check what exists
+            check_result = supabase.table('property_details').select('property_id').eq('source_document_id', document_id).execute()
+            count_before = len(check_result.data) if check_result.data else 0
+            logger.info(f"   Found {count_before} property details to delete")
+            
+            if count_before == 0:
+                logger.info(f"   ✅ No property details to delete (clean)")
+                return True
+            
+            # Delete them
+            result = supabase.table('property_details').delete().eq('source_document_id', document_id).execute()
+            logger.info(f"   ✅ Deleted {count_before} property details for document {document_id}")
+            logger.info(f"   Delete response: {result}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting property details: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def delete_supabase_document_vectors(self, document_id):
+        """Delete document vectors from Supabase"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying document_vectors for document_id: {document_id}")
+            
+            # First check what exists
+            check_result = supabase.table('document_vectors').select('id').eq('document_id', document_id).execute()
+            count_before = len(check_result.data) if check_result.data else 0
+            logger.info(f"   Found {count_before} document vectors to delete")
+            
+            if count_before == 0:
+                logger.info(f"   ✅ No document vectors to delete (clean)")
+                return True
+            
+            # Delete them
+            result = supabase.table('document_vectors').delete().eq('document_id', document_id).execute()
+            logger.info(f"   ✅ Deleted {count_before} document vectors for document {document_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting document vectors: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def delete_supabase_property_vectors(self, document_id):
+        """Delete property vectors from Supabase (via property_id link)"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying property_vectors via property_details for document_id: {document_id}")
+            
+            # First get property IDs from property_details
+            props_result = supabase.table('property_details').select('property_id').eq('source_document_id', document_id).execute()
+            
+            if props_result.data:
+                property_ids = [prop['property_id'] for prop in props_result.data]
+                logger.info(f"   Found {len(property_ids)} properties with potential vectors")
+                logger.info(f"   Property IDs: {property_ids[:3]}..." if len(property_ids) > 3 else f"   Property IDs: {property_ids}")
+                
+                total_deleted = 0
+                for i, prop_id in enumerate(property_ids, 1):
+                    # Check how many vectors exist for this property
+                    logger.info(f"   [{i}/{len(property_ids)}] Checking property {prop_id}...")
+                    check_result = supabase.table('property_vectors').select('id').eq('property_id', prop_id).execute()
+                    vector_count = len(check_result.data) if check_result.data else 0
+                    logger.info(f"      Found {vector_count} vectors for property {prop_id}")
+                    
+                    if vector_count > 0:
+                        delete_result = supabase.table('property_vectors').delete().eq('property_id', prop_id).execute()
+                        total_deleted += vector_count
+                        logger.info(f"      ✅ Deleted {vector_count} vectors (API response: {len(delete_result.data) if delete_result.data else 0} rows)")
+                    else:
+                        logger.info(f"      ⚠️ No vectors found for this property")
+                
+                logger.info(f"   ✅ Deleted {total_deleted} total property vectors across {len(property_ids)} properties")
+                
+                # VERIFY: Double-check no vectors remain
+                verification = supabase.table('property_vectors').select('id').in_('property_id', property_ids).execute()
+                remaining = len(verification.data) if verification.data else 0
+                if remaining > 0:
+                    logger.error(f"   ❌ VERIFICATION FAILED: {remaining} property vectors still remain!")
+                    return False
+                else:
+                    logger.info(f"   ✅ VERIFICATION PASSED: No property vectors remaining")
+            else:
+                logger.info(f"   ✅ No properties found, so no property vectors to delete")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting property vectors: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def delete_supabase_processing_history(self, document_id):
+        """Delete processing history from Supabase"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying document_processing_history for document_id: {document_id}")
+            
+            # First check what exists
+            check_result = supabase.table('document_processing_history').select('id').eq('document_id', document_id).execute()
+            count_before = len(check_result.data) if check_result.data else 0
+            logger.info(f"   Found {count_before} processing history entries to delete")
+            
+            if count_before == 0:
+                logger.info(f"   ✅ No processing history to delete (clean)")
+                return True
+            
+            # Delete them
+            result = supabase.table('document_processing_history').delete().eq('document_id', document_id).execute()
+            logger.info(f"   ✅ Deleted {count_before} processing history entries for document {document_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting processing history: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def delete_supabase_document(self, document_id, business_id):
+        """Delete document record from Supabase documents table"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying documents table for document_id: {document_id}, business_id: {business_id}")
+            
+            # First check if it exists
+            check_result = supabase.table('documents').select('id').eq('id', document_id).eq('business_id', business_id).execute()
+            exists = len(check_result.data) > 0 if check_result.data else False
+            logger.info(f"   Document exists in Supabase: {exists}")
+            
+            if not exists:
+                logger.info(f"   ✅ Document not in Supabase (already deleted or never synced)")
+                return True
+            
+            # Delete it
+            result = supabase.table('documents').delete().eq('id', document_id).eq('business_id', business_id).execute()
+            logger.info(f"   ✅ Deleted document {document_id} from Supabase documents table")
+            logger.info(f"   Delete response: {result}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting document from Supabase: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def delete_supabase_document_access_logs(self, document_id):
+        """Delete document access logs from Supabase"""
+        try:
+            supabase = self._get_supabase_client()
+            logger.info(f"🔍 Querying document_access_logs for document_id: {document_id}")
+            
+            # First check what exists
+            check_result = supabase.table('document_access_logs').select('id').eq('document_id', document_id).execute()
+            count_before = len(check_result.data) if check_result.data else 0
+            logger.info(f"   Found {count_before} document access log entries to delete")
+            
+            if count_before == 0:
+                logger.info(f"   ✅ No document access logs to delete (clean)")
+                return True
+            
+            # Delete them
+            result = supabase.table('document_access_logs').delete().eq('document_id', document_id).execute()
+            logger.info(f"   ✅ Deleted {count_before} document access log entries for document {document_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting document access logs: {e}")
+            import traceback
+            traceback.print_exc()
+            return False

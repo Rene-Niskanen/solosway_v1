@@ -387,14 +387,17 @@ export const MainContent = ({
               ? 'bg-white/95'
               : currentView === 'profile'
                 ? 'bg-transparent'
-                : 'bg-white/20'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : 'p-8 lg:p-16'}`}>
+                : currentView === 'notifications'
+                  ? 'bg-white'
+                  : 'bg-white/20'
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0' : 'p-8 lg:p-16'}`}>
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 
             : currentView === 'upload' ? 'h-full' 
             : currentView === 'analytics' ? 'h-full overflow-hidden'
             : currentView === 'profile' ? 'h-full w-full'
+            : currentView === 'notifications' ? 'h-full w-full'
             : 'max-w-5xl mx-auto'
         } flex-1 flex flex-col`}>
           <motion.div initial={{

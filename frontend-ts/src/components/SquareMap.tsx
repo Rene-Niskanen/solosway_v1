@@ -48,10 +48,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [selectedProperty, setSelectedProperty] = useState<any>(null);
   const [showPropertyCard, setShowPropertyCard] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [showFullDescription, setShowFullDescription] = useState(false);
   const [propertyMarkers, setPropertyMarkers] = useState<any[]>([]);
   const [selectedPropertyPosition, setSelectedPropertyPosition] = useState<{ x: number; y: number } | null>(null);
   const [isColorfulMap, setIsColorfulMap] = useState(true);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
+
+  // Helper function to truncate text
+  const truncateText = (text: string, maxLength: number = 200) => {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+  };
 
   // Debug selectedPropertyPosition changes
   useEffect(() => {
@@ -406,14 +414,38 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           tenure: prop.tenure || '',
           transaction_date: prop.transaction_date || '',
           similarity: 90, // Default
-          image: "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
+          image: prop.primary_image_url || (prop.property_images && prop.property_images.length > 0 ? prop.property_images[0].url : null) || "/property-1.png",
           agent: {
-            name: "Property Agent",
-            company: "solosway"
+            name: "John Bell",
+            company: "harperjamesproperty36"
           }
         })).filter((prop: any) => prop.latitude && prop.longitude); // Only include geocoded properties
         
         console.log(`✅ Transformed ${transformedProperties.length} geocoded properties`);
+        
+        // 🔍 IMAGE DEBUG: Log image data for first few properties
+        if (transformedProperties.length > 0) {
+          console.log('🖼️ IMAGE DEBUG - Sample Properties with Image Data:', 
+            transformedProperties.slice(0, 3).map(p => ({
+              address: p.address,
+              primary_image_url: p.image,
+              has_database_image: p.image && !p.image.includes('/property-1.png'),
+              image_source: p.image && p.image.includes('/property-1.png') ? 'fallback' : 'database'
+            }))
+          );
+          
+          // 🔍 RAW DATABASE DEBUG: Check what image data is coming from database
+          console.log('🔍 RAW DATABASE IMAGE DEBUG - First 3 properties from backend:', 
+            allProperties.slice(0, 3).map(prop => ({
+              address: prop.property_address,
+              primary_image_url: prop.primary_image_url,
+              property_images: prop.property_images,
+              image_count: prop.image_count,
+              has_primary: !!prop.primary_image_url,
+              has_images_array: !!(prop.property_images && prop.property_images.length > 0)
+            }))
+          );
+        }
         
         // 🔍 PHASE 1 DEBUG: Log sample transformed properties with price data
         if (transformedProperties.length > 0) {
@@ -652,12 +684,36 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           features: prop.other_amenities || '',
           condition: 8, // Default
           similarity: 90, // Default
-          image: "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
+          image: prop.primary_image_url || (prop.property_images && prop.property_images.length > 0 ? prop.property_images[0].url : null) || "/property-1.png",
           agent: {
-            name: "Property Agent",
-            company: "solosway"
+            name: "Jerome Bell",
+            company: "harperjamesproperty36"
           }
         };
+
+        // 🔍 IMAGE DEBUG: Log image data for first few properties
+        if (allProperties.indexOf(prop) < 3) {
+          console.log(`🖼️ IMAGE DEBUG - Property ${allProperties.indexOf(prop) + 1}:`, {
+            address: transformedProperty.address,
+            primary_image_url: prop.primary_image_url,
+            property_images: prop.property_images,
+            image_count: prop.image_count,
+            final_image: transformedProperty.image,
+            has_database_image: transformedProperty.image && !transformedProperty.image.includes('/property-1.png'),
+            image_source: transformedProperty.image && transformedProperty.image.includes('/property-1.png') ? 'fallback' : 'database'
+          });
+          
+          // 🔍 RAW DATABASE DEBUG: Check what image data is coming from database
+          console.log(`🔍 RAW DATABASE IMAGE DEBUG - Property ${allProperties.indexOf(prop) + 1} from backend:`, {
+            address: prop.property_address,
+            primary_image_url: prop.primary_image_url,
+            property_images: prop.property_images,
+            image_count: prop.image_count,
+            has_primary: !!prop.primary_image_url,
+            has_images_array: !!(prop.property_images && prop.property_images.length > 0),
+            all_keys: Object.keys(prop).filter(key => key.includes('image') || key.includes('Image'))
+          });
+        }
 
         // 🔍 PHASE 1 DEBUG: Log final transformed property for first few
         if (allProperties.indexOf(prop) < 3) {
@@ -674,7 +730,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         return transformedProperty;
       }).filter((prop: any) => prop.latitude && prop.longitude); // Only include geocoded properties
       
-      console.log(`🏠 Loaded ${allProperties.length} geocoded properties from AstraDB Tabular`);
+      console.log(`🏠 Loaded ${allProperties.length} geocoded properties from Supabase`);
       
       // Debug: Check final Park Street property after transformation
       const finalParkStreetProp = allProperties.find(p => p.address && p.address.includes('Park Street'));
@@ -694,11 +750,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       // If backend returns no properties, log it but don't use mock data
       if (propertiesToDisplay.length === 0) {
-        console.warn('⚠️ No properties found in AstraDB Tabular. Upload documents to see properties on map.');
+        console.warn('⚠️ No properties found in Supabase. Upload documents to see properties on map.');
       }
       
       // REMOVED: 1,656 lines of hardcoded mock data
-      // Now using real data from AstraDB Tabular
+      // Now using real data from Supabase
       
       const mockProperties = propertiesToDisplay; // Renamed for compatibility with existing code below
       
@@ -720,7 +776,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           features: "Garden, Parking, Modern Kitchen",
           condition: 8,
           similarity: 95,
-          image: "https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=400&h=300&fit=crop&crop=center&auto=format&q=80",
+          image: "/property-1.png",
           agent: {
             name: "Jerome Bell",
             company: "harperjamesproperty36"
@@ -2362,7 +2418,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       ];
 
       // Show ALL properties from backend (no complex filtering for now)
-      console.log(`🗺️ Displaying ${mockProperties.length} properties from AstraDB Tabular`);
+      console.log(`🗺️ Displaying ${mockProperties.length} properties from Supabase`);
       console.log('Properties:', mockProperties.map(p => ({ id: p.id, address: p.address })));
       
       // Use all properties (filtering disabled for now to show everything)
@@ -2675,6 +2731,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Update the selected property state
         setSelectedProperty(property);
         setShowPropertyCard(true);
+        setIsExpanded(false); // Reset expanded state for new property
+        setShowFullDescription(false); // Reset description state for new property
         
         // Calculate position using map.project
         const geometry = feature.geometry as GeoJSON.Point;
@@ -3504,13 +3562,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               style={{
                 position: 'fixed',
                 right: '40px',
-                bottom: '200px', // Moved up to avoid search bar overlap
+                top: '80px', // Position from top to ensure visibility
                 zIndex: 9999,
                 transform: 'translateX(0)'
               }}
             >
               <div 
-                className="overflow-hidden w-80"
+                className="overflow-hidden w-80 flex flex-col"
                 style={{
                   background: 'rgba(255, 255, 255, 0.1)',
                   backdropFilter: 'blur(20px)',
@@ -3556,8 +3614,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   </div>
                 </div>
 
-                {/* Property Details */}
-                <div className="px-4 pb-4 space-y-3">
+                {/* Property Details - Scrollable Content */}
+                <div 
+                  className="flex-1 overflow-y-auto px-4 pb-4 space-y-3 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent"
+                  style={{ 
+                    maxHeight: isExpanded ? 'calc(80vh - 300px)' : '400px' 
+                  }}
+                >
                   {/* Address */}
                   <div>
                     <h3 className="text-base font-semibold text-gray-900 leading-tight">
@@ -3573,11 +3636,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                           Sale Comparable
                         </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                          Property Comparable
-                        </span>
-                      )}
+                      ) : null
+                    }
                     </div>
                   </div>
 
@@ -3619,11 +3679,6 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         </div>
                         <div className="text-xs text-gray-500 truncate">
                           @{selectedProperty.agent?.company || 'harperjamesproperty36'}
-                        </div>
-                        <div className="flex items-center space-x-1 mt-1">
-                          {[...Array(5)].map((_, i) => (
-                            <span key={i} className="text-yellow-400 text-xs">★</span>
-                          ))}
                         </div>
                       </div>
                     </div>
@@ -3674,18 +3729,108 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   <div className="pt-2">
                     <div className="text-sm font-medium text-gray-900 mb-1">Features</div>
                     <div className="text-sm text-gray-600">
-                      {selectedProperty.features || 'Open Plan Living, Garden, Parking'}
+                      {truncateText(selectedProperty.features || 'Open Plan Living, Garden, Parking', 120)}
                     </div>
                   </div>
 
                   {/* Summary */}
                   <div className="pt-2">
                     <div className="text-sm text-gray-600 leading-relaxed">
-                      {selectedProperty.summary || 'Contemporary 3-bedroom semi-detached house'}
+                      {(() => {
+                        const summary = selectedProperty.summary || 'Contemporary 3-bedroom semi-detached house';
+                        const isLong = summary.length > 200;
+                        
+                        if (!isLong || showFullDescription) {
+                          return summary;
+                        }
+                        
+                        return (
+                          <>
+                            {truncateText(summary, 200)}
+                            <button
+                              onClick={() => setShowFullDescription(true)}
+                              className="text-blue-600 hover:text-blue-800 font-medium ml-1"
+                            >
+                              Read more
+                            </button>
+                          </>
+                        );
+                      })()}
                     </div>
+                    {showFullDescription && (() => {
+                      const summary = selectedProperty.summary || 'Contemporary 3-bedroom semi-detached house';
+                      return summary.length > 200 ? (
+                        <button
+                          onClick={() => setShowFullDescription(false)}
+                          className="text-blue-600 hover:text-blue-800 font-medium text-sm mt-1"
+                        >
+                          Show less
+                        </button>
+                      ) : null;
+                    })()}
                   </div>
 
-                  {/* Action Buttons */}
+                  {/* Expanded Content - Only show when expanded */}
+                  {isExpanded && (
+                    <>
+                      {/* Additional Details */}
+                      <div className="pt-2">
+                        <div className="text-sm font-medium text-gray-900 mb-1">Additional Details</div>
+                        <div className="text-sm text-gray-600 space-y-1">
+                          <div>Days on Market: {selectedProperty.days_on_market || 'N/A'}</div>
+                          <div>Condition: {selectedProperty.condition || 'N/A'}/10</div>
+                          <div>EPC Rating: {selectedProperty.epc_rating || 'N/A'}</div>
+                          <div>Tenure: {selectedProperty.tenure || 'N/A'}</div>
+                          {selectedProperty.transaction_date && (
+                            <div>Transaction Date: {selectedProperty.transaction_date}</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Price History */}
+                      {(selectedProperty.soldPrice > 0 || selectedProperty.askingPrice > 0) && (
+                        <div className="pt-2">
+                          <div className="text-sm font-medium text-gray-900 mb-1">Price History</div>
+                          <div className="text-sm text-gray-600 space-y-1">
+                            {selectedProperty.soldPrice > 0 && (
+                              <div>Sold Price: £{selectedProperty.soldPrice.toLocaleString()}</div>
+                            )}
+                            {selectedProperty.askingPrice > 0 && (
+                              <div>Asking Price: £{selectedProperty.askingPrice.toLocaleString()}</div>
+                            )}
+                            {selectedProperty.rentPcm > 0 && (
+                              <div>Rent PCM: £{selectedProperty.rentPcm.toLocaleString()}</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Location Details */}
+                      <div className="pt-2">
+                        <div className="text-sm font-medium text-gray-900 mb-1">Location</div>
+                        <div className="text-sm text-gray-600">
+                          <div>Latitude: {selectedProperty.latitude?.toFixed(6)}</div>
+                          <div>Longitude: {selectedProperty.longitude?.toFixed(6)}</div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Scroll Indicator - Only show when expanded and there's scrollable content */}
+                  {isExpanded && (
+                    <div className="flex justify-center py-2">
+                      <div className="text-xs text-gray-400 flex items-center">
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                        </svg>
+                        Scroll for more details
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons - Always visible at bottom */}
+                <div className="px-4 pb-4 bg-white/10 backdrop-blur-sm border-t border-white/20">
                   <div className="flex space-x-3 pt-4">
                     <button
                       onClick={() => setShowPropertyCard(false)}
@@ -3693,8 +3838,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     >
                       Close
                     </button>
-                    <button className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-900 transition-colors duration-200">
-                      View More
+                    <button 
+                      onClick={() => setIsExpanded(!isExpanded)}
+                      className="flex-1 px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-md hover:bg-gray-900 transition-colors duration-200"
+                    >
+                      {isExpanded ? 'Show Less' : 'View More'}
                     </button>
                   </div>
                 </div>

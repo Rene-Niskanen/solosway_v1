@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronLeft, ChevronRight, Scan, MapPin } from "lucide-react";
 import { MapPopup } from './MapPopup';
 import { SquareMap } from './SquareMap';
+import { PropertyImages } from './PropertyImages';
 
 // Import property images
 import property1 from "@/assets/property-1.jpg";
@@ -30,6 +31,18 @@ export interface PropertyData {
   condition: number;
   similarity: number;
   image: string;
+  // Property images from backend
+  property_images?: Array<{
+    url: string;
+    filename: string;
+    extracted_at: string;
+    image_index: number;
+    size_bytes: number;
+  }>;
+  image_count?: number;
+  primary_image_url?: string;
+  has_images?: boolean;
+  total_images?: number;
   agent: {
     name: string;
     company: string;
@@ -266,6 +279,18 @@ export default function PropertyResultsDisplay({
             </div>
           </div>
 
+          {/* Property Images Section */}
+          {(currentProperty.has_images || currentProperty.image_count > 0) && (
+            <div className="mt-6">
+              <PropertyImages
+                images={currentProperty.property_images || []}
+                primaryImageUrl={currentProperty.primary_image_url}
+                imageCount={currentProperty.image_count || 0}
+                propertyAddress={currentProperty.address}
+              />
+            </div>
+          )}
+
           {/* Property Counter & Navigation */}
           <div className="mt-4 pt-4 border-t border-slate-100">
             <div className="flex items-center justify-between">
@@ -333,7 +358,6 @@ export default function PropertyResultsDisplay({
                   onLocationUpdate={() => {}}
                   onSearch={() => {}}
                   hasPerformedSearch={true}
-                  properties={convertPropertiesToMapFormat(properties)}
                 />
               </div>
             </motion.div>

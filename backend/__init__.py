@@ -4,7 +4,7 @@ from os import path
 from flask_login import LoginManager
 from dotenv import load_dotenv
 import os
-from flask_migrate import Migrate
+# flask_migrate removed - using Supabase for schema management
 from flask_cors import CORS
 from .config import Config
 from .celery_utils import celery_init_app
@@ -12,7 +12,6 @@ from .celery_utils import celery_init_app
 
 # Create the database connection
 db = SQLAlchemy()
-migrate = Migrate()
 
 def create_app():
     load_dotenv() # Load environment variables from .env file
@@ -40,7 +39,6 @@ def create_app():
     
     # Initialize extensions
     db.init_app(app)
-    migrate.init_app(app, db)
     
     # Celery initialization
     celery_app = celery_init_app(app)
@@ -75,20 +73,19 @@ def create_app():
     app.register_blueprint(admin, url_prefix='/')
 
 
-    from .models import User, Appraisal, ComparableProperty, ChatMessage, PropertyData, Document, ExtractedProperty
+    from .models import User, Document
     
     # Import tasks to register them with Celery
     from . import tasks
     
     with app.app_context():
-        # db.create_all() is now handled by flask db migrate
+        # Database schema managed by Supabase
         pass
 
     return app
 
 def create_database(app):
-    # This function is deprecated in favor of using Flask-Migrate.
-    # The database tables are now created and managed via migration scripts.
+    # Database tables are managed by Supabase schema
     pass
 
 
