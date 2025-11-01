@@ -1,15 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { ChevronLeft, ChevronRight, Image as ImageIcon, Eye } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Image as ImageIcon, Eye, Star, Download, RefreshCw, Settings } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 
 interface PropertyImage {
   url: string;
   filename: string;
+  original_name?: string;
   extracted_at: string;
-  image_index: number;
+  page_number?: number;
+  dimensions?: string;
+  classification?: {
+    score: number;
+    confidence: number;
+    reasons: string[];
+    is_property_photo: boolean;
+  };
+  description?: string;
+  storage_provider?: string;
+  storage_path?: string;
   size_bytes: number;
+  format?: string;
+  upload_attempts?: number;
 }
 
 interface PropertyImagesProps {
@@ -17,16 +31,34 @@ interface PropertyImagesProps {
   primaryImageUrl?: string;
   imageCount: number;
   propertyAddress?: string;
+  propertyId?: string;
+  onSetPrimaryImage?: (imageUrl: string) => void;
+  onOptimizeImages?: () => void;
 }
 
 export const PropertyImages: React.FC<PropertyImagesProps> = ({ 
   images, 
   primaryImageUrl, 
   imageCount,
-  propertyAddress 
+  propertyAddress,
+  propertyId,
+  onSetPrimaryImage,
+  onOptimizeImages
 }) => {
   const [selectedImage, setSelectedImage] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Auto-select primary image if available
+  useEffect(() => {
+    if (primaryImageUrl && images.length > 0) {
+      const primaryIndex = images.findIndex(img => img.url === primaryImageUrl);
+      if (primaryIndex !== -1) {
+        setSelectedImage(primaryIndex);
+      }
+    }
+  }, [primaryImageUrl, images]);
 
   if (imageCount === 0) {
     return (
@@ -63,6 +95,36 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
+  const handleSetPrimary = () => {
+    if (currentImage && onSetPrimaryImage) {
+      onSetPrimaryImage(currentImage.url);
+    }
+  };
+
+  const handleOptimize = async () => {
+    if (onOptimizeImages) {
+      setIsOptimizing(true);
+      try {
+        await onOptimizeImages();
+      } finally {
+        setIsOptimizing(false);
+      }
+    }
+  };
+
+  const getClassificationBadge = (classification?: PropertyImage['classification']) => {
+    if (!classification) return null;
+    
+    const { score, confidence, is_property_photo } = classification;
+    const badgeColor = is_property_photo ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
+    
+    return (
+      <Badge className={badgeColor}>
+        {is_property_photo ? 'Property Photo' : 'Other Image'} ({Math.round(confidence * 100)}%)
+      </Badge>
+    );
+  };
+
   return (
     <Card className="w-full">
       <CardContent className="p-6">
@@ -71,18 +133,52 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
             <ImageIcon className="h-5 w-5 text-blue-600" />
             <h3 className="text-lg font-semibold">Property Images</h3>
             <Badge variant="secondary">{imageCount} image{imageCount !== 1 ? 's' : ''}</Badge>
+            {currentImage?.classification && getClassificationBadge(currentImage.classification)}
           </div>
-          {images.length > 1 && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsFullscreen(true)}
-              className="flex items-center gap-2"
-            >
-              <Eye className="h-4 w-4" />
-              View Fullscreen
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {images.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsFullscreen(true)}
+                className="flex items-center gap-2"
+              >
+                <Eye className="h-4 w-4" />
+                View Fullscreen
+              </Button>
+            )}
+            <Dialog open={showSettings} onOpenChange={setShowSettings}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Image Settings</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <Button
+                    onClick={handleSetPrimary}
+                    className="w-full flex items-center gap-2"
+                    disabled={currentImage?.url === primaryImageUrl}
+                  >
+                    <Star className="h-4 w-4" />
+                    Set as Primary Image
+                  </Button>
+                  <Button
+                    onClick={handleOptimize}
+                    className="w-full flex items-center gap-2"
+                    disabled={isOptimizing}
+                    variant="outline"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isOptimizing ? 'animate-spin' : ''}`} />
+                    {isOptimizing ? 'Optimizing...' : 'Remove Duplicates'}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         {/* Main Image Display */}
@@ -104,6 +200,14 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
               </div>
             )}
           </div>
+
+          {/* Primary Image Indicator */}
+          {currentImage?.url === primaryImageUrl && (
+            <div className="absolute top-2 left-2 bg-blue-600 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+              <Star className="h-3 w-3" />
+              Primary
+            </div>
+          )}
 
           {/* Navigation Arrows */}
           {images.length > 1 && (
@@ -142,7 +246,7 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
               <button
                 key={index}
                 onClick={() => setSelectedImage(index)}
-                className={`flex-shrink-0 w-16 h-16 rounded overflow-hidden border-2 transition-all ${
+                className={`flex-shrink-0 w-16 h-16 rounded overflow-hidden border-2 transition-all relative ${
                   selectedImage === index
                     ? 'border-blue-500 ring-2 ring-blue-200'
                     : 'border-gray-200 hover:border-gray-300'
@@ -157,18 +261,23 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
                     target.src = '/placeholder.svg';
                   }}
                 />
+                {image.url === primaryImageUrl && (
+                  <div className="absolute top-0 right-0 bg-blue-600 text-white text-xs px-1 rounded-bl">
+                    <Star className="h-2 w-2" />
+                  </div>
+                )}
               </button>
             ))}
           </div>
         )}
 
-        {/* Image Details */}
+        {/* Enhanced Image Details */}
         {currentImage && (
           <div className="mt-4 p-3 bg-gray-50 rounded-lg">
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="font-medium text-gray-700">Filename:</span>
-                <p className="text-gray-600 truncate">{currentImage.filename}</p>
+                <p className="text-gray-600 truncate">{currentImage.original_name || currentImage.filename}</p>
               </div>
               <div>
                 <span className="font-medium text-gray-700">Size:</span>
@@ -181,10 +290,36 @@ export const PropertyImages: React.FC<PropertyImagesProps> = ({
                 </p>
               </div>
               <div>
-                <span className="font-medium text-gray-700">Index:</span>
-                <p className="text-gray-600">{currentImage.image_index + 1}</p>
+                <span className="font-medium text-gray-700">Dimensions:</span>
+                <p className="text-gray-600">{currentImage.dimensions || 'Unknown'}</p>
               </div>
+              {currentImage.page_number && (
+                <div>
+                  <span className="font-medium text-gray-700">Page:</span>
+                  <p className="text-gray-600">{currentImage.page_number}</p>
+                </div>
+              )}
+              {currentImage.format && (
+                <div>
+                  <span className="font-medium text-gray-700">Format:</span>
+                  <p className="text-gray-600">{currentImage.format.toUpperCase()}</p>
+                </div>
+              )}
             </div>
+            
+            {/* Classification Details */}
+            {currentImage.classification && (
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <span className="font-medium text-gray-700">Classification:</span>
+                <div className="mt-1">
+                  {getClassificationBadge(currentImage.classification)}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Score: {currentImage.classification.score.toFixed(2)} | 
+                    Reasons: {currentImage.classification.reasons.join(', ')}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

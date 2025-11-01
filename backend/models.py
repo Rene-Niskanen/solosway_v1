@@ -176,7 +176,7 @@ class Property(db.Model):
 
 
 class PropertyDetails(db.Model):
-    """Enriched property details from multiple documents"""
+    """Enriched property details from multiple documents with enhanced image support"""
     __tablename__ = 'property_details'
     
     property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'), primary_key=True)
@@ -199,6 +199,13 @@ class PropertyDetails(db.Model):
     source_documents = db.Column(db.JSON, default=list)  # Array of document IDs that contributed to this data
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Enhanced image support
+    property_images = db.Column(db.JSON, default=list)  # Array of image metadata objects
+    image_count = db.Column(db.Integer, default=0)  # Total number of property images
+    primary_image_url = db.Column(db.String(500))  # URL of the primary/featured image
+    image_metadata = db.Column(db.JSON)  # Additional image processing metadata
+    image_extraction_stats = db.Column(db.JSON)  # Statistics about image extraction process
     
     # Relationships
     property = db.relationship('Property', back_populates='details')
@@ -223,7 +230,13 @@ class PropertyDetails(db.Model):
             'data_sources': self.data_sources,
             'data_quality_score': self.data_quality_score,
             'last_enrichment': self.last_enrichment.isoformat() if self.last_enrichment else None,
-            'source_documents': self.source_documents
+            'source_documents': self.source_documents,
+            # Enhanced image fields
+            'property_images': self.property_images or [],
+            'image_count': self.image_count or 0,
+            'primary_image_url': self.primary_image_url,
+            'image_metadata': self.image_metadata or {},
+            'image_extraction_stats': self.image_extraction_stats or {}
         }
 
 class DocumentRelationship(db.Model):

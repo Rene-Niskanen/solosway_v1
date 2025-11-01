@@ -2161,3 +2161,178 @@ def test_property_matching():
             'error': str(e)
         }), 500
 
+@views.route('/api/property-images/<uuid:property_id>', methods=['GET'])
+@login_required
+def get_property_images(property_id):
+    """Get all images for a specific property"""
+    try:
+        from .services.storage_service import StorageService
+        from .models import Property, PropertyDetails
+        
+        # Get property details
+        property_details = PropertyDetails.query.filter_by(property_id=property_id).first()
+        if not property_details:
+            return jsonify({'error': 'Property not found'}), 404
+        
+        # Get images from storage service
+        storage_service = StorageService()
+        business_id = property_details.property.business_id if property_details.property else None
+        
+        if not business_id:
+            return jsonify({'error': 'Business ID not found'}), 400
+        
+        # Get images from all related documents
+        all_images = []
+        if property_details.property and property_details.property.document_relationships:
+            for relationship in property_details.property.document_relationships:
+                doc_images = storage_service.list_property_images(business_id, str(relationship.document_id))
+                all_images.extend(doc_images)
+        
+        # Remove duplicates based on image hash
+        unique_images = []
+        seen_hashes = set()
+        for img in all_images:
+            metadata = img.get('metadata', {})
+            image_hash = metadata.get('image_hash')
+            if image_hash and image_hash not in seen_hashes:
+                seen_hashes.add(image_hash)
+                unique_images.append(img)
+            elif not image_hash:
+                unique_images.append(img)
+        
+        return jsonify({
+            'property_id': str(property_id),
+            'image_count': len(unique_images),
+            'images': unique_images,
+            'primary_image_url': property_details.primary_image_url,
+            'image_metadata': property_details.image_metadata or {}
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting property images: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@views.route('/api/property-images/<uuid:property_id>/optimize', methods=['POST'])
+@login_required
+def optimize_property_images(property_id):
+    """Optimize property images by removing duplicates"""
+    try:
+        from .services.storage_service import StorageService
+        from .models import Property, PropertyDetails
+        
+        # Get property details
+        property_details = PropertyDetails.query.filter_by(property_id=property_id).first()
+        if not property_details:
+            return jsonify({'error': 'Property not found'}), 404
+        
+        business_id = property_details.property.business_id if property_details.property else None
+        if not business_id:
+            return jsonify({'error': 'Business ID not found'}), 400
+        
+        # Optimize images
+        storage_service = StorageService()
+        optimization_result = storage_service.optimize_image_storage(business_id, str(property_id))
+        
+        # Update property details with optimization stats
+        if optimization_result['success']:
+            property_details.image_extraction_stats = {
+                'last_optimization': datetime.utcnow().isoformat(),
+                'optimization_result': optimization_result
+            }
+            db.session.commit()
+        
+        return jsonify(optimization_result)
+        
+    except Exception as e:
+        logger.error(f"Error optimizing property images: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@views.route('/api/property-images/<uuid:property_id>/primary', methods=['POST'])
+@login_required
+def set_primary_property_image(property_id):
+    """Set a primary image for a property"""
+    try:
+        from .models import PropertyDetails
+        
+        data = request.get_json()
+        image_url = data.get('image_url')
+        
+        if not image_url:
+            return jsonify({'error': 'Image URL is required'}), 400
+        
+        # Update property details
+        property_details = PropertyDetails.query.filter_by(property_id=property_id).first()
+        if not property_details:
+            return jsonify({'error': 'Property not found'}), 404
+        
+        property_details.primary_image_url = image_url
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'property_id': str(property_id),
+            'primary_image_url': image_url
+        })
+        
+    except Exception as e:
+        logger.error(f"Error setting primary image: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@views.route('/api/property-images/<uuid:property_id>/stats', methods=['GET'])
+@login_required
+def get_property_image_stats(property_id):
+    """Get image extraction statistics for a property"""
+    try:
+        from .models import PropertyDetails
+        
+        property_details = PropertyDetails.query.filter_by(property_id=property_id).first()
+        if not property_details:
+            return jsonify({'error': 'Property not found'}), 404
+        
+        return jsonify({
+            'property_id': str(property_id),
+            'image_count': property_details.image_count or 0,
+            'primary_image_url': property_details.primary_image_url,
+            'image_metadata': property_details.image_metadata or {},
+            'image_extraction_stats': property_details.image_extraction_stats or {},
+            'last_enrichment': property_details.last_enrichment.isoformat() if property_details.last_enrichment else None
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting image stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@views.route('/api/image-extraction/analytics', methods=['GET'])
+@login_required
+def get_image_extraction_analytics():
+    """Get image extraction analytics and performance metrics"""
+    try:
+        from .services.image_extraction_analytics_service import ImageExtractionAnalyticsService
+        
+        business_id = current_user.company_name
+        days = request.args.get('days', 30, type=int)
+        
+        analytics_service = ImageExtractionAnalyticsService()
+        
+        # Get statistics
+        stats = analytics_service.get_extraction_statistics(business_id, days)
+        
+        # Get daily metrics
+        daily_metrics = analytics_service.get_daily_metrics(business_id, min(days, 7))
+        
+        # Get performance insights
+        insights = analytics_service.get_performance_insights(business_id, days)
+        
+        return jsonify({
+            'success': True,
+            'statistics': stats,
+            'daily_metrics': daily_metrics,
+            'insights': insights,
+            'business_id': business_id,
+            'period_days': days
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting image extraction analytics: {e}")
+        return jsonify({'error': str(e)}), 500
+

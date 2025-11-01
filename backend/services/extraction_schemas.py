@@ -71,6 +71,36 @@ SUBJECT_PROPERTY_EXTRACTION_SCHEMA = {
                 "notes": {
                     "type": "string",
                     "description": "Additional notes about the subject property."
+                },
+                "property_images": {
+                    "type": "array",
+                    "description": "List of property images extracted from the PDF. Each image must be base64-encoded.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "image": {
+                                "type": "string",
+                                "description": "Base64-encoded image extracted from the PDF"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Description of the image (e.g., 'exterior front view', 'floor plan', 'kitchen', 'bedroom')"
+                            },
+                            "image_type": {
+                                "type": "string",
+                                "description": "Type of image (e.g., 'photo', 'floor_plan', 'diagram', 'chart')"
+                            },
+                            "page_number": {
+                                "type": "number",
+                                "description": "Page number where this image appears in the document"
+                            }
+                        },
+                        "required": ["image"]
+                    }
+                },
+                "primary_image": {
+                    "type": "string",
+                    "description": "Base64-encoded image extracted from the PDF. Primary/featured property image, usually the best exterior photo or main property image."
                 }
             },
             # CRITICAL: Only require the most essential fields

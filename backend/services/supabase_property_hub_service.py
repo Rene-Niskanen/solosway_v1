@@ -197,7 +197,11 @@ class SupabasePropertyHubService:
                     if value is not None and value != '':
                         # Only update if existing value is null or if new value is more recent
                         if existing_details.get(key) is None or existing_details.get(key) == '':
-                            update_data[key] = value
+                            # Convert float to int for bedrooms/bathrooms
+                            if key in ['number_bedrooms', 'number_bathrooms']:
+                                update_data[key] = int(value) if isinstance(value, (int, float)) else value
+                            else:
+                                update_data[key] = value
                 
                 # Always update metadata fields
                 update_data.update({
@@ -229,8 +233,8 @@ class SupabasePropertyHubService:
                 'property_type': extracted_data.get('property_type'),
                 'size_sqft': extracted_data.get('size_sqft'),
                 'size_unit': extracted_data.get('size_unit'),
-                'number_bedrooms': extracted_data.get('number_bedrooms'),
-                'number_bathrooms': extracted_data.get('number_bathrooms'),
+                'number_bedrooms': int(extracted_data.get('number_bedrooms')) if extracted_data.get('number_bedrooms') is not None else None,
+                'number_bathrooms': int(extracted_data.get('number_bathrooms')) if extracted_data.get('number_bathrooms') is not None else None,
                 'tenure': extracted_data.get('tenure'),
                 'epc_rating': extracted_data.get('epc_rating'),
                 'condition': extracted_data.get('condition'),
@@ -249,7 +253,7 @@ class SupabasePropertyHubService:
                 'lease_details': extracted_data.get('lease_details'),
                 'listed_building_grade': extracted_data.get('listed_building_grade'),
                 'notes': extracted_data.get('notes'),
-                'property_images': extracted_data.get('property_images', []),
+                'property_images': extracted_data.get('property_images') or [],
                 'image_count': extracted_data.get('image_count', 0),
                 'primary_image_url': extracted_data.get('primary_image_url'),
                 'image_metadata': extracted_data.get('image_metadata', {}),

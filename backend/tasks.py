@@ -3,7 +3,7 @@ import boto3
 from celery import shared_task
 import time
 from .models import db, Document, DocumentStatus
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 import uuid
 import requests
@@ -560,15 +560,25 @@ def clean_extracted_property(property_data):
     numeric_fields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm', 'price_per_sqft', 'yield_percentage']
     for field in numeric_fields:
         value = property_data.get(field)
-        if value:
-            # Extract first number from strings like "5 (all en-suites)"
+        if value is not None:
             import re
             if isinstance(value, str):
+                # Extract first number from strings like "5 (all en-suites)"
                 match = re.search(r'(\d+(?:\.\d+)?)', value)
+                if match:
                 if field in ['number_bedrooms', 'number_bathrooms']:
-                    cleaned[field] = int(match.group(1)) if match else None
+                        # Always convert to int for bedrooms/bathrooms
+                        cleaned[field] = int(float(match.group(1)))
                 else:
-                    cleaned[field] = float(match.group(1)) if match else None
+                        cleaned[field] = float(match.group(1))
+                else:
+                    cleaned[field] = None
+            elif isinstance(value, (int, float)):
+                # Handle numeric values - convert floats to ints for bedrooms/bathrooms
+                if field in ['number_bedrooms', 'number_bathrooms']:
+                    cleaned[field] = int(value)  # Convert float to int
+                else:
+                    cleaned[field] = float(value) if isinstance(value, float) else value
             else:
                 cleaned[field] = value
         else:
@@ -582,81 +592,7 @@ def clean_extracted_property(property_data):
     return cleaned
 
 
-def extract_images_from_document(temp_file_path, document_id, business_id):
-    """Extract images from document and upload using unified storage service"""
-    from .services.storage_service import StorageService
-    from datetime import datetime
-    
-    try:
-        # Initialize storage service
-        storage_service = StorageService()
-        
-        # Use LlamaParse to extract images
-        parser = LlamaParse(
-            api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-            result_type="markdown",
-            verbose=True
-        )
-        
-        # Extract images from document
-        parsed_docs = parser.load_data(temp_file_path)
-        
-        extracted_images = []
-        image_count = 0
-        
-        for doc in parsed_docs:
-            if hasattr(doc, 'images') and doc.images:
-                for i, image_data in enumerate(doc.images):
-                    try:
-                        # Generate unique image filename
-                        image_filename = f"property_{document_id}_{image_count}_{i}.jpg"
-                        
-                        # Upload using storage service (prefers Supabase, falls back to S3)
-                        upload_result = storage_service.upload_property_image(
-                            image_data=image_data,
-                            filename=image_filename,
-                            business_id=business_id,
-                            document_id=document_id,
-                            preferred_storage='supabase'  # Prefer Supabase Storage
-                        )
-                        
-                        if upload_result['success']:
-                            # Store image metadata
-                            image_metadata = {
-                                'url': upload_result['url'],
-                                'filename': image_filename,
-                                'extracted_at': datetime.utcnow().isoformat(),
-                                'document_id': str(document_id),
-                                'image_index': i,
-                                'size_bytes': len(image_data),
-                                'storage_provider': upload_result['storage_provider'],
-                                'storage_path': upload_result['path']
-                            }
-                            
-                            extracted_images.append(image_metadata)
-                            image_count += 1
-                            
-                            print(f"✅ Extracted image {i+1}: {image_filename} (stored in {upload_result['storage_provider']})")
-                        else:
-                            print(f"❌ Failed to upload image {i+1}: {upload_result['error']}")
-                        
-                    except Exception as e:
-                        print(f"❌ Error processing image {i}: {e}")
-                        continue
-        
-        return {
-            'images': extracted_images,
-            'image_count': image_count,
-            'primary_image_url': extracted_images[0]['url'] if extracted_images else None
-        }
-        
-    except Exception as e:
-        print(f"❌ Error extracting images: {e}")
-        return {
-            'images': [],
-            'image_count': 0,
-            'primary_image_url': None
-        }
+# Old extract_images_from_document function removed - now using ImageExtractionService
 
 # Old schema removed - using extraction_schemas.py instead
 
@@ -1266,37 +1202,41 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             print(f"Processing document for business_id: {business_id}")
             print(f"Image extraction directory: {temp_image_dir}")
         
-            # --- 2. Parse with LlamaParse (with image extraction enabled) ---
+            # --- 2. Parse with LlamaParse (text only - images via LlamaExtract schema) ---
             parser = LlamaParse(
                 api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-                result_type="markdown",
-                verbose=True
+                result_type="markdown",  # or "text" - we just need text for extraction
+                verbose=False,  # Reduce logging overhead
+                language="en"
             )
-            file_extractor = {
-                ".pdf": parser,
-                ".docx": parser,
-                ".doc": parser,
-                ".pptx": parser,
-                ".ppt": parser
-            }
-            reader = SimpleDirectoryReader(input_dir=temp_dir, file_extractor=file_extractor)
-            parsed_docs = reader.load_data()
-            print("LlamaParse API call completed.")
+            
+            # Use aparse to get the JobResult object
+            import asyncio
+            llama_parse_result = asyncio.run(parser.aparse(temp_file_path))
+            
+            # Extract pages from result
+            parsed_docs = None
+            if hasattr(llama_parse_result, 'pages'):
+                parsed_docs = llama_parse_result.pages
+            elif isinstance(llama_parse_result, (list, tuple)):
+                parsed_docs = llama_parse_result
+            elif isinstance(llama_parse_result, dict):
+                parsed_docs = llama_parse_result.get('pages', [])
+            
+            if not parsed_docs:
+                parsed_docs = []
+            
+            print(f"✅ Parsed document: {len(parsed_docs)} pages")
 
             # --- Content Validation ---
-            has_content = any(doc.text and doc.text.strip() not in ['', 'NO_CONTENT_HERE'] for doc in parsed_docs)
+            has_content = any(hasattr(page, 'text') and page.text and page.text.strip() not in ['', 'NO_CONTENT_HERE'] for page in parsed_docs)
             if not has_content:
                 raise ValueError("LlamaParse did not return any meaningful content.")
-
-            # Add business_id to metadata for multi-tenancy
-            for doc in parsed_docs:
-                doc.metadata["business_id"] = str(business_id)
-                doc.metadata["document_id"] = str(document_id)
 
             # Content validation completed
 
             # Extract text from parsed documents for fallback
-            document_text = "\n".join([doc.text for doc in parsed_docs])
+            document_text = "\n".join([page.text for page in parsed_docs if hasattr(page, 'text') and page.text])
             print(f"📄 Extracted {len(document_text)} characters of text for processing")
 
             # --- 3. Extract structured data using LlamaExtract with timeout handling ---
@@ -1342,7 +1282,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         confidence_scores=False,
                     )
                     
-                    agent_name = f"advanced-pipeline-extraction"
+                    agent_name = f"advanced-pipeline-extraction-v2"
                     
                     try:
                         # Step 1: Try to get existing agent first (most efficient)
@@ -1478,6 +1418,56 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
                     print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
                     print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
+                    
+                    # Process images from LlamaExtract schema result
+                    # Handle null values from LlamaExtract (null becomes None in Python)
+                    property_images_data = subject_property.get('property_images') or []
+                    if property_images_data is None:
+                        property_images_data = []
+                    primary_image = subject_property.get('primary_image')
+                    
+                    if property_images_data or primary_image:
+                        print(f"🖼️ Processing {len(property_images_data)} images from extraction schema...")
+                        
+                        try:
+                            from .services.image_extraction_service import ImageExtractionService
+                            image_service = ImageExtractionService()
+                            
+                            processed_images = image_service.process_extraction_schema_images(
+                                images_data=property_images_data,
+                                primary_image=primary_image,
+                                document_id=str(document_id),
+                                business_id=business_id,
+                                property_id=None  # Will be linked later
+                            )
+                            
+                            # Add processed images to subject_property
+                            subject_property['property_images'] = processed_images['images']
+                            subject_property['image_count'] = processed_images['image_count']
+                            subject_property['primary_image_url'] = processed_images['primary_image_url']
+                            subject_property['image_metadata'] = {
+                                'extraction_method': 'llamæxtract_schema',
+                                'extraction_timestamp': datetime.utcnow().isoformat(),
+                                'total_extracted': len(property_images_data),
+                                'successful_uploads': processed_images['image_count']
+                            }
+                            
+                            print(f"✅ Processed {processed_images['image_count']} images from extraction schema")
+                        except Exception as e:
+                            print(f"⚠️ Failed to process images from extraction schema: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Set defaults if processing fails
+                            subject_property['property_images'] = []
+                            subject_property['image_count'] = 0
+                            subject_property['primary_image_url'] = None
+                            subject_property['image_metadata'] = {}
+                    else:
+                        print("ℹ️ No images found in extraction schema result")
+                        subject_property['property_images'] = []
+                        subject_property['image_count'] = 0
+                        subject_property['primary_image_url'] = None
+                        subject_property['image_metadata'] = {}
                 else:
                     print("   ❌ No subject property found in extraction results")
                     subject_properties = []
@@ -1500,23 +1490,17 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Update the property with cleaned address
                         subject_properties[0]['property_address'] = cleaned_address
-                
-                        print(f"📄 Extraction Results:")
-                        print(f"   Subject property: {subject_property}")
-                if subject_property:
-                    print(f"   ✅ Successfully extracted subject property")
-                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
-                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
-                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
-                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
-                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
-                else:
-                    print("   ❌ No subject property found in extraction results")
             else:
                 # Handle object-style response
                 subject_property = getattr(extracted_data, 'subject_property', None)
                 
                 if subject_property:
+                    # Convert to dict if needed
+                    if hasattr(subject_property, '__dict__'):
+                        subject_property = subject_property.__dict__
+                    elif hasattr(subject_property, 'dict'):
+                        subject_property = subject_property.dict()
+                    
                     # Clean the data before processing
                     subject_property = clean_extracted_property(subject_property)
                     subject_properties = [subject_property]
@@ -1527,6 +1511,56 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
                     print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
                     print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
+                    
+                    # Process images from LlamaExtract schema result
+                    # Handle null values from LlamaExtract (null becomes None in Python)
+                    property_images_data = subject_property.get('property_images') or []
+                    if property_images_data is None:
+                        property_images_data = []
+                    primary_image = subject_property.get('primary_image')
+                    
+                    if property_images_data or primary_image:
+                        print(f"🖼️ Processing {len(property_images_data)} images from extraction schema...")
+                        
+                        try:
+                            from .services.image_extraction_service import ImageExtractionService
+                            image_service = ImageExtractionService()
+                            
+                            processed_images = image_service.process_extraction_schema_images(
+                                images_data=property_images_data,
+                                primary_image=primary_image,
+                                document_id=str(document_id),
+                                business_id=business_id,
+                                property_id=None  # Will be linked later
+                            )
+                            
+                            # Add processed images to subject_property
+                            subject_property['property_images'] = processed_images['images']
+                            subject_property['image_count'] = processed_images['image_count']
+                            subject_property['primary_image_url'] = processed_images['primary_image_url']
+                            subject_property['image_metadata'] = {
+                                'extraction_method': 'llamæxtract_schema',
+                                'extraction_timestamp': datetime.utcnow().isoformat(),
+                                'total_extracted': len(property_images_data),
+                                'successful_uploads': processed_images['image_count']
+                            }
+                            
+                            print(f"✅ Processed {processed_images['image_count']} images from extraction schema")
+                        except Exception as e:
+                            print(f"⚠️ Failed to process images from extraction schema: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            # Set defaults if processing fails
+                            subject_property['property_images'] = []
+                            subject_property['image_count'] = 0
+                            subject_property['primary_image_url'] = None
+                            subject_property['image_metadata'] = {}
+                    else:
+                        print("ℹ️ No images found in extraction schema result")
+                        subject_property['property_images'] = []
+                        subject_property['image_count'] = 0
+                        subject_property['primary_image_url'] = None
+                        subject_property['image_metadata'] = {}
                 else:
                     print("   ❌ No subject property found in extraction results")
                     subject_properties = []
@@ -1696,42 +1730,9 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 print("🔄 Property linking completed")
                 print("=" * 80)
 
-            # --- 4. Image processing (enabled) ---
-            print("🖼️ Starting property image extraction...")
-            
-            try:
-                image_extraction_result = extract_images_from_document(temp_file_path, document_id, business_id)
-                
-                if image_extraction_result['image_count'] > 0:
-                    print(f"✅ Extracted {image_extraction_result['image_count']} property images")
-                    
-                    # Store images in property data
-                    for prop in subject_properties:
-                        prop['property_images'] = image_extraction_result['images']
-                        prop['image_count'] = image_extraction_result['image_count']
-                        prop['primary_image_url'] = image_extraction_result['primary_image_url']
-                        prop['image_metadata'] = {
-                            'extraction_method': 'llamaparse',
-                            'total_images': image_extraction_result['image_count'],
-                            'extraction_timestamp': datetime.utcnow().isoformat()
-                        }
-                else:
-                    print("ℹ️ No images found in document")
-                    # Set default empty values
-                    for prop in subject_properties:
-                        prop['property_images'] = []
-                        prop['image_count'] = 0
-                        prop['primary_image_url'] = None
-                        prop['image_metadata'] = {}
-                        
-            except Exception as e:
-                print(f"⚠️ Image extraction failed: {e}")
-                # Continue without images - set default empty values
-                for prop in subject_properties:
-                    prop['property_images'] = []
-                    prop['image_count'] = 0
-                    prop['primary_image_url'] = None
-                    prop['image_metadata'] = {}
+            # --- 4. Images are now extracted via LlamaExtract schema ---
+            # Images have already been processed in Phase 2 (after subject_property extraction)
+            # No additional image extraction needed
             
             property_uuids = [uuid.uuid4() for _ in subject_properties]
             property_image_mapping = {}
@@ -1906,6 +1907,20 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
                 print("Cleanup of temporary files completed.") 
+
+# is_property_photo_adaptive function removed - now using ImageExtractionService._is_property_photo_adaptive
+
+
+# extract_property_images_from_multiple_documents function removed - now using ImageExtractionService
+
+
+# classify_image_type function removed - now using ImageExtractionService._classify_image_type
+
+
+# extract_images_from_markdown function removed - now using ImageExtractionService._extract_images_from_markdown
+
+
+# extract_images_from_document_enhanced function removed - now using ImageExtractionService.extract_images
 
 @shared_task(bind=True)
 def process_document_simple(self, document_id, file_content, original_filename, business_id):
