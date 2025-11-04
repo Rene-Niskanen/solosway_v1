@@ -123,6 +123,61 @@ class SupabasePropertyHubService:
         except Exception as e:
             logger.error(f"❌ Error creating property hub: {e}")
             return {'success': False, 'error': str(e)}
+
+    def recompute_property_after_document_deletion(self, property_id: str, deleted_document_id: str) -> Dict[str, Any]:
+        """
+        Recompute property hub fields after a document is deleted:
+          - remove images and any detail entries attributed to the deleted document
+          - remove the deleted document from source_documents array if present
+          - adjust image_count and primary_image_url accordingly
+
+        Note: This method is intentionally conservative and only removes data that can
+        be clearly attributed to the deleted document. Richer re-aggregation based on
+        remaining documents can be layered on top later.
+        """
+        try:
+            # Load current details
+            details_result = self.supabase.table('property_details').select('*').eq('property_id', property_id).execute()
+            if not details_result.data:
+                return {'success': True, 'message': 'no property_details to update'}
+
+            details = details_result.data[0]
+
+            # Remove images contributed by the deleted document
+            images = details.get('property_images') or []
+            filtered_images = []
+            for img in images:
+                # Support either explicit document linkage fields if present
+                src_doc_id = img.get('document_id') or img.get('source_document_id') or img.get('source_document')
+                if str(src_doc_id) != str(deleted_document_id):
+                    filtered_images.append(img)
+
+            # Remove the deleted document from source_documents array if present
+            source_docs = details.get('source_documents') or []
+            source_docs = [d for d in source_docs if str(d) != str(deleted_document_id)]
+
+            # Adjust primary image if necessary
+            primary_image_url = details.get('primary_image_url')
+            if primary_image_url and not any(img.get('url') == primary_image_url for img in filtered_images):
+                primary_image_url = filtered_images[0]['url'] if filtered_images else None
+
+            update = {
+                'property_images': filtered_images,
+                'image_count': len(filtered_images),
+                'primary_image_url': primary_image_url,
+                'source_documents': source_docs,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+
+            # Persist the updates
+            update_result = self.supabase.table('property_details').update(update).eq('property_id', property_id).execute()
+            if update_result.data is None:
+                return {'success': False, 'error': 'update failed'}
+
+            return {'success': True, 'updated_fields': list(update.keys())}
+        except Exception as e:
+            logger.warning(f"Property recompute after deletion failed: {e}")
+            return {'success': False, 'error': str(e)}
     
     def _create_supabase_property(self, property_id: str, address_data: Dict, business_id: str) -> Dict[str, Any]:
         """Create property in Supabase properties table"""
@@ -157,6 +212,17 @@ class SupabasePropertyHubService:
     def _create_document_relationship(self, document_id: str, property_id: str, business_id: str, address_data: Dict) -> Dict[str, Any]:
         """Create document relationship in Supabase"""
         try:
+            # check if relationship already exists
+            existing = self.supabase.table('document_relationships')\
+                .select('id')\
+                .eq('document_id', document_id)\
+                .eq('property_id', property_id)\
+                .execute()
+
+            if existing.data and len(existing.data) > 0:
+                logger.info(f"      Relationship already exists: {existing.data[0]['id']}")
+                return existing.data[0]
+
             relationship_data = {
                 'id': str(uuid.uuid4()),
                 'document_id': document_id,
@@ -164,7 +230,7 @@ class SupabasePropertyHubService:
                 'relationship_type': 'valuation_report',  # Default, can be dynamic
                 'address_source': address_data.get('address_source', 'extraction'),
                 'confidence_score': address_data.get('geocoding_confidence', 0.8),
-                'relationship_metadata': {'extraction_method': 'llama_extract'},
+                'relationship_metadata': {'extraction_method': 'reducto'},
                 'created_at': datetime.utcnow().isoformat()
             }
             

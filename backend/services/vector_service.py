@@ -109,6 +109,32 @@ class SupabaseVectorService:
         
         return chunks
     
+    def delete_document_vectors(self, document_id: str) -> bool:
+        """
+        Delete existing document vectors for a specific document
+        This prevents duplicates when reprocessing documents.
+        
+        Args:
+            document_id: Document UUID
+            
+        Returns:
+            Success status
+        """
+        try:
+            logger.info(f"Deleting existing document vectors for document {document_id}")
+            
+            result = self.supabase.table(self.document_vectors_table)\
+                .delete()\
+                .eq('document_id', document_id)\
+                .execute()
+            
+            logger.info(f"Deleted document vectors for document {document_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting document vectors: {e}")
+            return False
+    
     def store_document_vectors(self, document_id: str, chunks: List[str], metadata: Dict[str, Any]) -> bool:
         """
         Store document vectors in Supabase
@@ -125,6 +151,9 @@ class SupabaseVectorService:
             if not chunks:
                 logger.warning("No chunks to store for document")
                 return True
+            
+            # Delete existing vectors first to prevent duplicates
+            self.delete_document_vectors(document_id)
             
             # Generate embeddings
             embeddings = self.create_embeddings(chunks)
@@ -199,29 +228,62 @@ class SupabaseVectorService:
                 record = {
                     'id': str(uuid.uuid4()),
                     'property_id': property_id,
-                    'property_description': property_text,  # Add the required property_description field
+                    'property_description': property_text if i == 0 else None,  # Only store full description in first chunk
                     'chunk_text': chunk,
                     'embedding': embedding,
                     'chunk_index': i,
                     'address_hash': metadata.get('address_hash'),
                     'business_id': metadata.get('business_id'),
                     'property_address': metadata.get('property_address'),
+                    'source_document_id': str(metadata.get('source_document_id')) if metadata.get('source_document_id') else None,
                     'created_at': datetime.utcnow().isoformat()
                 }
                 records.append(record)
             
+
+            logger.info(f"Inserting {len(records)} property vectors with source_document_id...")
             # Insert into Supabase
             result = self.supabase.table(self.property_vectors_table).insert(records).execute()
             
             if result.data:
-                # Property vectors stored successfully
+                logger.info(f"Property vectors stored successfully")
                 return True
             else:
                 logger.error(f"Failed to store property vectors: {result}")
+                if hasattr(result, 'error'):
+                    logger.error(f"     Error details: {result.error}")
                 return False
                 
         except Exception as e:
             logger.error(f"Error storing property vectors: {e}")
+            return False
+    
+    def delete_property_vectors_by_source(self, property_id: str, source_document_id: str) -> bool:
+        """
+        Delete existing property vectors for a specific property + document combination
+        This prevents duplicates when reprocessing documents.
+        
+        Args:
+            property_id: Property UUID
+            source_document_id: Source document UUID
+            
+        Returns:
+            Success status
+        """
+        try:
+            logger.info(f"Deleting existing property vectors for property {property_id} from document {source_document_id}")
+            
+            result = self.supabase.table(self.property_vectors_table)\
+                .delete()\
+                .eq('property_id', property_id)\
+                .eq('source_document_id', source_document_id)\
+                .execute()
+            
+            logger.info(f"Deleted property vectors for property {property_id} from document {source_document_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting property vectors: {e}")
             return False
     
     def search_document_vectors(self, query: str, business_id: str, limit: int = 10, similarity_threshold: float = 0.7) -> List[Dict[str, Any]]:
@@ -351,6 +413,32 @@ class SupabaseVectorService:
                 
         except Exception as e:
             logger.error(f"Error deleting property vectors: {e}")
+            return False
+
+    def delete_property_vectors_by_source_document(self, document_id: str, property_id: Optional[str] = None) -> bool:
+        """
+        Delete property vectors that were generated from a specific source document.
+
+        Tries to filter by a dedicated 'source_document_id' column if present. If the
+        column does not exist in the table schema, this method will return False so
+        callers can decide to fall back to broader deletion strategies.
+
+        Args:
+            document_id: Source document UUID
+            property_id: Optional property UUID to further scope the deletion
+
+        Returns:
+            Success status
+        """
+        try:
+            query = self.supabase.table(self.property_vectors_table).delete().eq('source_document_id', document_id)
+            if property_id:
+                query = query.eq('property_id', property_id)
+            result = query.execute()
+            # If the table supports the column and the operation executed, consider it success
+            return result.data is not None
+        except Exception as e:
+            logger.warning(f"Property vector delete by source_document_id not completed (schema may lack column): {e}")
             return False
     
     def get_vector_statistics(self, business_id: str) -> Dict[str, Any]:

@@ -1523,12 +1523,15 @@ def delete_document(document_id):
         traceback.print_exc()
         # Don't return error - continue with PostgreSQL document deletion
 
-    # 4. Delete local PostgreSQL relationships FIRST (before document)
+    # 4. Collect impacted properties, then delete relationships FIRST (before document)
     logger.info("[POSTGRESQL RELATIONSHIPS DELETION]")
+    impacted_property_ids = set()
     try:
         from .models import DocumentRelationship
-        relationship_count = DocumentRelationship.query.filter_by(document_id=document_id).count()
-        logger.info(f"   Found {relationship_count} document relationships")
+        relationships = DocumentRelationship.query.filter_by(document_id=document_id).all()
+        relationship_count = len(relationships)
+        impacted_property_ids = {str(rel.property_id) for rel in relationships}
+        logger.info(f"   Found {relationship_count} document relationships; impacted properties: {len(impacted_property_ids)}")
         
         # Delete all document relationships for this document
         DocumentRelationship.query.filter_by(document_id=document_id).delete()
@@ -1539,7 +1542,30 @@ def delete_document(document_id):
         db.session.rollback()
         # Continue anyway - don't fail the whole deletion
     
-    # 5. Delete local PostgreSQL processing history (after relationships)
+    # 5. Delete vectors linked to this document (document vectors + property vectors by source doc)
+    logger.info("[VECTORS DELETION]")
+    try:
+        from .services.vector_service import SupabaseVectorService
+        vector_service = SupabaseVectorService()
+
+        dv_ok = vector_service.delete_document_vectors(str(document_id))
+        logger.info(f"   Deleted document vectors for {document_id}: {'OK' if dv_ok else 'FAIL'}")
+
+        # Attempt fine-grained property vector deletion per impacted property
+        pv_any_ok = False
+        if impacted_property_ids:
+            for pid in impacted_property_ids:
+                pv_ok = vector_service.delete_property_vectors_by_source_document(str(document_id), pid)
+                pv_any_ok = pv_any_ok or pv_ok
+                logger.info(f"   Property vectors by source doc for property {pid}: {'OK' if pv_ok else 'SKIP/FAIL'}")
+        else:
+            # If we don't know which property was impacted, attempt global delete by source document id
+            pv_any_ok = vector_service.delete_property_vectors_by_source_document(str(document_id))
+            logger.info(f"   Property vectors by source doc (no property scope): {'OK' if pv_any_ok else 'SKIP/FAIL'}")
+    except Exception as e:
+        logger.warning(f"   WARNING: Vector deletion step failed - {e}")
+
+    # 6. Delete local PostgreSQL processing history (after relationships)
     logger.info("[POSTGRESQL PROCESSING HISTORY DELETION]")
     try:
         from .models import DocumentProcessingHistory
@@ -1555,7 +1581,21 @@ def delete_document(document_id):
         db.session.rollback()
         # Continue anyway - don't fail the whole deletion
     
-    # 6. Delete the PostgreSQL document record
+    # 7. Recompute property hubs impacted by this deletion
+    logger.info("[PROPERTY RECOMPUTE AFTER DOCUMENT DELETION]")
+    try:
+        if impacted_property_ids:
+            from .services.supabase_property_hub_service import SupabasePropertyHubService
+            hub_service = SupabasePropertyHubService()
+            for pid in impacted_property_ids:
+                res = hub_service.recompute_property_after_document_deletion(pid, str(document_id))
+                logger.info(f"   Recomputed property {pid}: {res}")
+        else:
+            logger.info("   No impacted properties detected; skipping recompute")
+    except Exception as e:
+        logger.warning(f"   WARNING: Property recompute failed - {e}")
+
+    # 8. Delete the PostgreSQL document record
     logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
     try:
         logger.info(f"   Deleting document record: {document_id}")
@@ -1570,7 +1610,7 @@ def delete_document(document_id):
         logger.error(f"   FAILED: PostgreSQL record deletion - {e}")
         return jsonify({'error': 'Failed to delete database record.'}), 500
 
-    # 7. Return comprehensive results
+    # 9. Return comprehensive results
     success_count = sum(deletion_results.values())
     total_operations = len(deletion_results)
     

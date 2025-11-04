@@ -1,0 +1,113 @@
+# Node modules (frontend dependencies)
+frontend-ts/node_modules/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment and config
+.env
+.env.local
+.env.*.local
+*.log
+.env.example
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in container)
+documentation/
+*.md
+!README.md
+
+# Test files
+test_*.py
+*_test.py
+tests/
+test_reducto_setup.py
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Frontend build artifacts and source (not needed for backend container)
+frontend-ts/dist/
+frontend-ts/build/
+frontend-ts/.next/
+frontend-ts/src/
+frontend-ts/public/
+frontend-ts/components/
+frontend-ts/*.json
+frontend-ts/*.js
+frontend-ts/*.ts
+frontend-ts/*.config.*
+frontend-ts/index.html
+frontend-ts/cookies.txt
+
+# Docker files themselves
+Dockerfile
+docker-compose.yaml
+.dockerignore
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Coverage reports
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Backup files
+*.bak
+*.backup
+*~
+

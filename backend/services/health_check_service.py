@@ -110,8 +110,7 @@ class HealthCheckService:
         """Check external services health"""
         services = {}
         
-        # Check LlamaCloud API
-        services['llamacloud'] = self._check_llamacloud_health()
+        # LlamaCloud removed - using Reducto instead
         
         # Check Google Maps API (if configured)
         services['google_maps'] = self._check_google_maps_health()

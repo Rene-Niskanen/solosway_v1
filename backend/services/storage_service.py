@@ -87,13 +87,26 @@ class StorageService:
                 file_options={'content-type': 'image/jpeg'}
             )
             
-            if response.get('error'):
+            # Handle Supabase response object (not dict)
+            # Check if upload succeeded - Supabase returns object, not dict
+            if hasattr(response, 'error') and response.error:
                 return {
                     'success': False,
-                    'error': response['error'],
+                    'error': str(response.error),
                     'storage_provider': 'supabase',
                     'url': None
                 }
+            
+            # Also check if response has a 'data' attribute with error
+            # Some Supabase versions may structure response differently
+            if hasattr(response, 'data') and isinstance(response.data, dict):
+                if response.data.get('error'):
+                    return {
+                        'success': False,
+                        'error': str(response.data['error']),
+                        'storage_provider': 'supabase',
+                        'url': None
+                    }
             
             # Get public URL
             public_url = self.supabase.storage.from_(self.supabase_bucket).get_public_url(storage_path)
@@ -148,7 +161,13 @@ class StorageService:
         try:
             if storage_provider == 'supabase':
                 response = self.supabase.storage.from_(self.supabase_bucket).remove([storage_path])
-                return not response.get('error')
+                # PHASE 1 FIX: Handle Supabase response object
+                if hasattr(response, 'error') and response.error:
+                    return False
+                if hasattr(response, 'data') and isinstance(response.data, dict):
+                    if response.data.get('error'):
+                        return False
+                return True
             elif storage_provider == 's3':
                 self.s3_client.delete_object(Bucket=self.s3_bucket, Key=storage_path)
                 return True

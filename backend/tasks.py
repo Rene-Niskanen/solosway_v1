@@ -21,19 +21,18 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import logging
 
-# imports for LlamaIndex, LlamaParse, and LlamaExtract
-from llama_parse import LlamaParse
-from llama_cloud_services import LlamaExtract
-from llama_cloud import ExtractConfig, ExtractMode, ExtractTarget
-from llama_cloud_services.extract import SourceText
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
-from llama_index.llms.openai import OpenAI
-from llama_index.embeddings.openai import OpenAIEmbedding
+# Reducto imports
+from .services.reducto_service import ReductoService
+from .services.reducto_image_service import ReductoImageService
 from .services.extraction_schemas import SUBJECT_PROPERTY_EXTRACTION_SCHEMA
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def convert_confidence_to_numeric(confidence_str: str) -> float:
+    """Convert Reducto string confidence to numeric for compatibility"""
+    confidence_map = {'high': 0.9, 'medium': 0.7, 'low': 0.5}
+    return confidence_map.get(confidence_str, 0.7)
 
 # Helper function to sync document status to Supabase
 def sync_document_to_supabase(document_id, status=None, additional_data=None):
@@ -301,43 +300,10 @@ def create_property_document(property_data: dict, geocoding_result: dict) -> str
     
     return "\n".join(description_parts)
 
-def _check_llamaextract_api() -> bool:
-    """Check if LlamaExtract API is accessible"""
-    try:
-        import requests
-        api_key = os.environ.get('LLAMA_CLOUD_API_KEY')
-        if not api_key:
-            print("   API Key not found in environment")
-            return False
-        
-        # Try multiple endpoints to check API accessibility
-        endpoints = [
-            'https://api.cloud.llamaindex.ai/api/v1/health',
-            'https://api.cloud.llamaindex.ai/api/health',
-            'https://api.cloud.llamaindex.ai/health'
-        ]
-        
-        headers = {'Authorization': f'Bearer {api_key}'}
-        
-        for endpoint in endpoints:
-            try:
-                response = requests.get(endpoint, headers=headers, timeout=5)
-                if response.status_code == 200:
-                    print(f"   API accessible via {endpoint}")
-                    return True
-            except Exception as e:
-                print(f"   Endpoint {endpoint} failed: {e}")
-                continue
-        
-        print("   All API endpoints failed")
-        return False
-        
-    except Exception as e:
-        print(f"   API health check failed: {e}")
-        return False
+# Removed _check_llamaextract_api() - no longer needed with Reducto-only approach
 
-def _enhanced_fallback_extraction(document_text: str, filename: str) -> dict:
-    """Enhanced fallback text-based extraction when LlamaExtract fails"""
+def _fallback_text_extraction(document_text: str, filename: str) -> dict:
+    """Fallback text-based extraction when Reducto extraction fails"""
     import re
     from datetime import datetime
     
@@ -488,79 +454,27 @@ def _enhanced_fallback_extraction(document_text: str, filename: str) -> dict:
         }]
     }
 
-def _fallback_text_extraction(document_text: str, filename: str) -> dict:
-    """Fallback text-based extraction when LlamaExtract fails"""
-    import re
-    from datetime import datetime
-    
-    print("🔄 Using fallback text-based extraction...")
-    
-    # Extract address from text using multiple patterns
-    address_patterns = [
-        r'\d+\s+[\w\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Place|Pl)',
-        r'[A-Za-z\s]+,\s*[A-Za-z\s]+,\s*[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}',
-        r'[A-Za-z\s]+,\s*[A-Za-z\s]+'
-    ]
-    
-    extracted_address = None
-    for pattern in address_patterns:
-        match = re.search(pattern, document_text, re.IGNORECASE)
-        if match:
-            extracted_address = match.group(0).strip()
-            break
-    
-    # Extract basic property info
-    bedrooms_match = re.search(r'(\d+)\s*(?:bed|bedroom|bedrooms)', document_text, re.IGNORECASE)
-    bathrooms_match = re.search(r'(\d+)\s*(?:bath|bathroom|bathrooms)', document_text, re.IGNORECASE)
-    size_match = re.search(r'(\d+(?:,\d+)*)\s*(?:sq\s*ft|sqft|square\s*feet)', document_text, re.IGNORECASE)
-    
-    # Extract price information
-    price_patterns = [
-        r'£(\d+(?:,\d+)*)',
-        r'(\d+(?:,\d+)*)\s*(?:pounds?|GBP)',
-        r'asking\s*(?:price|value)[:\s]*£?(\d+(?:,\d+)*)',
-        r'valuation[:\s]*£?(\d+(?:,\d+)*)'
-    ]
-    
-    extracted_price = None
-    for pattern in price_patterns:
-        match = re.search(pattern, document_text, re.IGNORECASE)
-        if match:
-            try:
-                extracted_price = float(match.group(1).replace(',', ''))
-                break
-            except ValueError:
-                continue
-    
-    # Extract property type
-    property_types = ['house', 'flat', 'apartment', 'detached', 'semi-detached', 'terraced', 'bungalow', 'cottage']
-    extracted_type = None
-    for prop_type in property_types:
-        if prop_type.lower() in document_text.lower():
-            extracted_type = prop_type.title()
-            break
-    
-    return {
-        'subject_property': {
-            'property_address': extracted_address or 'Address not found',
-            'property_type': extracted_type or 'Property',
-            'number_bedrooms': int(bedrooms_match.group(1)) if bedrooms_match else None,
-            'number_bathrooms': int(bathrooms_match.group(1)) if bathrooms_match else None,
-            'size_sqft': int(size_match.group(1).replace(',', '')) if size_match else None,
-            'asking_price': extracted_price,
-            'notes': f'Extracted using fallback text analysis from {filename}'
-        }
-    }
+# Removed duplicate _fallback_text_extraction function - using single version above
 
 def clean_extracted_property(property_data):
     """Clean extracted data to ensure proper data types"""
     cleaned = {}
     
+    # Helper to extract value from Reducto dict structure
+    def extract_value(val):
+        """Extract value from Reducto response structure"""
+        if isinstance(val, dict) and 'value' in val:
+            return val['value']
+        return val
+    
     # Clean numeric fields
-    numeric_fields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm', 'price_per_sqft', 'yield_percentage']
+    numeric_fields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm', 'price_per_sqft', 'yield_percentage', 'appraised_value']
     for field in numeric_fields:
         value = property_data.get(field)
-        if value:
+        if value is not None:
+            # Extract value from dict if needed
+            value = extract_value(value)
+            
             # Extract first number from strings like "5 (all en-suites)"
             import re
             if isinstance(value, str):
@@ -569,98 +483,28 @@ def clean_extracted_property(property_data):
                     cleaned[field] = int(match.group(1)) if match else None
                 else:
                     cleaned[field] = float(match.group(1)) if match else None
+            elif isinstance(value, (int, float)):
+                # Ensure bedrooms/bathrooms are integers
+                if field in ['number_bedrooms', 'number_bathrooms']:
+                    cleaned[field] = int(value)
+                else:
+                    cleaned[field] = float(value)
             else:
                 cleaned[field] = value
         else:
             cleaned[field] = None
     
-    # Copy other fields as-is
+    # Copy other fields as-is, extracting values from dicts
     for key, value in property_data.items():
         if key not in numeric_fields:
-            cleaned[key] = value
+            # Extract value from Reducto dict structure if needed
+            cleaned[key] = extract_value(value)
     
     return cleaned
 
 
-def extract_images_from_document(temp_file_path, document_id, business_id):
-    """Extract images from document and upload using unified storage service"""
-    from .services.storage_service import StorageService
-    from datetime import datetime
-    
-    try:
-        # Initialize storage service
-        storage_service = StorageService()
-        
-        # Use LlamaParse to extract images
-        parser = LlamaParse(
-            api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-            result_type="markdown",
-            verbose=True
-        )
-        
-        # Extract images from document
-        parsed_docs = parser.load_data(temp_file_path)
-        
-        extracted_images = []
-        image_count = 0
-        
-        for doc in parsed_docs:
-            if hasattr(doc, 'images') and doc.images:
-                for i, image_data in enumerate(doc.images):
-                    try:
-                        # Generate unique image filename
-                        image_filename = f"property_{document_id}_{image_count}_{i}.jpg"
-                        
-                        # Upload using storage service (prefers Supabase, falls back to S3)
-                        upload_result = storage_service.upload_property_image(
-                            image_data=image_data,
-                            filename=image_filename,
-                            business_id=business_id,
-                            document_id=document_id,
-                            preferred_storage='supabase'  # Prefer Supabase Storage
-                        )
-                        
-                        if upload_result['success']:
-                            # Store image metadata
-                            image_metadata = {
-                                'url': upload_result['url'],
-                                'filename': image_filename,
-                                'extracted_at': datetime.utcnow().isoformat(),
-                                'document_id': str(document_id),
-                                'image_index': i,
-                                'size_bytes': len(image_data),
-                                'storage_provider': upload_result['storage_provider'],
-                                'storage_path': upload_result['path']
-                            }
-                            
-                            extracted_images.append(image_metadata)
-                            image_count += 1
-                            
-                            print(f"✅ Extracted image {i+1}: {image_filename} (stored in {upload_result['storage_provider']})")
-                        else:
-                            print(f"❌ Failed to upload image {i+1}: {upload_result['error']}")
-                        
-                    except Exception as e:
-                        print(f"❌ Error processing image {i}: {e}")
-                        continue
-        
-        return {
-            'images': extracted_images,
-            'image_count': image_count,
-            'primary_image_url': extracted_images[0]['url'] if extracted_images else None
-        }
-        
-    except Exception as e:
-        print(f"❌ Error extracting images: {e}")
-        return {
-            'images': [],
-            'image_count': 0,
-            'primary_image_url': None
-        }
+# Removed extract_images_from_document function - now using ReductoImageService directly
 
-# Old schema removed - using extraction_schemas.py instead
-
-# AstraDB session function removed - using Supabase only
 
 @shared_task(bind=True)
 def process_document_classification(self, document_id, file_content, original_filename, business_id):
@@ -669,10 +513,8 @@ def process_document_classification(self, document_id, file_content, original_fi
     """
     from . import create_app
     from .models import db, Document, DocumentStatus
-    from .services.classification_service import DocumentClassificationService
     from .services.processing_history_service import ProcessingHistoryService
     from .services.filename_address_service import FilenameAddressService
-    from llama_parse import LlamaParse
     import tempfile
     import os
     
@@ -761,31 +603,130 @@ def process_document_classification(self, document_id, file_content, original_fi
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
+            # Initialize classification_result to None to handle error cases
+            classification_result = None
+            
             try:
-                # Extract text using LlamaParse
-                logger.info(f"Extracting text from: {original_filename}")
-                parser = LlamaParse(
-                    api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-                    result_type="text"
+                # REDUCTO PATH: Parse and classify using Reducto
+                logger.info(f"Using Reducto for parsing and classification: {original_filename}")
+                from .services.reducto_service import ReductoService
+                
+                reducto = ReductoService()
+                
+                # Parse document - use async for large files (> 1MB)
+                file_size_mb = len(file_content) / (1024 * 1024)
+                use_async = file_size_mb > 1.0  # Use async for files > 1MB
+                
+                if use_async:
+                    logger.info(f"📦 Large file detected ({file_size_mb:.2f}MB), using async processing")
+                
+                parse_result = reducto.parse_document(
+                    file_path=temp_file_path,
+                    return_images=["figure", "table"],
+                    use_async=use_async
                 )
-                parsed_docs = parser.load_data(temp_file_path)
-                document_text = "\n".join([doc.text for doc in parsed_docs])
                 
-                logger.info(f"Extracted {len(document_text)} characters of text")
+                job_id = parse_result['job_id']
+                document_text = parse_result['document_text']
+                image_urls = parse_result['image_urls']
+                chunks = parse_result.get('chunks', [])
+                image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
                 
-                # Store parsed text
+                logger.info(f"✅ Reducto Parse completed. Job ID: {job_id}")
+                logger.info(f"📄 Extracted {len(document_text)} characters of text")
+                logger.info(f"📸 Found {len(image_urls)} images")
+                logger.info(f"📦 Extracted {len(chunks)} chunks")
+                
+                # Store job_id and image URLs in metadata for later use
+                if document.metadata_json:
+                    metadata = json.loads(document.metadata_json)
+                else:
+                    metadata = {}
+                
+                metadata['reducto_job_id'] = job_id
+                metadata['reducto_parse_timestamp'] = datetime.utcnow().isoformat()
+                metadata['reducto_image_urls'] = image_urls
+                metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
+                if chunks:
+                    # Store chunk count for reference
+                    metadata['reducto_chunk_count'] = len(chunks)
+                document.metadata_json = json.dumps(metadata)
+                
+                # Store parsed text immediately
                 document.parsed_text = document_text
+                db.session.commit()
+                
+                # IMMEDIATELY create document vectors after parse completes
+                # We don't know property_id yet, but we can link via document_relationships later
+                if document_text and chunks:
+                    logger.info(f"🔄 Creating document vectors immediately after parse...")
+                    from .services.vector_service import SupabaseVectorService
+                    vector_service = SupabaseVectorService()
+                    
+                    # Extract chunk texts for embedding
+                    chunk_texts = [chunk.get('content', '') for chunk in chunks if chunk.get('content')]
+                    
+                    if chunk_texts:
+                        vector_metadata = {
+                            'document_id': str(document_id),
+                            'classification_type': None,  # Will be set after classification
+                            'address_hash': None,  # Will be set after extraction
+                            'business_id': business_id,
+                            'property_id': None  # Will be set after property linking
+                        }
+                        
+                        success = vector_service.store_document_vectors(
+                            document_id=str(document_id),
+                            chunks=chunk_texts,
+                            metadata=vector_metadata
+                        )
+                        
+                        if success:
+                            logger.info(f"✅ Document vectors stored: {len(chunk_texts)} chunks embedded")
+                        else:
+                            logger.warning(f"⚠️ Failed to store document vectors")
+                    else:
+                        logger.warning(f"⚠️ No chunk texts to embed")
+                else:
+                    logger.warning(f"⚠️ No document text or chunks to embed")
+                
+                # Classify using Reducto Extract (can run in parallel with vectorization above)
+                classification = reducto.classify_document(job_id)
+                
+                # Convert string confidence to numeric for compatibility
+                confidence_numeric = convert_confidence_to_numeric(classification['confidence'])
+                
+                classification_result = {
+                    'type': classification['document_type'],
+                    'confidence': confidence_numeric,
+                    'reasoning': f"Reducto classification: {classification['document_type']} (confidence: {classification['confidence']})",
+                    'method': 'reducto_extract'
+                }
+                
+                # parsed_text already stored above, just update metadata backup
+                if document.metadata_json:
+                    metadata = json.loads(document.metadata_json)
+                else:
+                    metadata = {}
+                metadata['reducto_parsed_text'] = document_text  # backup
+                metadata['reducto_image_urls'] = image_urls
+                if image_blocks_metadata:
+                    metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
+                document.metadata_json = json.dumps(metadata)
                 db.session.commit()
                 
                 # Log text extraction success
                 history_service.log_step_completion(
                     history_id=history_id,
                     step_message=f"Text extraction completed: {len(document_text)} characters",
-                    step_metadata={'text_length': len(document_text)}
+                    step_metadata={
+                        'text_length': len(document_text),
+                        'provider': 'reducto'
+                    }
                 )
                 
             except Exception as e:
-                logger.error(f"LlamaParse extraction failed: {e}")
+                logger.error(f"Reducto extraction failed: {e}")
                 # Use fallback text extraction
                 document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
                 document.parsed_text = document_text
@@ -797,21 +738,18 @@ def process_document_classification(self, document_id, file_content, original_fi
                     step_metadata={
                         'text_length': len(document_text),
                         'fallback_used': True,
-                        'extraction_error': str(e)
+                        'extraction_error': str(e),
+                        'provider': 'reducto'
                     }
                 )
+                
+                # If Reducto failed, we still need classification_result for error handling
+                if classification_result is None:
+                    raise  # Re-raise the exception since we can't continue without classification
             
-            # Classify the document
-            logger.info(f"Classification document: {original_filename}")
-            from .services.classification_service import classify_document_sync
-
-            try:
-                classification_result = classify_document_sync(temp_file_path, document_text)
-                logger.info(f"Document classified as: {classification_result['type']} (confidence: {classification_result['confidence']:.2f})")
-            except Exception as e:
-                logger.error(f"Error in classification: {e}")
-                raise
-            
+            # Verify classification_result is set before using it
+            if classification_result is None:
+                raise ValueError("Classification failed: classification_result is None")
             
             # Classes the document with classification results
             document.classification_type = classification_result['type']
@@ -924,7 +862,6 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
     from . import create_app
     from .models import db, Document, DocumentStatus
     from .services.processing_history_service import ProcessingHistoryService
-    from llama_parse import LlamaParse
     from .services.extraction_schemas import MINIMAL_EXTRACTION_SCHEMA
     import tempfile
     import os
@@ -963,263 +900,205 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
+            # Initialize variables that might be needed in exception handler
+            classification_type = document.classification_type or 'other_documents'
+            document_text = ""
+            extracted_data = None
+            
             try:
-                # Extract the text using Llamaparse
-                logger.info(f"Extracting text from: {original_filename}")
-                parser = LlamaParse(
-                    api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-                    result_type="text"
-                )
-                parsed_docs = parser.load_data(temp_file_path)
-                document_text = "\n".join([doc.text for doc in parsed_docs])
-
-                # store parsed text
-                document.parsed_text = document_text
-                db.session.commit()
-
-                # Extract the minimal information using dedicated LlamaExtract agent for other_documents
-                extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
-                
                 # Get the appropriate schema based on document classification
                 from .services.extraction_schemas import get_extraction_schema
-                classification_type = document.classification_type or 'other_documents'
                 extraction_schema = get_extraction_schema(classification_type)
                 
                 logger.info(f"🎯 Using extraction schema for: {classification_type}")
                 
-                # Add timeout handling for minimal extraction
-                import signal
+                # REDUCTO PATH: Use Reducto for minimal extraction
+                logger.info(f"🔄 Using Reducto for minimal extraction: {original_filename}")
+                from .services.reducto_service import ReductoService
                 
-                def timeout_handler(signum, frame):
-                    raise TimeoutError("LlamaExtract job timed out after 3 minutes")
+                reducto = ReductoService()
                 
-                # Set timeout to 3 minutes for minimal extraction
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(180)
+                # Check if we already have job_id from classification step
+                job_id = None
                 
-                try:
-                    # Create or get dedicated agent for other_documents
-                    if classification_type == 'other_documents':
-                        agent_name = "other-documents-property-extraction"
-                        logger.info(f"🔄 Creating/getting dedicated agent for other_documents: {agent_name}")
+                if document.metadata_json:
+                    metadata = json.loads(document.metadata_json)
+                    job_id = metadata.get('reducto_job_id')
+                    document_text = document.parsed_text or ""
+                
+                # If no job_id, parse now (shouldn't happen but safe fallback)
+                if not job_id:
+                    logger.info("⚠️ No job_id found in metadata, parsing document now...")
+                    file_size_mb = len(file_content) / (1024 * 1024)
+                    use_async = file_size_mb > 1.0
+                    
+                    parse_result = reducto.parse_document(
+                        file_path=temp_file_path,
+                        return_images=["figure", "table"],
+                        use_async=use_async
+                    )
+                    job_id = parse_result['job_id']
+                    document_text = parse_result['document_text']
+                    
+                    # Store in metadata
+                    if document.metadata_json:
+                        metadata = json.loads(document.metadata_json)
+                    else:
+                        metadata = {}
+                    metadata['reducto_job_id'] = job_id
+                    document.metadata_json = json.dumps(metadata)
+                    document.parsed_text = document_text
+                    db.session.commit()
+                else:
+                    logger.info(f"✅ Using existing job_id: {job_id}")
+                
+                # Extract with schema using Reducto
+                logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type}")
+                extraction = reducto.extract_with_schema(
+                    job_id=job_id,
+                    schema=extraction_schema,
+                    system_prompt="Extract minimal property information from this document."
+                )
+                
+                extracted_data = extraction['data']
+                logger.info("✅ Reducto minimal extraction completed successfully")
+                
+            except Exception as e:
+                logger.error(f"⚠️ Reducto extraction failed: {e}, using fallback")
+                # Ensure document_text is available for fallback
+                if not document_text:
+                    document_text = document.parsed_text or ""
+                extracted_data = _fallback_text_extraction(document_text, original_filename)
+
+            # Store extracted data (for both success and failure cases)
+            document.extracted_json = json.dumps(extracted_data)
+            document.status = DocumentStatus.COMPLETED
+            db.session.commit()
+            
+            # Sync completion to Supabase
+            sync_document_to_supabase(document_id, 'completed')
+
+            # ========================================================================
+            # PROPERTY LINKING FOR MINIMAL EXTRACTION (MOVED OUTSIDE EXCEPT BLOCK)
+            # ========================================================================
+            
+            logger.info("🔗 Starting property linking for minimal extraction...")
+            
+            # Handle different extraction data formats
+            extracted_properties = []
+            
+            if classification_type == 'other_documents' and 'subject_property' in extracted_data:
+                # New format: subject_property object
+                subject_prop = extracted_data['subject_property']
+                if subject_prop and subject_prop.get('property_address'):
+                    extracted_properties = [subject_prop]
+                    logger.info(f"📍 Found subject property in other_documents format")
+            elif 'properties' in extracted_data:
+                # Legacy format: properties array
+                extracted_properties = extracted_data.get('properties', [])
+                logger.info(f"📍 Found {len(extracted_properties)} properties in legacy format")
+            
+            if extracted_properties:
+                logger.info(f"📍 Processing {len(extracted_properties)} extracted properties")
+                
+                from .services.address_service import AddressNormalizationService
+                from .services.supabase_property_hub_service import SupabasePropertyHubService
+                
+                address_service = AddressNormalizationService()
+                property_hub_service = SupabasePropertyHubService()
+                
+                # Process each extracted property
+                for i, prop in enumerate(extracted_properties):
+                    property_address = prop.get('property_address')
+                    
+                    # Handle case where Reducto returns address as dict with 'value' key
+                    if isinstance(property_address, dict):
+                        property_address = property_address.get('value', '')
+                    
+                    if property_address and property_address != 'Address not found':
+                        logger.info(f"📍 Processing property {i+1}: {property_address}")
                         
                         try:
-                            # Try to get existing agent first
-                            agent = extractor.get_agent(name=agent_name)
-                            logger.info(f"✅ Found existing agent: {agent_name}")
-                        except Exception as get_error:
-                            logger.info(f"⚠️ Agent '{agent_name}' not found: {get_error}")
-                            logger.info(f"🔄 Creating new agent: {agent_name}")
+                            # Normalize address and compute hash
+                            normalized = address_service.normalize_address(property_address)
+                            address_hash = address_service.compute_address_hash(normalized)
+                            geocoding_result = address_service.geocode_address(property_address)
                             
-                            # Create new agent with specialized schema
-                            from llama_cloud import ExtractConfig, ExtractMode, ExtractTarget
-                            config = ExtractConfig(
-                                extraction_mode=ExtractMode.MULTIMODAL,
-                                extraction_target=ExtractTarget.PER_DOC,
-                                high_resolution_mode=True,
-                                cite_sources=True,
-                                use_reasoning=False,
-                                confidence_scores=True,
+                            address_data = {
+                                'original_address': property_address,
+                                'normalized_address': normalized,
+                                'address_hash': address_hash,
+                                'latitude': geocoding_result.get('latitude'),
+                                'longitude': geocoding_result.get('longitude'),
+                                'formatted_address': geocoding_result.get('formatted_address'),
+                                'geocoding_status': geocoding_result.get('status'),
+                                'geocoding_confidence': geocoding_result.get('confidence'),
+                                'geocoder_used': geocoding_result.get('geocoder', 'none')
+                            }
+                            
+                            logger.info(f"✅ Address processed: {address_data['formatted_address']}")
+                            
+                            # Create property hub using enhanced matching
+                            hub_result = property_hub_service.create_property_with_relationships(
+                                address_data=address_data,
+                                document_id=str(document_id),
+                                business_id=business_id,
+                                extracted_data=prop
                             )
                             
-                            agent = extractor.create_agent(
-                                name=agent_name,
-                                data_schema=extraction_schema,
-                                config=config
-                            )
-                            logger.info(f"✅ Successfully created new agent: {agent_name}")
-                        
-                        # Use the agent for extraction
-                        logger.info(f"🔄 Using agent extraction for other_documents...")
-                        result = agent.extract(temp_file_path)
-                        extracted_data = result.data
-                        logger.info("✅ Agent extraction completed successfully")
-                        
+                            if hub_result['success']:
+                                logger.info(f"✅ Property linked successfully: {hub_result['property_id']}")
+                                logger.info(f"   Match type: {hub_result['match_type']}")
+                                logger.info(f"   Confidence: {hub_result['confidence']:.2f}")
+                                logger.info(f"   Action: {hub_result['action']}")
+                            else:
+                                logger.warning(f"⚠️ Property linking failed: {hub_result.get('error', 'Unknown error')}")
+                                
+                        except Exception as e:
+                            logger.error(f"❌ Error processing property {i+1}: {e}")
+                            continue
                     else:
-                        # For non-other_documents, use direct extraction
-                        logger.info("🔄 Using direct extraction for non-other_documents...")
-                        
-                        # Try different LlamaExtract methods
-                        if hasattr(extractor, 'extract_from_file'):
-                            extraction_result = extractor.extract_from_file(
-                                schema=extraction_schema,
-                                file_path=temp_file_path
-                            )
-                            extracted_data = extraction_result
-                            logger.info("✅ LlamaExtract completed using extract_from_file")
-                        
-                        elif hasattr(extractor, 'extract'):
-                            extraction_result = extractor.extract(
-                                schema=extraction_schema,
-                                file_path=temp_file_path
-                            )
-                            extracted_data = extraction_result
-                            logger.info("✅ LlamaExtract completed using extract")
-                        
-                        elif hasattr(extractor, 'extract_from_text'):
-                            extraction_result = extractor.extract_from_text(
-                                schema=extraction_schema,
-                                text=document_text
-                            )
-                            extracted_data = extraction_result
-                            logger.info("✅ LlamaExtract completed using extract_from_text")
-                        
-                        else:
-                            raise AttributeError("No suitable LlamaExtract method found")
-                    
-                    signal.alarm(0)  # Cancel the alarm
-                    
-                except AttributeError as e:
-                    signal.alarm(0)  # Cancel the alarm
-                    logger.warning(f"⚠️ LlamaExtract method not available: {e}")
-                    logger.info("🔄 Falling back to enhanced text extraction...")
-                    
-                    # Enhanced fallback extraction
-                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
-                    
-                except TimeoutError:
-                    signal.alarm(0)  # Cancel the alarm
-                    logger.warning("⚠️ LlamaExtract timed out, using enhanced fallback")
-                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
-                    
-                except Exception as e:
-                    signal.alarm(0)  # Cancel the alarm
-                    logger.warning(f"⚠️ LlamaExtract failed: {e}, using enhanced fallback")
-                    extracted_data = _enhanced_fallback_extraction(document_text, original_filename)
+                        logger.info(f"⚠️ Property {i+1} has no valid address: {property_address}")
+            else:
+                logger.info("ℹ️ No properties found in minimal extraction - skipping property linking")
 
-                # store the extracted data
-                document.extracted_json = json.dumps(extracted_data)
-                document.status = DocumentStatus.COMPLETED  # FIXED: EXTRACTED doesn't exist in enum
-                db.session.commit()
-                
-                # Sync completion to Supabase
-                sync_document_to_supabase(document_id, 'completed')
+            # log history completion
+            history_service.log_step_completion(
+                history_id=history_id,
+                step_message=f"Minimal extraction completed with property linking",
+                step_metadata={
+                    'extracted_properties': len(extracted_data.get('properties', [])),
+                    'text_length': len(document_text),
+                    'property_linking_attempted': len(extracted_properties) > 0
+                }
+            )
 
-                # ========================================================================
-                # PROPERTY LINKING FOR MINIMAL EXTRACTION
-                # ========================================================================
-                
-                logger.info("🔗 Starting property linking for minimal extraction...")
-                
-                # Handle different extraction data formats
-                extracted_properties = []
-                
-                if classification_type == 'other_documents' and 'subject_property' in extracted_data:
-                    # New format: subject_property object
-                    subject_prop = extracted_data['subject_property']
-                    if subject_prop and subject_prop.get('property_address'):
-                        extracted_properties = [subject_prop]
-                        logger.info(f"📍 Found subject property in other_documents format")
-                elif 'properties' in extracted_data:
-                    # Legacy format: properties array
-                    extracted_properties = extracted_data.get('properties', [])
-                    logger.info(f"📍 Found {len(extracted_properties)} properties in legacy format")
-                
-                if extracted_properties:
-                    logger.info(f"📍 Processing {len(extracted_properties)} extracted properties")
-                    
-                    from .services.address_service import AddressNormalizationService
-                    from .services.supabase_property_hub_service import SupabasePropertyHubService
-                    
-                    address_service = AddressNormalizationService()
-                    property_hub_service = SupabasePropertyHubService()
-                    
-                    # Process each extracted property
-                    for i, prop in enumerate(extracted_properties):
-                        property_address = prop.get('property_address')
-                        if property_address and property_address != 'Address not found':
-                            logger.info(f"📍 Processing property {i+1}: {property_address}")
-                            
-                            try:
-                                # Normalize address and compute hash
-                                normalized = address_service.normalize_address(property_address)
-                                address_hash = address_service.compute_address_hash(normalized)
-                                geocoding_result = address_service.geocode_address(property_address)
-                                
-                                address_data = {
-                                    'original_address': property_address,
-                                    'normalized_address': normalized,
-                                    'address_hash': address_hash,
-                                    'latitude': geocoding_result.get('latitude'),
-                                    'longitude': geocoding_result.get('longitude'),
-                                    'formatted_address': geocoding_result.get('formatted_address'),
-                                    'geocoding_status': geocoding_result.get('status'),
-                                    'geocoding_confidence': geocoding_result.get('confidence'),
-                                    'geocoder_used': geocoding_result.get('geocoder', 'none')
-                                }
-                                
-                                logger.info(f"✅ Address processed: {address_data['formatted_address']}")
-                                
-                                # Create property hub using enhanced matching
-                                hub_result = property_hub_service.create_property_with_relationships(
-                                    address_data=address_data,
-                                    document_id=str(document_id),
-                                    business_id=business_id,
-                                    extracted_data=prop
-                                )
-                                
-                                if hub_result['success']:
-                                    logger.info(f"✅ Property linked successfully: {hub_result['property_id']}")
-                                    logger.info(f"   Match type: {hub_result['match_type']}")
-                                    logger.info(f"   Confidence: {hub_result['confidence']:.2f}")
-                                    logger.info(f"   Action: {hub_result['action']}")
-                                else:
-                                    logger.warning(f"⚠️ Property linking failed: {hub_result.get('error', 'Unknown error')}")
-                                    
-                            except Exception as e:
-                                logger.error(f"❌ Error processing property {i+1}: {e}")
-                                continue
-                        else:
-                            logger.info(f"⚠️ Property {i+1} has no valid address: {property_address}")
-                else:
-                    logger.info("ℹ️ No properties found in minimal extraction - skipping property linking")
+            return {
+                'status': 'completed',
+                'properties': extracted_data.get('properties', []),
+                'history_id': history_id
+            }
 
-                # log history completion
-                history_service.log_step_completion(
+        except Exception as e:
+            logger.error(f"Error in minimal extraction: {e}")
+            document.status = DocumentStatus.FAILED
+            db.session.commit()
+
+            if 'history_id' in locals():
+                history_service.log_step_failure(
                     history_id=history_id,
-                    step_message=f"Minimal extraction completed with property linking",
-                    step_metadata={
-                        'extracted_properties': len(extracted_data.get('properties', [])),
-                        'text_length': len(document_text),
-                        'property_linking_attempted': len(extracted_properties) > 0
-                    }
+                    error_message=str(e)
                 )
 
-                return {
-                    'status': 'completed',  # FIXED: Return 'completed' instead of 'extracted'
-                    'properties': extracted_data.get('properties', []),
-                    'history_id': history_id
-                }
+            return {"error": str(e)}
 
-            except Exception as e:
-                logger.error(f"Error in minimal extraction: {e}")
-                document.status = DocumentStatus.FAILED
-                db.session.commit()
-
-                if 'history_id' in locals():
-                    history_service.log_step_failure(
-                        history_id=history_id,
-                        error_message=str(e)
-                    )
-
-                return {"error": str(e)}
-
-            finally:
-                # clean up temp file
-                try:
-                    if os.path.exists(temp_file_path):
-                        os.unlink(temp_file_path)
-                except:
-                    pass
-        
-        except Exception as e:
-            logger.error(f"❌ Error in minimal extraction task: {e}")
+        finally:
+            # clean up temp file
             try:
-                document.status = DocumentStatus.FAILED
-                db.session.commit()
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
             except:
                 pass
-            return {"error": str(e)}
 
 @shared_task(bind=True)
 def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id):
@@ -1227,14 +1106,25 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
     Celery task to process an uploaded document:
     1. Receives file content directly.
     2. Saves content to a temporary file.
-    3. Parses with LlamaParse.
-    4. Extracts structured data using LlamaExtract.
+    3. Parses with Reducto.
+    4. Extracts structured data using Reducto Extract.
     5. Stores data in Supabase.
     """
     from . import create_app
     app = create_app()
     
     with app.app_context():
+        # PHASE 1 FIX: Signal Import & Safe Cleanup
+        import signal
+        
+        def safe_signal_cleanup():
+            """Safely cancel signal alarm if signal module is available"""
+            try:
+                signal.alarm(0)
+            except (NameError, AttributeError):
+                pass  # signal not imported or not available
+        # ==========================================
+        
         print("=" * 80)
         print("🚀 EXTRACTION TASK STARTED: process_document_with_dual_stores")
         print(f"   Document ID: {document_id}")
@@ -1266,270 +1156,231 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             print(f"Processing document for business_id: {business_id}")
             print(f"Image extraction directory: {temp_image_dir}")
         
-            # --- 2. Parse with LlamaParse (with image extraction enabled) ---
-            parser = LlamaParse(
-                api_key=os.environ['LLAMA_CLOUD_API_KEY'],
-                result_type="markdown",
-                verbose=True
-            )
-            file_extractor = {
-                ".pdf": parser,
-                ".docx": parser,
-                ".doc": parser,
-                ".pptx": parser,
-                ".ppt": parser
-            }
-            reader = SimpleDirectoryReader(input_dir=temp_dir, file_extractor=file_extractor)
-            parsed_docs = reader.load_data()
-            print("LlamaParse API call completed.")
-
-            # --- Content Validation ---
-            has_content = any(doc.text and doc.text.strip() not in ['', 'NO_CONTENT_HERE'] for doc in parsed_docs)
-            if not has_content:
-                raise ValueError("LlamaParse did not return any meaningful content.")
-
-            # Add business_id to metadata for multi-tenancy
-            for doc in parsed_docs:
-                doc.metadata["business_id"] = str(business_id)
-                doc.metadata["document_id"] = str(document_id)
-
-            # Content validation completed
-
-            # Extract text from parsed documents for fallback
-            document_text = "\n".join([doc.text for doc in parsed_docs])
-            print(f"📄 Extracted {len(document_text)} characters of text for processing")
-
-            # --- 3. Extract structured data using LlamaExtract with timeout handling ---
-            print("🔄 Starting property extraction with timeout protection...")
+            # --- 2. Parse with Reducto ---
+            # REDUCTO PATH: Parse + Extract + Images
+            print("🔄 Using Reducto for document processing...")
             
-            # Add timeout and error handling for LlamaExtract
-            import signal
+            from .services.reducto_service import ReductoService
+            from .services.reducto_image_service import ReductoImageService
+            from .services.extraction_schemas import get_extraction_schema
             
-            def timeout_handler(signum, frame):
-                raise TimeoutError("LlamaExtract job timed out after 5 minutes")
+            reducto = ReductoService()
+            image_service = ReductoImageService()
             
-            # Set timeout to 5 minutes (300 seconds)
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(300)
+            # Check if we already have job_id from classification step
+            job_id = None
+            image_urls = []
+            document_text = ""
             
-            try:
-                # Environment validation and debugging
-                print("🔍 LlamaExtract Configuration Check:")
-                print(f"   API Key present: {'✅' if os.environ.get('LLAMA_CLOUD_API_KEY') else '❌'}")
-                print(f"   File path: {temp_file_path}")
-                print(f"   File exists: {'✅' if os.path.exists(temp_file_path) else '❌'}")
-                print(f"   File size: {os.path.getsize(temp_file_path) if os.path.exists(temp_file_path) else 'N/A'} bytes")
+            if document.metadata_json:
+                metadata = json.loads(document.metadata_json)
+                job_id = metadata.get('reducto_job_id')
+                image_urls = metadata.get('reducto_image_urls', [])
+            
+            # If no job_id, parse now (shouldn't happen but safe fallback)
+            if not job_id:
+                print("⚠️ No job_id found in metadata, parsing document now...")
+                file_size_mb = len(file_content) / (1024 * 1024)
+                use_async = file_size_mb > 1.0
                 
-                # Check API accessibility
-                api_accessible = _check_llamaextract_api()
-                print(f"   API accessible: {'✅' if api_accessible else '❌'}")
+                if use_async:
+                    print(f"📦 Large file detected ({file_size_mb:.2f}MB), using async processing")
                 
-                if not api_accessible:
-                    print("⚠️ LlamaExtract API not accessible, using fallback immediately")
-                    signal.alarm(0)  # Cancel the alarm
-                    extracted_data = _fallback_text_extraction(document_text, original_filename)
+                parse_result = reducto.parse_document(
+                    file_path=temp_file_path,
+                    return_images=["figure", "table"],
+                    use_async=use_async
+                )
+                job_id = parse_result['job_id']
+                document_text = parse_result['document_text']
+                image_urls = parse_result['image_urls']
+                image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                
+                # Store in metadata
+                if document.metadata_json:
+                    metadata = json.loads(document.metadata_json)
                 else:
-                    print("Initializing LlamaExtract with multimodal mode...")
-                    extractor = LlamaExtract(api_key=os.environ['LLAMA_CLOUD_API_KEY'])
-                    
-                    # Use the correct pattern from documentation
-                    config = ExtractConfig(
-                        extraction_mode=ExtractMode.MULTIMODAL,
-                        extraction_target=ExtractTarget.PER_DOC,
-                        high_resolution_mode=True,
-                        cite_sources=True,
-                        use_reasoning=False,
-                        confidence_scores=False,
-                    )
-                    
-                    agent_name = f"advanced-pipeline-extraction"
-                    
-                    try:
-                        # Step 1: Try to get existing agent first (most efficient)
-                        print(f"🔍 Looking for existing agent: {agent_name}")
-                        agent = extractor.get_agent(name=agent_name)
-                        print(f"✅ Found existing agent: {agent_name}")
-                        
-                    except Exception as get_error:
-                        print(f"⚠️ Agent '{agent_name}' not found: {get_error}")
-                        print(f"🔄 Creating new agent: {agent_name}")
-                        
-                        try:
-                            # Step 2: Create new agent with schema-based name
-                            agent = extractor.create_agent(
-                                name=agent_name,
-                                data_schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA,
-                                config=config
-                            )
-                            print(f"✅ Successfully created new agent: {agent_name}")
-                            
-                        except Exception as create_error:
-                            print(f"❌ Failed to create agent '{agent_name}': {create_error}")
-                            print("🔄 Falling back to direct extraction...")
-                            
-                            # Step 3: Fallback to direct extraction
-                            try:
-                                result = extractor.extract_from_file(
-                                    file_path=temp_file_path,
-                                    schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA
-                                )
-                                extracted_data = result.data
-                                print("✅ Direct extraction completed successfully")
-                                
-                                # Skip agent extraction and continue
-                                signal.alarm(0)
-                                # Continue to agent extraction
-                                
-                            except Exception as direct_error:
-                                print(f"❌ Direct extraction also failed: {direct_error}")
-                                print("🔄 Using text fallback...")
-                                extracted_data = _fallback_text_extraction(document_text, original_filename)
-                                signal.alarm(0)
-                                # Continue to agent extraction
-                    
-                    # Step 4: Use the agent (either existing or newly created)
-                    try:
-                        print(f"🔄 Using agent extraction with: {agent_name}")
-                        result = agent.extract(temp_file_path)
-                        extracted_data = result.data
-                        print("✅ Agent extraction completed successfully")
-                        
-                    except Exception as agent_error:
-                        print(f"❌ Agent extraction failed: {agent_error}")
-                        print("🔄 Falling back to direct extraction...")
-                        
-                        try:
-                            result = extractor.extract_from_file(
-                                file_path=temp_file_path,
-                                schema=SUBJECT_PROPERTY_EXTRACTION_SCHEMA
-                            )
-                            extracted_data = result.data
-                            print("✅ Direct extraction completed successfully")
-                            
-                        except Exception as direct_error:
-                            print(f"❌ Direct extraction also failed: {direct_error}")
-                            print("🔄 Using text fallback...")
-                            extracted_data = _fallback_text_extraction(document_text, original_filename)
-                    
-                            # Cancel the alarm
-                            signal.alarm(0)
-                
-            except Exception as e:
-                print(f"❌ LlamaExtract failed: {e}")
-                signal.alarm(0)  # Cancel the alarm
-                # Fallback to text-based extraction
-                extracted_data = _fallback_text_extraction(document_text, original_filename)
-                
-            except TimeoutError:
-                print("❌ LlamaExtract job timed out after 5 minutes")
-                signal.alarm(0)  # Cancel the alarm
-                # Fallback to text-based extraction
-                extracted_data = _fallback_text_extraction(document_text, original_filename)
-                
-            except AttributeError as e:
-                print(f"❌ Direct extract method not available: {e}")
-                signal.alarm(0)  # Cancel the alarm
-                print("🔄 Falling back to agent-based approach...")
-                
-                try:
-                    agent_name = "advanced-pipeline-extraction"
-                    agent = extractor.get_agent(name=agent_name)
-                    print(f"✅ Using existing Velora extraction agent: {agent_name}")
-                    
-                    # Set timeout for agent extraction too
-                    signal.alarm(300)
-                    result = agent.extract(temp_file_path)
-                    extracted_data = result.data
-                    signal.alarm(0)
-                    print("✅ Agent extraction completed successfully")
-                    
-                except Exception as agent_error:
-                    print(f"❌ Agent extraction failed: {agent_error}")
-                    signal.alarm(0)  # Cancel the alarm
-                    # Fallback to text-based extraction
-                    extracted_data = _fallback_text_extraction(document_text, original_filename)
-                    
-            except Exception as e:
-                print(f"❌ LlamaExtract failed: {e}")
-                signal.alarm(0)  # Cancel the alarm
-                # Fallback to text-based extraction
-                extracted_data = _fallback_text_extraction(document_text, original_filename)
-
-            # Data extraction completed successfully
-
-            # Parse extracted data from Velora agent
-            if isinstance(extracted_data, dict):
-                # Handle the new subject_property schema format
-                if 'data' in extracted_data:
-                    # Match llama extract output
-                    subject_property = extracted_data['data'].get('subject_property')
-                else:
-                    # Match direct format
-                    subject_property = extracted_data.get('subject_property')
-                
-                if subject_property:
-                    # Clean the data before processing
-                    subject_property = clean_extracted_property(subject_property)
-                    subject_properties = [subject_property]
-                    
-                    print(f"✅ Successfully extracted and cleaned subject property")
-                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
-                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
-                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
-                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
-                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
-                else:
-                    print("   ❌ No subject property found in extraction results")
-                    subject_properties = []
-                
-                # Clean up the extracted address
-                if subject_properties and subject_properties[0]:
-                    raw_address = subject_properties[0].get('property_address', '')
-                    if raw_address:
-                        # Remove apartment numbers from the beginning
-                        import re
-                        # Pattern to match apartment numbers at the start
-                        apartment_pattern = r'^[\d\s,]+(?=[A-Za-z])'
-                        cleaned_address = re.sub(apartment_pattern, '', raw_address).strip()
-                        # Remove leading comma if present
-                        cleaned_address = re.sub(r'^,\s*', '', cleaned_address).strip()
-                        
-                        print(f"🧹 Address cleaning:")
-                        print(f"   Original: {raw_address}")
-                        print(f"   Cleaned:  {cleaned_address}")
-                        
-                        # Update the property with cleaned address
-                        subject_properties[0]['property_address'] = cleaned_address
-                
-                        print(f"📄 Extraction Results:")
-                        print(f"   Subject property: {subject_property}")
-                if subject_property:
-                    print(f"   ✅ Successfully extracted subject property")
-                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
-                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
-                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
-                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
-                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
-                else:
-                    print("   ❌ No subject property found in extraction results")
+                    metadata = {}
+                metadata['reducto_job_id'] = job_id
+                metadata['reducto_image_urls'] = image_urls
+                # Store image blocks metadata for filtering (if available)
+                if image_blocks_metadata:
+                    metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
+                document.metadata_json = json.dumps(metadata)
+                db.session.commit()
             else:
-                # Handle object-style response
-                subject_property = getattr(extracted_data, 'subject_property', None)
+                # Get document text from stored parsed_text
+                document_text = document.parsed_text or ""
+                
+                # FALLBACK: If parsed_text is empty or no images, retrieve from Reducto using job_id
+                if (not document_text or not image_urls) and job_id:
+                    logger.warning(f"⚠️ parsed_text or images missing, retrieving from Reducto for job {job_id}")
+                    try:
+                        # Retrieve parse result from Reducto using job_id
+                        parse_result = reducto.get_parse_result_from_job_id(
+                            job_id=job_id,
+                            return_images=["figure", "table"]
+                        )
+                        
+                        # Update document_text and image_urls from retrieved result
+                        if parse_result['document_text']:
+                            document_text = parse_result['document_text']
+                            document.parsed_text = document_text
+                            logger.info(f"✅ Retrieved parsed text from Reducto ({len(document_text)} chars)")
+                        
+                        if parse_result['image_urls']:
+                            image_urls = parse_result['image_urls']
+                            logger.info(f"✅ Retrieved {len(image_urls)} image URLs from Reducto")
+                        
+                        # Get image blocks metadata for filtering
+                        image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                        
+                        # Store in metadata as backup
+                        if document.metadata_json:
+                            metadata = json.loads(document.metadata_json)
+                        else:
+                            metadata = {}
+                        metadata['reducto_parsed_text'] = document_text
+                        metadata['reducto_image_urls'] = image_urls
+                        if image_blocks_metadata:
+                            metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
+                        document.metadata_json = json.dumps(metadata)
+                        
+                        # Commit updates
+                        db.session.commit()
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to retrieve parse result from Reducto job_id: {e}")
+                        # Fallback to metadata backup
+                        if document.metadata_json:
+                            try:
+                                metadata = json.loads(document.metadata_json)
+                                stored_text = metadata.get('reducto_parsed_text', '')
+                                stored_image_urls = metadata.get('reducto_image_urls', [])
+                                
+                                if stored_text and not document_text:
+                                    document_text = stored_text
+                                    document.parsed_text = stored_text
+                                    logger.info(f"✅ Retrieved parsed text from metadata backup ({len(document_text)} chars)")
+                                
+                                if stored_image_urls and not image_urls:
+                                    image_urls = stored_image_urls
+                                    logger.info(f"✅ Retrieved {len(image_urls)} image URLs from metadata backup")
+                                
+                                if (stored_text and not document_text) or (stored_image_urls and not image_urls):
+                                    db.session.commit()
+                            except Exception as e2:
+                                logger.error(f"Failed to retrieve parse result from metadata: {e2}")
+                
+                print(f"✅ Using existing job_id: {job_id}")
+                
+                # Initialize image_blocks_metadata if not already set
+                if 'image_blocks_metadata' not in locals() or image_blocks_metadata is None:
+                    image_blocks_metadata = []
+                
+                # Try to get image_blocks_metadata from metadata if not already retrieved
+                if not image_blocks_metadata and document.metadata_json:
+                    try:
+                        metadata = json.loads(document.metadata_json)
+                        image_blocks_metadata = metadata.get('reducto_image_blocks_metadata', [])
+                    except:
+                        pass
+            
+            print(f"📄 Document text length: {len(document_text)} characters")
+            print(f"📸 Found {len(image_urls)} images in document")
+            
+            # Ensure image_blocks_metadata is always initialized
+            if 'image_blocks_metadata' not in locals() or image_blocks_metadata is None:
+                image_blocks_metadata = []
+                # Try to get from parse_result if available
+                if 'parse_result' in locals() and isinstance(parse_result, dict):
+                    image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                # Fallback to metadata
+                elif document.metadata_json:
+                    try:
+                        metadata = json.loads(document.metadata_json)
+                        image_blocks_metadata = metadata.get('reducto_image_blocks_metadata', [])
+                    except:
+                        pass
+            
+            # Process images immediately (24h expiration) with filtering
+            processed_images = []
+            if image_urls:
+                print(f"🔄 Processing and filtering {len(image_urls)} images...")
+                image_result = image_service.process_parsed_images(
+                    image_urls=image_urls,
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    property_id=None,
+                    image_blocks_metadata=image_blocks_metadata,
+                    document_text=document_text
+                )
+                
+                processed_images = image_result['images']
+                filter_stats = image_result.get('filter_stats', {})
+                print(f"✅ Filtered {image_result['total']} → {filter_stats.get('total_filtered', 0)} property-relevant images")
+                print(f"✅ Uploaded {image_result['processed']}/{filter_stats.get('total_filtered', 0)} filtered images")
+                if image_result['errors']:
+                    print(f"⚠️ Image processing errors: {len(image_result['errors'])}")
+            
+            # Get classification if not already done
+            classification_type = document.classification_type
+            if not classification_type:
+                # Re-classify if needed
+                classification = reducto.classify_document(job_id)
+                classification_type = classification['document_type']
+                print(f"📋 Document classified as: {classification_type}")
+            
+            # Extract with appropriate schema
+            schema = get_extraction_schema(classification_type)
+            
+            print(f"🔄 Extracting property data with schema for: {classification_type}")
+            extraction = reducto.extract_with_schema(
+                job_id=job_id,
+                schema=schema,
+                system_prompt="Be precise and thorough. Extract all property details."
+            )
+            
+            extracted_data = extraction['data']
+            
+            # Transform to match existing structure
+            # Reducto returns: {'data': {'subject_property': {...}}}
+            if 'subject_property' in extracted_data:
+                subject_property = extracted_data['subject_property']
+            else:
+                # Handle other schemas (OTHER_DOCUMENTS_EXTRACTION_SCHEMA, MINIMAL_EXTRACTION_SCHEMA)
+                subject_property = extracted_data.get('subject_property', extracted_data)
+            
+            print(f"✅ Reducto extraction completed")
+            
+            # Add images to subject_property structure
+            if processed_images:
+                property_images = [
+                    {
+                        'url': img['url'],
+                        'document_id': img['document_id'],
+                        'source_document_id': img.get('source_document_id', img['document_id']),
+                        'image_index': img['image_index'],
+                        'storage_path': img.get('storage_path', ''),
+                        'size_bytes': img.get('size_bytes', 0)
+                    }
+                    for img in processed_images
+                ]
+                
+                primary_image_url = property_images[0]['url'] if property_images else None
                 
                 if subject_property:
-                    # Clean the data before processing
-                    subject_property = clean_extracted_property(subject_property)
-                    subject_properties = [subject_property]
-                    
-                    print(f"✅ Successfully extracted and cleaned subject property")
-                    print(f"   📍 Address: {subject_property.get('property_address', 'N/A')}")
-                    print(f"   🏠 Type: {subject_property.get('property_type', 'N/A')}")
-                    print(f"   🛏️  Bedrooms: {subject_property.get('number_bedrooms', 'N/A')}")
-                    print(f"   🚿 Bathrooms: {subject_property.get('number_bathrooms', 'N/A')}")
-                    print(f"   📐 Size: {subject_property.get('size_sqft', 'N/A')} sq ft")
-                else:
-                    print("   ❌ No subject property found in extraction results")
-                    subject_properties = []
+                    subject_property['property_images'] = property_images
+                    subject_property['primary_image_url'] = primary_image_url
+                    subject_property['image_count'] = len(property_images)
+            
+            # Format to match expected structure
+            if subject_property:
+                subject_properties = [clean_extracted_property(subject_property)]
+            else:
+                subject_properties = []
+            
+            print(f"✅ Processed {len(subject_properties)} property records")
             
             print(f"Successfully extracted data for {len(subject_properties)} properties.")
             print(f"Successfully extracted {len(subject_properties)} properties from document.")
@@ -1569,6 +1420,11 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             # Priority 2: Use extracted subject property address if filename didn't have one
             if not property_address and subject_property:
                 property_address = subject_property.get('property_address')
+                
+                # Handle case where Reducto returns address as dict with 'value' key
+                if isinstance(property_address, dict):
+                    property_address = property_address.get('value', '')
+                
                 if property_address:
                     address_source = 'extraction'
                     print(f"🎯 Using address from CONTENT EXTRACTION: '{property_address}'")
@@ -1696,46 +1552,10 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 print("🔄 Property linking completed")
                 print("=" * 80)
 
-            # --- 4. Image processing (enabled) ---
-            print("🖼️ Starting property image extraction...")
-            
-            try:
-                image_extraction_result = extract_images_from_document(temp_file_path, document_id, business_id)
-                
-                if image_extraction_result['image_count'] > 0:
-                    print(f"✅ Extracted {image_extraction_result['image_count']} property images")
-                    
-                    # Store images in property data
-                    for prop in subject_properties:
-                        prop['property_images'] = image_extraction_result['images']
-                        prop['image_count'] = image_extraction_result['image_count']
-                        prop['primary_image_url'] = image_extraction_result['primary_image_url']
-                        prop['image_metadata'] = {
-                            'extraction_method': 'llamaparse',
-                            'total_images': image_extraction_result['image_count'],
-                            'extraction_timestamp': datetime.utcnow().isoformat()
-                        }
-                else:
-                    print("ℹ️ No images found in document")
-                    # Set default empty values
-                    for prop in subject_properties:
-                        prop['property_images'] = []
-                        prop['image_count'] = 0
-                        prop['primary_image_url'] = None
-                        prop['image_metadata'] = {}
-                        
-            except Exception as e:
-                print(f"⚠️ Image extraction failed: {e}")
-                # Continue without images - set default empty values
-                for prop in subject_properties:
-                    prop['property_images'] = []
-                    prop['image_count'] = 0
-                    prop['primary_image_url'] = None
-                    prop['image_metadata'] = {}
+            # Images are already processed via ReductoImageService above (lines 1202-1216)
+            # and attached to subject_property structure (lines 1248-1267)
             
             property_uuids = [uuid.uuid4() for _ in subject_properties]
-            property_image_mapping = {}
-            unassigned_image_paths = []
 
             # --- 5. Store structured data in Supabase ---
             print("Storing structured data in Supabase...")
@@ -1776,19 +1596,49 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 from .services.vector_service import SupabaseVectorService
                 vector_service = SupabaseVectorService()
                 
-                # Process document chunks with minimal logging
+                # Process document text (from Reducto parse) with minimal logging
                 document_vectors_stored = 0
-                for i, doc in enumerate(parsed_docs):
+                
+                # Ensure document_text is available - if empty, try to retrieve from Reducto
+                if not document_text and job_id:
+                    logger.warning("⚠️ document_text is empty, attempting to retrieve from Reducto...")
+                    try:
+                        # reducto is already initialized earlier in the function
+                        parse_result = reducto.get_parse_result_from_job_id(
+                            job_id=job_id,
+                            return_images=["figure", "table"]
+                        )
+                        if parse_result.get('document_text'):
+                            document_text = parse_result['document_text']
+                            document.parsed_text = document_text
+                            db.session.commit()
+                            logger.info(f"✅ Retrieved document text from Reducto ({len(document_text)} chars)")
+                    except Exception as e:
+                        logger.error(f"Failed to retrieve document text from Reducto: {e}")
+                        # Fallback: try to get from document metadata
+                        if document.metadata_json:
+                            try:
+                                metadata = json.loads(document.metadata_json)
+                                stored_text = metadata.get('reducto_parsed_text', '')
+                                if stored_text:
+                                    document_text = stored_text
+                                    document.parsed_text = stored_text
+                                    db.session.commit()
+                                    logger.info(f"✅ Retrieved document text from metadata backup ({len(document_text)} chars)")
+                            except Exception as e2:
+                                logger.error(f"Failed to retrieve from metadata: {e2}")
+                
+                if document_text:
                     try:
                         # Chunk the document text
-                        chunks = vector_service.chunk_text(doc.text, chunk_size=512, overlap=50)
+                        chunks = vector_service.chunk_text(document_text, chunk_size=512, overlap=50)
                         
                         # Prepare metadata
                         metadata = {
                             'business_id': business_id,
                             'document_id': str(document_id),
                             'property_id': str(property_uuids[0]) if property_uuids else None,
-                            'classification_type': 'valuation_report',  # Default for now
+                            'classification_type': classification_type or 'valuation_report',
                             'address_hash': None  # Will be set if available
                         }
                         
@@ -1800,10 +1650,10 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         )
                         
                         if success:
-                            document_vectors_stored += len(chunks)
+                            document_vectors_stored = len(chunks)
                             
                     except Exception as e:
-                        continue
+                        print(f"⚠️ Error chunking/storing document vectors: {e}")
                 
                 print(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
                 
@@ -1852,6 +1702,12 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             'rented_date': prop.get('rented_date'),
                             'leased_date': prop.get('leased_date')
                         }
+                        
+                        # Delete existing vectors for this property + document to prevent duplicates
+                        vector_service.delete_property_vectors_by_source(
+                            property_id=str(property_uuid),
+                            source_document_id=str(document_id)
+                        )
                         
                         # Store property vectors
                         success = vector_service.store_property_vectors(
@@ -2010,6 +1866,11 @@ def store_extracted_properties_in_supabase(extracted_data, business_id, document
             try:
                 # Prepare address data from geocoding map
                 address = prop.get('property_address', '')
+                
+                # Handle case where Reducto returns address as dict with 'value' key
+                if isinstance(address, dict):
+                    address = address.get('value', '')
+                
                 geocoding_result = geocoding_map.get(address, {}) if geocoding_map else {}
                 
                 address_data = {
@@ -2023,6 +1884,20 @@ def store_extracted_properties_in_supabase(extracted_data, business_id, document
                     'geocoding_confidence': geocoding_result.get('confidence', 0.0),
                     'address_source': 'extraction'
                 }
+
+                # before calling the create document relationship function - check if relationship already exists
+                from .services.supabase_property_hub_service import SupabasePropertyHubService
+                property_hub_service = SupabasePropertyHubService()
+
+                existing = property_hub_service.supabase.table('document_relationships')\
+                    .select('id')\
+                    .select('document_id', str(document_id))\
+                    .eq('property_id', str(property_uuids[1]) if i < len(property_uuids) else None)\
+                    .execute()
+                
+                if existing.data:
+                    logger.info(f"Property hub {i+1} relationships already exists, skipping creation")
+                    continue
                 
                 # Create property hub using the service
                 hub_result = property_hub_service.create_property_with_relationships(
