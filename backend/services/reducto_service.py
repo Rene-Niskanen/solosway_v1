@@ -106,15 +106,15 @@ class ReductoService:
             else:
                 # Use synchronous parsing (for small files)
                 logger.info("🔄 Using synchronous parsing")
-                parse_result = self.client.parse.run(
-                    input=upload,
-                    settings={
-                        "return_images": return_images
-                    }
-                )
-                
-                # Extract Job_id
-                job_id = getattr(parse_result, 'job_id', None)
+            parse_result = self.client.parse.run(
+                input=upload,
+                settings={
+                    "return_images": return_images
+                }
+            )
+
+            # Extract Job_id
+            job_id = getattr(parse_result, 'job_id', None)
 
             # Extract text from chunks 
             document_text = ""
@@ -149,41 +149,64 @@ class ReductoService:
                     for chunk in result_obj.chunks:
                         chunk_content = chunk.content if hasattr(chunk, 'content') else ''
                         chunk_embed = chunk.embed if hasattr(chunk, 'embed') else ''
+                        chunk_enriched = getattr(chunk, 'enriched', None)  # NEW: Get enriched content
+                        
+                        # Extract ALL blocks with full metadata (not just image blocks)
+                        chunk_blocks = []
+                        chunk_bbox_aggregate = None  # Aggregate bbox for the chunk
+                        
+                        if hasattr(chunk, 'blocks') and chunk.blocks:
+                            for block in chunk.blocks:
+                                block_type = getattr(block, 'type', 'unknown')
+                                block_content = getattr(block, 'content', '')
+                                block_image_url = getattr(block, 'image_url', None)
+                                block_confidence = getattr(block, 'confidence', None)
+                                block_logprobs_confidence = getattr(block, 'logprobs_confidence', None)
+                                
+                                # Extract bbox for ALL block types (Text, Table, Figure)
+                                block_bbox = None
+                                if hasattr(block, 'bbox') and block.bbox:
+                                    bbox_obj = block.bbox
+                                    block_bbox = {
+                                        'left': getattr(bbox_obj, 'left', None),
+                                        'top': getattr(bbox_obj, 'top', None),
+                                        'width': getattr(bbox_obj, 'width', None),
+                                        'height': getattr(bbox_obj, 'height', None),
+                                        'page': getattr(bbox_obj, 'page', None),
+                                        'original_page': getattr(bbox_obj, 'original_page', None)
+                                    }
+                                    # Use first block's bbox as chunk-level bbox (or aggregate if needed)
+                                    if chunk_bbox_aggregate is None:
+                                        chunk_bbox_aggregate = block_bbox.copy()
+                                
+                                block_metadata = {
+                                    'type': block_type,
+                                    'content': block_content,
+                                    'bbox': block_bbox,
+                                    'confidence': block_confidence,
+                                    'logprobs_confidence': block_logprobs_confidence,
+                                    'image_url': block_image_url
+                                }
+                                
+                                chunk_blocks.append(block_metadata)
+                                
+                                # Extract image URLs for image processing
+                                if block_image_url:
+                                    image_urls.append(block_image_url)
+                                    image_blocks_metadata.append({
+                                        'type': block_type,
+                                        'image_url': block_image_url,
+                                        'bbox': block_bbox
+                                    })
+                        
                         chunks.append({
                             'content': chunk_content,
                             'embed': chunk_embed,
-                            'blocks': []
+                            'enriched': chunk_enriched,  # NEW
+                            'blocks': chunk_blocks,  # ALL blocks, not just images
+                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (first block's bbox)
                         })
                         document_text += chunk_content + "\n"
-
-                        # Extract image URLs from blocks with metadata
-                        if hasattr(chunk, 'blocks') and chunk.blocks:
-                            for block in chunk.blocks:
-                                if hasattr(block, 'image_url') and block.image_url:
-                                    image_urls.append(block.image_url)
-                                    
-                                    # Store block metadata for filtering
-                                    block_metadata = {
-                                        'type': getattr(block, 'type', 'unknown'),
-                                        'image_url': block.image_url,
-                                        'bbox': None
-                                    }
-                                    
-                                    # Extract bbox if available
-                                    if hasattr(block, 'bbox'):
-                                        bbox = block.bbox
-                                        if bbox:
-                                            block_metadata['bbox'] = {
-                                                'left': getattr(bbox, 'left', None) if hasattr(bbox, 'left') else None,
-                                                'top': getattr(bbox, 'top', None) if hasattr(bbox, 'top') else None,
-                                                'width': getattr(bbox, 'width', None) if hasattr(bbox, 'width') else None,
-                                                'height': getattr(bbox, 'height', None) if hasattr(bbox, 'height') else None,
-                                                'page': getattr(bbox, 'page', None) if hasattr(bbox, 'page') else None,
-                                                'original_page': getattr(bbox, 'original_page', None) if hasattr(bbox, 'original_page') else None
-                                            }
-                                    
-                                    image_blocks_metadata.append(block_metadata)
-                                    chunks[-1]['blocks'].append(block_metadata)
                 
                 # Alternative if chunks are not available, try direct text extraction 
                 elif hasattr(result_obj, 'text'):
@@ -257,45 +280,69 @@ class ReductoService:
                 if hasattr(result_obj, 'chunks'):
                     for chunk in result_obj.chunks:
                         chunk_content = chunk.content if hasattr(chunk, 'content') else ''
+                        chunk_embed = chunk.embed if hasattr(chunk, 'embed') else ''
+                        chunk_enriched = getattr(chunk, 'enriched', None)  # NEW: Get enriched content
+                        
+                        # Extract ALL blocks with full metadata (not just image blocks)
+                        chunk_blocks = []
+                        chunk_bbox_aggregate = None  # Aggregate bbox for the chunk
+                        
+                        if hasattr(chunk, 'blocks') and chunk.blocks:
+                            for block in chunk.blocks:
+                                block_type = getattr(block, 'type', 'unknown')
+                                block_content = getattr(block, 'content', '')
+                                block_image_url = getattr(block, 'image_url', None)
+                                block_confidence = getattr(block, 'confidence', None)
+                                block_logprobs_confidence = getattr(block, 'logprobs_confidence', None)
+                                
+                                # Extract bbox for ALL block types (Text, Table, Figure)
+                                block_bbox = None
+                                if hasattr(block, 'bbox') and block.bbox:
+                                    bbox_obj = block.bbox
+                                    block_bbox = {
+                                        'left': getattr(bbox_obj, 'left', None),
+                                        'top': getattr(bbox_obj, 'top', None),
+                                        'width': getattr(bbox_obj, 'width', None),
+                                        'height': getattr(bbox_obj, 'height', None),
+                                        'page': getattr(bbox_obj, 'page', None),
+                                        'original_page': getattr(bbox_obj, 'original_page', None)
+                                    }
+                                    # Use first block's bbox as chunk-level bbox (or aggregate if needed)
+                                    if chunk_bbox_aggregate is None:
+                                        chunk_bbox_aggregate = block_bbox.copy()
+                                
+                                block_metadata = {
+                                    'type': block_type,
+                                    'content': block_content,
+                                    'bbox': block_bbox,
+                                    'confidence': block_confidence,
+                                    'logprobs_confidence': block_logprobs_confidence,
+                                    'image_url': block_image_url
+                                }
+                                
+                                chunk_blocks.append(block_metadata)
+                                
+                                # Extract image URLs for image processing
+                                if block_image_url:
+                                    image_urls.append(block_image_url)
+                                    image_blocks_metadata.append({
+                                        'type': block_type,
+                                        'image_url': block_image_url,
+                                        'bbox': block_bbox
+                                    })
+                        
                         chunks.append({
                             'content': chunk_content,
-                            'embed': chunk.embed if hasattr(chunk, 'embed') else '',
-                            'blocks': []
+                            'embed': chunk_embed,
+                            'enriched': chunk_enriched,  # NEW
+                            'blocks': chunk_blocks,  # ALL blocks, not just images
+                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (first block's bbox)
                         })
                         document_text += chunk_content
-
-                        # Extract image URLs from blocks with metadata
-                        if hasattr(chunk, 'blocks'):
-                            for block in chunk.blocks:
-                                if hasattr(block, 'image_url') and block.image_url:
-                                    image_urls.append(block.image_url)
-                                    
-                                    # Store block metadata for filtering
-                                    block_metadata = {
-                                        'type': getattr(block, 'type', 'unknown'),
-                                        'image_url': block.image_url,
-                                        'bbox': None
-                                    }
-                                    
-                                    # Extract bbox if available
-                                    if hasattr(block, 'bbox'):
-                                        bbox = block.bbox
-                                        if bbox:
-                                            block_metadata['bbox'] = {
-                                                'left': getattr(bbox, 'left', None),
-                                                'top': getattr(bbox, 'top', None),
-                                                'width': getattr(bbox, 'width', None),
-                                                'height': getattr(bbox, 'height', None),
-                                                'page': getattr(bbox, 'page', None),
-                                                'original_page': getattr(bbox, 'original_page', None)
-                                            }
-                                    
-                                    image_blocks_metadata.append(block_metadata)
-                                    chunks[-1]['blocks'].append(block_metadata)
                 # Alternative if chunks are not available, try direct text extraction 
                 elif hasattr(result_obj, 'text'):
                     document_text = result_obj.text 
-            
+
             logger.info(f"✅ Retrieved parse result: {len(document_text)} chars, {len(image_urls)} images")
             
             return {
@@ -305,10 +352,10 @@ class ReductoService:
                 'image_urls': image_urls,
                 'image_blocks_metadata': image_blocks_metadata
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to retrieve parse result from job_id {job_id}: {e}")
-            raise
+            raise 
 
     def classify_document(self, job_id: str) -> Dict[str, Any]:
         """
@@ -450,7 +497,7 @@ class ReductoService:
                     
                     # Store citations if available (at top level)
                     if isinstance(field_data, dict) and 'citations' in field_data:
-                        citations[field_name] = field_data['citations']
+                            citations[field_name] = field_data['citations']
 
             return {
                 'data': extracted_data,
@@ -478,7 +525,7 @@ class ReductoService:
         except Exception as e:
             logger.error(f"Failed to download image from {presigned_url}: {e}")
             raise
-
+        
         
  
 

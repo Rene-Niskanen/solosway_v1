@@ -45,14 +45,14 @@ class ReductoImageService:
         """
         total_images = len(image_urls)
         logger.info(f"📸 Processing {total_images} images from Reducto...")
-        
+
         # Step 1: Download all images first (before URLs expire)
         downloaded_images = []
         for idx, image_url in enumerate(image_urls):
             try:
                 # Download image from presigned urls before expiry
                 image_data = self.reducto_service.download_image_from_url(image_url)
-                
+
                 # Get corresponding block metadata if available
                 block_metadata = None
                 if image_blocks_metadata and idx < len(image_blocks_metadata):

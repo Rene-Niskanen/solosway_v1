@@ -648,8 +648,20 @@ def process_document_classification(self, document_id, file_content, original_fi
                 metadata['reducto_image_urls'] = image_urls
                 metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
                 if chunks:
-                    # Store chunk count for reference
+                    # Store FULL chunks structure with bbox metadata for later retrieval
+                    # This ensures bbox data is available even if Reducto job_id expires
+                    chunks_data = []
+                    for chunk in chunks:
+                        chunks_data.append({
+                            'content': chunk.get('content', ''),
+                            'embed': chunk.get('embed', ''),
+                            'enriched': chunk.get('enriched'),
+                            'bbox': chunk.get('bbox'),
+                            'blocks': chunk.get('blocks', [])
+                        })
+                    metadata['reducto_chunks'] = chunks_data
                     metadata['reducto_chunk_count'] = len(chunks)
+                    logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document metadata")
                 document.metadata_json = json.dumps(metadata)
                 
                 # Store parsed text immediately
@@ -664,7 +676,37 @@ def process_document_classification(self, document_id, file_content, original_fi
                     vector_service = SupabaseVectorService()
                     
                     # Extract chunk texts for embedding
-                    chunk_texts = [chunk.get('content', '') for chunk in chunks if chunk.get('content')]
+                    # Use embed if available (optimized for embeddings), otherwise use content
+                    # If chunks are too large, they'll be split by vector_service
+                    chunk_texts = []
+                    chunk_metadata_list = []
+                    
+                    MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin for 8192 token limit
+                    
+                    for chunk in chunks:
+                        # Prefer embed (optimized for embeddings), fallback to content
+                        embed_text = chunk.get('embed', '')
+                        content_text = chunk.get('content', '')
+                        
+                        # Choose text to embed (prefer embed if available)
+                        text_to_embed = embed_text if embed_text else content_text
+                        
+                        if text_to_embed:
+                            # If text is too large, it will be chunked by vector_service
+                            # For now, add it as-is (vector_service will handle chunking)
+                            chunk_texts.append(text_to_embed)
+                            
+                            # Extract chunk metadata with bbox
+                            chunk_bbox = chunk.get('bbox')
+                            chunk_meta = {
+                                'bbox': chunk_bbox,  # Chunk-level bbox
+                                'blocks': chunk.get('blocks', []),  # All blocks with bbox
+                                'page': chunk_bbox.get('page') if chunk_bbox and isinstance(chunk_bbox, dict) else None
+                            }
+                            chunk_metadata_list.append(chunk_meta)
+                            
+                            if len(text_to_embed) > MAX_CHUNK_SIZE:
+                                logger.warning(f"⚠️ Large chunk detected ({len(text_to_embed)} chars), will be split during embedding")
                     
                     if chunk_texts:
                         vector_metadata = {
@@ -678,11 +720,12 @@ def process_document_classification(self, document_id, file_content, original_fi
                         success = vector_service.store_document_vectors(
                             document_id=str(document_id),
                             chunks=chunk_texts,
-                            metadata=vector_metadata
+                            metadata=vector_metadata,
+                            chunk_metadata_list=chunk_metadata_list  # NEW: Pass bbox metadata
                         )
                         
                         if success:
-                            logger.info(f"✅ Document vectors stored: {len(chunk_texts)} chunks embedded")
+                            logger.info(f"Document vectors stored: {len(chunk_texts)} chunks embedded with bbox metadata")
                         else:
                             logger.warning(f"⚠️ Failed to store document vectors")
                     else:
@@ -742,7 +785,7 @@ def process_document_classification(self, document_id, file_content, original_fi
                         'provider': 'reducto'
                     }
                 )
-                
+            
                 # If Reducto failed, we still need classification_result for error handling
                 if classification_result is None:
                     raise  # Re-raise the exception since we can't continue without classification
@@ -951,18 +994,18 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                     db.session.commit()
                 else:
                     logger.info(f"✅ Using existing job_id: {job_id}")
-                
+                        
                 # Extract with schema using Reducto
                 logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type}")
                 extraction = reducto.extract_with_schema(
                     job_id=job_id,
-                    schema=extraction_schema,
+                                schema=extraction_schema,
                     system_prompt="Extract minimal property information from this document."
                 )
                 
                 extracted_data = extraction['data']
                 logger.info("✅ Reducto minimal extraction completed successfully")
-                
+                    
             except Exception as e:
                 logger.error(f"⚠️ Reducto extraction failed: {e}, using fallback")
                 # Ensure document_text is available for fallback
@@ -974,16 +1017,16 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             document.extracted_json = json.dumps(extracted_data)
             document.status = DocumentStatus.COMPLETED
             db.session.commit()
-            
+                
             # Sync completion to Supabase
             sync_document_to_supabase(document_id, 'completed')
 
             # ========================================================================
             # PROPERTY LINKING FOR MINIMAL EXTRACTION (MOVED OUTSIDE EXCEPT BLOCK)
             # ========================================================================
-            
+                
             logger.info("🔗 Starting property linking for minimal extraction...")
-            
+                
             # Handle different extraction data formats
             extracted_properties = []
             
@@ -1067,7 +1110,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 history_id=history_id,
                 step_message=f"Minimal extraction completed with property linking",
                 step_metadata={
-                    'extracted_properties': len(extracted_data.get('properties', [])),
+                    'extracted_properties': len(extracted_data.get('properties', [])) if extracted_data else 0,
                     'text_length': len(document_text),
                     'property_linking_attempted': len(extracted_properties) > 0
                 }
@@ -1075,7 +1118,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
 
             return {
                 'status': 'completed',
-                'properties': extracted_data.get('properties', []),
+                'properties': extracted_data.get('properties', []) if extracted_data else [],
                 'history_id': history_id
             }
 
@@ -1166,7 +1209,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             
             reducto = ReductoService()
             image_service = ReductoImageService()
-            
+
             # Check if we already have job_id from classification step
             job_id = None
             image_urls = []
@@ -1234,7 +1277,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Get image blocks metadata for filtering
                         image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
-                        
+                            
                         # Store in metadata as backup
                         if document.metadata_json:
                             metadata = json.loads(document.metadata_json)
@@ -1630,8 +1673,71 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 
                 if document_text:
                     try:
-                        # Chunk the document text
-                        chunks = vector_service.chunk_text(document_text, chunk_size=512, overlap=50)
+                        # Try to get chunks from stored metadata FIRST (always available)
+                        # Fallback to Reducto API if metadata doesn't have chunks
+                        reducto_chunks = None
+                        chunk_metadata_list = None
+                        
+                        # PRIORITY 1: Get chunks from stored metadata (always available, has bbox)
+                        if document.metadata_json:
+                            try:
+                                metadata_json = json.loads(document.metadata_json)
+                                stored_chunks = metadata_json.get('reducto_chunks', [])
+                                if stored_chunks:
+                                    reducto_chunks = stored_chunks
+                                    logger.info(f"✅ Retrieved {len(reducto_chunks)} chunks from stored metadata (with bbox)")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not parse metadata_json: {e}")
+                        
+                        # PRIORITY 2: Fallback to Reducto API if metadata doesn't have chunks
+                        if not reducto_chunks and job_id:
+                            try:
+                                logger.info(f"🔄 Attempting to retrieve chunks from Reducto API (job_id may have expired)...")
+                                parse_result = reducto.get_parse_result_from_job_id(
+                                    job_id=job_id,
+                                    return_images=["figure", "table"]
+                                )
+                                reducto_chunks = parse_result.get('chunks', [])
+                                logger.info(f"✅ Retrieved {len(reducto_chunks)} chunks from Reducto API")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not retrieve Reducto chunks from API: {e}")
+                                logger.info(f"   This is expected if job_id has expired (>12 hours)")
+                        
+                        # Use Reducto chunks if available, otherwise chunk manually
+                        if reducto_chunks:
+                            # Extract chunk texts for embedding (use embed if available, fallback to content)
+                            chunk_texts = []
+                            chunk_metadata_list = []
+                            
+                            MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin
+                            
+                            for chunk in reducto_chunks:
+                                # Prefer embed (optimized for embeddings), fallback to content
+                                embed_text = chunk.get('embed', '')
+                                content_text = chunk.get('content', '')
+                                
+                                # Choose text to embed
+                                text_to_embed = embed_text if embed_text else content_text
+                                
+                                if text_to_embed:
+                                    chunk_texts.append(text_to_embed)
+                                    
+                                    # Extract chunk metadata with bbox
+                                    chunk_bbox = chunk.get('bbox')
+                                    chunk_meta = {
+                                        'bbox': chunk_bbox,  # Chunk-level bbox
+                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
+                                        'page': chunk_bbox.get('page') if chunk_bbox and isinstance(chunk_bbox, dict) else None
+                                    }
+                                    chunk_metadata_list.append(chunk_meta)
+                            
+                            chunks = chunk_texts
+                            logger.info(f"✅ Using Reducto chunks with bbox metadata: {len(chunks)} chunks")
+                        else:
+                            # Fallback: Chunk the document text manually (no bbox metadata)
+                            chunks = vector_service.chunk_text(document_text, chunk_size=512, overlap=50)
+                            chunk_metadata_list = None
+                            logger.info(f"⚠️ Using manual chunking (no bbox metadata): {len(chunks)} chunks")
                         
                         # Prepare metadata
                         metadata = {
@@ -1642,11 +1748,12 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             'address_hash': None  # Will be set if available
                         }
                         
-                        # Store document vectors
+                        # Store document vectors with bbox metadata if available
                         success = vector_service.store_document_vectors(
                             str(document_id), 
                             chunks, 
-                            metadata
+                            metadata,
+                            chunk_metadata_list=chunk_metadata_list 
                         )
                         
                         if success:
@@ -1654,6 +1761,8 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             
                     except Exception as e:
                         print(f"⚠️ Error chunking/storing document vectors: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 print(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
                 
