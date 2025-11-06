@@ -1,0 +1,83 @@
+name: Docker Build Test
+
+on:
+  pull_request:
+    branches: [ main ]  # Only run this when a PR targets main
+  push:
+    branches: [ main ]  # Also run on pushes to main for merge verification
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Docker
+        run: docker --version
+
+      - name: Set up Docker Compose
+        run: docker compose version
+
+      - name: Build and run containers
+        run: |
+          docker compose up -d --build
+          sleep 15  # give containers time to start
+          docker compose ps  # show running containers
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for services to be healthy..."
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f http://localhost:5002/api/health > /dev/null 2>&1; then
+              echo "Service is healthy!"
+              break
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Service not ready yet, waiting..."
+            sleep 2
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Service failed to become healthy after $max_attempts attempts"
+            docker compose logs web
+            exit 1
+          fi
+
+      - name: Test service health
+        run: |
+          echo "Checking container status..."
+          docker ps
+          
+          echo "Testing health endpoint..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5002/api/health)
+          if [ "$response" != "200" ]; then
+            echo "Health check failed with status code: $response"
+            docker compose logs web
+            exit 1
+          fi
+          echo "Health check passed with status code: $response"
+          
+          # Get health check response body for debugging
+          echo "Health check response:"
+          curl -s http://localhost:5002/api/health || echo "Could not retrieve health check response"
+
+      - name: Check container logs for errors
+        if: failure()
+        run: |
+          echo "=== Web Container Logs ==="
+          docker compose logs web
+          echo "=== Worker Container Logs ==="
+          docker compose logs worker
+          echo "=== Postgres Container Logs ==="
+          docker compose logs postgres
+          echo "=== Redis Container Logs ==="
+          docker compose logs redis
+
+      - name: Shut down containers
+        if: always()
+        run: docker compose down -v
+
