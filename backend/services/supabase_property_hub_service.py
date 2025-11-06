@@ -220,7 +220,7 @@ class SupabasePropertyHubService:
                 .execute()
 
             if existing.data and len(existing.data) > 0:
-                logger.info(f"      Relationship already exists: {existing.data[0]['id']}")
+                logger.info(f"Document relationship already exists: {existing.data[0]['id']}")
                 return existing.data[0]
 
             relationship_data = {
