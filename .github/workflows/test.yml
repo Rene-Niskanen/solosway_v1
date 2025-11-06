@@ -20,6 +20,29 @@ jobs:
       - name: Set up Docker Compose
         run: docker compose version
 
+      - name: Set PostgreSQL password
+        id: set-password
+        run: |
+          # Use secret if available, otherwise use default
+          # Note: Linter warning about CI_POSTGRES_PASSWORD is expected - secret may not exist
+          PASSWORD="${{ secrets.CI_POSTGRES_PASSWORD }}"
+          if [ -z "$PASSWORD" ] || [ "$PASSWORD" = "" ]; then
+            PASSWORD="secure_password"
+          fi
+          echo "password=$PASSWORD" >> $GITHUB_OUTPUT
+
+      - name: Create minimal .env file for CI
+        run: |
+          cat > .env << EOF
+          # Minimal environment variables for CI testing
+          # Only essential variables needed for container startup and health check
+          
+          # Database (required by app - raises ValueError if not set)
+          DATABASE_URL=postgresql://solosway_user:${{ steps.set-password.outputs.password }}@postgres:5432/solosway_properties
+          POSTGRES_PASSWORD=${{ steps.set-password.outputs.password }}
+          EOF
+          echo "Created minimal .env file for CI"
+
       - name: Build and run containers
         run: |
           docker compose up -d --build
