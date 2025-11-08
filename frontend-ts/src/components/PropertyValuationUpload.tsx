@@ -73,10 +73,6 @@ export default function PropertyValuationUpload({
     e.target.value = '';
   };
   const processFile = (file: File) => {
-    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-    if (!allowedTypes.includes(file.type)) {
-      return;
-    }
     const newFile: UploadedFile = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       name: file.name,
@@ -391,7 +387,7 @@ export default function PropertyValuationUpload({
           }} whileTap={{
             scale: 0.99
           }}>
-                <input ref={fileInputRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileSelect} className="hidden" />
+                <input ref={fileInputRef} type="file" multiple accept="*/*" onChange={handleFileSelect} className="hidden" />
 
                 <div className="flex flex-col items-center space-y-3">
                   <motion.div className="w-12 h-12 bg-gradient-to-br from-indigo-100 to-blue-100 rounded-xl flex items-center justify-center" animate={{
@@ -406,7 +402,7 @@ export default function PropertyValuationUpload({
                       {isDragOver ? 'Drop your files here' : 'Choose files or drag and drop'}
                     </h3>
                     <p className="text-sm text-slate-500">
-                      PDF, JPG, PNG files up to 100MB each
+                      Any document up to 100MB
                     </p>
                   </div>
 
