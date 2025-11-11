@@ -156,11 +156,11 @@ const LocationPickerModal: React.FC<{
         setSelectedCoordinates(coords);
         setSelectedLocationName(locationName);
 
-        // Update map
+        // Update map immediately with smooth animation
         map.current.flyTo({
           center: coords,
           zoom: 9.5,
-          duration: 1000
+          duration: 600 // Faster animation for immediate feedback
         });
 
         // Update marker
@@ -177,7 +177,7 @@ const LocationPickerModal: React.FC<{
     }
   }, [mapboxToken]);
 
-  // Real-time geocoding as user types (debounced)
+  // Real-time geocoding as user types (very short debounce for immediate feedback)
   React.useEffect(() => {
     if (!isOpen || !locationInput.trim()) return;
 
@@ -186,10 +186,10 @@ const LocationPickerModal: React.FC<{
       clearTimeout(geocodeTimeoutRef.current);
     }
 
-    // Debounce geocoding
+    // Very short debounce (100ms) for immediate visual feedback
     geocodeTimeoutRef.current = setTimeout(() => {
       geocodeLocation(locationInput.trim());
-    }, 500);
+    }, 100);
 
     return () => {
       if (geocodeTimeoutRef.current) {
