@@ -87,6 +87,17 @@ const LocationPickerModal: React.FC<{
 
   // Initialize map when modal opens
   React.useEffect(() => {
+    // Clean up any existing map first
+    if (map.current) {
+      console.log('📍 LocationPicker: Cleaning up existing map');
+      map.current.remove();
+      map.current = null;
+    }
+    if (marker.current) {
+      marker.current.remove();
+      marker.current = null;
+    }
+
     if (!isOpen || !mapContainer.current) {
       console.log('📍 LocationPicker: Modal not open or container not ready', { isOpen, hasContainer: !!mapContainer.current });
       return;
@@ -138,10 +149,29 @@ const LocationPickerModal: React.FC<{
     setSelectedLocationName(initial.name);
     setSelectedZoom(initial.zoom);
 
-    // Small delay to ensure container is fully rendered
+    // Small delay to ensure container is fully rendered and modal is fully open
     const initTimeout = setTimeout(() => {
-      if (!mapContainer.current) {
-        console.error('❌ LocationPicker: Container disappeared before map init');
+      if (!isOpen || !mapContainer.current) {
+        console.error('❌ LocationPicker: Modal closed or container disappeared before map init', { isOpen, hasContainer: !!mapContainer.current });
+        return;
+      }
+
+      // Double-check container has dimensions
+      if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
+        console.warn('📍 LocationPicker: Container has no dimensions, waiting...', {
+          width: mapContainer.current.offsetWidth,
+          height: mapContainer.current.offsetHeight
+        });
+        // Retry after a longer delay
+        setTimeout(() => {
+          if (isOpen && mapContainer.current && mapContainer.current.offsetWidth > 0) {
+            // Re-run initialization
+            const retryInit = setTimeout(() => {
+              if (!isOpen || !mapContainer.current) return;
+              // This will be handled by the main init logic below
+            }, 200);
+          }
+        }, 300);
         return;
       }
 
@@ -162,24 +192,12 @@ const LocationPickerModal: React.FC<{
 
         console.log('✅ LocationPicker: Map instance created');
 
-        // Add error handler
-        map.current.on('error', (e) => {
-          console.error('❌ Map error:', e);
-        });
-
-        // Force map to render immediately
-        map.current.on('style.load', () => {
-          if (map.current) {
-            console.log('✅ LocationPicker: Map style loaded');
-            map.current.resize();
-          }
-        });
       } catch (error) {
         console.error('❌ LocationPicker: Failed to create map:', error);
         return;
       }
 
-      // Wait for map to load before adding marker
+      // Store handlers for cleanup
       const handleMapLoad = () => {
         if (!map.current) return;
 
@@ -210,19 +228,7 @@ const LocationPickerModal: React.FC<{
         }, 100);
       };
 
-      map.current.on('load', handleMapLoad);
-      
-      // Also try to resize after a short delay as fallback
-      setTimeout(() => {
-        if (map.current && !map.current.loaded()) {
-          console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
-        } else if (map.current) {
-          map.current.resize();
-        }
-      }, 500);
-
-      // Handle map clicks
-      map.current.on('click', (e) => {
+      const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
         const { lng, lat } = e.lngLat;
         const coords: [number, number] = [lng, lat];
         setSelectedCoordinates(coords);
@@ -234,32 +240,38 @@ const LocationPickerModal: React.FC<{
         if (marker.current) {
           marker.current.setLngLat(coords);
         }
-      });
+      };
 
-      // Hide branding on load and with timeout as fallback
-      map.current.on('load', () => {
-        const container = map.current?.getContainer();
-        if (container) {
-          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-          const logo = container.querySelector('.mapboxgl-ctrl-logo');
-          if (attrib) (attrib as HTMLElement).style.display = 'none';
-          if (logo) (logo as HTMLElement).style.display = 'none';
-        }
-      });
-      setTimeout(() => {
+      const handleMapError = (e: any) => {
+        console.error('❌ Map error:', e);
+      };
+
+      const handleStyleLoad = () => {
         if (map.current) {
-          const container = map.current.getContainer();
-          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-          const logo = container.querySelector('.mapboxgl-ctrl-logo');
-          if (attrib) (attrib as HTMLElement).style.display = 'none';
-          if (logo) (logo as HTMLElement).style.display = 'none';
+          console.log('✅ LocationPicker: Map style loaded');
+          map.current.resize();
         }
-      }, 100);
+      };
+
+      map.current.on('load', handleMapLoad);
+      map.current.on('click', handleMapClick);
+      map.current.on('error', handleMapError);
+      map.current.on('style.load', handleStyleLoad);
+      
+      // Also try to resize after a short delay as fallback
+      setTimeout(() => {
+        if (map.current && !map.current.loaded()) {
+          console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
+        } else if (map.current) {
+          map.current.resize();
+        }
+      }, 500);
     }, 100);
 
     return () => {
       clearTimeout(initTimeout);
       if (map.current) {
+        // Remove map (this automatically removes all listeners)
         map.current.remove();
         map.current = null;
       }
