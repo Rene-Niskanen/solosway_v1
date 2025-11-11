@@ -661,6 +661,24 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
         
+        // Hide the base marker for this property by filtering it out
+        if (map.current.getLayer('property-markers')) {
+          map.current.setFilter('property-markers', [
+            '!=',
+            ['get', 'id'],
+            property.id
+          ]);
+        }
+        
+        // Also hide the outer ring for this property
+        if (map.current.getLayer('property-outer')) {
+          map.current.setFilter('property-outer', [
+            '!=',
+            ['get', 'id'],
+            property.id
+          ]);
+        }
+        
         // Create individual marker layers for this specific property only
         const propertyId = `property-${property.id}`;
         const outerId = `property-outer-${property.id}`;
@@ -782,6 +800,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Clear selected property effects
   const clearSelectedPropertyEffects = () => {
     if (map.current) {
+      // Restore base marker layers to show all properties (remove filters)
+      if (map.current.getLayer('property-markers')) {
+        map.current.setFilter('property-markers', null);
+      }
+      if (map.current.getLayer('property-outer')) {
+        map.current.setFilter('property-outer', null);
+      }
+      
       // Clear all possible property effect layers
       const allLayers = map.current.getStyle().layers;
         allLayers.forEach(layer => {
@@ -1656,6 +1682,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         onClose={() => {
           setShowPropertyDetailsPanel(false);
           setShowPropertyCard(false); // Also close the old property card
+          setSelectedProperty(null); // Clear selected property
+          clearSelectedPropertyEffects(); // Restore base markers
         }}
       />
     </AnimatePresence>
