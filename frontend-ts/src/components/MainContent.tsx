@@ -713,49 +713,38 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Blur Overlays - cover everything outside the preview frame */}
-            {/* Top blur overlay */}
+            {/* Seamless Blur Overlay - covers everything outside the preview frame */}
             <div 
-              className="fixed left-0 right-0 z-[10001] pointer-events-none"
+              className="fixed inset-0 z-[10001] pointer-events-none"
               style={{
-                top: 0,
-                height: '80px',
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.3)'
-              }}
-            />
-            {/* Bottom blur overlay */}
-            <div 
-              className="fixed left-0 right-0 z-[10001] pointer-events-none"
-              style={{
-                bottom: 0,
-                height: '80px',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.3)'
-              }}
-            />
-            {/* Left blur overlay */}
-            <div 
-              className="fixed top-0 bottom-0 z-[10001] pointer-events-none"
-              style={{
-                left: 0,
-                width: '72px',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.3)'
-              }}
-            />
-            {/* Right blur overlay */}
-            <div 
-              className="fixed top-0 bottom-0 z-[10001] pointer-events-none"
-              style={{
-                right: 0,
-                width: '72px',
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.3)'
+                backgroundColor: 'rgba(241, 245, 249, 0.3)',
+                // Create a transparent "hole" in the middle matching the preview frame
+                clipPath: `polygon(
+                  0% 0%, 
+                  0% 100%, 
+                  72px 100%, 
+                  72px 80px, 
+                  calc(100% - 72px) 80px, 
+                  calc(100% - 72px) calc(100% - 80px), 
+                  72px calc(100% - 80px), 
+                  72px 100%, 
+                  100% 100%, 
+                  100% 0%
+                )`,
+                WebkitClipPath: `polygon(
+                  0% 0%, 
+                  0% 100%, 
+                  72px 100%, 
+                  72px 80px, 
+                  calc(100% - 72px) 80px, 
+                  calc(100% - 72px) calc(100% - 80px), 
+                  72px calc(100% - 80px), 
+                  72px 100%, 
+                  100% 100%, 
+                  100% 0%
+                )`
               }}
             />
             
