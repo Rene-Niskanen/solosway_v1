@@ -114,6 +114,8 @@ const LocationPickerModal: React.FC<{
   const previewMarker = React.useRef<mapboxgl.Marker | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  // Track if coordinate change is from user interaction (map click) to prevent sync loop
+  const isUserInteractionRef = React.useRef<boolean>(false);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
@@ -303,7 +305,15 @@ const LocationPickerModal: React.FC<{
           const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
             const { lng, lat } = e.lngLat;
             const coords: [number, number] = [lng, lat];
+            
+            // Mark this as user interaction to prevent sync effect from running
+            isUserInteractionRef.current = true;
             setSelectedCoordinates(coords);
+            
+            // Reset flag after state update
+            setTimeout(() => {
+              isUserInteractionRef.current = false;
+            }, 100);
             
             // Reverse geocode to get location name
             reverseGeocode(lng, lat);
@@ -361,14 +371,21 @@ const LocationPickerModal: React.FC<{
   }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom, isLocationDataReady]);
 
   // Sync map with selected coordinates whenever they change
+  // But skip sync if the change came from user interaction (map click)
   React.useEffect(() => {
     if (!map.current || !isOpen) return;
+    
+    // Skip sync if this coordinate change came from user interaction
+    if (isUserInteractionRef.current) {
+      console.log('📍 LocationPicker: Skipping sync - coordinate change from user interaction');
+      return;
+    }
     
     // Don't sync if map is not loaded yet
     if (!map.current.loaded()) {
       // Wait for map to load before syncing
       const handleLoad = () => {
-        if (map.current && map.current.loaded()) {
+        if (map.current && map.current.loaded() && !isUserInteractionRef.current) {
           syncMap();
         }
       };
@@ -382,13 +399,37 @@ const LocationPickerModal: React.FC<{
 
     const syncMap = () => {
       if (!map.current || !map.current.loaded()) return;
+      
+      // Double-check we're not in a user interaction
+      if (isUserInteractionRef.current) {
+        return;
+      }
 
       try {
-        map.current.flyTo({
-          center: selectedCoordinates,
-          zoom: selectedZoom || 9.5,
-          duration: 600
-        });
+        // Check if map is already at the target location to avoid unnecessary flyTo
+        const currentCenter = map.current.getCenter();
+        const currentZoom = map.current.getZoom();
+        const targetLng = selectedCoordinates[0];
+        const targetLat = selectedCoordinates[1];
+        const targetZoom = selectedZoom || 9.5;
+        
+        const distance = Math.sqrt(
+          Math.pow(currentCenter.lng - targetLng, 2) + 
+          Math.pow(currentCenter.lat - targetLat, 2)
+        );
+        const zoomDiff = Math.abs(currentZoom - targetZoom);
+        
+        // Only flyTo if the location or zoom is significantly different
+        if (distance > 0.001 || zoomDiff > 0.5) {
+          map.current.flyTo({
+            center: selectedCoordinates,
+            zoom: targetZoom,
+            duration: 600
+          });
+          console.log('✅ LocationPicker: Map synced with coordinates');
+        } else {
+          console.log('📍 LocationPicker: Map already at target location, skipping sync');
+        }
 
         // Don't add marker - using dotted border frame instead
         // if (marker.current) {
@@ -398,11 +439,12 @@ const LocationPickerModal: React.FC<{
         //     .setLngLat(selectedCoordinates)
         //     .addTo(map.current);
         // }
-        console.log('✅ LocationPicker: Map synced with coordinates');
       } catch (error) {
         console.error('❌ LocationPicker: Error syncing map:', error);
-        // Retry after a delay
-        setTimeout(syncMap, 500);
+        // Retry after a delay only if not user interaction
+        if (!isUserInteractionRef.current) {
+          setTimeout(syncMap, 500);
+        }
       }
     };
 
