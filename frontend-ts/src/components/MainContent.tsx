@@ -683,6 +683,8 @@ const LocationPickerModal: React.FC<{
               variant="outline"
               onClick={() => {
                 setIsOpen(false);
+                // Close sidebar when entering preview mode
+                onCloseSidebar?.();
                 setIsPreviewMode(true);
               }}
               disabled={!selectedCoordinates}
@@ -992,6 +994,7 @@ export interface MainContentProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
   homeClicked?: boolean;
   onHomeResetComplete?: () => void;
+  onCloseSidebar?: () => void;
 }
 export const MainContent = ({
   className,

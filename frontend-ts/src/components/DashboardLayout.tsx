@@ -302,6 +302,7 @@ const DashboardLayoutContent = ({
         onNavigate={handleViewChange}
         homeClicked={homeClicked}
         onHomeResetComplete={() => setHomeClicked(false)}
+        onCloseSidebar={() => setIsSidebarCollapsed(true)}
       />
     </motion.div>
   );
