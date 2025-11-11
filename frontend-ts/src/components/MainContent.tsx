@@ -542,13 +542,18 @@ const LocationPickerModal: React.FC<{
     const initTimeout = setTimeout(() => {
       // Wait for container to be available and have dimensions
       let retryCount = 0;
-      const maxRetries = 50; // 5 seconds max wait
+      const maxRetries = 100; // 10 seconds max wait
       
       const initMap = () => {
         retryCount++;
         
         if (retryCount > maxRetries) {
-          console.error('❌ Failed to initialize map: container never became ready');
+          console.error('❌ Failed to initialize map: container never became ready after', maxRetries, 'retries');
+          console.error('Container state:', {
+            exists: !!previewMapContainer.current,
+            rect: previewMapContainer.current ? previewMapContainer.current.getBoundingClientRect() : null,
+            computedStyle: previewMapContainer.current ? window.getComputedStyle(previewMapContainer.current) : null
+          });
           return;
         }
 
@@ -558,13 +563,43 @@ const LocationPickerModal: React.FC<{
         }
 
         const container = previewMapContainer.current;
-        const rect = container.getBoundingClientRect();
-        const hasDimensions = rect.width > 0 && rect.height > 0;
         
-        if (!hasDimensions) {
+        // Check if element is actually in the DOM
+        if (!container.isConnected) {
           setTimeout(initMap, 100);
           return;
         }
+        
+        const rect = container.getBoundingClientRect();
+        const computedStyle = window.getComputedStyle(container);
+        const hasDimensions = rect.width > 0 && rect.height > 0;
+        const isVisible = computedStyle.display !== 'none' && 
+                         computedStyle.visibility !== 'hidden' && 
+                         parseFloat(computedStyle.opacity) > 0;
+        
+        if (!hasDimensions || !isVisible) {
+          if (retryCount % 10 === 0) { // Log every 10 retries
+            console.log('⏳ Waiting for container...', {
+              retryCount,
+              hasDimensions,
+              isVisible,
+              width: rect.width,
+              height: rect.height,
+              display: computedStyle.display,
+              visibility: computedStyle.visibility,
+              opacity: computedStyle.opacity
+            });
+          }
+          setTimeout(initMap, 100);
+          return;
+        }
+        
+        console.log('✅ Container ready!', {
+          width: rect.width,
+          height: rect.height,
+          coordinates: selectedCoordinates,
+          zoom: selectedZoom
+        });
 
       // Container is ready - initialize map
       try {
@@ -576,6 +611,7 @@ const LocationPickerModal: React.FC<{
           previewMap.current = null;
         }
 
+        console.log('🗺️ Creating map instance...');
         previewMap.current = new mapboxgl.Map({
           container: container,
           style: 'mapbox://styles/mapbox/light-v11',
@@ -585,19 +621,34 @@ const LocationPickerModal: React.FC<{
           logoPosition: 'bottom-left'
         });
         
-        // Force resize immediately
+        console.log('✅ Map instance created, waiting for load...');
+        
+        // Force resize on load
         previewMap.current.once('load', () => {
+          console.log('✅ Map loaded! Resizing...');
           if (previewMap.current) {
             previewMap.current.resize();
+            // Force another resize after a moment
+            setTimeout(() => {
+              if (previewMap.current) {
+                previewMap.current.resize();
+                console.log('✅ Map resized');
+              }
+            }, 100);
           }
         });
         
-        // Also resize after a short delay
+        // Also resize after delays to ensure it renders
         setTimeout(() => {
           if (previewMap.current) {
             previewMap.current.resize();
           }
         }, 300);
+        setTimeout(() => {
+          if (previewMap.current) {
+            previewMap.current.resize();
+          }
+        }, 600);
         
         // Ensure map container has no white background and remove all unwanted elements
         if (previewMapContainer.current && previewMap.current) {
