@@ -533,6 +533,20 @@ const LocationPickerModal: React.FC<{
 
     mapboxgl.accessToken = mapboxToken;
 
+    // Ensure container has dimensions before initializing map
+    if (previewMapContainer.current) {
+      const container = previewMapContainer.current;
+      // Force container to have explicit dimensions
+      if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+        console.warn('Preview map container has no dimensions, waiting...');
+        setTimeout(() => {
+          if (previewMapContainer.current && previewMap.current) {
+            previewMap.current.resize();
+          }
+        }, 100);
+      }
+    }
+
     previewMap.current = new mapboxgl.Map({
       container: previewMapContainer.current,
       style: 'mapbox://styles/mapbox/light-v11',
@@ -541,6 +555,13 @@ const LocationPickerModal: React.FC<{
       attributionControl: false,
       logoPosition: 'bottom-left' // Set but we'll hide it
     });
+    
+    // Resize map after initialization to ensure it renders correctly
+    setTimeout(() => {
+      if (previewMap.current) {
+        previewMap.current.resize();
+      }
+    }, 100);
     
     // Ensure map container has no white background and remove all unwanted elements
     if (previewMapContainer.current && previewMap.current) {
@@ -725,8 +746,17 @@ const LocationPickerModal: React.FC<{
 
     // Hide elements immediately and on load
     hideAllMapboxElements();
-    previewMap.current.on('load', hideAllMapboxElements);
-    previewMap.current.on('style.load', hideAllMapboxElements);
+    
+    const handleMapLoad = () => {
+      if (previewMap.current) {
+        // Resize map to ensure it renders correctly
+        previewMap.current.resize();
+        hideAllMapboxElements();
+      }
+    };
+    
+    previewMap.current.on('load', handleMapLoad);
+    previewMap.current.on('style.load', handleMapLoad);
     previewMap.current.on('render', hideAllMapboxElements);
     
     // Also hide after delays to catch late-loading elements
