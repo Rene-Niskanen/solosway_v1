@@ -19,6 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
@@ -236,18 +237,18 @@ const LocationPickerModal: React.FC<{
     <>
       <motion.button
         onClick={() => setIsOpen(true)}
-        className="w-full px-4 py-3 border-2 border-dashed border-slate-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors text-left"
+        className="w-full px-4 py-3 border-2 border-dashed border-slate-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors text-left bg-white"
         whileHover={{ scale: 1.01 }}
         whileTap={{ scale: 0.99 }}
       >
         <div className="flex items-center justify-between">
-          <div>
+          <div className="flex-1">
             <div className="font-medium text-slate-700 mb-1">Set Default Map Location</div>
             <div className="text-sm text-slate-500">
               {savedLocation || 'Click to set location'}
             </div>
           </div>
-          <span className="text-2xl">🗺️</span>
+          <MapPin className="w-5 h-5 text-slate-400 ml-4" />
         </div>
       </motion.button>
 
@@ -330,8 +331,9 @@ const LocationPickerModal: React.FC<{
   );
 };
 
-// Map Location Selector Component (simplified - just shows button and saved location)
-const MapLocationSelector: React.FC = () => {
+// Settings View Component with Sidebar Navigation
+const SettingsView: React.FC = () => {
+  const [activeCategory, setActiveCategory] = React.useState<string>('appearance');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
 
   // Load saved location on mount
@@ -362,15 +364,152 @@ const MapLocationSelector: React.FC = () => {
     }
   };
 
+  const settingsCategories = [
+    { id: 'appearance', label: 'Appearance', icon: Palette },
+    { id: 'map-location', label: 'Default Map Location', icon: MapPin },
+    { id: 'notifications', label: 'Notifications', icon: Bell },
+    { id: 'privacy', label: 'Privacy', icon: Shield },
+    { id: 'language', label: 'Language & Region', icon: Globe },
+    { id: 'display', label: 'Display', icon: Monitor },
+  ];
+
+  const renderSettingsContent = () => {
+    switch (activeCategory) {
+      case 'map-location':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Default Map Location</h3>
+              <p className="text-sm text-slate-600">
+                Choose where the map opens when you first view it. You can search for a location or click on the map to set it.
+              </p>
+            </div>
+            <LocationPickerModal 
+              savedLocation={savedLocation}
+              onLocationSaved={handleLocationSaved}
+            />
+          </div>
+        );
+      case 'appearance':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Appearance</h3>
+              <p className="text-sm text-slate-600">
+                Customize the look and feel of Velora.
+              </p>
+            </div>
+            <div className="text-slate-500 text-sm">
+              Appearance settings coming soon...
+            </div>
+          </div>
+        );
+      case 'notifications':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Notifications</h3>
+              <p className="text-sm text-slate-600">
+                Manage your notification preferences.
+              </p>
+            </div>
+            <div className="text-slate-500 text-sm">
+              Notification settings coming soon...
+            </div>
+          </div>
+        );
+      case 'privacy':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Privacy</h3>
+              <p className="text-sm text-slate-600">
+                Control your privacy and data settings.
+              </p>
+            </div>
+            <div className="text-slate-500 text-sm">
+              Privacy settings coming soon...
+            </div>
+          </div>
+        );
+      case 'language':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Language & Region</h3>
+              <p className="text-sm text-slate-600">
+                Set your language and regional preferences.
+              </p>
+            </div>
+            <div className="text-slate-500 text-sm">
+              Language settings coming soon...
+            </div>
+          </div>
+        );
+      case 'display':
+        return (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-xl font-semibold text-slate-800 mb-2">Display</h3>
+              <p className="text-sm text-slate-600">
+                Adjust display and layout preferences.
+              </p>
+            </div>
+            <div className="text-slate-500 text-sm">
+              Display settings coming soon...
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
-    <div className="space-y-3">
-      <LocationPickerModal 
-        savedLocation={savedLocation}
-        onLocationSaved={handleLocationSaved}
-      />
-      <p className="text-xs text-slate-500 mt-2">
-        Your selection will be applied the next time you open the map.
-      </p>
+    <div className="w-full h-full flex">
+      {/* Settings Sidebar */}
+      <div className="w-64 border-r border-slate-200 bg-white">
+        <div className="p-6 border-b border-slate-200">
+          <h2 className="text-lg font-semibold text-slate-800">Settings</h2>
+          <p className="text-sm text-slate-500 mt-1">Manage your preferences</p>
+        </div>
+        <nav className="p-4 space-y-1">
+          {settingsCategories.map((category) => {
+            const Icon = category.icon;
+            const isActive = activeCategory === category.id;
+            return (
+              <motion.button
+                key={category.id}
+                onClick={() => setActiveCategory(category.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{category.label}</span>
+              </motion.button>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Settings Content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto p-8">
+          <motion.div
+            key={activeCategory}
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            {renderSettingsContent()}
+          </motion.div>
+        </div>
+      </div>
     </div>
   );
 };
@@ -778,47 +917,7 @@ export const MainContent = ({
             <PropertyValuationUpload onUpload={file => console.log('File uploaded:', file.name)} onContinueWithReport={() => console.log('Continue with report clicked')} />
           </div>;
       case 'settings':
-        return <div className="w-full h-full flex items-center justify-center px-6">
-            <motion.div 
-              initial={{
-                opacity: 0,
-                y: 20
-              }} 
-              animate={{
-                opacity: 1,
-                y: 0
-              }} 
-              transition={{
-                duration: 0.6,
-                ease: [0.23, 1, 0.32, 1]
-              }} 
-              className="bg-white/90 backdrop-blur-xl rounded-3xl p-8 border-2 border-slate-200/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] max-w-2xl w-full"
-            >
-              <div className="w-16 h-16 bg-gradient-to-br from-slate-50 to-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/60">
-                <span className="text-2xl">⚙️</span>
-              </div>
-              <h2 className="text-2xl font-semibold text-slate-800 mb-2 tracking-tight text-center">
-                Settings
-              </h2>
-              <p className="text-slate-600 leading-relaxed font-medium text-center mb-8">
-                Customize your experience and configure your preferences.
-              </p>
-              
-              {/* Map Location Settings */}
-              <div className="space-y-4">
-                <div className="border border-slate-200 rounded-xl p-6 bg-white/50">
-                  <h3 className="text-lg font-semibold text-slate-800 mb-2 flex items-center gap-2">
-                    <span>🗺️</span>
-                    Default Map Location
-                  </h3>
-                  <p className="text-sm text-slate-600 mb-4">
-                    Choose where the map opens when you first view it.
-                  </p>
-                  <MapLocationSelector />
-                </div>
-              </div>
-            </motion.div>
-          </div>;
+        return <SettingsView />;
       default:
         return <div className="flex items-center justify-center flex-1 relative">
             {/* Interactive Dot Grid Background */}
