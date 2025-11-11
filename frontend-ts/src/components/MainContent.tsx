@@ -66,7 +66,8 @@ const calculateZoomFromBbox = (bbox: number[] | undefined, placeType: string[] |
 const LocationPickerModal: React.FC<{ 
   savedLocation: string;
   onLocationSaved: () => void;
-}> = ({ savedLocation, onLocationSaved }) => {
+  onCloseSidebar?: () => void;
+}> = ({ savedLocation, onLocationSaved, onCloseSidebar }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   const [locationInput, setLocationInput] = React.useState<string>('');
@@ -796,7 +797,7 @@ const LocationPickerModal: React.FC<{
 };
 
 // Settings View Component with Sidebar Navigation
-const SettingsView: React.FC = () => {
+const SettingsView: React.FC<{ onCloseSidebar?: () => void }> = ({ onCloseSidebar }) => {
   const [activeCategory, setActiveCategory] = React.useState<string>('appearance');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
 
@@ -851,6 +852,7 @@ const SettingsView: React.FC = () => {
             <LocationPickerModal 
               savedLocation={savedLocation}
               onLocationSaved={handleLocationSaved}
+              onCloseSidebar={onCloseSidebar}
             />
           </div>
         );
@@ -1383,7 +1385,7 @@ export const MainContent = ({
             <PropertyValuationUpload onUpload={file => console.log('File uploaded:', file.name)} onContinueWithReport={() => console.log('Continue with report clicked')} />
           </div>;
       case 'settings':
-        return <SettingsView />;
+        return <SettingsView onCloseSidebar={onCloseSidebar} />;
       default:
         return <div className="flex items-center justify-center flex-1 relative">
             {/* Interactive Dot Grid Background */}
