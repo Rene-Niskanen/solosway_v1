@@ -71,38 +71,10 @@ const LocationPickerModal: React.FC<{
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   const [locationInput, setLocationInput] = React.useState<string>('');
-  // Always initialize with a default location so map always shows
-  const getDefaultCoordinates = (): [number, number] => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
-            return parsed.coordinates as [number, number];
-          }
-        } catch {}
-      }
-    }
-    return [-0.1276, 51.5074] as [number, number]; // Default to London
-  };
-  const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number]>(getDefaultCoordinates());
+  // Initialize with empty values - will be loaded from localStorage when modal opens
+  const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
   const [selectedLocationName, setSelectedLocationName] = React.useState<string>('');
-  const getDefaultZoom = (): number => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (parsed.zoom && typeof parsed.zoom === 'number') {
-            return parsed.zoom;
-          }
-        } catch {}
-      }
-    }
-    return 9.5;
-  };
-  const [selectedZoom, setSelectedZoom] = React.useState<number>(getDefaultZoom());
+  const [selectedZoom, setSelectedZoom] = React.useState<number>(9.5);
   const [isGeocoding, setIsGeocoding] = React.useState(false);
   const [geocodeError, setGeocodeError] = React.useState<string>('');
   
@@ -124,66 +96,49 @@ const LocationPickerModal: React.FC<{
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
 
-  // Reload saved location when modal opens
+  // Reload saved location when modal opens - simple: whatever was last saved
   React.useEffect(() => {
     if (isOpen) {
       setIsLocationDataReady(false);
-      // Get the latest saved location from localStorage
-      const getSavedLocation = async () => {
-        if (typeof window !== 'undefined') {
-          const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
-                let locationName = parsed.name || '';
-                
-                // If name is missing but coordinates exist, try reverse geocoding
-                if (!locationName && parsed.coordinates) {
-                  try {
-                    const reverseGeocodeUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${parsed.coordinates[0]},${parsed.coordinates[1]}.json?access_token=${mapboxToken}&limit=1`;
-                    const response = await fetch(reverseGeocodeUrl);
-                    if (response.ok) {
-                      const data = await response.json();
-                      if (data.features && data.features.length > 0) {
-                        locationName = data.features[0].place_name;
-                      }
-                    }
-                  } catch (error) {
-                    console.warn('Reverse geocoding failed for saved location:', error);
-                    // Fallback to coordinates if reverse geocoding fails
-                    locationName = `${parsed.coordinates[1].toFixed(4)}, ${parsed.coordinates[0].toFixed(4)}`;
-                  }
-                }
-                
-                return {
-                  coordinates: parsed.coordinates as [number, number],
-                  zoom: parsed.zoom || 9.5,
-                  name: locationName
-                };
-              }
-            } catch {}
+      
+      // Simple logic: Get the last saved location from localStorage
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+              // Use exactly what was saved - no reverse geocoding, no defaults
+              setLocationInput(parsed.name || '');
+              setSelectedCoordinates(parsed.coordinates as [number, number]);
+              setSelectedLocationName(parsed.name || '');
+              setSelectedZoom(parsed.zoom || 9.5);
+              setIsLocationDataReady(true);
+              console.log('📍 LocationPicker: Loaded last saved location', {
+                name: parsed.name,
+                coordinates: parsed.coordinates,
+                zoom: parsed.zoom
+              });
+              return;
+            }
+          } catch (error) {
+            console.error('❌ LocationPicker: Error parsing saved location', error);
           }
         }
-        return {
-          coordinates: [-0.1276, 51.5074] as [number, number],
-          zoom: 9.5,
-          name: 'London, UK'
-        };
-      };
-
-      getSavedLocation().then((saved) => {
-        setLocationInput(saved.name);
-        setSelectedCoordinates(saved.coordinates);
-        setSelectedLocationName(saved.name);
-        setSelectedZoom(saved.zoom);
-        setIsLocationDataReady(true);
-        console.log('📍 LocationPicker: Loaded saved location on modal open', saved);
-      });
+      }
+      
+      // Only use defaults if nothing was ever saved
+      const defaultCoords: [number, number] = [-0.1276, 51.5074]; // London
+      setLocationInput('London, UK');
+      setSelectedCoordinates(defaultCoords);
+      setSelectedLocationName('London, UK');
+      setSelectedZoom(9.5);
+      setIsLocationDataReady(true);
+      console.log('📍 LocationPicker: No saved location found, using default (London)');
     } else {
       setIsLocationDataReady(false);
     }
-  }, [isOpen, mapboxToken]);
+  }, [isOpen]);
 
   // Initialize map when modal opens and location is loaded
   React.useEffect(() => {
@@ -207,7 +162,6 @@ const LocationPickerModal: React.FC<{
     }
 
     // Wait for location data to be ready before initializing map
-    // This ensures we use the latest saved location and prevents race conditions
     if (!isLocationDataReady || !selectedCoordinates) {
       console.log('📍 LocationPicker: Waiting for location data to be loaded...', { isLocationDataReady, hasCoordinates: !!selectedCoordinates });
       return;
