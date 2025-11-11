@@ -529,7 +529,21 @@ const LocationPickerModal: React.FC<{
 
   // Initialize preview mode map
   React.useEffect(() => {
-    if (!isPreviewMode || !selectedCoordinates) return;
+    console.log('🔍 Preview mode useEffect triggered', {
+      isPreviewMode,
+      selectedCoordinates,
+      hasContainer: !!previewMapContainer.current
+    });
+
+    if (!isPreviewMode) {
+      console.log('❌ Preview mode not active, skipping map init');
+      return;
+    }
+
+    if (!selectedCoordinates) {
+      console.error('❌ No selected coordinates, cannot initialize map');
+      return;
+    }
 
     // Wait for container to be available and have dimensions
     const initMap = () => {
@@ -977,8 +991,20 @@ const LocationPickerModal: React.FC<{
             <Button
               variant="outline"
               onClick={() => {
+                console.log('🔘 Adjust Zoom & Preview clicked', {
+                  selectedCoordinates,
+                  selectedZoom,
+                  selectedLocationName
+                });
+                if (!selectedCoordinates) {
+                  console.error('❌ Cannot enter preview mode: no coordinates selected');
+                  return;
+                }
                 setIsOpen(false);
-                setIsPreviewMode(true);
+                // Small delay to ensure dialog closes before opening preview
+                setTimeout(() => {
+                  setIsPreviewMode(true);
+                }, 100);
               }}
               disabled={!selectedCoordinates}
               className="mr-2"
