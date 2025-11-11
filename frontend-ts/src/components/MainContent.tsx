@@ -710,20 +710,6 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Preview Mode Overlay Frame */}
-            <div className="absolute inset-0 pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg m-4 shadow-2xl" 
-              style={{
-                boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
-              }}
-            />
-            
-            {/* Preview Mode Label */}
-            <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
-              <div className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg">
-                Preview Mode
-              </div>
-            </div>
-
             {/* Non-functional Sidebar */}
             <div className="fixed left-0 top-0 h-full w-14 bg-white/80 backdrop-blur-sm border-r border-slate-200 z-[10000]">
               <div className="flex flex-col items-center py-6 space-y-4">
@@ -739,6 +725,25 @@ const LocationPickerModal: React.FC<{
               </div>
             </div>
 
+            {/* Preview Mode Overlay Frame - adjusted to not cover sidebar and buttons */}
+            <div 
+              className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
+              style={{
+                top: '4px',
+                left: '60px', // Start after sidebar (56px + 4px margin)
+                right: '4px',
+                bottom: '100px', // Above search bar and buttons
+                boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
+              }}
+            />
+            
+            {/* Preview Mode Label */}
+            <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
+              <div className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg">
+                Preview Mode
+              </div>
+            </div>
+
             {/* Full Screen Map */}
             <div 
               ref={previewMapContainer}
@@ -749,7 +754,7 @@ const LocationPickerModal: React.FC<{
               }}
             />
             
-            {/* Fixed Center Pin Overlay - stays in center of viewport */}
+            {/* Fixed Center Pin Overlay - Blue circle with white target icon */}
             <div 
               className="fixed z-[10001] pointer-events-none"
               style={{
@@ -758,9 +763,28 @@ const LocationPickerModal: React.FC<{
                 transform: 'translate(-50%, -50%)'
               }}
             >
-              <div className="relative">
-                <MapPin className="w-8 h-8 text-blue-600 drop-shadow-lg" fill="currentColor" />
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-blue-600 rounded-full border-2 border-white"></div>
+              {/* Blue circle background */}
+              <div className="relative w-12 h-12 bg-blue-600 rounded-full border-4 border-white shadow-lg flex items-center justify-center">
+                {/* White target/crosshair icon */}
+                <svg 
+                  width="24" 
+                  height="24" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="white" 
+                  strokeWidth="2.5" 
+                  strokeLinecap="round"
+                  className="drop-shadow-sm"
+                >
+                  {/* Outer circle */}
+                  <circle cx="12" cy="12" r="8" stroke="white" fill="none" />
+                  {/* Horizontal line */}
+                  <line x1="12" y1="4" x2="12" y2="20" stroke="white" />
+                  {/* Vertical line */}
+                  <line x1="4" y1="12" x2="20" y2="12" stroke="white" />
+                  {/* Center dot */}
+                  <circle cx="12" cy="12" r="1.5" fill="white" />
+                </svg>
               </div>
             </div>
 
