@@ -16,6 +16,7 @@ import { SquareMap, SquareMapRef } from './SquareMap';
 import Profile from './Profile';
 import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
+import { backendApi } from '@/services/backendApi';
 export interface MainContentProps {
   className?: string;
   currentView?: string;
@@ -55,10 +56,26 @@ export const MainContent = ({
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  const [userData, setUserData] = React.useState<any>(null);
   const mapRef = React.useRef<SquareMapRef>(null);
   
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
+
+  // Fetch user data on mount
+  React.useEffect(() => {
+    const fetchUserData = async () => {
+      try {
+        const authResult = await backendApi.checkAuth();
+        if (authResult.success && authResult.data?.user) {
+          setUserData(authResult.data.user);
+        }
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+      }
+    };
+    fetchUserData();
+  }, []);
 
   const handleMapToggle = () => {
     console.log('🗺️ MainContent handleMapToggle called!', { 
@@ -204,23 +221,45 @@ export const MainContent = ({
     }
   };
 
+  // Track previous view to detect actual navigation changes
+  const prevViewRef = React.useRef<string>(currentView);
+  
   // Reset chat mode and map visibility when currentView changes (sidebar navigation)
+  // IMPORTANT: This should ONLY trigger on actual navigation, NOT on sidebar toggle
   React.useEffect(() => {
+    const prevView = prevViewRef.current;
+    const isActualNavigation = prevView !== currentView;
+    prevViewRef.current = currentView;
+    
+    // Only reset if we're actually navigating to a different view
+    // Don't reset if we're already on search view (e.g., just toggling sidebar)
     if (currentView !== 'search' && currentView !== 'home') {
       setChatQuery("");
       setChatMessages([]);
       // Let the parent handle chat mode changes
       onChatModeChange?.(false);
     }
+    // When navigating to search view (via home button), hide the map
+    // BUT: Only hide map if we're actually navigating FROM a different view
+    // Don't hide map if we're already on search view (e.g., just toggling sidebar)
+    // This prevents the map from being hidden when just toggling the sidebar
+    if (currentView === 'search' && isActualNavigation && prevView !== 'search') {
+      // Only hide map if we're actually navigating FROM a different view TO search
+      // This prevents hiding the map when just toggling sidebar on map view
+      setIsMapVisible(false);
+      setMapSearchQuery("");
+      setHasPerformedSearch(false);
+    }
   }, [currentView, onChatModeChange]);
 
   // Special handling for home view - reset everything to default state
   React.useEffect(() => {
     if (homeClicked) {
+      console.log('🏠 Home clicked - resetting map and state');
       setChatQuery("");
       setChatMessages([]);
       setCurrentLocation("");
-      setIsMapVisible(false);
+      setIsMapVisible(false); // Explicitly hide map when home is clicked
       setMapSearchQuery("");
       setHasPerformedSearch(false);
       onChatModeChange?.(false);
@@ -280,9 +319,66 @@ export const MainContent = ({
           }} transition={{
             duration: 0.3,
             ease: [0.23, 1, 0.32, 1]
-          }} className="flex items-center justify-center flex-1 relative">
+          }} className="flex flex-col items-center justify-start flex-1 relative pt-32">
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
+                
+                {/* VELORA Branding Section */}
+                <div className="flex flex-col items-center mb-12">
+                  {/* VELORA Logo */}
+                  <img 
+                    src="/VELORA (new) .png" 
+                    alt="VELORA" 
+                    className="max-w-[280px] h-auto mb-6"
+                    style={{ maxHeight: '120px' }}
+                    onLoad={() => {
+                      console.log('✅ VELORA logo loaded successfully');
+                    }}
+                    onError={(e) => {
+                      console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
+                      // Try URL-encoded version if direct path fails
+                      const img = e.target as HTMLImageElement;
+                      const currentSrc = img.src;
+                      
+                      // If direct path failed, try URL-encoded version
+                      if (!currentSrc.includes('%20')) {
+                        const encodedPath = '/VELORA%20(new)%20.png';
+                        console.log(`🔄 Trying URL-encoded path: ${encodedPath}`);
+                        img.src = encodedPath;
+                      } else {
+                        // If all attempts fail, hide the image
+                        console.error('❌ VELORA logo failed to load with all attempts.');
+                        img.style.display = 'none';
+                      }
+                    }}
+                  />
+                  
+                  {/* Dynamic Welcome Message */}
+                  {(() => {
+                    const getUserName = () => {
+                      if (userData?.first_name) {
+                        return userData.first_name;
+                      }
+                      if (userData?.email) {
+                        // Extract name from email (e.g., "user@example.com" → "user")
+                        const emailPrefix = userData.email.split('@')[0];
+                        // Capitalize first letter
+                        return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+                      }
+                      return '';
+                    };
+                    const userName = getUserName();
+                    return userName ? (
+                      <p className="text-slate-500 text-sm mb-12 text-center">
+                        Welcome back {userName}, your workspace is synced and ready for your next move
+                      </p>
+                    ) : (
+                      <p className="text-slate-500 text-sm mb-12 text-center">
+                        Welcome back, your workspace is synced and ready for your next move
+                      </p>
+                    );
+                  })()}
+                </div>
                 
                 {/* Unified Search Bar - adapts based on context */}
                 <SearchBar 
@@ -367,30 +463,24 @@ export const MainContent = ({
           </div>;
     }
   };
-  return <div className={`flex-1 relative ${className || ''}`}>
-      {/* Background based on current view */}
-      {(currentView === 'search' || currentView === 'home') && !isInChatMode ? (
-        <PropertyCyclingBackground />
-      ) : currentView !== 'upload' ? (
-        <FlowBackground />
-      ) : currentView === 'upload' ? (
-        <FlowBackground />
-      ) : null}
+  return <div className={`flex-1 relative bg-white ${className || ''}`} style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}>
+      {/* Background based on current view - Hidden to show white background */}
+      {/* Background components commented out to show white background */}
       
-      {/* Content container - no blur effects */}
+      {/* Content container - white background */}
       <div className={`relative h-full flex flex-col ${
         isInChatMode 
-          ? 'bg-transparent' 
+          ? 'bg-white' 
           : currentView === 'upload' 
-            ? 'bg-white/95' 
+            ? 'bg-white' 
             : currentView === 'analytics'
-              ? 'bg-white/95'
+              ? 'bg-white'
               : currentView === 'profile'
-                ? 'bg-transparent'
+                ? 'bg-white'
                 : currentView === 'notifications'
                   ? 'bg-white'
-                  : 'bg-white/20'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0' : 'p-8 lg:p-16'}`}>
+                  : 'bg-white'
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ backgroundColor: '#ffffff' }}>
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 

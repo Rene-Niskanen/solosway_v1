@@ -2,16 +2,12 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Folder, User, BarChart3, Upload, Search, Home, PanelLeft, Settings } from "lucide-react";
+import { Database, User, BarChart3, Upload, Home, PanelLeft, Settings } from "lucide-react";
 
 const sidebarItems = [{
   icon: Home,
   id: 'home',
   label: 'Home'
-}, {
-  icon: Search,
-  id: 'search',
-  label: 'Search'
 }, {
   icon: Upload,
   id: 'upload',
@@ -21,7 +17,7 @@ const sidebarItems = [{
   id: 'analytics',
   label: 'Analytics'
 }, {
-  icon: Folder,
+  icon: Database,
   id: 'notifications',
   label: 'Files'
 }, {
@@ -49,7 +45,7 @@ export const Sidebar = ({
   onItemClick,
   onChatToggle,
   isChatPanelOpen = false,
-  activeItem = 'search',
+  activeItem = 'home',
   isCollapsed = false,
   onToggle
 }: SidebarProps) => {
@@ -97,8 +93,8 @@ export const Sidebar = ({
         duration: 0.05,
         ease: [0.4, 0, 0.2, 1]
       }}
-      className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} transition-all duration-300 ${className || ''}`} 
-      style={{ background: isCollapsed ? 'transparent' : 'var(--sidebar-background)' }}
+      className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} transition-all duration-300 bg-white ${className || ''}`} 
+      style={{ background: isCollapsed ? 'transparent' : '#ffffff', backgroundColor: isCollapsed ? 'transparent' : '#ffffff' }}
     >
       {!isCollapsed && (
         <>
@@ -131,15 +127,15 @@ export const Sidebar = ({
         <AnimatePresence>
         </AnimatePresence>
         
-        <PanelLeft className="w-4 h-4 lg:w-5 lg:h-5 text-white drop-shadow-sm transition-all duration-300 ease-out" strokeWidth={1.8} />
+        <PanelLeft className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm transition-all duration-300 ease-out" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
       </motion.button>
 
       {/* Navigation Items */}
-      <div className="flex flex-col space-y-2">
+      <div className="flex flex-col space-y-4">
         {sidebarItems.map((item, index) => {
         const Icon = item.icon;
-        // Home icon should never be active since it's just a navigation button
-        const isActive = activeItem === item.id && item.id !== 'home';
+        // Home icon is active when on search/dashboard view
+        const isActive = item.id === 'home' ? activeItem === 'search' : activeItem === item.id;
         return <motion.button key={item.id} initial={{
           opacity: 0,
           y: 8,
@@ -164,33 +160,76 @@ export const Sidebar = ({
             duration: 0.05
           }
         }} onClick={() => {
-          // Navigate to search page when search icon is clicked
-          if (item.id === 'search') {
-            console.log('Navigating to search page');
+          // Home button navigates to search/dashboard view
+          if (item.id === 'home') {
+            handleItemClick('home'); // Call 'home' so DashboardLayout can properly handle map reset
+          } else {
+            handleItemClick(item.id);
           }
-          handleItemClick(item.id);
         }} className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center transition-all duration-300 ease-out group" aria-label={item.label}>
               {/* Icon */}
-              <Icon className={`w-4 h-4 lg:w-5 lg:h-5 transition-all duration-300 ease-out drop-shadow-sm ${isActive ? 'text-sidebar-active scale-105' : 'text-white hover:scale-102'}`} strokeWidth={1.8} />
+              <Icon className={`w-4 h-4 lg:w-5 lg:h-5 transition-all duration-300 ease-out drop-shadow-sm ${isActive ? 'text-sidebar-active scale-105' : 'hover:scale-102'}`} strokeWidth={1.8} style={{ color: isActive ? undefined : '#8B8B8B' }} />
             </motion.button>;
       })}
+      
+      {/* VELORA Dash Logo - positioned below last icon with same spacing */}
+      <motion.div
+        initial={{
+          opacity: 0,
+          y: 8,
+          scale: 0.95
+        }}
+        animate={{
+          opacity: 1,
+          y: 0,
+          scale: 1
+        }}
+        transition={{
+          duration: 0.12,
+          ease: [0.4, 0, 0.2, 1],
+          delay: sidebarItems.length * 0.02 + 0.04
+        }}
+        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center"
+      >
+        <img 
+          src="/velora-dash-logo.png" 
+          alt="VELORA" 
+          className="w-6 h-6 lg:w-8 lg:h-8 object-contain"
+          style={{ opacity: 0.45 }}
+        />
+      </motion.div>
       </div>
         </>
       )}
     </motion.div>
 
     {/* Sidebar Toggle Rail - full height thin clickable area */}
+    {/* IMPORTANT: This button should ONLY toggle sidebar, NEVER navigate */}
     <motion.button
-      onClick={onToggle}
+      type="button"
+      onClick={(e) => {
+        // Stop event from bubbling to parent elements (which might have navigation handlers)
+        e.stopPropagation();
+        // CRITICAL: Only call onToggle (which is handleSidebarToggle)
+        // NEVER call onItemClick or handleItemClick
+        // This should ONLY toggle sidebar state, NEVER navigate
+        console.log('🔘 Toggle rail clicked - ONLY toggling sidebar, NOT navigating');
+        onToggle?.();
+      }}
       aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-      className={`fixed inset-y-0 w-4
-        bg-white/10 backdrop-blur-sm shadow-lg
-        hover:bg-white/20 active:bg-white/30
-        hover:shadow-xl`}
+      className={`fixed inset-y-0 w-3
+        shadow-lg
+        hover:shadow-xl
+        ${isCollapsed ? 'left-0' : isChatPanelOpen ? '' : 'left-10 lg:left-14'}`}
       style={{ 
         WebkitTapHighlightColor: 'transparent',
-        zIndex: 250,
-        left: isCollapsed ? '0px' : (isChatPanelOpen ? '376px' : '56px')
+        zIndex: 9999,
+        // Position toggle rail exactly at the edge of the sidebar (no gap)
+        // Sidebar is w-10 (40px) on mobile, lg:w-14 (56px) on desktop
+        // Using Tailwind classes: left-10 (2.5rem = 40px) and lg:left-14 (3.5rem = 56px)
+        ...(isChatPanelOpen && !isCollapsed ? { left: '376px' } : {}),
+        backgroundColor: '#E9E9EB',
+        pointerEvents: 'auto'
       }}
       animate={{
         x: 0
@@ -214,7 +253,7 @@ export const Sidebar = ({
           transform: 'translate(-50%, -50%)'
         }}
       >
-        <div className={`w-0 h-0 border-l-[8px] border-l-white border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent drop-shadow-sm`} />
+        <div className={`w-0 h-0 border-l-[8px] border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent drop-shadow-sm`} style={{ borderLeftColor: '#8B8B8B' }} />
       </motion.div>
     </motion.button>
   </>;

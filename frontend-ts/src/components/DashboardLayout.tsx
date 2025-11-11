@@ -16,6 +16,39 @@ export interface DashboardLayoutProps {
 const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
+  // Override body background when Dashboard component mounts
+  React.useEffect(() => {
+    const originalBodyStyle = document.body.style.background;
+    const originalBodyBackgroundImage = document.body.style.backgroundImage;
+    const originalBodyBackgroundColor = document.body.style.backgroundColor;
+    const originalBodyAttachment = document.body.style.backgroundAttachment;
+    const originalBodyClass = document.body.className;
+    
+    // Set body to white background and remove gradient
+    document.body.style.background = '#ffffff';
+    document.body.style.backgroundImage = 'none';
+    document.body.style.backgroundColor = '#ffffff';
+    document.body.style.backgroundAttachment = 'scroll'; // Override fixed attachment
+    
+    // Also override html element
+    const htmlElement = document.documentElement;
+    const originalHtmlBackground = htmlElement.style.background;
+    const originalHtmlBackgroundColor = htmlElement.style.backgroundColor;
+    htmlElement.style.background = '#ffffff';
+    htmlElement.style.backgroundColor = '#ffffff';
+    
+    return () => {
+      // Restore original body background when component unmounts
+      document.body.style.background = originalBodyStyle;
+      document.body.style.backgroundImage = originalBodyBackgroundImage;
+      document.body.style.backgroundColor = originalBodyBackgroundColor;
+      document.body.style.backgroundAttachment = originalBodyAttachment;
+      document.body.className = originalBodyClass;
+      htmlElement.style.background = originalHtmlBackground;
+      htmlElement.style.backgroundColor = originalHtmlBackgroundColor;
+    };
+  }, []);
+
   const [currentView, setCurrentView] = React.useState<string>('search');
   const [isChatPanelOpen, setIsChatPanelOpen] = React.useState<boolean>(false);
   const [isInChatMode, setIsInChatMode] = React.useState<boolean>(false);
@@ -42,11 +75,6 @@ const DashboardLayoutContent = ({
       setIsChatPanelOpen(false);
     }
     
-    // Always exit chat mode when navigating to a different view
-    setCurrentView(viewId);
-    setIsInChatMode(false);
-    setCurrentChatData(null);
-    
     // Special handling for home - reset everything to default state
     if (viewId === 'home') {
       setCurrentChatData(null);
@@ -60,6 +88,12 @@ const DashboardLayoutContent = ({
       setCurrentView('search');
       return; // Exit early to prevent setting currentView again
     }
+    
+    
+    // Always exit chat mode when navigating to a different view
+    setCurrentView(viewId);
+    setIsInChatMode(false);
+    setCurrentChatData(null);
     
     // Force sidebar to be visible when entering upload view
     if (viewId === 'upload') {
@@ -157,6 +191,12 @@ const DashboardLayoutContent = ({
 
 
   const handleSidebarToggle = React.useCallback(() => {
+    // CRITICAL: This function should ONLY toggle sidebar state
+    // It should NEVER call handleViewChange, setCurrentView, or trigger navigation
+    // This is called by the toggle rail, NOT by navigation buttons
+    
+    console.log('🔘 handleSidebarToggle called - ONLY toggling sidebar, NOT navigating');
+    
     // Allow toggle functionality in all views, including upload
     setIsSidebarCollapsed(prev => {
       const newCollapsed = !prev;
@@ -173,6 +213,12 @@ const DashboardLayoutContent = ({
       
       return newCollapsed;
     });
+    
+    // EXPLICITLY DO NOT CALL:
+    // - handleViewChange
+    // - setCurrentView
+    // - setHomeClicked
+    // - Any navigation logic
   }, [isChatPanelOpen, wasChatPanelOpenBeforeCollapse]);
 
   const handleNewChat = React.useCallback(() => {
@@ -213,7 +259,8 @@ const DashboardLayoutContent = ({
       initial={{ opacity: 0, scale: 0.98 }} 
       animate={{ opacity: 1, scale: 1 }} 
       transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }} 
-      className={`flex h-screen w-full overflow-hidden relative ${className || ''}`}
+      className={`flex h-screen w-full overflow-hidden relative bg-white border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
+      style={{ backgroundColor: '#ffffff' }}
     >
 
       {/* Chat Return Notification */}

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Image as ImageIcon } from "lucide-react";
+import { Paperclip } from "lucide-react";
 
 export interface ImageUploadButtonProps {
   onImageUpload?: (searchQuery: string) => void;
@@ -52,7 +52,7 @@ export const ImageUploadButton = ({
         }}
         title="Upload property screenshot"
       >
-        <ImageIcon className={iconSizes[size]} strokeWidth={1.5} />
+        <Paperclip className={iconSizes[size]} strokeWidth={1.5} />
       </motion.button>
 
       {/* Import and render ImageUploadFeature when needed */}

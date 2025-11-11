@@ -1193,7 +1193,11 @@ def api_dashboard():
         
         # Get user's properties (still from PostgreSQL for now)
         from .models import Property
-        properties = Property.query.filter_by(business_id=current_user.company_name).order_by(Property.created_at.desc()).limit(10).all()
+        try:
+            properties = Property.query.filter_by(business_id=current_user.company_name).order_by(Property.created_at.desc()).limit(10).all()
+        except Exception as e:
+            logger.warning(f"Error querying properties from PostgreSQL: {e}")
+            properties = []
         
         # Convert documents to JSON-serializable format
         documents_data = []
@@ -1241,6 +1245,7 @@ def api_dashboard():
         })
         
     except Exception as e:
+        logger.error(f"Dashboard error: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 # API endpoint for creating appraisals

@@ -1,12 +1,35 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 
-export const Landing: React.FC = () => (
+export const Landing: React.FC = () => {
+  // Override body background when Landing component mounts
+  useEffect(() => {
+    const originalBodyStyle = document.body.style.background;
+    const originalBodyClass = document.body.className;
+    
+    // Set body to white background
+    document.body.style.background = '#ffffff';
+    
+    return () => {
+      // Restore original body background when component unmounts
+      document.body.style.background = originalBodyStyle;
+      document.body.className = originalBodyClass;
+    };
+  }, []);
+
+  return (
   <div
-    className="bg-gray-50 group/design-root"
-    style={{ fontFamily: "Inter, 'Noto Sans', sans-serif" }}
+    className="bg-white group/design-root min-h-screen border-l border-r border-t border-b border-[#e9edf1]"
+    style={{ 
+      fontFamily: "Inter, 'Noto Sans', sans-serif",
+      backgroundColor: '#ffffff',
+      position: 'relative',
+      zIndex: 1,
+      width: '100%',
+      minHeight: '100vh'
+    }}
   >
-    <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-b-[#e9edf1] px-10 py-3">
+    <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-b-[#e9edf1] px-10 py-3 bg-white">
       <div className="flex items-center gap-4 text-[#101419]">
         <div className="size-4">
           <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -48,7 +71,7 @@ export const Landing: React.FC = () => (
       </div>
     </header>
 
-    <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 bg-white">
       <div className="flex flex-col gap-6 px-4 py-10">
         <div className="flex flex-col gap-8 md:flex-row">
           <div
@@ -157,7 +180,7 @@ export const Landing: React.FC = () => (
       </div>
     </main>
 
-    <footer className="flex justify-center py-10">
+    <footer className="flex justify-center py-10 bg-white border-t border-[#e9edf1]">
       <div className="flex flex-col items-center gap-6 text-center">
         <div className="flex flex-wrap items-center justify-center gap-6">
           <button className="text-[#58728d] text-base font-normal leading-normal bg-transparent border-none cursor-pointer">Terms of Service</button>
@@ -170,4 +193,5 @@ export const Landing: React.FC = () => (
       </div>
     </footer>
   </div>
-);
+  );
+};
