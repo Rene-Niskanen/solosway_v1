@@ -1442,14 +1442,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       const getDefaultMapLocation = () => {
         if (typeof window !== 'undefined') {
           const saved = localStorage.getItem('defaultMapLocation');
-          if (saved === 'london') {
-            return { center: [-0.1276, 51.5074] as [number, number], zoom: 10.5 };
-          } else if (saved === 'bristol') {
-            return { center: [-2.5879, 51.4545] as [number, number], zoom: 10.5 };
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+                return {
+                  center: parsed.coordinates as [number, number],
+                  zoom: parsed.zoom || 9.5 // Use saved zoom or default to 9.5 (zoomed out)
+                };
+              }
+            } catch {
+              // If parsing fails, fall through to default
+            }
           }
         }
-        // Default to London (since most properties are there)
-        return { center: [-0.1276, 51.5074] as [number, number], zoom: 10.5 };
+        // Default to London (since most properties are there) - zoomed out
+        return { center: [-0.1276, 51.5074] as [number, number], zoom: 9.5 };
       };
       
       const defaultLocation = getDefaultMapLocation();

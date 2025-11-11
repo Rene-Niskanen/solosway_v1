@@ -18,79 +18,156 @@ import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 
-// Map location configuration
-const MAP_LOCATIONS = {
-  london: {
-    name: 'London',
-    coordinates: [-0.1276, 51.5074] as [number, number],
-    zoom: 10.5
-  },
-  bristol: {
-    name: 'Bristol',
-    coordinates: [-2.5879, 51.4545] as [number, number],
-    zoom: 10.5
-  }
-};
-
 const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
 // Map Location Selector Component
 const MapLocationSelector: React.FC = () => {
-  const [selectedLocation, setSelectedLocation] = React.useState<string>(() => {
-    // Load from localStorage or default to London
+  const [locationInput, setLocationInput] = React.useState<string>('');
+  const [savedLocation, setSavedLocation] = React.useState<string>('');
+  const [isGeocoding, setIsGeocoding] = React.useState(false);
+  const [geocodeError, setGeocodeError] = React.useState<string>('');
+  const [geocodeSuccess, setGeocodeSuccess] = React.useState(false);
+
+  // Load saved location on mount
+  React.useEffect(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-      return saved || 'london';
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          setSavedLocation(parsed.name || '');
+          setLocationInput(parsed.name || '');
+        } catch {
+          // If it's old format (just a string), clear it
+          localStorage.removeItem(DEFAULT_MAP_LOCATION_KEY);
+        }
+      }
     }
-    return 'london';
-  });
+  }, []);
 
-  const handleLocationChange = (location: string) => {
-    setSelectedLocation(location);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, location);
+  const handleGeocode = async () => {
+    if (!locationInput.trim()) {
+      setGeocodeError('Please enter a location');
+      return;
+    }
+
+    setIsGeocoding(true);
+    setGeocodeError('');
+    setGeocodeSuccess(false);
+
+    try {
+      const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
+      if (!mapboxToken) {
+        throw new Error('Mapbox token not configured');
+      }
+
+      // Geocode the location using Mapbox API
+      const response = await fetch(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(locationInput.trim())}.json?access_token=${mapboxToken}&limit=1&types=place,locality,neighborhood,district,region`
+      );
+
+      if (!response.ok) {
+        throw new Error('Geocoding failed');
+      }
+
+      const data = await response.json();
+
+      if (data.features && data.features.length > 0) {
+        const feature = data.features[0];
+        const [lng, lat] = feature.center;
+        const locationName = feature.place_name;
+
+        // Save to localStorage
+        const locationData = {
+          name: locationName,
+          coordinates: [lng, lat],
+          zoom: 9.5 // Zoomed out to see the area
+        };
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, JSON.stringify(locationData));
+        }
+
+        setSavedLocation(locationName);
+        setGeocodeSuccess(true);
+        setLocationInput(locationName);
+
+        // Clear success message after 3 seconds
+        setTimeout(() => setGeocodeSuccess(false), 3000);
+      } else {
+        throw new Error('Location not found');
+      }
+    } catch (error: any) {
+      setGeocodeError(error.message || 'Failed to geocode location. Please try again.');
+      setGeocodeSuccess(false);
+    } finally {
+      setIsGeocoding(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleGeocode();
     }
   };
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        {Object.entries(MAP_LOCATIONS).map(([key, location]) => (
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={locationInput}
+            onChange={(e) => {
+              setLocationInput(e.target.value);
+              setGeocodeError('');
+              setGeocodeSuccess(false);
+            }}
+            onKeyPress={handleKeyPress}
+            placeholder="e.g., London, Bristol, Manchester..."
+            className="flex-1 px-4 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-700"
+            disabled={isGeocoding}
+          />
           <motion.button
-            key={key}
-            onClick={() => handleLocationChange(key)}
-            className={`p-4 rounded-lg border-2 transition-all ${
-              selectedLocation === key
-                ? 'border-blue-500 bg-blue-50'
-                : 'border-slate-200 bg-white hover:border-slate-300'
-            }`}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
+            onClick={handleGeocode}
+            disabled={isGeocoding || !locationInput.trim()}
+            className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
+            whileHover={!isGeocoding && locationInput.trim() ? { scale: 1.02 } : {}}
+            whileTap={!isGeocoding && locationInput.trim() ? { scale: 0.98 } : {}}
           >
-            <div className="text-left">
-              <div className={`font-semibold mb-1 ${
-                selectedLocation === key ? 'text-blue-700' : 'text-slate-700'
-              }`}>
-                {location.name}
-              </div>
-              <div className="text-xs text-slate-500">
-                {location.coordinates[1].toFixed(4)}, {location.coordinates[0].toFixed(4)}
-              </div>
-            </div>
-            {selectedLocation === key && (
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                className="mt-2 text-blue-600 text-sm font-medium"
-              >
-                ✓ Selected
-              </motion.div>
-            )}
+            {isGeocoding ? 'Searching...' : 'Set Location'}
           </motion.button>
-        ))}
+        </div>
+        
+        {geocodeError && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-2"
+          >
+            {geocodeError}
+          </motion.div>
+        )}
+        
+        {geocodeSuccess && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-sm text-green-600 bg-green-50 border border-green-200 rounded-lg p-2"
+          >
+            ✓ Location saved successfully!
+          </motion.div>
+        )}
+
+        {savedLocation && !geocodeSuccess && (
+          <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
+            <div className="font-medium text-slate-700 mb-1">Current default location:</div>
+            <div className="text-slate-600">{savedLocation}</div>
+          </div>
+        )}
       </div>
       <p className="text-xs text-slate-500 mt-2">
-        Your selection will be applied the next time you open the map.
+        Enter any city, area, or location. The map will open zoomed out to show the area when you first view it.
       </p>
     </div>
   );
