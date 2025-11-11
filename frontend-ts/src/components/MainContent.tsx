@@ -721,29 +721,32 @@ const LocationPickerModal: React.FC<{
                 WebkitBackdropFilter: 'blur(12px)',
                 backgroundColor: 'rgba(241, 245, 249, 0.3)',
                 // Create a transparent "hole" in the middle matching the preview frame
+                // The polygon goes around the outside, creating a frame shape
                 clipPath: `polygon(
                   0% 0%, 
                   0% 100%, 
                   72px 100%, 
-                  72px 80px, 
-                  calc(100% - 72px) 80px, 
-                  calc(100% - 72px) calc(100% - 80px), 
                   72px calc(100% - 80px), 
-                  72px 100%, 
+                  calc(100% - 72px) calc(100% - 80px), 
+                  calc(100% - 72px) 80px, 
+                  72px 80px, 
+                  72px 0%, 
+                  100% 0%, 
                   100% 100%, 
-                  100% 0%
+                  0% 100%
                 )`,
                 WebkitClipPath: `polygon(
                   0% 0%, 
                   0% 100%, 
                   72px 100%, 
-                  72px 80px, 
-                  calc(100% - 72px) 80px, 
-                  calc(100% - 72px) calc(100% - 80px), 
                   72px calc(100% - 80px), 
-                  72px 100%, 
+                  calc(100% - 72px) calc(100% - 80px), 
+                  calc(100% - 72px) 80px, 
+                  72px 80px, 
+                  72px 0%, 
+                  100% 0%, 
                   100% 100%, 
-                  100% 0%
+                  0% 100%
                 )`
               }}
             />
