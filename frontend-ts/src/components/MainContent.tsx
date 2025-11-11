@@ -901,11 +901,12 @@ const LocationPickerModal: React.FC<{
             {/* Full Screen Map */}
             <div 
               ref={previewMapContainer}
-              className="w-full h-full relative"
+              className="w-full h-full relative preview-map-container"
               style={{
                 marginLeft: '56px', // Offset for sidebar
                 backgroundColor: 'transparent', // Ensure no white background
-                overflow: 'hidden' // Prevent any overflow elements
+                overflow: 'hidden', // Prevent any overflow elements
+                position: 'relative'
               }}
             />
             
