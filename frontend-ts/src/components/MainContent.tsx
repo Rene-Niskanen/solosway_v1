@@ -652,66 +652,21 @@ const LocationPickerModal: React.FC<{
       return;
     }
 
-    // Always use the selectedCoordinates and selectedZoom state values
-    // In preview mode, these are updated by the preview map's moveend handler
-    // In modal mode, these are set by geocoding or map clicks
-    // This ensures we save what the user explicitly selected, not what the map happens to show
-    const finalCoordinates = selectedCoordinates;
-    const finalZoom = selectedZoom || 9.5;
-    
-    // Validate coordinates are valid
-    if (!Array.isArray(finalCoordinates) || finalCoordinates.length !== 2) {
-      console.error('❌ LocationPicker: Invalid coordinates format', finalCoordinates);
-      return;
-    }
-    
-    if (typeof finalCoordinates[0] !== 'number' || typeof finalCoordinates[1] !== 'number') {
-      console.error('❌ LocationPicker: Coordinates must be numbers', finalCoordinates);
-      return;
-    }
-    
-    if (isNaN(finalCoordinates[0]) || isNaN(finalCoordinates[1])) {
-      console.error('❌ LocationPicker: Coordinates contain NaN', finalCoordinates);
-      return;
-    }
-
+    // Simple: Save exactly what the user selected
     const locationData = {
       name: selectedLocationName || locationInput || 'Unknown Location',
-      coordinates: finalCoordinates,
-      zoom: finalZoom
+      coordinates: selectedCoordinates,
+      zoom: selectedZoom || 9.5
     };
 
-    console.log('📍 LocationPicker: Confirming location with data:', {
-      name: locationData.name,
-      coordinates: locationData.coordinates,
-      zoom: locationData.zoom,
-      isPreviewMode
-    });
+    console.log('📍 LocationPicker: Saving location', locationData);
 
     if (typeof window !== 'undefined') {
       try {
-        const jsonData = JSON.stringify(locationData);
-        localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, jsonData);
-        
-        // Verify the save worked
-        const verify = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-        if (verify) {
-          const parsed = JSON.parse(verify);
-          if (parsed.coordinates[0] === finalCoordinates[0] && 
-              parsed.coordinates[1] === finalCoordinates[1] &&
-              parsed.zoom === finalZoom) {
-            console.log('✅ LocationPicker: Location saved and verified successfully', parsed);
-          } else {
-            console.error('❌ LocationPicker: Saved data does not match intended data', {
-              intended: locationData,
-              saved: parsed
-            });
-          }
-        } else {
-          console.error('❌ LocationPicker: Failed to save location - localStorage returned null');
-        }
+        localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, JSON.stringify(locationData));
+        console.log('✅ LocationPicker: Location saved - this will be shown next time modal opens');
       } catch (error) {
-        console.error('❌ LocationPicker: Error saving location to localStorage:', error);
+        console.error('❌ LocationPicker: Error saving location', error);
         return;
       }
     }
