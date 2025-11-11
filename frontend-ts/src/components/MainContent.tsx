@@ -197,6 +197,9 @@ const LocationPickerModal: React.FC<{
       marker.current.remove();
       marker.current = null;
     }
+    
+    // Reset initialization flag when cleaning up
+    isMapJustInitializedRef.current = false;
 
     if (!isOpen || !mapContainer.current) {
       console.log('📍 LocationPicker: Modal not open or container not ready', { isOpen, hasContainer: !!mapContainer.current });
