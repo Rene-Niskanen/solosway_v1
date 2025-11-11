@@ -712,6 +712,13 @@ const LocationPickerModal: React.FC<{
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
+            style={{
+              backgroundColor: '#f1f5f9', // Ensure slate-100 background covers everything
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0
+            }}
           >
             {/* Seamless Blur Overlay - covers everything outside the preview frame */}
             <div 
@@ -721,6 +728,7 @@ const LocationPickerModal: React.FC<{
                 WebkitBackdropFilter: 'blur(12px)',
                 backgroundColor: 'rgba(241, 245, 249, 0.3)',
                 // Use mask to create transparent hole in center matching preview frame
+                // The mask shows blur everywhere except the preview area (from 80px to calc(100% - 80px) vertically, 72px to calc(100% - 72px) horizontally)
                 maskImage: `linear-gradient(to right, 
                   black 0, 
                   black 72px, 
@@ -753,6 +761,17 @@ const LocationPickerModal: React.FC<{
                 )`,
                 maskComposite: 'intersect',
                 WebkitMaskComposite: 'source-in'
+              }}
+            />
+            
+            {/* Additional overlay to cover top white bar - ensures no white shows through */}
+            <div 
+              className="fixed top-0 left-0 right-0 z-[10000] pointer-events-none"
+              style={{
+                height: '80px',
+                backgroundColor: '#f1f5f9', // Match slate-100 background
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)'
               }}
             />
             
