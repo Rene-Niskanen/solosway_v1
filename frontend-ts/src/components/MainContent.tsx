@@ -87,12 +87,24 @@ const LocationPickerModal: React.FC<{
 
   // Initialize map when modal opens
   React.useEffect(() => {
-    if (!isOpen || !mapContainer.current) return;
-
-    if (!mapboxToken) {
-      console.error('Mapbox token is missing!');
+    if (!isOpen || !mapContainer.current) {
+      console.log('📍 LocationPicker: Modal not open or container not ready', { isOpen, hasContainer: !!mapContainer.current });
       return;
     }
+
+    if (!mapboxToken) {
+      console.error('❌ Mapbox token is missing!');
+      return;
+    }
+
+    console.log('📍 LocationPicker: Initializing map...', {
+      hasToken: !!mapboxToken,
+      tokenPrefix: mapboxToken.substring(0, 10) + '...',
+      containerSize: mapContainer.current ? {
+        width: mapContainer.current.offsetWidth,
+        height: mapContainer.current.offsetHeight
+      } : 'no container'
+    });
 
     mapboxgl.accessToken = mapboxToken;
     
@@ -128,19 +140,42 @@ const LocationPickerModal: React.FC<{
 
     // Small delay to ensure container is fully rendered
     const initTimeout = setTimeout(() => {
-      if (!mapContainer.current) return;
+      if (!mapContainer.current) {
+        console.error('❌ LocationPicker: Container disappeared before map init');
+        return;
+      }
 
-      map.current = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11',
+      console.log('📍 LocationPicker: Creating map instance...', {
         center: initial.center,
         zoom: initial.zoom,
-        attributionControl: false
+        container: mapContainer.current
       });
+
+      try {
+        map.current = new mapboxgl.Map({
+          container: mapContainer.current,
+          style: 'mapbox://styles/mapbox/light-v11',
+          center: initial.center,
+          zoom: initial.zoom,
+          attributionControl: false
+        });
+
+        console.log('✅ LocationPicker: Map instance created');
+
+        // Add error handler
+        map.current.on('error', (e) => {
+          console.error('❌ Map error:', e);
+        });
+      } catch (error) {
+        console.error('❌ LocationPicker: Failed to create map:', error);
+        return;
+      }
 
       // Wait for map to load before adding marker
       map.current.on('load', () => {
         if (!map.current) return;
+
+        console.log('✅ LocationPicker: Map loaded successfully');
 
         // Resize map to ensure it renders correctly
         map.current.resize();
@@ -149,6 +184,8 @@ const LocationPickerModal: React.FC<{
         marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
           .setLngLat(initial.center)
           .addTo(map.current);
+
+        console.log('✅ LocationPicker: Marker added at', initial.center);
 
         // Hide Mapbox branding
         const container = map.current.getContainer();
@@ -208,14 +245,22 @@ const LocationPickerModal: React.FC<{
   }, [isOpen, mapboxToken]);
 
   const geocodeLocation = React.useCallback(async (query: string) => {
-    if (!query) return;
+    if (!query) {
+      console.log('📍 Geocode: Empty query');
+      return;
+    }
+
+    console.log('📍 Geocode: Starting geocoding for:', query);
 
     // Wait for map to be initialized and loaded
     if (!map.current) {
+      console.log('📍 Geocode: Map not initialized, waiting...');
       // Map not initialized yet, wait and retry once
       setTimeout(() => {
         if (map.current) {
           geocodeLocation(query);
+        } else {
+          console.error('❌ Geocode: Map still not initialized after wait');
         }
       }, 300);
       return;
@@ -223,12 +268,14 @@ const LocationPickerModal: React.FC<{
 
     // Check if map is loaded, wait for it if not
     if (!map.current.loaded()) {
+      console.log('📍 Geocode: Map not loaded yet, waiting for load event...');
       map.current.once('load', () => {
         geocodeLocation(query);
       });
       return;
     }
 
+    console.log('📍 Geocode: Map ready, fetching location...');
     setIsGeocoding(true);
     setGeocodeError('');
 
@@ -245,11 +292,23 @@ const LocationPickerModal: React.FC<{
 
       const data = await response.json();
 
+      console.log('📍 Geocode: Response received', {
+        hasFeatures: !!(data.features && data.features.length > 0),
+        featureCount: data.features?.length || 0,
+        features: data.features
+      });
+
       if (data.features && data.features.length > 0) {
         const feature = data.features[0];
         const [lng, lat] = feature.center;
         const coords: [number, number] = [lng, lat];
         const locationName = feature.place_name;
+        
+        console.log('✅ Geocode: Location found', {
+          name: locationName,
+          coordinates: coords,
+          placeType: feature.place_type
+        });
         
         // Calculate dynamic zoom based on area size
         const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
