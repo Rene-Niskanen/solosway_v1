@@ -555,13 +555,20 @@ const LocationPickerModal: React.FC<{
 
       const container = previewMapContainer.current;
       
-      // Check if container has dimensions
-      if (container.offsetWidth === 0 || container.offsetHeight === 0) {
-        console.log('⏳ Container has no dimensions yet, waiting...', {
+      // Check if container is visible and has dimensions
+      const computedStyle = window.getComputedStyle(container);
+      const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden' && computedStyle.opacity !== '0';
+      
+      if (!isVisible || container.offsetWidth === 0 || container.offsetHeight === 0) {
+        console.log('⏳ Container not ready yet, waiting...', {
+          isVisible,
           width: container.offsetWidth,
           height: container.offsetHeight,
-          computedWidth: window.getComputedStyle(container).width,
-          computedHeight: window.getComputedStyle(container).height
+          computedWidth: computedStyle.width,
+          computedHeight: computedStyle.height,
+          display: computedStyle.display,
+          visibility: computedStyle.visibility,
+          opacity: computedStyle.opacity
         });
         setTimeout(initMap, 100);
         return;
