@@ -538,14 +538,20 @@ const LocationPickerModal: React.FC<{
       style: 'mapbox://styles/mapbox/light-v11',
       center: selectedCoordinates,
       zoom: selectedZoom,
-      attributionControl: false
+      attributionControl: false,
+      logoPosition: 'bottom-left' // Set but we'll hide it
     });
     
-    // Ensure map container has no white background
+    // Ensure map container has no white background and remove all unwanted elements
     if (previewMapContainer.current && previewMap.current) {
       const mapContainer = previewMap.current.getContainer();
       if (mapContainer) {
         mapContainer.style.backgroundColor = 'transparent';
+        // Remove any default Mapbox controls
+        const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
+        controls.forEach((ctrl: Element) => {
+          (ctrl as HTMLElement).style.display = 'none';
+        });
       }
     }
 
@@ -573,24 +579,95 @@ const LocationPickerModal: React.FC<{
     previewMap.current.on('moveend', handleMoveEnd);
     previewMap.current.on('move', handleMove);
 
-    // Hide Mapbox branding
-    const hideBranding = () => {
-      if (previewMap.current) {
-        const container = previewMap.current.getContainer();
-        const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-        const logo = container.querySelector('.mapboxgl-ctrl-logo');
-        if (attrib) (attrib as HTMLElement).style.display = 'none';
-        if (logo) (logo as HTMLElement).style.display = 'none';
+    // Comprehensive function to hide all Mapbox branding and controls
+    const hideAllMapboxElements = () => {
+      if (!previewMap.current) return;
+      
+      const container = previewMap.current.getContainer();
+      if (!container) return;
+
+      // Hide all Mapbox control elements
+      const allControls = container.querySelectorAll('[class*="mapboxgl-ctrl"]');
+      allControls.forEach((ctrl: Element) => {
+        const htmlCtrl = ctrl as HTMLElement;
+        htmlCtrl.style.display = 'none';
+        htmlCtrl.style.visibility = 'hidden';
+        htmlCtrl.style.opacity = '0';
+      });
+
+      // Hide attribution
+      const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+      if (attrib) {
+        (attrib as HTMLElement).style.display = 'none';
+        (attrib as HTMLElement).style.visibility = 'hidden';
+      }
+
+      // Hide logo
+      const logo = container.querySelector('.mapboxgl-ctrl-logo');
+      if (logo) {
+        (logo as HTMLElement).style.display = 'none';
+        (logo as HTMLElement).style.visibility = 'hidden';
+      }
+
+      // Hide any navigation controls
+      const navControls = container.querySelectorAll('.mapboxgl-ctrl-group');
+      navControls.forEach((ctrl: Element) => {
+        (ctrl as HTMLElement).style.display = 'none';
+        (ctrl as HTMLElement).style.visibility = 'hidden';
+      });
+
+      // Ensure container background is transparent
+      container.style.backgroundColor = 'transparent';
+      
+      // Hide any canvas overlays that might show grey/white
+      const canvas = container.querySelector('canvas');
+      if (canvas) {
+        canvas.style.backgroundColor = 'transparent';
       }
     };
 
-    previewMap.current.on('load', hideBranding);
-    setTimeout(hideBranding, 100);
+    // Hide elements immediately and on load
+    hideAllMapboxElements();
+    previewMap.current.on('load', hideAllMapboxElements);
+    previewMap.current.on('style.load', hideAllMapboxElements);
+    
+    // Also hide after delays to catch late-loading elements
+    setTimeout(hideAllMapboxElements, 100);
+    setTimeout(hideAllMapboxElements, 500);
+    setTimeout(hideAllMapboxElements, 1000);
+
+    // Use MutationObserver to watch for any dynamically added Mapbox elements
+    const observer = new MutationObserver(() => {
+      hideAllMapboxElements();
+    });
+
+    if (previewMapContainer.current && previewMap.current) {
+      const container = previewMap.current.getContainer();
+      if (container) {
+        observer.observe(container, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'style']
+        });
+      }
+    }
+
+    // Store observer for cleanup
+    (previewMap.current as any)._mapboxObserver = observer;
 
     return () => {
       if (previewMap.current) {
+        // Clean up observer
+        const observer = (previewMap.current as any)._mapboxObserver;
+        if (observer) {
+          observer.disconnect();
+        }
+        
         previewMap.current.off('moveend', handleMoveEnd);
         previewMap.current.off('move', handleMove);
+        previewMap.current.off('load', hideAllMapboxElements);
+        previewMap.current.off('style.load', hideAllMapboxElements);
         previewMap.current.remove();
         previewMap.current = null;
       }
@@ -750,7 +827,8 @@ const LocationPickerModal: React.FC<{
               className="w-full h-full relative"
               style={{
                 marginLeft: '56px', // Offset for sidebar
-                backgroundColor: 'transparent' // Ensure no white background
+                backgroundColor: 'transparent', // Ensure no white background
+                overflow: 'hidden' // Prevent any overflow elements
               }}
             />
             
