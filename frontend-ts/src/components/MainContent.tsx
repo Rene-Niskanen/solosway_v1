@@ -707,11 +707,15 @@ const LocationPickerModal: React.FC<{
     hideAllMapboxElements();
     previewMap.current.on('load', hideAllMapboxElements);
     previewMap.current.on('style.load', hideAllMapboxElements);
+    previewMap.current.on('render', hideAllMapboxElements);
     
     // Also hide after delays to catch late-loading elements
+    setTimeout(hideAllMapboxElements, 50);
     setTimeout(hideAllMapboxElements, 100);
+    setTimeout(hideAllMapboxElements, 200);
     setTimeout(hideAllMapboxElements, 500);
     setTimeout(hideAllMapboxElements, 1000);
+    setTimeout(hideAllMapboxElements, 2000);
 
     // Use MutationObserver to watch for any dynamically added Mapbox elements
     const observer = new MutationObserver(() => {
@@ -730,21 +734,55 @@ const LocationPickerModal: React.FC<{
       }
     }
 
-    // Store observer for cleanup
+    // Also observe the document body in case elements are added outside the container
+    const bodyObserver = new MutationObserver(() => {
+      if (previewMap.current) {
+        hideAllMapboxElements();
+      }
+    });
+    
+    bodyObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    // Continuous check every 100ms for the first 5 seconds
+    let checkCount = 0;
+    const maxChecks = 50; // 5 seconds at 100ms intervals
+    const continuousCheck = setInterval(() => {
+      hideAllMapboxElements();
+      checkCount++;
+      if (checkCount >= maxChecks) {
+        clearInterval(continuousCheck);
+      }
+    }, 100);
+
+    // Store observers and interval for cleanup
     (previewMap.current as any)._mapboxObserver = observer;
+    (previewMap.current as any)._bodyObserver = bodyObserver;
+    (previewMap.current as any)._continuousCheck = continuousCheck;
 
     return () => {
       if (previewMap.current) {
-        // Clean up observer
+        // Clean up observers
         const observer = (previewMap.current as any)._mapboxObserver;
         if (observer) {
           observer.disconnect();
+        }
+        const bodyObserver = (previewMap.current as any)._bodyObserver;
+        if (bodyObserver) {
+          bodyObserver.disconnect();
+        }
+        const continuousCheck = (previewMap.current as any)._continuousCheck;
+        if (continuousCheck) {
+          clearInterval(continuousCheck);
         }
         
         previewMap.current.off('moveend', handleMoveEnd);
         previewMap.current.off('move', handleMove);
         previewMap.current.off('load', hideAllMapboxElements);
         previewMap.current.off('style.load', hideAllMapboxElements);
+        previewMap.current.off('render', hideAllMapboxElements);
         previewMap.current.remove();
         previewMap.current = null;
       }
