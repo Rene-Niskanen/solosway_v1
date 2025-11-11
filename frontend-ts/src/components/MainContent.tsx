@@ -722,54 +722,56 @@ const LocationPickerModal: React.FC<{
               height: '100vh'
             }}
           >
-            {/* Single Continuous Blur Overlay - uses dotted border dimensions as cutout */}
+            {/* Single Continuous Blur Overlay - seamless rectangular cutout matching dotted border */}
             <div 
               className="fixed inset-0 z-[10001] pointer-events-none"
               style={{
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
                 backgroundColor: 'rgba(241, 245, 249, 0.4)',
-                // Use mask to create transparent hole matching dotted border dimensions
-                // Blur appears everywhere EXCEPT the preview area (cutout)
-                // Exact dimensions: Top 80px, Bottom 80px, Left 72px, Right 72px
+                // Use a single mask with precise rectangular cutout to avoid corner artifacts
+                // Creates transparent rectangle: top 80px, bottom 80px, left 72px, right 72px
+                // This approach avoids intersecting gradients that cause corner squares
                 maskImage: `
+                  linear-gradient(black, black),
                   linear-gradient(to right, 
-                    black 0, 
-                    black 72px, 
+                    transparent 0, 
                     transparent 72px, 
-                    transparent calc(100% - 72px), 
+                    black 72px, 
                     black calc(100% - 72px), 
-                    black 100%
+                    transparent calc(100% - 72px), 
+                    transparent 100%
                   ),
                   linear-gradient(to bottom, 
-                    black 0, 
-                    black 80px, 
+                    transparent 0, 
                     transparent 80px, 
-                    transparent calc(100% - 80px), 
+                    black 80px, 
                     black calc(100% - 80px), 
-                    black 100%
+                    transparent calc(100% - 80px), 
+                    transparent 100%
                   )
                 `,
                 WebkitMaskImage: `
+                  linear-gradient(black, black),
                   linear-gradient(to right, 
-                    black 0, 
-                    black 72px, 
+                    transparent 0, 
                     transparent 72px, 
-                    transparent calc(100% - 72px), 
+                    black 72px, 
                     black calc(100% - 72px), 
-                    black 100%
+                    transparent calc(100% - 72px), 
+                    transparent 100%
                   ),
                   linear-gradient(to bottom, 
-                    black 0, 
-                    black 80px, 
+                    transparent 0, 
                     transparent 80px, 
-                    transparent calc(100% - 80px), 
+                    black 80px, 
                     black calc(100% - 80px), 
-                    black 100%
+                    transparent calc(100% - 80px), 
+                    transparent 100%
                   )
                 `,
-                maskComposite: 'intersect',
-                WebkitMaskComposite: 'source-in'
+                maskComposite: 'subtract',
+                WebkitMaskComposite: 'subtract'
               }}
             />
             
