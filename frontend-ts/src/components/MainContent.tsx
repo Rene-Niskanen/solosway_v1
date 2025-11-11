@@ -89,6 +89,11 @@ const LocationPickerModal: React.FC<{
   React.useEffect(() => {
     if (!isOpen || !mapContainer.current) return;
 
+    if (!mapboxToken) {
+      console.error('Mapbox token is missing!');
+      return;
+    }
+
     mapboxgl.accessToken = mapboxToken;
     
     // Get initial location from saved or default to London
@@ -136,6 +141,9 @@ const LocationPickerModal: React.FC<{
       // Wait for map to load before adding marker
       map.current.on('load', () => {
         if (!map.current) return;
+
+        // Resize map to ensure it renders correctly
+        map.current.resize();
 
         // Add marker
         marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
@@ -225,11 +233,15 @@ const LocationPickerModal: React.FC<{
     setGeocodeError('');
 
     try {
+      // Include postcode type for UK postcodes like "BS7 0PU"
       const response = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1&types=place,locality,neighborhood,district,region`
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1&types=place,locality,neighborhood,district,region,postcode`
       );
 
-      if (!response.ok) throw new Error('Geocoding failed');
+      if (!response.ok) {
+        console.error('Geocoding API error:', response.status, response.statusText);
+        throw new Error('Geocoding failed');
+      }
 
       const data = await response.json();
 
@@ -247,22 +259,45 @@ const LocationPickerModal: React.FC<{
         setSelectedZoom(calculatedZoom);
 
         // Update map immediately with smooth animation
-        if (map.current && map.current.loaded()) {
-          map.current.flyTo({
-            center: coords,
-            zoom: calculatedZoom,
-            duration: 600 // Faster animation for immediate feedback
-          });
+        if (map.current) {
+          // Ensure map is resized
+          map.current.resize();
+          
+          if (map.current.loaded()) {
+            map.current.flyTo({
+              center: coords,
+              zoom: calculatedZoom,
+              duration: 600 // Faster animation for immediate feedback
+            });
 
-          // Update marker
-          if (marker.current) {
-            marker.current.setLngLat(coords);
+            // Update marker
+            if (marker.current) {
+              marker.current.setLngLat(coords);
+            }
+          } else {
+            // Map not loaded yet, wait for it
+            map.current.once('load', () => {
+              if (map.current) {
+                map.current.flyTo({
+                  center: coords,
+                  zoom: calculatedZoom,
+                  duration: 600
+                });
+                if (marker.current) {
+                  marker.current.setLngLat(coords);
+                }
+              }
+            });
           }
+        } else {
+          console.warn('Map not initialized yet, coordinates set but map not updated');
         }
       } else {
         setGeocodeError('Location not found');
+        console.log('No features found for query:', query);
       }
     } catch (error: any) {
+      console.error('Geocoding error:', error);
       setGeocodeError('Failed to find location');
     } finally {
       setIsGeocoding(false);
