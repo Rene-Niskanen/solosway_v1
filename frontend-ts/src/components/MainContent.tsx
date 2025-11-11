@@ -538,11 +538,12 @@ const LocationPickerModal: React.FC<{
       return;
     }
 
-    // Wait a bit for the framer-motion animation to start rendering
+    // Wait for framer-motion animation to complete (opacity animation duration)
+    // The animation goes from opacity 0 to 1, we need to wait for it to be visible
     const initTimeout = setTimeout(() => {
       // Wait for container to be available and have dimensions
       let retryCount = 0;
-      const maxRetries = 100; // 10 seconds max wait
+      const maxRetries = 50; // 5 seconds max wait (reduced since we wait longer initially)
       
       const initMap = () => {
         retryCount++;
@@ -976,7 +977,7 @@ const LocationPickerModal: React.FC<{
 
       // Start initialization
       initMap();
-    }, 200); // Wait 200ms for framer-motion animation to start
+    }, 500); // Wait 500ms for framer-motion animation to complete (opacity: 0 -> 1)
 
     return () => {
       clearTimeout(initTimeout);
