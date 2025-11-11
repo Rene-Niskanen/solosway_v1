@@ -654,6 +654,7 @@ const LocationPickerModal: React.FC<{
         const position = computedStyle.position;
         const left = computedStyle.left;
         const top = computedStyle.top;
+        const bgColor = computedStyle.backgroundColor;
         
         // Hide any absolutely/fixed positioned divs on left or top that aren't the map itself
         if ((position === 'absolute' || position === 'fixed') &&
@@ -665,6 +666,25 @@ const LocationPickerModal: React.FC<{
           htmlDiv.style.display = 'none';
           htmlDiv.style.visibility = 'hidden';
           htmlDiv.style.opacity = '0';
+          htmlDiv.style.width = '0';
+          htmlDiv.style.height = '0';
+        }
+        
+        // Also hide any divs with grey or white backgrounds regardless of position
+        if (bgColor && 
+            (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
+             bgColor.includes('rgb(255, 255, 255)') || // white
+             bgColor.includes('rgb(241, 245, 249)') || // slate-100
+             bgColor.includes('rgb(233, 233, 235)')) && // similar grey
+            !htmlDiv.classList.contains('mapboxgl-map') &&
+            !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
+            htmlDiv.offsetWidth > 0 && htmlDiv.offsetHeight > 0 &&
+            htmlDiv.offsetWidth < 300 && htmlDiv.offsetHeight < 300) {
+          htmlDiv.style.display = 'none';
+          htmlDiv.style.visibility = 'hidden';
+          htmlDiv.style.opacity = '0';
+          htmlDiv.style.width = '0';
+          htmlDiv.style.height = '0';
         }
       });
 
