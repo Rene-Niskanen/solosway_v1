@@ -540,6 +540,14 @@ const LocationPickerModal: React.FC<{
       zoom: selectedZoom,
       attributionControl: false
     });
+    
+    // Ensure map container has no white background
+    if (previewMapContainer.current && previewMap.current) {
+      const mapContainer = previewMap.current.getContainer();
+      if (mapContainer) {
+        mapContainer.style.backgroundColor = 'transparent';
+      }
+    }
 
     // Update zoom and location when map moves - pin stays centered visually
     const handleMoveEnd = () => {
@@ -708,14 +716,21 @@ const LocationPickerModal: React.FC<{
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] bg-slate-100"
+            className="fixed inset-0 z-[10000] bg-slate-100"
+            style={{
+              backgroundColor: '#f1f5f9', // Ensure consistent slate-100 background covers everything
+              left: 0, // Cover entire screen including sidebar area
+              top: 0,
+              right: 0,
+              bottom: 0
+            }}
           >
             {/* Preview Mode Overlay Frame - adjusted to not be behind sidebar or buttons */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
                 top: '80px', // Below buttons (buttons are ~60px tall + padding)
-                left: '72px', // Start well after sidebar (56px sidebar + 16px padding to ensure visibility)
+                left: '88px', // Start well after sidebar (56px sidebar + 32px padding to ensure full visibility)
                 right: '4px', // Equal padding on right side
                 bottom: '80px', // Above buttons only
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
@@ -734,7 +749,8 @@ const LocationPickerModal: React.FC<{
               ref={previewMapContainer}
               className="w-full h-full relative"
               style={{
-                marginLeft: '56px' // Offset for sidebar
+                marginLeft: '56px', // Offset for sidebar
+                backgroundColor: 'transparent' // Ensure no white background
               }}
             />
             
