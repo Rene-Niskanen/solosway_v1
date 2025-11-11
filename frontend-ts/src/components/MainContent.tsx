@@ -548,12 +548,67 @@ const LocationPickerModal: React.FC<{
         retryCount++;
         
         if (retryCount > maxRetries) {
-          console.error('❌ Failed to initialize map: container never became ready after', maxRetries, 'retries');
-          console.error('Container state:', {
-            exists: !!previewMapContainer.current,
-            rect: previewMapContainer.current ? previewMapContainer.current.getBoundingClientRect() : null,
-            computedStyle: previewMapContainer.current ? window.getComputedStyle(previewMapContainer.current) : null
-          });
+          const container = previewMapContainer.current;
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            const style = window.getComputedStyle(container);
+            console.error('❌ Failed to initialize map: container never became ready after', maxRetries, 'retries');
+            console.error('Container state:', {
+              exists: true,
+              isConnected: container.isConnected,
+              rect: {
+                width: rect.width,
+                height: rect.height,
+                top: rect.top,
+                left: rect.left,
+                bottom: rect.bottom,
+                right: rect.right
+              },
+              style: {
+                width: style.width,
+                height: style.height,
+                display: style.display,
+                visibility: style.visibility,
+                opacity: style.opacity,
+                position: style.position
+              },
+              innerWidth: window.innerWidth,
+              innerHeight: window.innerHeight
+            });
+            
+            // Last resort: try to initialize anyway with forced dimensions
+            console.log('⚠️ Attempting to initialize map with forced dimensions...');
+            container.style.width = window.innerWidth + 'px';
+            container.style.height = window.innerHeight + 'px';
+            
+            // Try one more time
+            setTimeout(() => {
+              if (previewMapContainer.current && selectedCoordinates) {
+                try {
+                  mapboxgl.accessToken = mapboxToken;
+                  if (previewMap.current) {
+                    previewMap.current.remove();
+                    previewMap.current = null;
+                  }
+                  previewMap.current = new mapboxgl.Map({
+                    container: container,
+                    style: 'mapbox://styles/mapbox/light-v11',
+                    center: selectedCoordinates,
+                    zoom: selectedZoom || 9.5,
+                    attributionControl: false
+                  });
+                  previewMap.current.once('load', () => {
+                    if (previewMap.current) {
+                      previewMap.current.resize();
+                    }
+                  });
+                  console.log('✅ Map initialized as last resort');
+                } catch (error) {
+                  console.error('❌ Last resort initialization also failed:', error);
+                }
+              }
+            }, 100);
+          }
           return;
         }
 
@@ -570,35 +625,25 @@ const LocationPickerModal: React.FC<{
           return;
         }
         
-        // Force explicit dimensions if they're not set
+        // Force explicit dimensions immediately
+        container.style.width = window.innerWidth + 'px';
+        container.style.height = window.innerHeight + 'px';
+        
         const rect = container.getBoundingClientRect();
         const computedStyle = window.getComputedStyle(container);
         
-        // If container has no dimensions, set them explicitly
-        if (rect.width === 0 || rect.height === 0) {
-          container.style.width = window.innerWidth + 'px';
-          container.style.height = window.innerHeight + 'px';
-          // Check again after setting dimensions
-          setTimeout(initMap, 50);
-          return;
-        }
-        
+        // Check dimensions after forcing them
         const hasDimensions = rect.width > 0 && rect.height > 0;
-        const isVisible = computedStyle.display !== 'none' && 
-                         computedStyle.visibility !== 'hidden' && 
-                         parseFloat(computedStyle.opacity) > 0;
         
-        if (!hasDimensions || !isVisible) {
+        // Don't check visibility too strictly - just ensure dimensions exist
+        if (!hasDimensions) {
           if (retryCount % 10 === 0) { // Log every 10 retries
-            console.log('⏳ Waiting for container...', {
+            console.log('⏳ Waiting for container dimensions...', {
               retryCount,
-              hasDimensions,
-              isVisible,
               width: rect.width,
               height: rect.height,
-              display: computedStyle.display,
-              visibility: computedStyle.visibility,
-              opacity: computedStyle.opacity,
+              styleWidth: container.style.width,
+              styleHeight: container.style.height,
               innerWidth: window.innerWidth,
               innerHeight: window.innerHeight
             });
