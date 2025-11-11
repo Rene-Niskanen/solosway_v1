@@ -232,12 +232,12 @@ const LocationPickerModal: React.FC<{
             // Resize map to ensure it renders correctly
             map.current.resize();
 
-            // Add marker
-            marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-              .setLngLat(initial.center)
-              .addTo(map.current);
+            // Don't add marker - using dotted border frame instead
+            // marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+            //   .setLngLat(initial.center)
+            //   .addTo(map.current);
 
-            console.log('✅ LocationPicker: Marker added at', initial.center);
+            console.log('✅ LocationPicker: Map loaded (no marker - using dotted border frame)');
 
             // Hide Mapbox branding
             const container = map.current.getContainer();
@@ -262,10 +262,10 @@ const LocationPickerModal: React.FC<{
             // Reverse geocode to get location name
             reverseGeocode(lng, lat);
             
-            // Update marker
-            if (marker.current) {
-              marker.current.setLngLat(coords);
-            }
+            // Don't update marker - using dotted border frame instead
+            // if (marker.current) {
+            //   marker.current.setLngLat(coords);
+            // }
           };
 
           const handleMapError = (e: any) => {
@@ -329,14 +329,14 @@ const LocationPickerModal: React.FC<{
             duration: 600
           });
 
-          // Update or create marker
-          if (marker.current) {
-            marker.current.setLngLat(selectedCoordinates);
-          } else {
-            marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-              .setLngLat(selectedCoordinates)
-              .addTo(map.current);
-          }
+          // Don't add marker - using dotted border frame instead
+          // if (marker.current) {
+          //   marker.current.setLngLat(selectedCoordinates);
+          // } else {
+          //   marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+          //     .setLngLat(selectedCoordinates)
+          //     .addTo(map.current);
+          // }
           console.log('✅ LocationPicker: Map synced with coordinates');
         } else {
           // Wait for map to load
@@ -430,15 +430,14 @@ const LocationPickerModal: React.FC<{
                   duration: 600
                 });
 
-                // Update or create marker
-                if (marker.current) {
-                  marker.current.setLngLat(coords);
-                } else {
-                  // Create marker if it doesn't exist
-                  marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-                    .setLngLat(coords)
-                    .addTo(map.current);
-                }
+                // Don't add marker - using dotted border frame instead
+                // if (marker.current) {
+                //   marker.current.setLngLat(coords);
+                // } else {
+                //   marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+                //     .setLngLat(coords)
+                //     .addTo(map.current);
+                // }
                 
                 console.log('✅ Geocode: Map updated successfully');
               } else {
@@ -451,13 +450,14 @@ const LocationPickerModal: React.FC<{
                       zoom: calculatedZoom,
                       duration: 600
                     });
-                    if (marker.current) {
-                      marker.current.setLngLat(coords);
-                    } else {
-                      marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-                        .setLngLat(coords)
-                        .addTo(map.current);
-                    }
+                    // Don't add marker - using dotted border frame instead
+                    // if (marker.current) {
+                    //   marker.current.setLngLat(coords);
+                    // } else {
+                    //   marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+                    //     .setLngLat(coords)
+                    //     .addTo(map.current);
+                    // }
                     console.log('✅ Geocode: Map updated after load event');
                   }
                 });
@@ -674,10 +674,28 @@ const LocationPickerModal: React.FC<{
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Map Preview</label>
               <div 
-                ref={mapContainer}
-                className="w-full h-96 rounded-lg border border-slate-300 overflow-hidden bg-slate-100"
-                style={{ minHeight: '384px', width: '100%', position: 'relative' }}
-              />
+                className="w-full h-96 rounded-lg border border-slate-300 overflow-hidden bg-slate-100 relative"
+                style={{ minHeight: '384px', width: '100%' }}
+              >
+                {/* Map Container */}
+                <div 
+                  ref={mapContainer}
+                  className="w-full h-full"
+                  style={{ position: 'relative' }}
+                />
+                
+                {/* Dotted Border Frame Overlay - similar to fullscreen preview */}
+                <div 
+                  className="absolute pointer-events-none z-10 border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
+                  style={{
+                    top: '20px',
+                    left: '20px',
+                    right: '20px',
+                    bottom: '20px',
+                    boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
+                  }}
+                />
+              </div>
               <p className="text-xs text-slate-500">
                 Click on the map to set the location, or search above to find a place.
               </p>
