@@ -722,57 +722,6 @@ const LocationPickerModal: React.FC<{
               height: '100vh'
             }}
           >
-            {/* Single Continuous Blur Overlay - uses dotted border dimensions as cutout */}
-            <div 
-              className="fixed inset-0 z-[10001] pointer-events-none"
-              style={{
-                backdropFilter: 'blur(12px)',
-                WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.4)',
-                // Use mask to create transparent hole matching dotted border dimensions
-                // Blur appears everywhere EXCEPT the preview area (cutout)
-                // Exact dimensions: Top 80px, Bottom 80px, Left 72px, Right 72px
-                maskImage: `
-                  linear-gradient(to right, 
-                    black 0, 
-                    black 72px, 
-                    transparent 72px, 
-                    transparent calc(100% - 72px), 
-                    black calc(100% - 72px), 
-                    black 100%
-                  ),
-                  linear-gradient(to bottom, 
-                    black 0, 
-                    black 80px, 
-                    transparent 80px, 
-                    transparent calc(100% - 80px), 
-                    black calc(100% - 80px), 
-                    black 100%
-                  )
-                `,
-                WebkitMaskImage: `
-                  linear-gradient(to right, 
-                    black 0, 
-                    black 72px, 
-                    transparent 72px, 
-                    transparent calc(100% - 72px), 
-                    black calc(100% - 72px), 
-                    black 100%
-                  ),
-                  linear-gradient(to bottom, 
-                    black 0, 
-                    black 80px, 
-                    transparent 80px, 
-                    transparent calc(100% - 80px), 
-                    black calc(100% - 80px), 
-                    black 100%
-                  )
-                `,
-                maskComposite: 'intersect',
-                WebkitMaskComposite: 'source-in'
-              }}
-            />
-            
             {/* Preview Mode Overlay Frame - equal padding on all sides, accounting for sidebar */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
@@ -809,18 +758,24 @@ const LocationPickerModal: React.FC<{
             
 
 
-            {/* Confirm Button - Top Right */}
-            <div className="fixed top-4 right-4 z-[10001] flex space-x-2">
+            {/* Buttons - Inside dotted lines, just above bottom */}
+            <div 
+              className="absolute z-[10001] flex space-x-2"
+              style={{
+                bottom: '100px', // Just above bottom border (80px border + 20px padding)
+                right: '92px' // Inside right border (72px border + 20px padding)
+              }}
+            >
               <Button
                 variant="outline"
                 onClick={() => setIsPreviewMode(false)}
-                className="bg-white shadow-lg"
+                className="text-sm px-3 py-1.5 h-auto bg-slate-50 hover:bg-slate-100 border-slate-300 text-slate-700 shadow-sm"
               >
                 Back
               </Button>
               <Button
                 onClick={handleConfirm}
-                className="bg-blue-600 hover:bg-blue-700 shadow-lg"
+                className="text-sm px-3 py-1.5 h-auto bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
               >
                 Confirm Location
               </Button>
