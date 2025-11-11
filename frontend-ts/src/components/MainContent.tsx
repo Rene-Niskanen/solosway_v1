@@ -71,9 +71,38 @@ const LocationPickerModal: React.FC<{
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   const [locationInput, setLocationInput] = React.useState<string>('');
-  const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
+  // Always initialize with a default location so map always shows
+  const getDefaultCoordinates = (): [number, number] => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+            return parsed.coordinates as [number, number];
+          }
+        } catch {}
+      }
+    }
+    return [-0.1276, 51.5074] as [number, number]; // Default to London
+  };
+  const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number]>(getDefaultCoordinates());
   const [selectedLocationName, setSelectedLocationName] = React.useState<string>('');
-  const [selectedZoom, setSelectedZoom] = React.useState<number>(9.5);
+  const getDefaultZoom = (): number => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.zoom && typeof parsed.zoom === 'number') {
+            return parsed.zoom;
+          }
+        } catch {}
+      }
+    }
+    return 9.5;
+  };
+  const [selectedZoom, setSelectedZoom] = React.useState<number>(getDefaultZoom());
   const [isGeocoding, setIsGeocoding] = React.useState(false);
   const [geocodeError, setGeocodeError] = React.useState<string>('');
   
@@ -287,10 +316,10 @@ const LocationPickerModal: React.FC<{
 
   // Sync map with selected coordinates whenever they change
   React.useEffect(() => {
-    if (!map.current || !selectedCoordinates) return;
+    if (!map.current) return;
 
     const syncMap = () => {
-      if (!map.current || !selectedCoordinates) return;
+      if (!map.current) return;
 
       try {
         if (map.current.loaded()) {
@@ -688,7 +717,6 @@ const LocationPickerModal: React.FC<{
                 onCloseSidebar?.();
                 setIsPreviewMode(true);
               }}
-              disabled={!selectedCoordinates}
               className="mr-2"
             >
               Adjust Zoom & Preview
