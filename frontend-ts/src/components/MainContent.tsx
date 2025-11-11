@@ -17,6 +17,84 @@ import Profile from './Profile';
 import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
+
+// Map location configuration
+const MAP_LOCATIONS = {
+  london: {
+    name: 'London',
+    coordinates: [-0.1276, 51.5074] as [number, number],
+    zoom: 10.5
+  },
+  bristol: {
+    name: 'Bristol',
+    coordinates: [-2.5879, 51.4545] as [number, number],
+    zoom: 10.5
+  }
+};
+
+const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
+
+// Map Location Selector Component
+const MapLocationSelector: React.FC = () => {
+  const [selectedLocation, setSelectedLocation] = React.useState<string>(() => {
+    // Load from localStorage or default to London
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+      return saved || 'london';
+    }
+    return 'london';
+  });
+
+  const handleLocationChange = (location: string) => {
+    setSelectedLocation(location);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, location);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        {Object.entries(MAP_LOCATIONS).map(([key, location]) => (
+          <motion.button
+            key={key}
+            onClick={() => handleLocationChange(key)}
+            className={`p-4 rounded-lg border-2 transition-all ${
+              selectedLocation === key
+                ? 'border-blue-500 bg-blue-50'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <div className="text-left">
+              <div className={`font-semibold mb-1 ${
+                selectedLocation === key ? 'text-blue-700' : 'text-slate-700'
+              }`}>
+                {location.name}
+              </div>
+              <div className="text-xs text-slate-500">
+                {location.coordinates[1].toFixed(4)}, {location.coordinates[0].toFixed(4)}
+              </div>
+            </div>
+            {selectedLocation === key && (
+              <motion.div
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                className="mt-2 text-blue-600 text-sm font-medium"
+              >
+                ✓ Selected
+              </motion.div>
+            )}
+          </motion.button>
+        ))}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        Your selection will be applied the next time you open the map.
+      </p>
+    </div>
+  );
+};
 export interface MainContentProps {
   className?: string;
   currentView?: string;
@@ -421,26 +499,45 @@ export const MainContent = ({
             <PropertyValuationUpload onUpload={file => console.log('File uploaded:', file.name)} onContinueWithReport={() => console.log('Continue with report clicked')} />
           </div>;
       case 'settings':
-        return <div className="text-center max-w-md mx-auto">
-            <motion.div initial={{
-            opacity: 0,
-            y: 20
-          }} animate={{
-            opacity: 1,
-            y: 0
-          }} transition={{
-            duration: 0.6,
-            ease: [0.23, 1, 0.32, 1]
-          }} className="bg-white/90 backdrop-blur-xl rounded-3xl p-12 border-2 border-slate-200/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
+        return <div className="w-full h-full flex items-center justify-center px-6">
+            <motion.div 
+              initial={{
+                opacity: 0,
+                y: 20
+              }} 
+              animate={{
+                opacity: 1,
+                y: 0
+              }} 
+              transition={{
+                duration: 0.6,
+                ease: [0.23, 1, 0.32, 1]
+              }} 
+              className="bg-white/90 backdrop-blur-xl rounded-3xl p-8 border-2 border-slate-200/60 shadow-[0_8px_32px_rgba(0,0,0,0.08)] max-w-2xl w-full"
+            >
               <div className="w-16 h-16 bg-gradient-to-br from-slate-50 to-gray-50 rounded-2xl flex items-center justify-center mx-auto mb-6 border-2 border-slate-200/60">
                 <span className="text-2xl">⚙️</span>
               </div>
-              <h2 className="text-2xl font-semibold text-slate-800 mb-4 tracking-tight">
-                <span>Settings</span>
+              <h2 className="text-2xl font-semibold text-slate-800 mb-2 tracking-tight text-center">
+                Settings
               </h2>
-              <p className="text-slate-600 leading-relaxed font-medium">
-                <span>Customize your experience and configure your preferences.</span>
+              <p className="text-slate-600 leading-relaxed font-medium text-center mb-8">
+                Customize your experience and configure your preferences.
               </p>
+              
+              {/* Map Location Settings */}
+              <div className="space-y-4">
+                <div className="border border-slate-200 rounded-xl p-6 bg-white/50">
+                  <h3 className="text-lg font-semibold text-slate-800 mb-2 flex items-center gap-2">
+                    <span>🗺️</span>
+                    Default Map Location
+                  </h3>
+                  <p className="text-sm text-slate-600 mb-4">
+                    Choose where the map opens when you first view it.
+                  </p>
+                  <MapLocationSelector />
+                </div>
+              </div>
             </motion.div>
           </div>;
       default:

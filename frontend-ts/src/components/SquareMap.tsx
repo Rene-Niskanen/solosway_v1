@@ -1437,12 +1437,29 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     try {
       console.log('🗺️ Creating Mapbox map instance...');
+      
+      // Get default map location from localStorage
+      const getDefaultMapLocation = () => {
+        if (typeof window !== 'undefined') {
+          const saved = localStorage.getItem('defaultMapLocation');
+          if (saved === 'london') {
+            return { center: [-0.1276, 51.5074] as [number, number], zoom: 10.5 };
+          } else if (saved === 'bristol') {
+            return { center: [-2.5879, 51.4545] as [number, number], zoom: 10.5 };
+          }
+        }
+        // Default to London (since most properties are there)
+        return { center: [-0.1276, 51.5074] as [number, number], zoom: 10.5 };
+      };
+      
+      const defaultLocation = getDefaultMapLocation();
+      
       // Create map with worldwide access (no bounds restriction)
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11', // Light style (no color) - default
-        center: [-2.5879, 51.4545], // Start with Bristol center
-        zoom: 10.5, // Initial zoom level
+        center: defaultLocation.center,
+        zoom: defaultLocation.zoom,
         bearing: 15, // Slight rotation for better view
         pitch: 45, // 3D perspective angle
         interactive: true,
