@@ -722,16 +722,26 @@ const LocationPickerModal: React.FC<{
                 backgroundColor: 'rgba(241, 245, 249, 0.4)',
                 // Use mask to create transparent hole matching dotted border dimensions
                 // Blur appears everywhere EXCEPT the preview area (cutout)
-                maskImage: `radial-gradient(ellipse at center, 
-                  transparent calc(50% - 1px), 
-                  black calc(50% - 1px)
-                )`,
-                WebkitMaskImage: `radial-gradient(ellipse at center, 
-                  transparent calc(50% - 1px), 
-                  black calc(50% - 1px)
-                )`,
-                // Alternative: use rectangular mask with exact border dimensions
-                mask: `
+                // Exact dimensions: Top 80px, Bottom 80px, Left 72px, Right 72px
+                maskImage: `
+                  linear-gradient(to right, 
+                    black 0, 
+                    black 72px, 
+                    transparent 72px, 
+                    transparent calc(100% - 72px), 
+                    black calc(100% - 72px), 
+                    black 100%
+                  ),
+                  linear-gradient(to bottom, 
+                    black 0, 
+                    black 80px, 
+                    transparent 80px, 
+                    transparent calc(100% - 80px), 
+                    black calc(100% - 80px), 
+                    black 100%
+                  )
+                `,
+                WebkitMaskImage: `
                   linear-gradient(to right, 
                     black 0, 
                     black 72px, 
