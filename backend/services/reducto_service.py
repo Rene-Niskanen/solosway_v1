@@ -373,7 +373,14 @@ class ReductoService:
                 "properties": {
                     "document_type": {
                         "type": "string",
-                        "enum": ["valuation_report", "market_appraisal", "other_documents"],
+                        "enum": [
+                            "valuation_report",
+                            "title_deed",
+                            "epc_certificate",
+                            "letter_of_offer",
+                            "tenancy_agreement",
+                            "other_documents"
+                            ],
                         "description": "The type of document being classified"
                     }
                 },
@@ -384,7 +391,26 @@ class ReductoService:
                 input=f"jobid://{job_id}",
                 instructions={
                     "schema": classification_schema,
-                    "system_prompt": "Classify this document based on its content. Focus on whether its a formal valuation report, market appraisal, or other property document."
+                    "system_prompt": (
+                        "You are an expert document classifier for real estate records. "
+                        "Your goal is to determine the single most appropriate category for the uploaded document. "
+                        "Classify the document into ONE of the following categories:\n\n"
+                        "**valuation_report** — Formal property valuation report prepared by a valuer or surveyor. "
+                        "Usually includes market value, comparable sales, property description, inspection date, and valuer signature.\n\n"
+                        "**title_deed** — Official land ownership record or land registry document. "
+                        "Contains title number, proprietorship, charges, boundaries, or property description issued by the land registry.\n\n"
+                        "**epc_certificate** — Energy Performance Certificate. "
+                        "Includes EPC ratings (A–G), current/potential efficiency scores, assessment date, assessor details, and recommendations.\n\n"
+                        "**tenancy_agreement** — Contract between landlord and tenant describing rent amount, lease term, start/end dates, tenant/landlord names, and obligations.\n\n"
+                        "**letter_of_offer** — A letter or memorandum expressing an offer to purchase, lease, or finance a property. "
+                        "May include proposed price, buyer and seller details, and conditions of the offer.\n\n"
+                        "**other_documents** — Use only when none of the above definitions clearly fit (e.g. correspondence, invoices, general letters, photos, or appendices).\n\n"
+                        "**Instructions:**\n"
+                        "- Read the entire document carefully before classifying.\n"
+                        "- Match based on the document’s *primary purpose and content*, not just keywords.\n"
+                        "- If the document partially matches multiple categories, choose the one that best describes its main function.\n"
+                        "- Output only the final classification label (exactly as listed above).\n"
+                    )
                 }
             )
 

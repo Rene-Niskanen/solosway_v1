@@ -179,17 +179,18 @@ MINIMAL_EXTRACTION_SCHEMA = {
 
 def get_extraction_schema(classification_type: str) -> dict:
     """
-    Get the appropriate extraction schema based on classification type
-    
-    Args:
-        classification_type: The classified document type
-        
-    Returns:
-        The appropriate extraction schema
+    Map the Reducto classification to the correct extraction schema.
     """
-    if classification_type in ['valuation_report', 'market_appraisal']:
+    if classification_type == 'valuation_report':
         return SUBJECT_PROPERTY_EXTRACTION_SCHEMA
-    elif classification_type == 'other_documents':
+
+    if classification_type in [
+        'other_documents',
+        'title_deed',
+        'epc_certificate',
+        'letter_of_offer',
+        'tenancy_agreement',
+    ]:
         return OTHER_DOCUMENTS_EXTRACTION_SCHEMA
-    else:
-        return MINIMAL_EXTRACTION_SCHEMA
+
+    return MINIMAL_EXTRACTION_SCHEMA
