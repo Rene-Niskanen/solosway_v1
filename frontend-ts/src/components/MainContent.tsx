@@ -710,12 +710,12 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Preview Mode Overlay Frame - adjusted to not be behind sidebar */}
+            {/* Preview Mode Overlay Frame - adjusted to not be behind sidebar or buttons */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
-                top: '4px',
-                left: '60px', // Start after sidebar (56px sidebar + 4px padding)
+                top: '80px', // Below buttons (buttons are ~60px tall + padding)
+                left: '72px', // Start well after sidebar (56px sidebar + 16px padding to ensure visibility)
                 right: '4px', // Equal padding on right side
                 bottom: '80px', // Above buttons only
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
