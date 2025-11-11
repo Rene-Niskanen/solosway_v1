@@ -1219,90 +1219,103 @@ export default function ChatInterface({
           <div className="max-w-3xl mx-auto">
           <form onSubmit={handleSendMessage} className="relative">
               <motion.div 
-                className="relative flex items-center rounded-full px-6 py-2 transition-all duration-300 ease-out border border-slate-300"
+                className="relative flex items-center rounded-full px-6 py-2"
                 style={{
-                  background: 'rgba(255, 255, 255, 0.15)',
-                  backdropFilter: 'blur(20px)',
+                  background: '#ffffff',
                   borderRadius: '9999px',
-                  WebkitBackdropFilter: 'blur(20px)',
-                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)'
-                }}
-                animate={{
-                  scale: 1
-                }}
-                transition={{
-                  duration: 0.2,
-                  ease: "easeOut"
-                }}
-                whileHover={{
-                  scale: 1.003
-                }}
-                whileTap={{
-                  scale: 0.995
+                  border: '1px solid #E5E7EB',
+                  boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)'
                 }}
               >
-              <motion.input 
-                ref={inputRef} 
-                type="text" 
-                value={inputValue} 
-                onChange={e => setInputValue(e.target.value)} 
-                onFocus={() => {
-                  setIsInputActivated(true);
-                  setIsFocused(true);
-                }}
-                onBlur={() => setIsFocused(false)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    if (inputValue.trim() && !isTyping) {
-                      handleSendMessage(e as any);
+              <div className="flex-1 relative">
+                <motion.input 
+                  ref={inputRef} 
+                  type="text" 
+                  value={inputValue} 
+                  onChange={e => setInputValue(e.target.value)} 
+                  onFocus={() => {
+                    setIsInputActivated(true);
+                    setIsFocused(true);
+                  }}
+                  onBlur={() => setIsFocused(false)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      if (inputValue.trim() && !isTyping) {
+                        handleSendMessage(e as any);
+                      }
                     }
-                  }
-                }} 
-                placeholder="Ask anything..." 
-                className="flex-1 bg-transparent focus:outline-none text-lg font-normal text-slate-700 placeholder:text-slate-500 placeholder:font-light placeholder:tracking-wide" 
-                disabled={isTyping} 
-                animate={{
-                  scale: 1
-                }}
-                whileFocus={{
-                  scale: 1.002
-                }}
-                transition={{
-                  duration: 0.15,
-                  ease: "easeOut"
-                }}
-              />
+                  }} 
+                  placeholder="Ask anything..." 
+                  className="w-full bg-transparent focus:outline-none text-lg font-normal text-slate-700 placeholder:text-slate-400"
+                  autoComplete="off"
+                  disabled={isTyping} 
+                />
+              </div>
               
-              <ImageUploadButton
-                onImageUpload={(query) => {
-                  setInputValue(query);
-                  handleSendMessage({ preventDefault: () => {} } as any);
-                }}
-                size="md"
-              />
-              
-              <motion.button 
-                type="submit" 
-                disabled={!inputValue.trim() || isTyping} 
-                className={`ml-3 w-8 h-8 flex items-center justify-center rounded-full transition-all duration-200 ${
-                inputValue.trim() && !isTyping 
-                    ? 'bg-slate-600 text-white hover:bg-green-500' 
-                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                }`}
-                whileHover={inputValue.trim() && !isTyping ? { 
-                  scale: 1.05
-                } : {}}
-                whileTap={inputValue.trim() && !isTyping ? { 
-                  scale: 0.95
-                } : {}}
-                transition={{
-                  duration: 0.15,
-                  ease: "easeOut"
-                }}
-              >
-                <ArrowUp className="w-4 h-4" strokeWidth={2} />
-              </motion.button>
+              <div className="flex items-center space-x-3 ml-4">
+                <ImageUploadButton
+                  onImageUpload={(query) => {
+                    setInputValue(query);
+                    handleSendMessage({ preventDefault: () => {} } as any);
+                  }}
+                  size="md"
+                />
+                
+                <motion.button 
+                  type="submit" 
+                  onClick={handleSendMessage} 
+                  className={`flex items-center justify-center relative ${!isTyping ? '' : 'cursor-not-allowed'}`}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    minWidth: '32px',
+                    minHeight: '32px',
+                    borderRadius: '50%'
+                  }}
+                  animate={{
+                    backgroundColor: inputValue.trim() ? '#415C85' : 'transparent'
+                  }}
+                  disabled={isTyping}
+                  whileHover={!isTyping && inputValue.trim() ? { 
+                    scale: 1.05
+                  } : {}}
+                  whileTap={!isTyping && inputValue.trim() ? { 
+                    scale: 0.95
+                  } : {}}
+                  transition={{
+                    duration: 0.2,
+                    ease: [0.16, 1, 0.3, 1]
+                  }}
+                >
+                  <motion.div
+                    key="chevron-right"
+                    initial={{ opacity: 1 }}
+                    animate={{ opacity: inputValue.trim() ? 0 : 1 }}
+                    transition={{
+                      duration: 0.2,
+                      ease: [0.16, 1, 0.3, 1]
+                    }}
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                  </motion.div>
+                  <motion.div
+                    key="arrow-up"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: inputValue.trim() ? 1 : 0 }}
+                    transition={{
+                      duration: 0.2,
+                      ease: [0.16, 1, 0.3, 1]
+                    }}
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                  </motion.div>
+                </motion.button>
+              </div>
             </motion.div>
           </form>
           </div>

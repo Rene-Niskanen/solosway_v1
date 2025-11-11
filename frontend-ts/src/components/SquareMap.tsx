@@ -1397,9 +1397,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Use loadProperties to get all properties from backend
         loadProperties();
         
-        // Add navigation controls
-        map.current?.addControl(new mapboxgl.NavigationControl());
-        map.current?.addControl(new mapboxgl.FullscreenControl());
+        // Navigation controls removed per user request
         
         // Update property card position when map moves
         map.current?.on('move', () => {

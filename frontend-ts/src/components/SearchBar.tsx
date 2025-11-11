@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map } from "lucide-react";
+import { ChevronRight, Map, ArrowUp } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 
 export interface SearchBarProps {
@@ -36,6 +36,7 @@ export const SearchBar = ({
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Context-aware configuration
   const getContextConfig = () => {
@@ -43,11 +44,12 @@ export const SearchBar = ({
       return {
         placeholder: "Search for properties...",
         showMapToggle: true, // Always show map toggle
-        showMic: false,
+        showMic: true, // Show paperclip icon in map view too
         position: "bottom", // Always bottom when map is visible
         glassmorphism: true,
         maxWidth: '100vw', // Full width for map mode
-        greenGlow: true // Add green glow for map mode
+        greenGlow: true, // Add green glow for map mode
+        isSquare: false // Keep rounded for map mode
       };
     } else if (isInChatMode) {
       return {
@@ -57,9 +59,11 @@ export const SearchBar = ({
         position: "center", // Always center
         glassmorphism: false,
         maxWidth: '600px', // Narrower for chat mode
-        greenGlow: false
+        greenGlow: false,
+        isSquare: false // Keep rounded for chat mode
       };
     } else {
+      // Dashboard view - square corners
       return {
         placeholder: "What can I help you find today?",
         showMapToggle: true,
@@ -67,7 +71,8 @@ export const SearchBar = ({
         position: "center", // Always center
         glassmorphism: false,
         maxWidth: '600px', // Narrower for opening search page
-        greenGlow: false
+        greenGlow: false,
+        isSquare: true // Square corners for dashboard view
       };
     }
   };
@@ -105,8 +110,22 @@ export const SearchBar = ({
       setIsSubmitted(false);
       setHasStartedTyping(false);
       setIsFocused(false);
+      // Clear any pending query start calls
+      if (queryStartTimeoutRef.current) {
+        clearTimeout(queryStartTimeoutRef.current);
+        queryStartTimeoutRef.current = null;
+      }
     }
   }, [resetTrigger]);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (queryStartTimeoutRef.current) {
+        clearTimeout(queryStartTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Auto-focus on mount
   useEffect(() => {
@@ -149,34 +168,12 @@ export const SearchBar = ({
         <div className="relative">
           <form onSubmit={handleSubmit} className="relative">
             <motion.div 
-              className={`relative flex items-center rounded-full px-6 py-2 transition-all duration-300 ease-out ${isSubmitted ? 'opacity-75' : ''}`}
+              className={`relative flex items-center px-6 py-2 ${isSubmitted ? 'opacity-75' : ''} ${contextConfig.isSquare ? 'rounded-lg' : 'rounded-full'}`}
               style={{
-                background: isFocused 
-                  ? 'rgba(255, 255, 255, 0.15)' 
-                  : 'rgba(255, 255, 255, 0.1)',
-                backdropFilter: 'blur(20px)',
-                borderRadius: '9999px',
-                WebkitBackdropFilter: 'blur(20px)'
-              }}
-              animate={{
-                scale: isFocused ? 1.005 : 1,
-                boxShadow: isFocused 
-                  ? contextConfig.greenGlow 
-                    ? '0 12px 40px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 0 0 2px rgba(16, 185, 129, 0.6), 0 0 24px rgba(16, 185, 129, 0.25), 0 0 48px rgba(16, 185, 129, 0.12)'
-                    : '0 20px 60px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 0 0 2px rgba(59, 130, 246, 0.5), 0 0 24px rgba(59, 130, 246, 0.2), 0 0 48px rgba(59, 130, 246, 0.1)'
-                  : contextConfig.greenGlow 
-                    ? '0 8px 32px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 0 1px rgba(16, 185, 129, 0.3), 0 0 16px rgba(16, 185, 129, 0.15), 0 0 32px rgba(16, 185, 129, 0.08)'
-                    : '0 25px 50px -12px rgba(0, 0, 0, 0.25), inset 0 0 0 1px rgba(255, 255, 255, 0.2)'
-              }}
-              transition={{
-                duration: 0.2,
-                ease: "easeOut"
-              }}
-              whileHover={{
-                scale: 1.003,
-                boxShadow: contextConfig.greenGlow 
-                  ? '0 10px 36px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 0 0 1.5px rgba(16, 185, 129, 0.5), 0 0 20px rgba(16, 185, 129, 0.2), 0 0 40px rgba(16, 185, 129, 0.1)'
-                  : '0 30px 60px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 0 0 1.5px rgba(59, 130, 246, 0.4), 0 0 20px rgba(59, 130, 246, 0.15), 0 0 40px rgba(59, 130, 246, 0.08)'
+                background: '#ffffff',
+                borderRadius: contextConfig.isSquare ? '8px' : '9999px',
+                border: '1px solid #E5E7EB',
+                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)'
               }}
             >
               {/* Map Toggle Button - always show */}
@@ -220,10 +217,26 @@ export const SearchBar = ({
                   value={searchValue} 
                   onChange={e => {
                     const value = e.target.value;
+                    // Update state immediately for instant visual feedback
                     setSearchValue(value);
+                    
+                    // Track typing state
                     if (value.trim() && !hasStartedTyping) {
                       setHasStartedTyping(true);
-                      onQueryStart?.(value.trim());
+                    } else if (!value.trim()) {
+                      setHasStartedTyping(false);
+                    }
+                    
+                    // Clear previous timeout
+                    if (queryStartTimeoutRef.current) {
+                      clearTimeout(queryStartTimeoutRef.current);
+                    }
+                    
+                    // Call onQueryStart with very short debounce (50ms) for real-time responsiveness
+                    if (value.trim()) {
+                      queryStartTimeoutRef.current = setTimeout(() => {
+                        onQueryStart?.(value.trim());
+                      }, 50);
                     }
                   }}
                   onFocus={() => setIsFocused(true)} 
@@ -233,13 +246,6 @@ export const SearchBar = ({
                   className="w-full bg-transparent focus:outline-none text-lg font-normal text-slate-700 placeholder:text-slate-400"
                   autoComplete="off" 
                   disabled={isSubmitted}
-                  animate={{
-                    scale: isFocused ? 1.01 : 1
-                  }}
-                  transition={{
-                    duration: 0.15,
-                    ease: "easeOut"
-                  }}
                 />
               </div>
               
@@ -258,22 +264,55 @@ export const SearchBar = ({
                 <motion.button 
                   type="submit" 
                   onClick={handleSubmit} 
-                  className={`w-8 h-8 flex items-center justify-center transition-all duration-200 ${!isSubmitted ? 'text-slate-600 hover:text-green-500' : 'text-slate-400 cursor-not-allowed'}`} 
+                  className={`flex items-center justify-center relative ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    minWidth: '32px',
+                    minHeight: '32px',
+                    borderRadius: '50%'
+                  }}
+                  animate={{
+                    backgroundColor: searchValue.trim() ? '#415C85' : 'transparent'
+                  }}
                   disabled={isSubmitted}
-                  whileHover={!isSubmitted ? { 
-                    scale: 1.08,
-                    x: 1
+                  whileHover={!isSubmitted && searchValue.trim() ? { 
+                    scale: 1.05
                   } : {}}
-                  whileTap={!isSubmitted ? { 
-                    scale: 0.9,
-                    x: -1
+                  whileTap={!isSubmitted && searchValue.trim() ? { 
+                    scale: 0.95
                   } : {}}
                   transition={{
-                    duration: 0.15,
-                    ease: "easeOut"
+                    duration: 0.2,
+                    ease: [0.16, 1, 0.3, 1]
                   }}
                 >
-                  <ChevronRight className="w-6 h-6" strokeWidth={1.5} />
+                  <motion.div
+                    key="chevron-right"
+                    initial={{ opacity: 1 }}
+                    animate={{ opacity: searchValue.trim() ? 0 : 1 }}
+                    transition={{
+                      duration: 0.2,
+                      ease: [0.16, 1, 0.3, 1]
+                    }}
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                  </motion.div>
+                  <motion.div
+                    key="arrow-up"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: searchValue.trim() ? 1 : 0 }}
+                    transition={{
+                      duration: 0.2,
+                      ease: [0.16, 1, 0.3, 1]
+                    }}
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                  </motion.div>
                 </motion.button>
               </div>
             </motion.div>

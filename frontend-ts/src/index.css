@@ -82,7 +82,7 @@
     --sidebar-accent-foreground: 255 255 255;
     --sidebar-border: transparent;
     --sidebar-ring: 255 255 255;
-    --sidebar-active: 120 100% 60%; /* Bright distinct green for active state */
+    --sidebar-active: 120 100% 40%; /* Darker green for active state */
 
     /* Animation Easings */
     --ease-smooth: cubic-bezier(0.23, 1, 0.32, 1);
@@ -162,7 +162,7 @@
     --sidebar-accent-foreground: 255 255 255;
     --sidebar-border: transparent;
     --sidebar-ring: 255 255 255;
-    --sidebar-active: 120 100% 65%; /* Bright distinct green for active state */
+    --sidebar-active: 120 100% 45%; /* Darker green for active state */
   }
 }
 
