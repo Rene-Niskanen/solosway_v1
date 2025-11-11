@@ -961,10 +961,15 @@ const LocationPickerModal: React.FC<{
               ref={previewMapContainer}
               className="w-full h-full relative preview-map-container"
               style={{
-                marginLeft: '56px', // Offset for sidebar
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+                width: '100%',
+                height: '100%',
                 backgroundColor: 'transparent', // Ensure no white background
-                overflow: 'hidden', // Prevent any overflow elements
-                position: 'relative'
+                overflow: 'hidden' // Prevent any overflow elements
               }}
             />
             
@@ -973,7 +978,7 @@ const LocationPickerModal: React.FC<{
               className="fixed z-[10001] pointer-events-none"
               style={{
                 top: '50%',
-                left: 'calc(50vw + 28px)', // Center accounting for sidebar (56px / 2 = 28px)
+                left: '50vw', // Center in viewport (map now covers full width)
                 transform: 'translate(-50%, -50%)'
               }}
             >
