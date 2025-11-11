@@ -25,21 +25,63 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 
 const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
+// Helper function to calculate dynamic zoom based on area size
+const calculateZoomFromBbox = (bbox: number[] | undefined, placeType: string[] | undefined): number => {
+  if (!bbox || bbox.length !== 4) {
+    // Default zoom if no bbox
+    return 9.5;
+  }
+
+  // Calculate area size from bbox
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const lngDiff = maxLng - minLng;
+  const latDiff = maxLat - minLat;
+  const areaSize = lngDiff * latDiff;
+
+  // Determine zoom based on place type and area size
+  if (placeType?.includes('neighborhood') || placeType?.includes('locality')) {
+    // Small areas (villages, neighborhoods) - zoom in more
+    if (areaSize < 0.01) return 13; // Very small village
+    if (areaSize < 0.05) return 12; // Small village
+    return 11; // Medium village
+  } else if (placeType?.includes('place')) {
+    // Towns and cities - zoom based on size
+    if (areaSize < 0.1) return 11; // Small town
+    if (areaSize < 0.5) return 10; // Medium town
+    if (areaSize < 2) return 9.5; // Large town / small city
+    return 9; // City
+  } else if (placeType?.includes('region') || placeType?.includes('district')) {
+    // Large regions - zoom out
+    return 8;
+  }
+
+  // Default based on area size
+  if (areaSize < 0.01) return 13;
+  if (areaSize < 0.1) return 11;
+  if (areaSize < 1) return 9.5;
+  return 8;
+};
+
 // Location Picker Modal Component
 const LocationPickerModal: React.FC<{ 
   savedLocation: string;
   onLocationSaved: () => void;
 }> = ({ savedLocation, onLocationSaved }) => {
   const [isOpen, setIsOpen] = React.useState(false);
+  const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   const [locationInput, setLocationInput] = React.useState<string>('');
   const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
   const [selectedLocationName, setSelectedLocationName] = React.useState<string>('');
+  const [selectedZoom, setSelectedZoom] = React.useState<number>(9.5);
   const [isGeocoding, setIsGeocoding] = React.useState(false);
   const [geocodeError, setGeocodeError] = React.useState<string>('');
   
   const mapContainer = React.useRef<HTMLDivElement>(null);
+  const previewMapContainer = React.useRef<HTMLDivElement>(null);
   const map = React.useRef<mapboxgl.Map | null>(null);
+  const previewMap = React.useRef<mapboxgl.Map | null>(null);
   const marker = React.useRef<mapboxgl.Marker | null>(null);
+  const previewMarker = React.useRef<mapboxgl.Marker | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
@@ -59,7 +101,7 @@ const LocationPickerModal: React.FC<{
             if (parsed.coordinates) {
               return {
                 center: parsed.coordinates as [number, number],
-                zoom: 9.5,
+                zoom: parsed.zoom || 9.5,
                 name: parsed.name || ''
               };
             }
@@ -77,6 +119,7 @@ const LocationPickerModal: React.FC<{
     setLocationInput(initial.name);
     setSelectedCoordinates(initial.center);
     setSelectedLocationName(initial.name);
+    setSelectedZoom(initial.zoom);
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
@@ -152,14 +195,18 @@ const LocationPickerModal: React.FC<{
         const [lng, lat] = feature.center;
         const coords: [number, number] = [lng, lat];
         const locationName = feature.place_name;
+        
+        // Calculate dynamic zoom based on area size
+        const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
 
         setSelectedCoordinates(coords);
         setSelectedLocationName(locationName);
+        setSelectedZoom(calculatedZoom);
 
         // Update map immediately with smooth animation
         map.current.flyTo({
           center: coords,
-          zoom: 9.5,
+          zoom: calculatedZoom,
           duration: 600 // Faster animation for immediate feedback
         });
 
@@ -207,8 +254,11 @@ const LocationPickerModal: React.FC<{
       if (response.ok) {
         const data = await response.json();
         if (data.features && data.features.length > 0) {
-          setSelectedLocationName(data.features[0].place_name);
-          setLocationInput(data.features[0].place_name);
+          const feature = data.features[0];
+          const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
+          setSelectedLocationName(feature.place_name);
+          setLocationInput(feature.place_name);
+          setSelectedZoom(calculatedZoom);
         }
       }
     } catch (error) {
@@ -222,7 +272,7 @@ const LocationPickerModal: React.FC<{
     const locationData = {
       name: selectedLocationName || locationInput,
       coordinates: selectedCoordinates,
-      zoom: 9.5
+      zoom: selectedZoom
     };
 
     if (typeof window !== 'undefined') {
@@ -230,8 +280,73 @@ const LocationPickerModal: React.FC<{
     }
 
     setIsOpen(false);
+    setIsPreviewMode(false);
     onLocationSaved();
   };
+
+  // Initialize preview mode map
+  React.useEffect(() => {
+    if (!isPreviewMode || !previewMapContainer.current || !selectedCoordinates) return;
+
+    mapboxgl.accessToken = mapboxToken;
+
+    previewMap.current = new mapboxgl.Map({
+      container: previewMapContainer.current,
+      style: 'mapbox://styles/mapbox/light-v11',
+      center: selectedCoordinates,
+      zoom: selectedZoom,
+      attributionControl: false
+    });
+
+    // Add marker
+    previewMarker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+      .setLngLat(selectedCoordinates)
+      .addTo(previewMap.current);
+
+    // Update zoom and location when map moves
+    const handleMoveEnd = () => {
+      if (previewMap.current) {
+        const currentZoom = previewMap.current.getZoom();
+        setSelectedZoom(currentZoom);
+        const center = previewMap.current.getCenter();
+        setSelectedCoordinates([center.lng, center.lat]);
+        if (previewMarker.current) {
+          previewMarker.current.setLngLat([center.lng, center.lat]);
+        }
+        // Reverse geocode to update location name
+        reverseGeocode(center.lng, center.lat);
+      }
+    };
+
+    previewMap.current.on('moveend', handleMoveEnd);
+
+    // Hide Mapbox branding
+    const hideBranding = () => {
+      if (previewMap.current) {
+        const container = previewMap.current.getContainer();
+        const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+        const logo = container.querySelector('.mapboxgl-ctrl-logo');
+        if (attrib) (attrib as HTMLElement).style.display = 'none';
+        if (logo) (logo as HTMLElement).style.display = 'none';
+      }
+    };
+
+    previewMap.current.on('load', hideBranding);
+    setTimeout(hideBranding, 100);
+
+    return () => {
+      if (previewMap.current) {
+        previewMap.current.off('moveend', handleMoveEnd);
+        previewMap.current.remove();
+        previewMap.current = null;
+      }
+      if (previewMarker.current) {
+        previewMarker.current.remove();
+        previewMarker.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPreviewMode, mapboxToken]);
 
   return (
     <>
@@ -306,6 +421,11 @@ const LocationPickerModal: React.FC<{
                     Coordinates: {selectedCoordinates[1].toFixed(4)}, {selectedCoordinates[0].toFixed(4)}
                   </div>
                 )}
+                {selectedZoom && (
+                  <div className="text-xs text-blue-600 mt-1">
+                    Zoom Level: {selectedZoom.toFixed(1)}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -318,6 +438,17 @@ const LocationPickerModal: React.FC<{
               Cancel
             </Button>
             <Button
+              variant="outline"
+              onClick={() => {
+                setIsOpen(false);
+                setIsPreviewMode(true);
+              }}
+              disabled={!selectedCoordinates}
+              className="mr-2"
+            >
+              Adjust Zoom & Preview
+            </Button>
+            <Button
               onClick={handleConfirm}
               disabled={!selectedCoordinates}
               className="bg-blue-600 hover:bg-blue-700"
@@ -327,6 +458,70 @@ const LocationPickerModal: React.FC<{
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Preview Mode - Full Screen Map View */}
+      <AnimatePresence>
+        {isPreviewMode && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9999] bg-white"
+          >
+            {/* Non-functional Sidebar */}
+            <div className="fixed left-0 top-0 h-full w-14 bg-white border-r border-slate-200 z-[10000]">
+              <div className="flex flex-col items-center py-6 space-y-4">
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
+                  <MapPin className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
+                  <MapPin className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
+                  <MapPin className="w-5 h-5 text-slate-400" />
+                </div>
+              </div>
+            </div>
+
+            {/* Full Screen Map */}
+            <div 
+              ref={previewMapContainer}
+              className="w-full h-full"
+              style={{
+                marginLeft: '56px', // Offset for sidebar
+                paddingBottom: '80px' // Space for search bar
+              }}
+            />
+
+            {/* Non-functional Search Bar at Bottom */}
+            <div className="fixed bottom-0 left-0 right-0 z-[10000] p-4 bg-white border-t border-slate-200">
+              <div className="max-w-2xl mx-auto">
+                <div className="flex items-center space-x-3 bg-slate-50 rounded-lg px-4 py-3 border border-slate-200 opacity-50">
+                  <div className="flex-1 text-slate-400 text-sm">Search for properties...</div>
+                  <div className="w-8 h-8 rounded-full bg-slate-200"></div>
+                </div>
+              </div>
+            </div>
+
+            {/* Confirm Button - Top Right */}
+            <div className="fixed top-4 right-4 z-[10001] flex space-x-2">
+              <Button
+                variant="outline"
+                onClick={() => setIsPreviewMode(false)}
+                className="bg-white"
+              >
+                Back
+              </Button>
+              <Button
+                onClick={handleConfirm}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                Confirm Location
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 };
