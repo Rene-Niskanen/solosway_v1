@@ -529,491 +529,60 @@ const LocationPickerModal: React.FC<{
 
   // Initialize preview mode map
   React.useEffect(() => {
-    if (!isPreviewMode || !selectedCoordinates) {
-      // Clean up map when preview mode is closed
-      if (!isPreviewMode && previewMap.current) {
-        previewMap.current.remove();
-        previewMap.current = null;
+    if (!isPreviewMode || !previewMapContainer.current || !selectedCoordinates) return;
+
+    mapboxgl.accessToken = mapboxToken;
+
+    previewMap.current = new mapboxgl.Map({
+      container: previewMapContainer.current,
+      style: 'mapbox://styles/mapbox/light-v11',
+      center: selectedCoordinates,
+      zoom: selectedZoom,
+      attributionControl: false
+    });
+
+    // Update zoom and location when map moves - pin stays centered visually
+    const handleMoveEnd = () => {
+      if (previewMap.current) {
+        const currentZoom = previewMap.current.getZoom();
+        setSelectedZoom(currentZoom);
+        // Get center of viewport (where the pin is visually)
+        const center = previewMap.current.getCenter();
+        setSelectedCoordinates([center.lng, center.lat]);
+        // Reverse geocode to update location name
+        reverseGeocode(center.lng, center.lat);
       }
-      return;
-    }
+    };
 
-    // Wait for framer-motion animation to complete (opacity animation duration)
-    // The animation goes from opacity 0 to 1, we need to wait for it to be visible
-    const initTimeout = setTimeout(() => {
-      // Wait for container to be available and have dimensions
-      let retryCount = 0;
-      const maxRetries = 50; // 5 seconds max wait (reduced since we wait longer initially)
-      
-      const initMap = () => {
-        retryCount++;
-        
-        if (retryCount > maxRetries) {
-          const container = previewMapContainer.current;
-          if (container) {
-            const rect = container.getBoundingClientRect();
-            const style = window.getComputedStyle(container);
-            console.error('❌ Failed to initialize map: container never became ready after', maxRetries, 'retries');
-            console.error('Container state:', {
-              exists: true,
-              isConnected: container.isConnected,
-              rect: {
-                width: rect.width,
-                height: rect.height,
-                top: rect.top,
-                left: rect.left,
-                bottom: rect.bottom,
-                right: rect.right
-              },
-              style: {
-                width: style.width,
-                height: style.height,
-                display: style.display,
-                visibility: style.visibility,
-                opacity: style.opacity,
-                position: style.position
-              },
-              innerWidth: window.innerWidth,
-              innerHeight: window.innerHeight
-            });
-            
-            // Last resort: try to initialize anyway with forced dimensions
-            console.log('⚠️ Attempting to initialize map with forced dimensions...');
-            container.style.width = window.innerWidth + 'px';
-            container.style.height = window.innerHeight + 'px';
-            
-            // Try one more time
-            setTimeout(() => {
-              if (previewMapContainer.current && selectedCoordinates) {
-                try {
-                  mapboxgl.accessToken = mapboxToken;
-                  if (previewMap.current) {
-                    previewMap.current.remove();
-                    previewMap.current = null;
-                  }
-                  previewMap.current = new mapboxgl.Map({
-                    container: container,
-                    style: 'mapbox://styles/mapbox/light-v11',
-                    center: selectedCoordinates,
-                    zoom: selectedZoom || 9.5,
-                    attributionControl: false
-                  });
-                  previewMap.current.once('load', () => {
-                    if (previewMap.current) {
-                      previewMap.current.resize();
-                    }
-                  });
-                  console.log('✅ Map initialized as last resort');
-                } catch (error) {
-                  console.error('❌ Last resort initialization also failed:', error);
-                }
-              }
-            }, 100);
-          }
-          return;
-        }
-
-        if (!previewMapContainer.current) {
-          setTimeout(initMap, 100);
-          return;
-        }
-
-        const container = previewMapContainer.current;
-        
-        // Check if element is actually in the DOM
-        if (!container.isConnected) {
-          setTimeout(initMap, 100);
-          return;
-        }
-        
-        // Force explicit dimensions immediately with !important
-        container.style.setProperty('width', window.innerWidth + 'px', 'important');
-        container.style.setProperty('height', window.innerHeight + 'px', 'important');
-        container.style.setProperty('display', 'block', 'important');
-        container.style.setProperty('visibility', 'visible', 'important');
-        container.style.setProperty('opacity', '1', 'important');
-        
-        // Force a reflow to ensure dimensions are calculated
-        void container.offsetHeight;
-        
-        const rect = container.getBoundingClientRect();
-        
-        // Check if style dimensions are set (even if getBoundingClientRect returns 0)
-        const styleWidth = container.style.width || window.getComputedStyle(container).width;
-        const styleHeight = container.style.height || window.getComputedStyle(container).height;
-        const hasStyleDimensions = (styleWidth && styleWidth !== '0px' && styleWidth !== 'auto') ||
-                                  (styleHeight && styleHeight !== '0px' && styleHeight !== 'auto');
-        
-        // Also check getBoundingClientRect
-        const hasRectDimensions = rect.width > 0 && rect.height > 0;
-        
-        // If we have style dimensions but not rect dimensions, that's okay - proceed
-        // Mapbox can work with explicit style dimensions even if getBoundingClientRect is 0
-        if (!hasRectDimensions && !hasStyleDimensions && retryCount < 5) {
-          // Only wait a few times if we truly have no dimensions at all
-          setTimeout(initMap, 100);
-          return;
-        }
-        
-        // We have dimensions (either from rect or style), proceed with initialization
-        console.log('✅ Container ready!', {
-          rectWidth: rect.width,
-          rectHeight: rect.height,
-          styleWidth: styleWidth,
-          styleHeight: styleHeight,
-          hasRectDimensions,
-          hasStyleDimensions,
-          coordinates: selectedCoordinates,
-          zoom: selectedZoom
-        });
-
-      // Container is ready - initialize map
-      try {
-        mapboxgl.accessToken = mapboxToken;
-
-        // Clean up any existing map first
-        if (previewMap.current) {
-          previewMap.current.remove();
-          previewMap.current = null;
-        }
-
-        console.log('🗺️ Creating map instance...');
-        previewMap.current = new mapboxgl.Map({
-          container: container,
-          style: 'mapbox://styles/mapbox/light-v11',
-          center: selectedCoordinates,
-          zoom: selectedZoom || 9.5,
-          attributionControl: false,
-          logoPosition: 'bottom-left'
-        });
-        
-        console.log('✅ Map instance created, waiting for load...');
-        
-        // Force resize on load
-        previewMap.current.once('load', () => {
-          console.log('✅ Map loaded! Resizing...');
-          if (previewMap.current) {
-            previewMap.current.resize();
-            // Force another resize after a moment
-            setTimeout(() => {
-              if (previewMap.current) {
-                previewMap.current.resize();
-                console.log('✅ Map resized');
-              }
-            }, 100);
-          }
-        });
-        
-        // Also resize after delays to ensure it renders
-        setTimeout(() => {
-          if (previewMap.current) {
-            previewMap.current.resize();
-          }
-        }, 300);
-        setTimeout(() => {
-          if (previewMap.current) {
-            previewMap.current.resize();
-          }
-        }, 600);
-        
-        // Ensure map container has no white background and remove all unwanted elements
-        if (previewMapContainer.current && previewMap.current) {
-          const mapContainer = previewMap.current.getContainer();
-          if (mapContainer) {
-            mapContainer.style.backgroundColor = 'transparent';
-            // Remove any default Mapbox controls
-            const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
-            controls.forEach((ctrl: Element) => {
-              (ctrl as HTMLElement).style.display = 'none';
-            });
-          }
-        }
-
-        // Update zoom and location when map moves - pin stays centered visually
-        const handleMoveEnd = () => {
-        if (previewMap.current) {
-          const currentZoom = previewMap.current.getZoom();
-          setSelectedZoom(currentZoom);
-          // Get center of viewport (where the pin is visually)
-          const center = previewMap.current.getCenter();
-          setSelectedCoordinates([center.lng, center.lat]);
-          // Reverse geocode to update location name
-          reverseGeocode(center.lng, center.lat);
-        }
-      };
-
-      // Also update on move (not just moveend) for smoother updates
-      const handleMove = () => {
-        if (previewMap.current) {
-          const center = previewMap.current.getCenter();
-          setSelectedCoordinates([center.lng, center.lat]);
-        }
-      };
-
-      previewMap.current.on('moveend', handleMoveEnd);
-      previewMap.current.on('move', handleMove);
-
-        // Comprehensive function to hide all Mapbox branding and controls
-        const hideAllMapboxElements = () => {
-          if (!previewMap.current) return;
-      
-          const container = previewMap.current.getContainer();
-          if (!container) return;
-
-          // Hide ALL elements with mapboxgl classes (most aggressive approach)
-          const allMapboxElements = container.querySelectorAll('[class*="mapboxgl"]');
-          allMapboxElements.forEach((el: Element) => {
-            const htmlEl = el as HTMLElement;
-            // Only hide control elements, not the map canvas itself
-            if (!htmlEl.classList.contains('mapboxgl-map') && 
-                !htmlEl.classList.contains('mapboxgl-canvas') &&
-                !htmlEl.classList.contains('mapboxgl-canvas-container')) {
-              htmlEl.style.display = 'none';
-              htmlEl.style.visibility = 'hidden';
-              htmlEl.style.opacity = '0';
-              htmlEl.style.pointerEvents = 'none';
-            }
-          });
-
-          // Hide all Mapbox control elements (specific selectors)
-          const allControls = container.querySelectorAll('[class*="mapboxgl-ctrl"]');
-          allControls.forEach((ctrl: Element) => {
-            const htmlCtrl = ctrl as HTMLElement;
-            htmlCtrl.style.display = 'none';
-            htmlCtrl.style.visibility = 'hidden';
-            htmlCtrl.style.opacity = '0';
-            htmlCtrl.style.pointerEvents = 'none';
-            htmlCtrl.style.width = '0';
-            htmlCtrl.style.height = '0';
-          });
-
-          // Hide attribution
-          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-          if (attrib) {
-            const htmlAttrib = attrib as HTMLElement;
-            htmlAttrib.style.display = 'none';
-            htmlAttrib.style.visibility = 'hidden';
-            htmlAttrib.style.opacity = '0';
-            htmlAttrib.style.width = '0';
-            htmlAttrib.style.height = '0';
-          }
-
-          // Hide logo
-          const logo = container.querySelector('.mapboxgl-ctrl-logo');
-          if (logo) {
-            const htmlLogo = logo as HTMLElement;
-            htmlLogo.style.display = 'none';
-            htmlLogo.style.visibility = 'hidden';
-            htmlLogo.style.opacity = '0';
-            htmlLogo.style.width = '0';
-            htmlLogo.style.height = '0';
-          }
-
-          // Hide any navigation controls
-          const navControls = container.querySelectorAll('.mapboxgl-ctrl-group');
-          navControls.forEach((ctrl: Element) => {
-            const htmlCtrl = ctrl as HTMLElement;
-            htmlCtrl.style.display = 'none';
-            htmlCtrl.style.visibility = 'hidden';
-            htmlCtrl.style.opacity = '0';
-            htmlCtrl.style.width = '0';
-            htmlCtrl.style.height = '0';
-          });
-
-          // Hide any divs positioned on the left or top that might be controls
-          const allDivs = container.querySelectorAll('div');
-          allDivs.forEach((div: Element) => {
-            const htmlDiv = div as HTMLElement;
-            const computedStyle = window.getComputedStyle(htmlDiv);
-            const position = computedStyle.position;
-            const left = computedStyle.left;
-            const top = computedStyle.top;
-            const bgColor = computedStyle.backgroundColor;
-            
-            // Hide any absolutely/fixed positioned divs on left or top that aren't the map itself
-            if ((position === 'absolute' || position === 'fixed') &&
-                (left === '0px' || left === '10px' || left === '20px' || 
-                 top === '0px' || top === '10px' || top === '20px') &&
-                !htmlDiv.classList.contains('mapboxgl-map') &&
-                !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
-                htmlDiv.offsetWidth < 200 && htmlDiv.offsetHeight < 200) {
-              htmlDiv.style.display = 'none';
-              htmlDiv.style.visibility = 'hidden';
-              htmlDiv.style.opacity = '0';
-              htmlDiv.style.width = '0';
-              htmlDiv.style.height = '0';
-            }
-            
-            // Also hide any divs with grey or white backgrounds regardless of position
-            if (bgColor && 
-                (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
-                 bgColor.includes('rgb(255, 255, 255)') || // white
-                 bgColor.includes('rgb(241, 245, 249)') || // slate-100
-                 bgColor.includes('rgb(233, 233, 235)')) && // similar grey
-                !htmlDiv.classList.contains('mapboxgl-map') &&
-                !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
-                htmlDiv.offsetWidth > 0 && htmlDiv.offsetHeight > 0 &&
-                htmlDiv.offsetWidth < 300 && htmlDiv.offsetHeight < 300) {
-              htmlDiv.style.display = 'none';
-              htmlDiv.style.visibility = 'hidden';
-              htmlDiv.style.opacity = '0';
-              htmlDiv.style.width = '0';
-              htmlDiv.style.height = '0';
-            }
-          });
-
-          // Ensure container background is transparent
-          container.style.backgroundColor = 'transparent';
-          
-          // Hide any canvas overlays that might show grey/white
-          const canvas = container.querySelector('canvas');
-          if (canvas) {
-            canvas.style.backgroundColor = 'transparent';
-          }
-
-          // Hide any elements with grey or white backgrounds in the top-left area
-          const allElements = container.querySelectorAll('*');
-          allElements.forEach((el: Element) => {
-            const htmlEl = el as HTMLElement;
-            const rect = htmlEl.getBoundingClientRect();
-            const containerRect = container.getBoundingClientRect();
-            
-            // Check if element is in top-left corner and has grey/white background
-            if (rect.left < containerRect.left + 100 && 
-                rect.top < containerRect.top + 100 &&
-                rect.width > 0 && rect.height > 0 &&
-                !htmlEl.classList.contains('mapboxgl-map') &&
-                !htmlEl.classList.contains('mapboxgl-canvas') &&
-                !htmlEl.classList.contains('mapboxgl-canvas-container')) {
-              const bgColor = window.getComputedStyle(htmlEl).backgroundColor;
-              if (bgColor && (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
-                              bgColor.includes('rgb(255, 255, 255)') || // white
-                              bgColor.includes('rgb(241, 245, 249)'))) { // slate-100
-                htmlEl.style.display = 'none';
-                htmlEl.style.visibility = 'hidden';
-                htmlEl.style.opacity = '0';
-              }
-            }
-          });
-        };
-
-        // Hide elements immediately and on load
-        hideAllMapboxElements();
-        
-        const handleMapLoad = () => {
-          if (previewMap.current) {
-            // Resize map to ensure it renders correctly
-            previewMap.current.resize();
-            hideAllMapboxElements();
-          }
-        };
-        
-        previewMap.current.on('load', handleMapLoad);
-        previewMap.current.on('style.load', handleMapLoad);
-        previewMap.current.on('render', hideAllMapboxElements);
-        
-        // Store render listener for cleanup
-        (previewMap.current as any)._renderListeners = [hideAllMapboxElements];
-        
-        // Also hide after delays to catch late-loading elements
-        setTimeout(hideAllMapboxElements, 50);
-        setTimeout(hideAllMapboxElements, 100);
-        setTimeout(hideAllMapboxElements, 200);
-        setTimeout(hideAllMapboxElements, 500);
-        setTimeout(hideAllMapboxElements, 1000);
-        setTimeout(hideAllMapboxElements, 2000);
-
-        // Use MutationObserver to watch for any dynamically added Mapbox elements
-        const observer = new MutationObserver(() => {
-          hideAllMapboxElements();
-        });
-
-        if (previewMapContainer.current && previewMap.current) {
-          const container = previewMap.current.getContainer();
-          if (container) {
-            observer.observe(container, {
-              childList: true,
-              subtree: true,
-              attributes: true,
-              attributeFilter: ['class', 'style']
-            });
-          }
-        }
-
-        // Also observe the document body in case elements are added outside the container
-        const bodyObserver = new MutationObserver(() => {
-          if (previewMap.current) {
-            hideAllMapboxElements();
-          }
-        });
-        
-        bodyObserver.observe(document.body, {
-          childList: true,
-          subtree: true
-        });
-
-        // Continuous check every 100ms for the first 5 seconds
-        let checkCount = 0;
-        const maxChecks = 50; // 5 seconds at 100ms intervals
-        const continuousCheck = setInterval(() => {
-          hideAllMapboxElements();
-          checkCount++;
-          if (checkCount >= maxChecks) {
-            clearInterval(continuousCheck);
-          }
-        }, 100);
-
-        // Store observers and interval for cleanup
-        (previewMap.current as any)._mapboxObserver = observer;
-        (previewMap.current as any)._bodyObserver = bodyObserver;
-        (previewMap.current as any)._continuousCheck = continuousCheck;
-        (previewMap.current as any)._handleMoveEnd = handleMoveEnd;
-        (previewMap.current as any)._handleMove = handleMove;
-        (previewMap.current as any)._handleMapLoad = handleMapLoad;
-      } catch (error) {
-        console.error('❌ Failed to initialize preview map:', error);
+    // Also update on move (not just moveend) for smoother updates
+    const handleMove = () => {
+      if (previewMap.current) {
+        const center = previewMap.current.getCenter();
+        setSelectedCoordinates([center.lng, center.lat]);
       }
-      };
+    };
 
-      // Start initialization
-      initMap();
-    }, 500); // Wait 500ms for framer-motion animation to complete (opacity: 0 -> 1)
+    previewMap.current.on('moveend', handleMoveEnd);
+    previewMap.current.on('move', handleMove);
+
+    // Hide Mapbox branding
+    const hideBranding = () => {
+      if (previewMap.current) {
+        const container = previewMap.current.getContainer();
+        const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+        const logo = container.querySelector('.mapboxgl-ctrl-logo');
+        if (attrib) (attrib as HTMLElement).style.display = 'none';
+        if (logo) (logo as HTMLElement).style.display = 'none';
+      }
+    };
+
+    previewMap.current.on('load', hideBranding);
+    setTimeout(hideBranding, 100);
 
     return () => {
-      clearTimeout(initTimeout);
       if (previewMap.current) {
-        // Clean up observers
-        const observer = (previewMap.current as any)._mapboxObserver;
-        if (observer) {
-          observer.disconnect();
-        }
-        const bodyObserver = (previewMap.current as any)._bodyObserver;
-        if (bodyObserver) {
-          bodyObserver.disconnect();
-        }
-        const continuousCheck = (previewMap.current as any)._continuousCheck;
-        if (continuousCheck) {
-          clearInterval(continuousCheck);
-        }
-        
-        const handleMoveEnd = (previewMap.current as any)._handleMoveEnd;
-        const handleMove = (previewMap.current as any)._handleMove;
-        const handleMapLoad = (previewMap.current as any)._handleMapLoad;
-        
-        if (handleMoveEnd) previewMap.current.off('moveend', handleMoveEnd);
-        if (handleMove) previewMap.current.off('move', handleMove);
-        if (handleMapLoad) {
-          previewMap.current.off('load', handleMapLoad);
-          previewMap.current.off('style.load', handleMapLoad);
-        }
-        // Remove render listener - it uses hideAllMapboxElements which is scoped to initMap
-        // We'll just remove all listeners
-        const renderListeners = (previewMap.current as any)._renderListeners;
-        if (renderListeners) {
-          renderListeners.forEach((listener: any) => {
-            previewMap.current?.off('render', listener);
-          });
-        }
+        previewMap.current.off('moveend', handleMoveEnd);
+        previewMap.current.off('move', handleMove);
         previewMap.current.remove();
         previewMap.current = null;
       }
@@ -1113,20 +682,8 @@ const LocationPickerModal: React.FC<{
             <Button
               variant="outline"
               onClick={() => {
-                console.log('🔘 Adjust Zoom & Preview clicked', {
-                  selectedCoordinates,
-                  selectedZoom,
-                  selectedLocationName
-                });
-                if (!selectedCoordinates) {
-                  console.error('❌ Cannot enter preview mode: no coordinates selected');
-                  return;
-                }
                 setIsOpen(false);
-                // Small delay to ensure dialog closes before opening preview
-                setTimeout(() => {
-                  setIsPreviewMode(true);
-                }, 100);
+                setIsPreviewMode(true);
               }}
               disabled={!selectedCoordinates}
               className="mr-2"
@@ -1151,22 +708,15 @@ const LocationPickerModal: React.FC<{
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[10000] bg-slate-100"
-            style={{
-              backgroundColor: '#f1f5f9', // Ensure consistent slate-100 background covers everything
-              left: 0, // Cover entire screen including sidebar area
-              top: 0,
-              right: 0,
-              bottom: 0
-            }}
+            className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Preview Mode Overlay Frame - adjusted to not be behind sidebar or buttons */}
+            {/* Preview Mode Overlay Frame - no sidebar, full width */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
-                top: '80px', // Below buttons (buttons are ~60px tall + padding)
-                left: '72px', // Start after sidebar (56px sidebar + 16px padding)
-                right: '4px', // Equal padding on right side
+                top: '4px',
+                left: '4px',
+                right: '4px',
                 bottom: '80px', // Above buttons only
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
               }}
@@ -1182,17 +732,7 @@ const LocationPickerModal: React.FC<{
             {/* Full Screen Map */}
             <div 
               ref={previewMapContainer}
-              className="preview-map-container"
-              style={{
-                position: 'fixed',
-                left: 0,
-                top: 0,
-                width: window.innerWidth + 'px',
-                height: window.innerHeight + 'px',
-                backgroundColor: 'transparent',
-                overflow: 'hidden',
-                zIndex: 1
-              }}
+              className="w-full h-full relative"
             />
             
             {/* Fixed Center Pin Overlay - Blue circle with white target icon */}
@@ -1200,7 +740,7 @@ const LocationPickerModal: React.FC<{
               className="fixed z-[10001] pointer-events-none"
               style={{
                 top: '50%',
-                left: '50vw', // Center in viewport (map now covers full width)
+                left: '50vw', // Center of screen (no sidebar offset)
                 transform: 'translate(-50%, -50%)'
               }}
             >
