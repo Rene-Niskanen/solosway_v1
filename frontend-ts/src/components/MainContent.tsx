@@ -92,6 +92,8 @@ const LocationPickerModal: React.FC<{
   const isZoomUserSelectedRef = React.useRef<boolean>(false);
   // Track if map was just initialized to prevent immediate sync
   const isMapJustInitializedRef = React.useRef<boolean>(false);
+  // Track when loading coordinates from localStorage to prevent sync during initial load
+  const isLoadingFromStorageRef = React.useRef<boolean>(false);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
@@ -100,6 +102,9 @@ const LocationPickerModal: React.FC<{
   React.useEffect(() => {
     if (isOpen) {
       setIsLocationDataReady(false);
+      
+      // Set flag to prevent sync effect from running during initial load
+      isLoadingFromStorageRef.current = true;
       
       // Simple logic: Get the last saved location from localStorage
       if (typeof window !== 'undefined') {
@@ -137,6 +142,8 @@ const LocationPickerModal: React.FC<{
       console.log('📍 LocationPicker: No saved location found, using default (London)');
     } else {
       setIsLocationDataReady(false);
+      // Reset flag when modal closes
+      isLoadingFromStorageRef.current = false;
     }
   }, [isOpen]);
 
@@ -153,8 +160,9 @@ const LocationPickerModal: React.FC<{
       marker.current = null;
     }
     
-    // Reset initialization flag when cleaning up
+    // Reset initialization and loading flags when cleaning up
     isMapJustInitializedRef.current = false;
+    isLoadingFromStorageRef.current = false;
 
     if (!isOpen || !mapContainer.current) {
       console.log('📍 LocationPicker: Modal not open or container not ready', { isOpen, hasContainer: !!mapContainer.current });
@@ -248,6 +256,7 @@ const LocationPickerModal: React.FC<{
             // This prevents the sync from running immediately and causing glitches
             setTimeout(() => {
               isMapJustInitializedRef.current = false;
+              isLoadingFromStorageRef.current = false; // Clear loading flag after map is stable
               console.log('📍 LocationPicker: Map initialization complete, sync effect can now run');
             }, 1000); // 1 second delay to ensure map is stable
 
@@ -353,9 +362,15 @@ const LocationPickerModal: React.FC<{
   }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom, isLocationDataReady]);
 
   // Sync map with selected coordinates whenever they change
-  // But skip sync if the change came from user interaction (map click) or if map was just initialized
+  // But skip sync if the change came from user interaction (map click), if map was just initialized, or if loading from storage
   React.useEffect(() => {
     if (!map.current || !isOpen) return;
+    
+    // Skip sync if loading from localStorage (prevents sync during initial load)
+    if (isLoadingFromStorageRef.current) {
+      console.log('📍 LocationPicker: Skipping sync - loading from localStorage');
+      return;
+    }
     
     // Skip sync if map was just initialized (prevents glitching between locations)
     if (isMapJustInitializedRef.current) {
@@ -373,7 +388,7 @@ const LocationPickerModal: React.FC<{
     if (!map.current.loaded()) {
       // Wait for map to load before syncing
       const handleLoad = () => {
-        if (map.current && map.current.loaded() && !isUserInteractionRef.current && !isMapJustInitializedRef.current) {
+        if (map.current && map.current.loaded() && !isUserInteractionRef.current && !isMapJustInitializedRef.current && !isLoadingFromStorageRef.current) {
           syncMap();
         }
       };
@@ -388,8 +403,8 @@ const LocationPickerModal: React.FC<{
     const syncMap = () => {
       if (!map.current || !map.current.loaded()) return;
       
-      // Double-check we're not in a user interaction or just initialized
-      if (isUserInteractionRef.current || isMapJustInitializedRef.current) {
+      // Double-check we're not in a user interaction, just initialized, or loading from storage
+      if (isUserInteractionRef.current || isMapJustInitializedRef.current || isLoadingFromStorageRef.current) {
         return;
       }
 
