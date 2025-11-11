@@ -121,49 +121,73 @@ const LocationPickerModal: React.FC<{
     setSelectedLocationName(initial.name);
     setSelectedZoom(initial.zoom);
 
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
-      center: initial.center,
-      zoom: initial.zoom,
-      attributionControl: false
-    });
+    // Small delay to ensure container is fully rendered
+    const initTimeout = setTimeout(() => {
+      if (!mapContainer.current) return;
 
-    // Add marker
-    marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-      .setLngLat(initial.center)
-      .addTo(map.current);
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: initial.center,
+        zoom: initial.zoom,
+        attributionControl: false
+      });
 
-    // Handle map clicks
-    map.current.on('click', (e) => {
-      const { lng, lat } = e.lngLat;
-      const coords: [number, number] = [lng, lat];
-      setSelectedCoordinates(coords);
-      
-      // Reverse geocode to get location name
-      reverseGeocode(lng, lat);
-      
-      // Update marker
-      if (marker.current) {
-        marker.current.setLngLat(coords);
-      }
-    });
+      // Wait for map to load before adding marker
+      map.current.on('load', () => {
+        if (!map.current) return;
 
-    // Hide Mapbox branding
-    const hideBranding = () => {
-      if (map.current) {
+        // Add marker
+        marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+          .setLngLat(initial.center)
+          .addTo(map.current);
+
+        // Hide Mapbox branding
         const container = map.current.getContainer();
         const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
         const logo = container.querySelector('.mapboxgl-ctrl-logo');
         if (attrib) (attrib as HTMLElement).style.display = 'none';
         if (logo) (logo as HTMLElement).style.display = 'none';
-      }
-    };
+      });
 
-    map.current.on('load', hideBranding);
-    setTimeout(hideBranding, 100);
+      // Handle map clicks
+      map.current.on('click', (e) => {
+        const { lng, lat } = e.lngLat;
+        const coords: [number, number] = [lng, lat];
+        setSelectedCoordinates(coords);
+        
+        // Reverse geocode to get location name
+        reverseGeocode(lng, lat);
+        
+        // Update marker
+        if (marker.current) {
+          marker.current.setLngLat(coords);
+        }
+      });
+
+      // Hide branding on load and with timeout as fallback
+      map.current.on('load', () => {
+        const container = map.current?.getContainer();
+        if (container) {
+          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+          const logo = container.querySelector('.mapboxgl-ctrl-logo');
+          if (attrib) (attrib as HTMLElement).style.display = 'none';
+          if (logo) (logo as HTMLElement).style.display = 'none';
+        }
+      });
+      setTimeout(() => {
+        if (map.current) {
+          const container = map.current.getContainer();
+          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+          const logo = container.querySelector('.mapboxgl-ctrl-logo');
+          if (attrib) (attrib as HTMLElement).style.display = 'none';
+          if (logo) (logo as HTMLElement).style.display = 'none';
+        }
+      }, 100);
+    }, 100);
 
     return () => {
+      clearTimeout(initTimeout);
       if (map.current) {
         map.current.remove();
         map.current = null;
@@ -176,7 +200,26 @@ const LocationPickerModal: React.FC<{
   }, [isOpen, mapboxToken]);
 
   const geocodeLocation = React.useCallback(async (query: string) => {
-    if (!query || !map.current) return;
+    if (!query) return;
+
+    // Wait for map to be initialized and loaded
+    if (!map.current) {
+      // Map not initialized yet, wait and retry once
+      setTimeout(() => {
+        if (map.current) {
+          geocodeLocation(query);
+        }
+      }, 300);
+      return;
+    }
+
+    // Check if map is loaded, wait for it if not
+    if (!map.current.loaded()) {
+      map.current.once('load', () => {
+        geocodeLocation(query);
+      });
+      return;
+    }
 
     setIsGeocoding(true);
     setGeocodeError('');
@@ -204,15 +247,17 @@ const LocationPickerModal: React.FC<{
         setSelectedZoom(calculatedZoom);
 
         // Update map immediately with smooth animation
-        map.current.flyTo({
-          center: coords,
-          zoom: calculatedZoom,
-          duration: 600 // Faster animation for immediate feedback
-        });
+        if (map.current && map.current.loaded()) {
+          map.current.flyTo({
+            center: coords,
+            zoom: calculatedZoom,
+            duration: 600 // Faster animation for immediate feedback
+          });
 
-        // Update marker
-        if (marker.current) {
-          marker.current.setLngLat(coords);
+          // Update marker
+          if (marker.current) {
+            marker.current.setLngLat(coords);
+          }
         }
       } else {
         setGeocodeError('Location not found');
@@ -402,8 +447,8 @@ const LocationPickerModal: React.FC<{
               <label className="text-sm font-medium text-slate-700">Map Preview</label>
               <div 
                 ref={mapContainer}
-                className="w-full h-96 rounded-lg border border-slate-300 overflow-hidden"
-                style={{ minHeight: '384px' }}
+                className="w-full h-96 rounded-lg border border-slate-300 overflow-hidden bg-slate-100"
+                style={{ minHeight: '384px', width: '100%', position: 'relative' }}
               />
               <p className="text-xs text-slate-500">
                 Click on the map to set the location, or search above to find a place.
