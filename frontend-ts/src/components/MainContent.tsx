@@ -830,8 +830,8 @@ const LocationPickerModal: React.FC<{
         
         previewMap.current.off('moveend', handleMoveEnd);
         previewMap.current.off('move', handleMove);
-        previewMap.current.off('load', hideAllMapboxElements);
-        previewMap.current.off('style.load', hideAllMapboxElements);
+        previewMap.current.off('load', handleMapLoad);
+        previewMap.current.off('style.load', handleMapLoad);
         previewMap.current.off('render', hideAllMapboxElements);
         previewMap.current.remove();
         previewMap.current = null;
