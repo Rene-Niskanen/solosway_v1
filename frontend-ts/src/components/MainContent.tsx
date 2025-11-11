@@ -529,76 +529,98 @@ const LocationPickerModal: React.FC<{
 
   // Initialize preview mode map
   React.useEffect(() => {
-    if (!isPreviewMode || !previewMapContainer.current || !selectedCoordinates) return;
+    if (!isPreviewMode || !selectedCoordinates) return;
 
-    mapboxgl.accessToken = mapboxToken;
+    // Wait for container to be available and have dimensions
+    const initMap = () => {
+      if (!previewMapContainer.current) {
+        console.log('⏳ Waiting for preview map container...');
+        setTimeout(initMap, 100);
+        return;
+      }
 
-    // Ensure container has dimensions before initializing map
-    if (previewMapContainer.current) {
       const container = previewMapContainer.current;
-      // Force container to have explicit dimensions
+      
+      // Check if container has dimensions
       if (container.offsetWidth === 0 || container.offsetHeight === 0) {
-        console.warn('Preview map container has no dimensions, waiting...');
-        setTimeout(() => {
-          if (previewMapContainer.current && previewMap.current) {
-            previewMap.current.resize();
-          }
-        }, 100);
-      }
-    }
-
-    previewMap.current = new mapboxgl.Map({
-      container: previewMapContainer.current,
-      style: 'mapbox://styles/mapbox/light-v11',
-      center: selectedCoordinates,
-      zoom: selectedZoom,
-      attributionControl: false,
-      logoPosition: 'bottom-left' // Set but we'll hide it
-    });
-    
-    // Resize map after initialization to ensure it renders correctly
-    setTimeout(() => {
-      if (previewMap.current) {
-        previewMap.current.resize();
-      }
-    }, 100);
-    
-    // Ensure map container has no white background and remove all unwanted elements
-    if (previewMapContainer.current && previewMap.current) {
-      const mapContainer = previewMap.current.getContainer();
-      if (mapContainer) {
-        mapContainer.style.backgroundColor = 'transparent';
-        // Remove any default Mapbox controls
-        const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
-        controls.forEach((ctrl: Element) => {
-          (ctrl as HTMLElement).style.display = 'none';
+        console.log('⏳ Container has no dimensions yet, waiting...', {
+          width: container.offsetWidth,
+          height: container.offsetHeight,
+          computedWidth: window.getComputedStyle(container).width,
+          computedHeight: window.getComputedStyle(container).height
         });
+        setTimeout(initMap, 100);
+        return;
       }
-    }
 
-    // Update zoom and location when map moves - pin stays centered visually
-    const handleMoveEnd = () => {
+      console.log('✅ Container ready, initializing map...', {
+        width: container.offsetWidth,
+        height: container.offsetHeight
+      });
+
+      mapboxgl.accessToken = mapboxToken;
+
+      // Clean up any existing map first
       if (previewMap.current) {
-        const currentZoom = previewMap.current.getZoom();
-        setSelectedZoom(currentZoom);
-        // Get center of viewport (where the pin is visually)
-        const center = previewMap.current.getCenter();
-        setSelectedCoordinates([center.lng, center.lat]);
-        // Reverse geocode to update location name
-        reverseGeocode(center.lng, center.lat);
+        previewMap.current.remove();
+        previewMap.current = null;
       }
-    };
 
-    // Also update on move (not just moveend) for smoother updates
-    const handleMove = () => {
-      if (previewMap.current) {
-        const center = previewMap.current.getCenter();
-        setSelectedCoordinates([center.lng, center.lat]);
+      previewMap.current = new mapboxgl.Map({
+        container: container,
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: selectedCoordinates,
+        zoom: selectedZoom,
+        attributionControl: false,
+        logoPosition: 'bottom-left' // Set but we'll hide it
+      });
+      
+      console.log('✅ Map instance created');
+      
+      // Resize map after initialization to ensure it renders correctly
+      setTimeout(() => {
+        if (previewMap.current) {
+          console.log('🔄 Resizing map...');
+          previewMap.current.resize();
+        }
+      }, 200);
+      
+      // Ensure map container has no white background and remove all unwanted elements
+      if (previewMapContainer.current && previewMap.current) {
+        const mapContainer = previewMap.current.getContainer();
+        if (mapContainer) {
+          mapContainer.style.backgroundColor = 'transparent';
+          // Remove any default Mapbox controls
+          const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
+          controls.forEach((ctrl: Element) => {
+            (ctrl as HTMLElement).style.display = 'none';
+          });
+        }
       }
-    };
 
-    previewMap.current.on('moveend', handleMoveEnd);
-    previewMap.current.on('move', handleMove);
+      // Update zoom and location when map moves - pin stays centered visually
+      const handleMoveEnd = () => {
+        if (previewMap.current) {
+          const currentZoom = previewMap.current.getZoom();
+          setSelectedZoom(currentZoom);
+          // Get center of viewport (where the pin is visually)
+          const center = previewMap.current.getCenter();
+          setSelectedCoordinates([center.lng, center.lat]);
+          // Reverse geocode to update location name
+          reverseGeocode(center.lng, center.lat);
+        }
+      };
+
+      // Also update on move (not just moveend) for smoother updates
+      const handleMove = () => {
+        if (previewMap.current) {
+          const center = previewMap.current.getCenter();
+          setSelectedCoordinates([center.lng, center.lat]);
+        }
+      };
+
+      previewMap.current.on('moveend', handleMoveEnd);
+      previewMap.current.on('move', handleMove);
 
     // Comprehensive function to hide all Mapbox branding and controls
     const hideAllMapboxElements = () => {
@@ -828,10 +850,16 @@ const LocationPickerModal: React.FC<{
           clearInterval(continuousCheck);
         }
         
-        previewMap.current.off('moveend', handleMoveEnd);
-        previewMap.current.off('move', handleMove);
-        previewMap.current.off('load', handleMapLoad);
-        previewMap.current.off('style.load', handleMapLoad);
+        const handleMoveEnd = (previewMap.current as any)._handleMoveEnd;
+        const handleMove = (previewMap.current as any)._handleMove;
+        const handleMapLoad = (previewMap.current as any)._handleMapLoad;
+        
+        if (handleMoveEnd) previewMap.current.off('moveend', handleMoveEnd);
+        if (handleMove) previewMap.current.off('move', handleMove);
+        if (handleMapLoad) {
+          previewMap.current.off('load', handleMapLoad);
+          previewMap.current.off('style.load', handleMapLoad);
+        }
         previewMap.current.off('render', hideAllMapboxElements);
         previewMap.current.remove();
         previewMap.current = null;
