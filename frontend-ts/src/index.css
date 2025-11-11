@@ -324,4 +324,13 @@
     scrollbar-width: thin;
     scrollbar-color: rgb(203 213 225) transparent;
   }
+
+  /* Permanently hide Mapbox branding */
+  .mapboxgl-ctrl-attrib,
+  .mapboxgl-ctrl-logo {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
 }
