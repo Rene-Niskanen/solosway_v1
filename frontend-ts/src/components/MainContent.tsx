@@ -118,6 +118,8 @@ const LocationPickerModal: React.FC<{
   const isUserInteractionRef = React.useRef<boolean>(false);
   // Track if zoom was explicitly set by user (vs calculated by reverse geocoding)
   const isZoomUserSelectedRef = React.useRef<boolean>(false);
+  // Track if map was just initialized to prevent immediate sync
+  const isMapJustInitializedRef = React.useRef<boolean>(false);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
@@ -263,6 +265,9 @@ const LocationPickerModal: React.FC<{
         });
 
         try {
+          // Mark that map is being initialized to prevent sync effect from running
+          isMapJustInitializedRef.current = true;
+          
           map.current = new mapboxgl.Map({
             container: mapContainer.current,
             style: 'mapbox://styles/mapbox/light-v11',
@@ -271,7 +276,10 @@ const LocationPickerModal: React.FC<{
             attributionControl: false
           });
 
-          console.log('✅ LocationPicker: Map instance created');
+          console.log('✅ LocationPicker: Map instance created', {
+            center: initialCenter,
+            zoom: initialZoom
+          });
 
           // Store handlers for cleanup
           const handleMapLoad = () => {
@@ -381,9 +389,15 @@ const LocationPickerModal: React.FC<{
   }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom, isLocationDataReady]);
 
   // Sync map with selected coordinates whenever they change
-  // But skip sync if the change came from user interaction (map click)
+  // But skip sync if the change came from user interaction (map click) or if map was just initialized
   React.useEffect(() => {
     if (!map.current || !isOpen) return;
+    
+    // Skip sync if map was just initialized (prevents glitching between locations)
+    if (isMapJustInitializedRef.current) {
+      console.log('📍 LocationPicker: Skipping sync - map was just initialized');
+      return;
+    }
     
     // Skip sync if this coordinate change came from user interaction
     if (isUserInteractionRef.current) {
@@ -395,7 +409,7 @@ const LocationPickerModal: React.FC<{
     if (!map.current.loaded()) {
       // Wait for map to load before syncing
       const handleLoad = () => {
-        if (map.current && map.current.loaded() && !isUserInteractionRef.current) {
+        if (map.current && map.current.loaded() && !isUserInteractionRef.current && !isMapJustInitializedRef.current) {
           syncMap();
         }
       };
@@ -410,8 +424,8 @@ const LocationPickerModal: React.FC<{
     const syncMap = () => {
       if (!map.current || !map.current.loaded()) return;
       
-      // Double-check we're not in a user interaction
-      if (isUserInteractionRef.current) {
+      // Double-check we're not in a user interaction or just initialized
+      if (isUserInteractionRef.current || isMapJustInitializedRef.current) {
         return;
       }
 
