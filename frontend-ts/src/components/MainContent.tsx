@@ -295,15 +295,26 @@ const LocationPickerModal: React.FC<{
     setGeocodeError('');
 
     try {
+      if (!mapboxToken) {
+        console.error('❌ Geocode: Mapbox token is missing!');
+        setGeocodeError('Mapbox token is not configured');
+        setIsGeocoding(false);
+        return;
+      }
+
       // For postcodes, try without type restrictions first, then fallback to specific types
       // Remove type restrictions to allow all location types including postcodes
-      const response = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1`
-      );
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1`;
+      console.log('📍 Geocode: Fetching from:', url.replace(mapboxToken, 'TOKEN_HIDDEN'));
+      
+      const response = await fetch(url);
 
       if (!response.ok) {
-        console.error('Geocoding API error:', response.status, response.statusText);
-        throw new Error('Geocoding failed');
+        const errorText = await response.text();
+        console.error('❌ Geocoding API error:', response.status, response.statusText, errorText);
+        setGeocodeError(`Geocoding failed: ${response.status} ${response.statusText}`);
+        setIsGeocoding(false);
+        return;
       }
 
       const data = await response.json();
@@ -378,12 +389,12 @@ const LocationPickerModal: React.FC<{
 
         updateMap();
       } else {
-        setGeocodeError('Location not found');
-        console.log('No features found for query:', query);
+        setGeocodeError('Location not found. Try a different search term.');
+        console.log('❌ No features found for query:', query);
       }
     } catch (error: any) {
-      console.error('Geocoding error:', error);
-      setGeocodeError('Failed to find location');
+      console.error('❌ Geocoding error:', error);
+      setGeocodeError(`Failed to find location: ${error.message || 'Network error'}`);
     } finally {
       setIsGeocoding(false);
     }
