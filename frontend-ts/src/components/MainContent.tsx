@@ -538,31 +538,33 @@ const LocationPickerModal: React.FC<{
       return;
     }
 
-    // Wait for container to be available and have dimensions
-    let retryCount = 0;
-    const maxRetries = 50; // 5 seconds max wait
-    
-    const initMap = () => {
-      retryCount++;
+    // Wait a bit for the framer-motion animation to start rendering
+    const initTimeout = setTimeout(() => {
+      // Wait for container to be available and have dimensions
+      let retryCount = 0;
+      const maxRetries = 50; // 5 seconds max wait
       
-      if (retryCount > maxRetries) {
-        console.error('❌ Failed to initialize map: container never became ready');
-        return;
-      }
+      const initMap = () => {
+        retryCount++;
+        
+        if (retryCount > maxRetries) {
+          console.error('❌ Failed to initialize map: container never became ready');
+          return;
+        }
 
-      if (!previewMapContainer.current) {
-        setTimeout(initMap, 100);
-        return;
-      }
+        if (!previewMapContainer.current) {
+          setTimeout(initMap, 100);
+          return;
+        }
 
-      const container = previewMapContainer.current;
-      const rect = container.getBoundingClientRect();
-      const hasDimensions = rect.width > 0 && rect.height > 0;
-      
-      if (!hasDimensions) {
-        setTimeout(initMap, 100);
-        return;
-      }
+        const container = previewMapContainer.current;
+        const rect = container.getBoundingClientRect();
+        const hasDimensions = rect.width > 0 && rect.height > 0;
+        
+        if (!hasDimensions) {
+          setTimeout(initMap, 100);
+          return;
+        }
 
       // Container is ready - initialize map
       try {
@@ -854,12 +856,14 @@ const LocationPickerModal: React.FC<{
       } catch (error) {
         console.error('❌ Failed to initialize preview map:', error);
       }
-    };
+      };
 
-    // Start initialization
-    initMap();
+      // Start initialization
+      initMap();
+    }, 200); // Wait 200ms for framer-motion animation to start
 
     return () => {
+      clearTimeout(initTimeout);
       if (previewMap.current) {
         // Clean up observers
         const observer = (previewMap.current as any)._mapboxObserver;
