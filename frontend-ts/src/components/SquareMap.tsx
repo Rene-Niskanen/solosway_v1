@@ -1593,6 +1593,34 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
   }, [searchQuery, isVisible]);
 
+  // Listen for default map location changes from settings
+  useEffect(() => {
+    const handleLocationChange = (event: CustomEvent) => {
+      if (!map.current || !isVisible) return;
+      
+      const locationData = event.detail;
+      if (locationData && locationData.coordinates && Array.isArray(locationData.coordinates) && locationData.coordinates.length === 2) {
+        console.log('🗺️ SquareMap: Default location changed, updating map view', locationData);
+        
+        // Update map center and zoom to reflect the new default location
+        map.current.flyTo({
+          center: locationData.coordinates as [number, number],
+          zoom: locationData.zoom || 9.5,
+          duration: 1000, // Smooth transition
+          essential: true
+        });
+      }
+    };
+
+    // Add event listener for default map location changes
+    window.addEventListener('defaultMapLocationChanged', handleLocationChange as EventListener);
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('defaultMapLocationChanged', handleLocationChange as EventListener);
+    };
+  }, [isVisible]);
+
   return (
     <AnimatePresence>
       {isVisible && (

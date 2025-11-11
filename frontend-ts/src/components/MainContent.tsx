@@ -680,6 +680,11 @@ const LocationPickerModal: React.FC<{
       try {
         localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, JSON.stringify(locationData));
         console.log('✅ LocationPicker: Location saved - this will be shown next time modal opens');
+        
+        // Dispatch custom event to notify map component of location change
+        window.dispatchEvent(new CustomEvent('defaultMapLocationChanged', {
+          detail: locationData
+        }));
       } catch (error) {
         console.error('❌ LocationPicker: Error saving location', error);
         return;
