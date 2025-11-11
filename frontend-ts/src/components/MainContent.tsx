@@ -23,7 +23,7 @@ import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload,
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
-const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
+export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
 // Helper function to calculate dynamic zoom based on area size
 const calculateZoomFromBbox = (bbox: number[] | undefined, placeType: string[] | undefined): number => {
@@ -115,21 +115,45 @@ const LocationPickerModal: React.FC<{
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
+  // Track if location data is ready to prevent race conditions
+  const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
+
   // Reload saved location when modal opens
   React.useEffect(() => {
     if (isOpen) {
+      setIsLocationDataReady(false);
       // Get the latest saved location from localStorage
-      const getSavedLocation = () => {
+      const getSavedLocation = async () => {
         if (typeof window !== 'undefined') {
           const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
           if (saved) {
             try {
               const parsed = JSON.parse(saved);
               if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+                let locationName = parsed.name || '';
+                
+                // If name is missing but coordinates exist, try reverse geocoding
+                if (!locationName && parsed.coordinates) {
+                  try {
+                    const reverseGeocodeUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${parsed.coordinates[0]},${parsed.coordinates[1]}.json?access_token=${mapboxToken}&limit=1`;
+                    const response = await fetch(reverseGeocodeUrl);
+                    if (response.ok) {
+                      const data = await response.json();
+                      if (data.features && data.features.length > 0) {
+                        locationName = data.features[0].place_name;
+                      }
+                    }
+                  } catch (error) {
+                    console.warn('Reverse geocoding failed for saved location:', error);
+                    // Fallback to coordinates if reverse geocoding fails
+                    locationName = `${parsed.coordinates[1].toFixed(4)}, ${parsed.coordinates[0].toFixed(4)}`;
+                  }
+                }
+                
                 return {
                   coordinates: parsed.coordinates as [number, number],
                   zoom: parsed.zoom || 9.5,
-                  name: parsed.name || ''
+                  name: locationName
                 };
               }
             } catch {}
@@ -142,14 +166,18 @@ const LocationPickerModal: React.FC<{
         };
       };
 
-      const saved = getSavedLocation();
-      setLocationInput(saved.name);
-      setSelectedCoordinates(saved.coordinates);
-      setSelectedLocationName(saved.name);
-      setSelectedZoom(saved.zoom);
-      console.log('📍 LocationPicker: Loaded saved location on modal open', saved);
+      getSavedLocation().then((saved) => {
+        setLocationInput(saved.name);
+        setSelectedCoordinates(saved.coordinates);
+        setSelectedLocationName(saved.name);
+        setSelectedZoom(saved.zoom);
+        setIsLocationDataReady(true);
+        console.log('📍 LocationPicker: Loaded saved location on modal open', saved);
+      });
+    } else {
+      setIsLocationDataReady(false);
     }
-  }, [isOpen]);
+  }, [isOpen, mapboxToken]);
 
   // Initialize map when modal opens and location is loaded
   React.useEffect(() => {
@@ -169,10 +197,10 @@ const LocationPickerModal: React.FC<{
       return;
     }
 
-    // Wait a bit for the state to be updated from the isOpen effect
-    // This ensures we use the latest saved location
-    if (!selectedCoordinates) {
-      console.log('📍 LocationPicker: Waiting for coordinates to be loaded...');
+    // Wait for location data to be ready before initializing map
+    // This ensures we use the latest saved location and prevents race conditions
+    if (!isLocationDataReady || !selectedCoordinates) {
+      console.log('📍 LocationPicker: Waiting for location data to be loaded...', { isLocationDataReady, hasCoordinates: !!selectedCoordinates });
       return;
     }
 
@@ -330,36 +358,47 @@ const LocationPickerModal: React.FC<{
         marker.current = null;
       }
     };
-  }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom]);
+  }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom, isLocationDataReady]);
 
   // Sync map with selected coordinates whenever they change
   React.useEffect(() => {
-    if (!map.current) return;
+    if (!map.current || !isOpen) return;
+    
+    // Don't sync if map is not loaded yet
+    if (!map.current.loaded()) {
+      // Wait for map to load before syncing
+      const handleLoad = () => {
+        if (map.current && map.current.loaded()) {
+          syncMap();
+        }
+      };
+      map.current.once('load', handleLoad);
+      return () => {
+        if (map.current) {
+          map.current.off('load', handleLoad);
+        }
+      };
+    }
 
     const syncMap = () => {
-      if (!map.current) return;
+      if (!map.current || !map.current.loaded()) return;
 
       try {
-        if (map.current.loaded()) {
-          map.current.flyTo({
-            center: selectedCoordinates,
-            zoom: selectedZoom || 9.5,
-            duration: 600
-          });
+        map.current.flyTo({
+          center: selectedCoordinates,
+          zoom: selectedZoom || 9.5,
+          duration: 600
+        });
 
-          // Don't add marker - using dotted border frame instead
-          // if (marker.current) {
-          //   marker.current.setLngLat(selectedCoordinates);
-          // } else {
-          //   marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-          //     .setLngLat(selectedCoordinates)
-          //     .addTo(map.current);
-          // }
-          console.log('✅ LocationPicker: Map synced with coordinates');
-        } else {
-          // Wait for map to load
-          map.current.once('load', syncMap);
-        }
+        // Don't add marker - using dotted border frame instead
+        // if (marker.current) {
+        //   marker.current.setLngLat(selectedCoordinates);
+        // } else {
+        //   marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+        //     .setLngLat(selectedCoordinates)
+        //     .addTo(map.current);
+        // }
+        console.log('✅ LocationPicker: Map synced with coordinates');
       } catch (error) {
         console.error('❌ LocationPicker: Error syncing map:', error);
         // Retry after a delay
@@ -368,7 +407,7 @@ const LocationPickerModal: React.FC<{
     };
 
     syncMap();
-  }, [selectedCoordinates, selectedZoom]);
+  }, [selectedCoordinates, selectedZoom, isOpen]);
 
   const geocodeLocation = React.useCallback(async (query: string) => {
     if (!query) {
@@ -631,12 +670,16 @@ const LocationPickerModal: React.FC<{
       if (previewMap.current) {
         previewMap.current.off('moveend', handleMoveEnd);
         previewMap.current.off('move', handleMove);
+        previewMap.current.off('load', hideBranding);
         previewMap.current.remove();
         previewMap.current = null;
       }
+      if (previewMarker.current) {
+        previewMarker.current.remove();
+        previewMarker.current = null;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPreviewMode, mapboxToken]);
+  }, [isPreviewMode, mapboxToken, selectedCoordinates, selectedZoom]);
 
   return (
     <>

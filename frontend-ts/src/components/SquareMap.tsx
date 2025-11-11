@@ -7,6 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
 import { useBackendApi } from './BackendApi';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { DEFAULT_MAP_LOCATION_KEY } from './MainContent';
 // import { openaiService, QueryAnalysis } from '../services/openai';
 
 interface SquareMapProps {
@@ -1441,7 +1442,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       // Get default map location from localStorage
       const getDefaultMapLocation = () => {
         if (typeof window !== 'undefined') {
-          const saved = localStorage.getItem('defaultMapLocation');
+          const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
           if (saved) {
             try {
               const parsed = JSON.parse(saved);
