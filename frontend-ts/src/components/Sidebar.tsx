@@ -94,7 +94,7 @@ export const Sidebar = ({
         ease: [0.4, 0, 0.2, 1]
       }}
       className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} transition-all duration-300 bg-white ${className || ''}`} 
-      style={{ background: isCollapsed ? 'transparent' : '#ffffff', backgroundColor: isCollapsed ? 'transparent' : '#ffffff' }}
+      style={{ background: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)', backgroundColor: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)' }}
     >
       {!isCollapsed && (
         <>

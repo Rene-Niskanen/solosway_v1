@@ -94,6 +94,8 @@ const LocationPickerModal: React.FC<{
   const isMapJustInitializedRef = React.useRef<boolean>(false);
   // Track when loading coordinates from localStorage to prevent sync during initial load
   const isLoadingFromStorageRef = React.useRef<boolean>(false);
+  // Track if coordinates are being updated from map drag to prevent effect loop
+  const isUpdatingFromDragRef = React.useRef<boolean>(false);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
@@ -238,12 +240,19 @@ const LocationPickerModal: React.FC<{
             style: 'mapbox://styles/mapbox/light-v11',
             center: initialCenter,
             zoom: initialZoom,
-            attributionControl: false
+            attributionControl: false,
+            interactive: true,
+            dragPan: true,
+            scrollZoom: true,
+            boxZoom: true,
+            doubleClickZoom: true
           });
 
           console.log('✅ LocationPicker: Map instance created', {
             center: initialCenter,
-            zoom: initialZoom
+            zoom: initialZoom,
+            interactive: map.current.getStyle() ? 'ready' : 'loading',
+            hasContainer: !!mapContainer.current
           });
 
           // Store handlers for cleanup
@@ -315,6 +324,33 @@ const LocationPickerModal: React.FC<{
             // }
           };
 
+          // Handle map drag - update coordinates when user drags the map
+          const handleMapMove = () => {
+            if (!map.current) return;
+            const center = map.current.getCenter();
+            const newCoordinates: [number, number] = [center.lng, center.lat];
+            setSelectedCoordinates(newCoordinates);
+          };
+
+          const handleMapMoveEnd = () => {
+            if (!map.current) return;
+            const center = map.current.getCenter();
+            const currentZoom = map.current.getZoom();
+            const newCoordinates: [number, number] = [center.lng, center.lat];
+            
+            console.log('📍 LocationPicker: Modal map drag ended, updating location', {
+              coordinates: newCoordinates,
+              zoom: currentZoom
+            });
+            
+            // Mark zoom as user-selected
+            isZoomUserSelectedRef.current = true;
+            setSelectedZoom(currentZoom);
+            setSelectedCoordinates(newCoordinates);
+            // Reverse geocode to update location name
+            reverseGeocode(center.lng, center.lat);
+          };
+
           const handleMapError = (e: any) => {
             console.error('❌ Map error:', e);
           };
@@ -328,6 +364,8 @@ const LocationPickerModal: React.FC<{
 
           map.current.on('load', handleMapLoad);
           map.current.on('click', handleMapClick);
+          map.current.on('move', handleMapMove);
+          map.current.on('moveend', handleMapMoveEnd);
           map.current.on('error', handleMapError);
           map.current.on('style.load', handleStyleLoad);
       
@@ -662,35 +700,93 @@ const LocationPickerModal: React.FC<{
   };
 
   const handleConfirm = () => {
-    if (!selectedCoordinates) {
-      console.error('❌ LocationPicker: Cannot confirm - no coordinates selected');
+    // IMPORTANT: Get coordinates BEFORE closing modal (which cleans up preview map)
+    // Get the latest coordinates directly from the preview map if it exists (most accurate)
+    // Otherwise fall back to state
+    let finalCoordinates: [number, number];
+    let finalZoom: number;
+
+    // Capture coordinates from the map that's currently visible
+    // Priority: preview map (if in preview mode) > modal map > state
+    if (isPreviewMode && previewMap.current) {
+      // Get the absolute latest position from the preview map
+      const center = previewMap.current.getCenter();
+      finalCoordinates = [center.lng, center.lat];
+      finalZoom = previewMap.current.getZoom();
+      console.log('📍 LocationPicker: Getting coordinates directly from preview map', {
+        coordinates: finalCoordinates,
+        zoom: finalZoom,
+        isPreviewMode,
+        hasPreviewMap: !!previewMap.current
+      });
+    } else if (map.current) {
+      // Get coordinates from the modal map (the one in the dialog)
+      const center = map.current.getCenter();
+      finalCoordinates = [center.lng, center.lat];
+      finalZoom = map.current.getZoom();
+      console.log('📍 LocationPicker: Getting coordinates directly from modal map', {
+        coordinates: finalCoordinates,
+        zoom: finalZoom,
+        isPreviewMode,
+        hasModalMap: !!map.current
+      });
+    } else if (selectedCoordinates) {
+      // Fallback to state if preview map doesn't exist
+      finalCoordinates = selectedCoordinates;
+      finalZoom = selectedZoom || 9.5;
+      console.log('📍 LocationPicker: Using coordinates from state (preview map not available)', {
+        coordinates: finalCoordinates,
+        zoom: finalZoom,
+        isPreviewMode,
+        hasPreviewMap: !!previewMap.current,
+        hasSelectedCoordinates: !!selectedCoordinates
+      });
+    } else {
+      console.error('❌ LocationPicker: Cannot confirm - no coordinates available', {
+        isPreviewMode,
+        hasPreviewMap: !!previewMap.current,
+        hasSelectedCoordinates: !!selectedCoordinates
+      });
       return;
     }
 
-    // Simple: Save exactly what the user selected
+    const finalName = selectedLocationName || locationInput || 'Unknown Location';
+
+    // Save exactly what the user selected (including any drag adjustments)
     const locationData = {
-      name: selectedLocationName || locationInput || 'Unknown Location',
-      coordinates: selectedCoordinates,
-      zoom: selectedZoom || 9.5
+      name: finalName,
+      coordinates: finalCoordinates,
+      zoom: finalZoom
     };
 
-    console.log('📍 LocationPicker: Saving location', locationData);
+    console.log('📍 LocationPicker: Confirming and saving location', {
+      coordinates: finalCoordinates,
+      zoom: finalZoom,
+      name: finalName,
+      locationData
+    });
 
+    // Save and dispatch event BEFORE closing modal
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, JSON.stringify(locationData));
-        console.log('✅ LocationPicker: Location saved - this will be shown next time modal opens');
+        console.log('✅ LocationPicker: Location saved to localStorage', locationData);
         
         // Dispatch custom event to notify map component of location change
-        window.dispatchEvent(new CustomEvent('defaultMapLocationChanged', {
-          detail: locationData
-        }));
+        // Use a small delay to ensure event listeners are ready
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('defaultMapLocationChanged', {
+            detail: locationData
+          }));
+          console.log('✅ LocationPicker: Event dispatched to notify map component', locationData);
+        }, 50);
       } catch (error) {
         console.error('❌ LocationPicker: Error saving location', error);
         return;
       }
     }
 
+    // Close modal AFTER saving (this will clean up preview map)
     setIsOpen(false);
     setIsPreviewMode(false);
     onLocationSaved();
@@ -713,23 +809,40 @@ const LocationPickerModal: React.FC<{
     // Update zoom and location when map moves - pin stays centered visually
     const handleMoveEnd = () => {
       if (previewMap.current) {
+        isUpdatingFromDragRef.current = true;
         const currentZoom = previewMap.current.getZoom();
         // In preview mode, user is explicitly adjusting the view, so mark zoom as user-selected
         isZoomUserSelectedRef.current = true;
-        setSelectedZoom(currentZoom);
-        // Get center of viewport (where the pin is visually)
         const center = previewMap.current.getCenter();
-        setSelectedCoordinates([center.lng, center.lat]);
+        const newCoordinates: [number, number] = [center.lng, center.lat];
+        
+        console.log('📍 LocationPicker: Map drag ended, updating location', {
+          coordinates: newCoordinates,
+          zoom: currentZoom
+        });
+        
+        setSelectedZoom(currentZoom);
+        setSelectedCoordinates(newCoordinates);
         // Reverse geocode to update location name (won't overwrite user-selected zoom)
         reverseGeocode(center.lng, center.lat);
+        // Reset flag after state updates
+        setTimeout(() => {
+          isUpdatingFromDragRef.current = false;
+        }, 100);
       }
     };
 
     // Also update on move (not just moveend) for smoother updates
     const handleMove = () => {
       if (previewMap.current) {
+        isUpdatingFromDragRef.current = true;
         const center = previewMap.current.getCenter();
-        setSelectedCoordinates([center.lng, center.lat]);
+        const newCoordinates: [number, number] = [center.lng, center.lat];
+        setSelectedCoordinates(newCoordinates);
+        // Reset flag after state update
+        setTimeout(() => {
+          isUpdatingFromDragRef.current = false;
+        }, 50);
       }
     };
 
@@ -763,7 +876,25 @@ const LocationPickerModal: React.FC<{
         previewMarker.current = null;
       }
     };
-  }, [isPreviewMode, mapboxToken, selectedCoordinates, selectedZoom]);
+  }, [isPreviewMode, mapboxToken]); // Removed selectedCoordinates and selectedZoom to prevent recreation on drag
+
+  // Update preview map center/zoom when coordinates change externally (not from dragging)
+  React.useEffect(() => {
+    if (!isPreviewMode || !previewMap.current || isUpdatingFromDragRef.current) return;
+    
+    // Only update if the map center is significantly different from selected coordinates
+    const currentCenter = previewMap.current.getCenter();
+    const coordDiff = Math.abs(currentCenter.lng - selectedCoordinates[0]) + Math.abs(currentCenter.lat - selectedCoordinates[1]);
+    const zoomDiff = Math.abs(previewMap.current.getZoom() - selectedZoom);
+    
+    // Only update if there's a meaningful difference (prevents unnecessary updates)
+    if (coordDiff > 0.0001 || zoomDiff > 0.1) {
+      previewMap.current.jumpTo({
+        center: selectedCoordinates,
+        zoom: selectedZoom
+      });
+    }
+  }, [isPreviewMode, selectedCoordinates, selectedZoom]);
 
   return (
     <>
@@ -826,7 +957,7 @@ const LocationPickerModal: React.FC<{
                 <div 
                   ref={mapContainer}
                   className="w-full h-full"
-                  style={{ position: 'relative' }}
+                  style={{ position: 'relative', zIndex: 1, pointerEvents: 'auto' }}
                 />
                 
                 {/* Dotted Border Frame Overlay - similar to fullscreen preview */}
