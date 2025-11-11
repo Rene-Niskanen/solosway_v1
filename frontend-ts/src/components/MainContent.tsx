@@ -186,10 +186,10 @@ const LocationPickerModal: React.FC<{
       clearTimeout(geocodeTimeoutRef.current);
     }
 
-    // Balanced debounce (300ms) - responsive but prevents excessive map jumping
+    // Longer debounce (700ms) - prevents excessive map jumping while typing
     geocodeTimeoutRef.current = setTimeout(() => {
       geocodeLocation(locationInput.trim());
-    }, 300);
+    }, 700);
 
     return () => {
       if (geocodeTimeoutRef.current) {
