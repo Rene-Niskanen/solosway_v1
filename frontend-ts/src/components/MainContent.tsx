@@ -570,8 +570,19 @@ const LocationPickerModal: React.FC<{
           return;
         }
         
+        // Force explicit dimensions if they're not set
         const rect = container.getBoundingClientRect();
         const computedStyle = window.getComputedStyle(container);
+        
+        // If container has no dimensions, set them explicitly
+        if (rect.width === 0 || rect.height === 0) {
+          container.style.width = window.innerWidth + 'px';
+          container.style.height = window.innerHeight + 'px';
+          // Check again after setting dimensions
+          setTimeout(initMap, 50);
+          return;
+        }
+        
         const hasDimensions = rect.width > 0 && rect.height > 0;
         const isVisible = computedStyle.display !== 'none' && 
                          computedStyle.visibility !== 'hidden' && 
@@ -587,7 +598,9 @@ const LocationPickerModal: React.FC<{
               height: rect.height,
               display: computedStyle.display,
               visibility: computedStyle.visibility,
-              opacity: computedStyle.opacity
+              opacity: computedStyle.opacity,
+              innerWidth: window.innerWidth,
+              innerHeight: window.innerHeight
             });
           }
           setTimeout(initMap, 100);
@@ -1118,15 +1131,14 @@ const LocationPickerModal: React.FC<{
               ref={previewMapContainer}
               className="preview-map-container"
               style={{
-                position: 'absolute',
+                position: 'fixed',
                 left: 0,
                 top: 0,
-                right: 0,
-                bottom: 0,
-                width: '100vw',
-                height: '100vh',
+                width: window.innerWidth + 'px',
+                height: window.innerHeight + 'px',
                 backgroundColor: 'transparent',
-                overflow: 'hidden'
+                overflow: 'hidden',
+                zIndex: 1
               }}
             />
             
