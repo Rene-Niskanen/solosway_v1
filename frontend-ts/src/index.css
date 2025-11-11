@@ -363,4 +363,26 @@
   .preview-map-container div[style*="top: 20px"] {
     display: none !important;
   }
+
+  /* Hide any elements with grey or white backgrounds in preview mode */
+  .preview-map-container div[style*="background-color: rgb(229, 229, 235)"],
+  .preview-map-container div[style*="background-color: rgb(255, 255, 255)"],
+  .preview-map-container div[style*="background-color: rgb(241, 245, 249)"],
+  .preview-map-container div[style*="background-color: rgb(233, 233, 235)"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+
+  /* Global rule: hide any small grey/white boxes in preview mode area */
+  body:has(.preview-map-container) div {
+    background-color: transparent !important;
+  }
+  
+  body:has(.preview-map-container) div[style*="background-color: rgb(229, 229, 235)"],
+  body:has(.preview-map-container) div[style*="background-color: rgb(255, 255, 255)"] {
+    display: none !important;
+  }
 }
