@@ -711,13 +711,15 @@ const LocationPickerModal: React.FC<{
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] bg-slate-100"
+            className="fixed inset-0 z-[9999]"
             style={{
-              backgroundColor: '#f1f5f9', // Ensure slate-100 background covers everything
+              backgroundColor: '#f1f5f9', // slate-100 - ensure full coverage
               top: 0,
               left: 0,
               right: 0,
-              bottom: 0
+              bottom: 0,
+              width: '100vw',
+              height: '100vh'
             }}
           >
             {/* Seamless Blur Overlay - covers everything outside the preview frame */}
@@ -727,8 +729,8 @@ const LocationPickerModal: React.FC<{
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
                 backgroundColor: 'rgba(241, 245, 249, 0.4)',
-                // Use clip-path to create a frame shape that covers everything except the preview area
-                // This ensures seamless blur without mask artifacts
+                // Use clip-path to create frame shape - blur covers everything except preview area
+                // This ensures the top area is fully covered with blur
                 clipPath: `polygon(
                   0% 0%, 
                   0% 100%, 
