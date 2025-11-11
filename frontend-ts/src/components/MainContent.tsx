@@ -710,13 +710,13 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Preview Mode Overlay Frame - no sidebar, full width */}
+            {/* Preview Mode Overlay Frame - adjusted to not be behind sidebar */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
                 top: '4px',
-                left: '4px',
-                right: '4px',
+                left: '60px', // Start after sidebar (56px sidebar + 4px padding)
+                right: '4px', // Equal padding on right side
                 bottom: '80px', // Above buttons only
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
               }}
@@ -733,6 +733,9 @@ const LocationPickerModal: React.FC<{
             <div 
               ref={previewMapContainer}
               className="w-full h-full relative"
+              style={{
+                marginLeft: '56px' // Offset for sidebar
+              }}
             />
             
             {/* Fixed Center Pin Overlay - Blue circle with white target icon */}
@@ -740,7 +743,7 @@ const LocationPickerModal: React.FC<{
               className="fixed z-[10001] pointer-events-none"
               style={{
                 top: '50%',
-                left: '50vw', // Center of screen (no sidebar offset)
+                left: 'calc(50vw + 28px)', // Center accounting for sidebar (56px / 2 = 28px)
                 transform: 'translate(-50%, -50%)'
               }}
             >
