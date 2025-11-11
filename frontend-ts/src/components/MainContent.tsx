@@ -504,20 +504,20 @@ const LocationPickerModal: React.FC<{
                 marginLeft: '56px', // Offset for sidebar
                 paddingBottom: '80px' // Space for search bar
               }}
+            />
+            
+            {/* Fixed Center Pin Overlay - stays in center of viewport */}
+            <div 
+              className="fixed z-[10001] pointer-events-none"
+              style={{
+                top: '50%',
+                left: 'calc(50vw + 28px)', // Center of screen accounting for sidebar (56px / 2 = 28px)
+                transform: 'translate(-50%, -50%)'
+              }}
             >
-              {/* Fixed Center Pin Overlay - stays in center of visible map area */}
-              <div 
-                className="absolute z-[10001] pointer-events-none"
-                style={{
-                  top: '50%',
-                  left: 'calc(50% + 28px)', // Center of map area accounting for sidebar
-                  transform: 'translate(-50%, -50%)'
-                }}
-              >
-                <div className="relative">
-                  <MapPin className="w-8 h-8 text-blue-600 drop-shadow-lg" fill="currentColor" />
-                  <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-blue-600 rounded-full border-2 border-white"></div>
-                </div>
+              <div className="relative">
+                <MapPin className="w-8 h-8 text-blue-600 drop-shadow-lg" fill="currentColor" />
+                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-blue-600 rounded-full border-2 border-white"></div>
               </div>
             </div>
 
