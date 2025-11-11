@@ -781,6 +781,9 @@ const LocationPickerModal: React.FC<{
       previewMap.current.on('style.load', handleMapLoad);
       previewMap.current.on('render', hideAllMapboxElements);
       
+      // Store render listener for cleanup
+      (previewMap.current as any)._renderListeners = [hideAllMapboxElements];
+      
       // Also hide after delays to catch late-loading elements
       setTimeout(hideAllMapboxElements, 50);
       setTimeout(hideAllMapboxElements, 100);
