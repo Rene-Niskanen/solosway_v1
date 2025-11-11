@@ -149,124 +149,126 @@ const LocationPickerModal: React.FC<{
     setSelectedLocationName(initial.name);
     setSelectedZoom(initial.zoom);
 
-    // Small delay to ensure container is fully rendered and modal is fully open
+    // Wait for dialog animation to complete (200ms) plus buffer for rendering
+    // Use a longer delay to account for Radix UI dialog animations
     const initTimeout = setTimeout(() => {
       if (!isOpen || !mapContainer.current) {
         console.error('❌ LocationPicker: Modal closed or container disappeared before map init', { isOpen, hasContainer: !!mapContainer.current });
         return;
       }
 
-      // Double-check container has dimensions
-      if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
-        console.warn('📍 LocationPicker: Container has no dimensions, waiting...', {
-          width: mapContainer.current.offsetWidth,
-          height: mapContainer.current.offsetHeight
-        });
-        // Retry after a longer delay
-        setTimeout(() => {
-          if (isOpen && mapContainer.current && mapContainer.current.offsetWidth > 0) {
-            // Re-run initialization
-            const retryInit = setTimeout(() => {
-              if (!isOpen || !mapContainer.current) return;
-              // This will be handled by the main init logic below
-            }, 200);
-          }
-        }, 300);
-        return;
-      }
+      // Double-check container has dimensions - retry if not ready
+      const checkAndInit = () => {
+        if (!isOpen || !mapContainer.current) return;
 
-      console.log('📍 LocationPicker: Creating map instance...', {
-        center: initial.center,
-        zoom: initial.zoom,
-        container: mapContainer.current
-      });
+        if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
+          console.warn('📍 LocationPicker: Container has no dimensions, retrying...', {
+            width: mapContainer.current.offsetWidth,
+            height: mapContainer.current.offsetHeight
+          });
+          // Retry after a short delay
+          setTimeout(checkAndInit, 100);
+          return;
+        }
 
-      try {
-        map.current = new mapboxgl.Map({
-          container: mapContainer.current,
-          style: 'mapbox://styles/mapbox/light-v11',
+        // Container is ready, proceed with initialization
+        console.log('📍 LocationPicker: Creating map instance...', {
           center: initial.center,
           zoom: initial.zoom,
-          attributionControl: false
+          container: mapContainer.current,
+          containerSize: {
+            width: mapContainer.current.offsetWidth,
+            height: mapContainer.current.offsetHeight
+          }
         });
 
-        console.log('✅ LocationPicker: Map instance created');
+        try {
+          map.current = new mapboxgl.Map({
+            container: mapContainer.current,
+            style: 'mapbox://styles/mapbox/light-v11',
+            center: initial.center,
+            zoom: initial.zoom,
+            attributionControl: false
+          });
 
-      } catch (error) {
-        console.error('❌ LocationPicker: Failed to create map:', error);
-        return;
-      }
+          console.log('✅ LocationPicker: Map instance created');
 
-      // Store handlers for cleanup
-      const handleMapLoad = () => {
-        if (!map.current) return;
+          // Store handlers for cleanup
+          const handleMapLoad = () => {
+            if (!map.current) return;
 
-        console.log('✅ LocationPicker: Map loaded successfully');
+            console.log('✅ LocationPicker: Map loaded successfully');
 
-        // Resize map to ensure it renders correctly
-        map.current.resize();
-
-        // Add marker
-        marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-          .setLngLat(initial.center)
-          .addTo(map.current);
-
-        console.log('✅ LocationPicker: Marker added at', initial.center);
-
-        // Hide Mapbox branding
-        const container = map.current.getContainer();
-        const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-        const logo = container.querySelector('.mapboxgl-ctrl-logo');
-        if (attrib) (attrib as HTMLElement).style.display = 'none';
-        if (logo) (logo as HTMLElement).style.display = 'none';
-
-        // Force a repaint to ensure map is visible
-        setTimeout(() => {
-          if (map.current) {
+            // Resize map to ensure it renders correctly
             map.current.resize();
-          }
-        }, 100);
-      };
 
-      const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
-        const { lng, lat } = e.lngLat;
-        const coords: [number, number] = [lng, lat];
-        setSelectedCoordinates(coords);
-        
-        // Reverse geocode to get location name
-        reverseGeocode(lng, lat);
-        
-        // Update marker
-        if (marker.current) {
-          marker.current.setLngLat(coords);
-        }
-      };
+            // Add marker
+            marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+              .setLngLat(initial.center)
+              .addTo(map.current);
 
-      const handleMapError = (e: any) => {
-        console.error('❌ Map error:', e);
-      };
+            console.log('✅ LocationPicker: Marker added at', initial.center);
 
-      const handleStyleLoad = () => {
-        if (map.current) {
-          console.log('✅ LocationPicker: Map style loaded');
-          map.current.resize();
-        }
-      };
+            // Hide Mapbox branding
+            const container = map.current.getContainer();
+            const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+            const logo = container.querySelector('.mapboxgl-ctrl-logo');
+            if (attrib) (attrib as HTMLElement).style.display = 'none';
+            if (logo) (logo as HTMLElement).style.display = 'none';
 
-      map.current.on('load', handleMapLoad);
-      map.current.on('click', handleMapClick);
-      map.current.on('error', handleMapError);
-      map.current.on('style.load', handleStyleLoad);
+            // Force a repaint to ensure map is visible
+            setTimeout(() => {
+              if (map.current) {
+                map.current.resize();
+              }
+            }, 100);
+          };
+
+          const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
+            const { lng, lat } = e.lngLat;
+            const coords: [number, number] = [lng, lat];
+            setSelectedCoordinates(coords);
+            
+            // Reverse geocode to get location name
+            reverseGeocode(lng, lat);
+            
+            // Update marker
+            if (marker.current) {
+              marker.current.setLngLat(coords);
+            }
+          };
+
+          const handleMapError = (e: any) => {
+            console.error('❌ Map error:', e);
+          };
+
+          const handleStyleLoad = () => {
+            if (map.current) {
+              console.log('✅ LocationPicker: Map style loaded');
+              map.current.resize();
+            }
+          };
+
+          map.current.on('load', handleMapLoad);
+          map.current.on('click', handleMapClick);
+          map.current.on('error', handleMapError);
+          map.current.on('style.load', handleStyleLoad);
       
-      // Also try to resize after a short delay as fallback
-      setTimeout(() => {
-        if (map.current && !map.current.loaded()) {
-          console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
-        } else if (map.current) {
-          map.current.resize();
+          // Also try to resize after a short delay as fallback
+          setTimeout(() => {
+            if (map.current && !map.current.loaded()) {
+              console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
+            } else if (map.current) {
+              map.current.resize();
+            }
+          }, 500);
+        } catch (error) {
+          console.error('❌ LocationPicker: Failed to create map:', error);
         }
-      }, 500);
-    }, 100);
+      };
+
+      checkAndInit();
+    }, 300); // Increased delay to account for dialog animation (200ms) + buffer
 
     return () => {
       clearTimeout(initTimeout);
