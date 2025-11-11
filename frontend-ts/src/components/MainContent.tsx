@@ -286,6 +286,13 @@ const LocationPickerModal: React.FC<{
             if (!map.current) return;
 
             console.log('✅ LocationPicker: Map loaded successfully');
+            
+            // Map is now loaded and initialized, allow sync effect to run after a short delay
+            // This prevents the sync from running immediately and causing glitches
+            setTimeout(() => {
+              isMapJustInitializedRef.current = false;
+              console.log('📍 LocationPicker: Map initialization complete, sync effect can now run');
+            }, 1000); // 1 second delay to ensure map is stable
 
             // Resize map to ensure it renders correctly
             map.current.resize();
