@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Database, User, BarChart3, Upload, Home, PanelLeft, Settings, LayoutDashboard, Map } from "lucide-react";
+import { Database, User, BarChart3, Upload, Home, PanelLeft, Settings, LayoutDashboard } from "lucide-react";
 
 const sidebarItems = [{
   icon: Home,
@@ -135,8 +135,8 @@ export const Sidebar = ({
         {sidebarItems.map((item, index) => {
         // Home icon is active when on search/dashboard view
         const isActive = item.id === 'home' ? activeItem === 'search' : activeItem === item.id;
-        // Use LayoutDashboard when in map view (search), Map icon otherwise
-        const Icon = item.id === 'home' ? (isActive ? LayoutDashboard : Map) : item.icon;
+        // Always use LayoutDashboard for home icon
+        const Icon = item.id === 'home' ? LayoutDashboard : item.icon;
         return <motion.button key={item.id} initial={{
           opacity: 0,
           y: 8,
