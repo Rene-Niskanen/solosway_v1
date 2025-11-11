@@ -622,8 +622,8 @@ const LocationPickerModal: React.FC<{
       previewMap.current.on('moveend', handleMoveEnd);
       previewMap.current.on('move', handleMove);
 
-    // Comprehensive function to hide all Mapbox branding and controls
-    const hideAllMapboxElements = () => {
+      // Comprehensive function to hide all Mapbox branding and controls
+      const hideAllMapboxElements = () => {
       if (!previewMap.current) return;
       
       const container = previewMap.current.getContainer();
@@ -766,73 +766,80 @@ const LocationPickerModal: React.FC<{
       });
     };
 
-    // Hide elements immediately and on load
-    hideAllMapboxElements();
-    
-    const handleMapLoad = () => {
-      if (previewMap.current) {
-        // Resize map to ensure it renders correctly
-        previewMap.current.resize();
+      // Hide elements immediately and on load
+      hideAllMapboxElements();
+      
+      const handleMapLoad = () => {
+        if (previewMap.current) {
+          // Resize map to ensure it renders correctly
+          previewMap.current.resize();
+          hideAllMapboxElements();
+        }
+      };
+      
+      previewMap.current.on('load', handleMapLoad);
+      previewMap.current.on('style.load', handleMapLoad);
+      previewMap.current.on('render', hideAllMapboxElements);
+      
+      // Also hide after delays to catch late-loading elements
+      setTimeout(hideAllMapboxElements, 50);
+      setTimeout(hideAllMapboxElements, 100);
+      setTimeout(hideAllMapboxElements, 200);
+      setTimeout(hideAllMapboxElements, 500);
+      setTimeout(hideAllMapboxElements, 1000);
+      setTimeout(hideAllMapboxElements, 2000);
+
+      // Use MutationObserver to watch for any dynamically added Mapbox elements
+      const observer = new MutationObserver(() => {
         hideAllMapboxElements();
+      });
+
+      if (previewMapContainer.current && previewMap.current) {
+        const container = previewMap.current.getContainer();
+        if (container) {
+          observer.observe(container, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style']
+          });
+        }
       }
+
+      // Also observe the document body in case elements are added outside the container
+      const bodyObserver = new MutationObserver(() => {
+        if (previewMap.current) {
+          hideAllMapboxElements();
+        }
+      });
+      
+      bodyObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+
+      // Continuous check every 100ms for the first 5 seconds
+      let checkCount = 0;
+      const maxChecks = 50; // 5 seconds at 100ms intervals
+      const continuousCheck = setInterval(() => {
+        hideAllMapboxElements();
+        checkCount++;
+        if (checkCount >= maxChecks) {
+          clearInterval(continuousCheck);
+        }
+      }, 100);
+
+      // Store observers and interval for cleanup
+      (previewMap.current as any)._mapboxObserver = observer;
+      (previewMap.current as any)._bodyObserver = bodyObserver;
+      (previewMap.current as any)._continuousCheck = continuousCheck;
+      (previewMap.current as any)._handleMoveEnd = handleMoveEnd;
+      (previewMap.current as any)._handleMove = handleMove;
+      (previewMap.current as any)._handleMapLoad = handleMapLoad;
     };
-    
-    previewMap.current.on('load', handleMapLoad);
-    previewMap.current.on('style.load', handleMapLoad);
-    previewMap.current.on('render', hideAllMapboxElements);
-    
-    // Also hide after delays to catch late-loading elements
-    setTimeout(hideAllMapboxElements, 50);
-    setTimeout(hideAllMapboxElements, 100);
-    setTimeout(hideAllMapboxElements, 200);
-    setTimeout(hideAllMapboxElements, 500);
-    setTimeout(hideAllMapboxElements, 1000);
-    setTimeout(hideAllMapboxElements, 2000);
 
-    // Use MutationObserver to watch for any dynamically added Mapbox elements
-    const observer = new MutationObserver(() => {
-      hideAllMapboxElements();
-    });
-
-    if (previewMapContainer.current && previewMap.current) {
-      const container = previewMap.current.getContainer();
-      if (container) {
-        observer.observe(container, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class', 'style']
-        });
-      }
-    }
-
-    // Also observe the document body in case elements are added outside the container
-    const bodyObserver = new MutationObserver(() => {
-      if (previewMap.current) {
-        hideAllMapboxElements();
-      }
-    });
-    
-    bodyObserver.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    // Continuous check every 100ms for the first 5 seconds
-    let checkCount = 0;
-    const maxChecks = 50; // 5 seconds at 100ms intervals
-    const continuousCheck = setInterval(() => {
-      hideAllMapboxElements();
-      checkCount++;
-      if (checkCount >= maxChecks) {
-        clearInterval(continuousCheck);
-      }
-    }, 100);
-
-    // Store observers and interval for cleanup
-    (previewMap.current as any)._mapboxObserver = observer;
-    (previewMap.current as any)._bodyObserver = bodyObserver;
-    (previewMap.current as any)._continuousCheck = continuousCheck;
+    // Start initialization
+    initMap();
 
     return () => {
       if (previewMap.current) {
