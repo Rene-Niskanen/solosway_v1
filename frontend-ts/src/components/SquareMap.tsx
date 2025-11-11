@@ -668,7 +668,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           zoom: 17.5, // Consistent zoom level matching reference image proximity
           duration: 2000, // 2 second smooth transition
           essential: true, // Ensure animation completes
-          offset: [-120, 0], // Shift center slightly to the left (negative x = left)
+          offset: [-80, 0], // Shift center slightly to the left (negative x = left)
           easing: (t) => {
             // Custom easing function for extremely smooth animation
             // Ease-in-out-cubic for smooth acceleration and deceleration
