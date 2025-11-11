@@ -715,8 +715,8 @@ const LocationPickerModal: React.FC<{
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
                 top: '80px', // Below top buttons and "Preview Mode" label (equal padding)
-                left: '72px', // After sidebar (56px) + padding (16px) = equal visual padding
-                right: '16px', // Equal padding on right
+                left: '72px', // After sidebar (56px) + padding (16px) = 72px from left edge
+                right: '72px', // Equal padding from right edge (matches left)
                 bottom: '80px', // Equal padding on bottom (matches top)
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
               }}
