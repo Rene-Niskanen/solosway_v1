@@ -596,22 +596,22 @@ const LocationPickerModal: React.FC<{
             previewMap.current.resize();
           }
         }, 300);
-      
-      // Ensure map container has no white background and remove all unwanted elements
-      if (previewMapContainer.current && previewMap.current) {
-        const mapContainer = previewMap.current.getContainer();
-        if (mapContainer) {
-          mapContainer.style.backgroundColor = 'transparent';
-          // Remove any default Mapbox controls
-          const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
-          controls.forEach((ctrl: Element) => {
-            (ctrl as HTMLElement).style.display = 'none';
-          });
+        
+        // Ensure map container has no white background and remove all unwanted elements
+        if (previewMapContainer.current && previewMap.current) {
+          const mapContainer = previewMap.current.getContainer();
+          if (mapContainer) {
+            mapContainer.style.backgroundColor = 'transparent';
+            // Remove any default Mapbox controls
+            const controls = mapContainer.querySelectorAll('.mapboxgl-ctrl');
+            controls.forEach((ctrl: Element) => {
+              (ctrl as HTMLElement).style.display = 'none';
+            });
+          }
         }
-      }
 
-      // Update zoom and location when map moves - pin stays centered visually
-      const handleMoveEnd = () => {
+        // Update zoom and location when map moves - pin stays centered visually
+        const handleMoveEnd = () => {
         if (previewMap.current) {
           const currentZoom = previewMap.current.getZoom();
           setSelectedZoom(currentZoom);
@@ -634,223 +634,226 @@ const LocationPickerModal: React.FC<{
       previewMap.current.on('moveend', handleMoveEnd);
       previewMap.current.on('move', handleMove);
 
-      // Comprehensive function to hide all Mapbox branding and controls
-      const hideAllMapboxElements = () => {
-      if (!previewMap.current) return;
+        // Comprehensive function to hide all Mapbox branding and controls
+        const hideAllMapboxElements = () => {
+          if (!previewMap.current) return;
       
-      const container = previewMap.current.getContainer();
-      if (!container) return;
+          const container = previewMap.current.getContainer();
+          if (!container) return;
 
-      // Hide ALL elements with mapboxgl classes (most aggressive approach)
-      const allMapboxElements = container.querySelectorAll('[class*="mapboxgl"]');
-      allMapboxElements.forEach((el: Element) => {
-        const htmlEl = el as HTMLElement;
-        // Only hide control elements, not the map canvas itself
-        if (!htmlEl.classList.contains('mapboxgl-map') && 
-            !htmlEl.classList.contains('mapboxgl-canvas') &&
-            !htmlEl.classList.contains('mapboxgl-canvas-container')) {
-          htmlEl.style.display = 'none';
-          htmlEl.style.visibility = 'hidden';
-          htmlEl.style.opacity = '0';
-          htmlEl.style.pointerEvents = 'none';
-        }
-      });
+          // Hide ALL elements with mapboxgl classes (most aggressive approach)
+          const allMapboxElements = container.querySelectorAll('[class*="mapboxgl"]');
+          allMapboxElements.forEach((el: Element) => {
+            const htmlEl = el as HTMLElement;
+            // Only hide control elements, not the map canvas itself
+            if (!htmlEl.classList.contains('mapboxgl-map') && 
+                !htmlEl.classList.contains('mapboxgl-canvas') &&
+                !htmlEl.classList.contains('mapboxgl-canvas-container')) {
+              htmlEl.style.display = 'none';
+              htmlEl.style.visibility = 'hidden';
+              htmlEl.style.opacity = '0';
+              htmlEl.style.pointerEvents = 'none';
+            }
+          });
 
-      // Hide all Mapbox control elements (specific selectors)
-      const allControls = container.querySelectorAll('[class*="mapboxgl-ctrl"]');
-      allControls.forEach((ctrl: Element) => {
-        const htmlCtrl = ctrl as HTMLElement;
-        htmlCtrl.style.display = 'none';
-        htmlCtrl.style.visibility = 'hidden';
-        htmlCtrl.style.opacity = '0';
-        htmlCtrl.style.pointerEvents = 'none';
-        htmlCtrl.style.width = '0';
-        htmlCtrl.style.height = '0';
-      });
+          // Hide all Mapbox control elements (specific selectors)
+          const allControls = container.querySelectorAll('[class*="mapboxgl-ctrl"]');
+          allControls.forEach((ctrl: Element) => {
+            const htmlCtrl = ctrl as HTMLElement;
+            htmlCtrl.style.display = 'none';
+            htmlCtrl.style.visibility = 'hidden';
+            htmlCtrl.style.opacity = '0';
+            htmlCtrl.style.pointerEvents = 'none';
+            htmlCtrl.style.width = '0';
+            htmlCtrl.style.height = '0';
+          });
 
-      // Hide attribution
-      const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-      if (attrib) {
-        const htmlAttrib = attrib as HTMLElement;
-        htmlAttrib.style.display = 'none';
-        htmlAttrib.style.visibility = 'hidden';
-        htmlAttrib.style.opacity = '0';
-        htmlAttrib.style.width = '0';
-        htmlAttrib.style.height = '0';
-      }
+          // Hide attribution
+          const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+          if (attrib) {
+            const htmlAttrib = attrib as HTMLElement;
+            htmlAttrib.style.display = 'none';
+            htmlAttrib.style.visibility = 'hidden';
+            htmlAttrib.style.opacity = '0';
+            htmlAttrib.style.width = '0';
+            htmlAttrib.style.height = '0';
+          }
 
-      // Hide logo
-      const logo = container.querySelector('.mapboxgl-ctrl-logo');
-      if (logo) {
-        const htmlLogo = logo as HTMLElement;
-        htmlLogo.style.display = 'none';
-        htmlLogo.style.visibility = 'hidden';
-        htmlLogo.style.opacity = '0';
-        htmlLogo.style.width = '0';
-        htmlLogo.style.height = '0';
-      }
+          // Hide logo
+          const logo = container.querySelector('.mapboxgl-ctrl-logo');
+          if (logo) {
+            const htmlLogo = logo as HTMLElement;
+            htmlLogo.style.display = 'none';
+            htmlLogo.style.visibility = 'hidden';
+            htmlLogo.style.opacity = '0';
+            htmlLogo.style.width = '0';
+            htmlLogo.style.height = '0';
+          }
 
-      // Hide any navigation controls
-      const navControls = container.querySelectorAll('.mapboxgl-ctrl-group');
-      navControls.forEach((ctrl: Element) => {
-        const htmlCtrl = ctrl as HTMLElement;
-        htmlCtrl.style.display = 'none';
-        htmlCtrl.style.visibility = 'hidden';
-        htmlCtrl.style.opacity = '0';
-        htmlCtrl.style.width = '0';
-        htmlCtrl.style.height = '0';
-      });
+          // Hide any navigation controls
+          const navControls = container.querySelectorAll('.mapboxgl-ctrl-group');
+          navControls.forEach((ctrl: Element) => {
+            const htmlCtrl = ctrl as HTMLElement;
+            htmlCtrl.style.display = 'none';
+            htmlCtrl.style.visibility = 'hidden';
+            htmlCtrl.style.opacity = '0';
+            htmlCtrl.style.width = '0';
+            htmlCtrl.style.height = '0';
+          });
 
-      // Hide any divs positioned on the left or top that might be controls
-      const allDivs = container.querySelectorAll('div');
-      allDivs.forEach((div: Element) => {
-        const htmlDiv = div as HTMLElement;
-        const computedStyle = window.getComputedStyle(htmlDiv);
-        const position = computedStyle.position;
-        const left = computedStyle.left;
-        const top = computedStyle.top;
-        const bgColor = computedStyle.backgroundColor;
+          // Hide any divs positioned on the left or top that might be controls
+          const allDivs = container.querySelectorAll('div');
+          allDivs.forEach((div: Element) => {
+            const htmlDiv = div as HTMLElement;
+            const computedStyle = window.getComputedStyle(htmlDiv);
+            const position = computedStyle.position;
+            const left = computedStyle.left;
+            const top = computedStyle.top;
+            const bgColor = computedStyle.backgroundColor;
+            
+            // Hide any absolutely/fixed positioned divs on left or top that aren't the map itself
+            if ((position === 'absolute' || position === 'fixed') &&
+                (left === '0px' || left === '10px' || left === '20px' || 
+                 top === '0px' || top === '10px' || top === '20px') &&
+                !htmlDiv.classList.contains('mapboxgl-map') &&
+                !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
+                htmlDiv.offsetWidth < 200 && htmlDiv.offsetHeight < 200) {
+              htmlDiv.style.display = 'none';
+              htmlDiv.style.visibility = 'hidden';
+              htmlDiv.style.opacity = '0';
+              htmlDiv.style.width = '0';
+              htmlDiv.style.height = '0';
+            }
+            
+            // Also hide any divs with grey or white backgrounds regardless of position
+            if (bgColor && 
+                (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
+                 bgColor.includes('rgb(255, 255, 255)') || // white
+                 bgColor.includes('rgb(241, 245, 249)') || // slate-100
+                 bgColor.includes('rgb(233, 233, 235)')) && // similar grey
+                !htmlDiv.classList.contains('mapboxgl-map') &&
+                !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
+                htmlDiv.offsetWidth > 0 && htmlDiv.offsetHeight > 0 &&
+                htmlDiv.offsetWidth < 300 && htmlDiv.offsetHeight < 300) {
+              htmlDiv.style.display = 'none';
+              htmlDiv.style.visibility = 'hidden';
+              htmlDiv.style.opacity = '0';
+              htmlDiv.style.width = '0';
+              htmlDiv.style.height = '0';
+            }
+          });
+
+          // Ensure container background is transparent
+          container.style.backgroundColor = 'transparent';
+          
+          // Hide any canvas overlays that might show grey/white
+          const canvas = container.querySelector('canvas');
+          if (canvas) {
+            canvas.style.backgroundColor = 'transparent';
+          }
+
+          // Hide any elements with grey or white backgrounds in the top-left area
+          const allElements = container.querySelectorAll('*');
+          allElements.forEach((el: Element) => {
+            const htmlEl = el as HTMLElement;
+            const rect = htmlEl.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+            
+            // Check if element is in top-left corner and has grey/white background
+            if (rect.left < containerRect.left + 100 && 
+                rect.top < containerRect.top + 100 &&
+                rect.width > 0 && rect.height > 0 &&
+                !htmlEl.classList.contains('mapboxgl-map') &&
+                !htmlEl.classList.contains('mapboxgl-canvas') &&
+                !htmlEl.classList.contains('mapboxgl-canvas-container')) {
+              const bgColor = window.getComputedStyle(htmlEl).backgroundColor;
+              if (bgColor && (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
+                              bgColor.includes('rgb(255, 255, 255)') || // white
+                              bgColor.includes('rgb(241, 245, 249)'))) { // slate-100
+                htmlEl.style.display = 'none';
+                htmlEl.style.visibility = 'hidden';
+                htmlEl.style.opacity = '0';
+              }
+            }
+          });
+        };
+
+        // Hide elements immediately and on load
+        hideAllMapboxElements();
         
-        // Hide any absolutely/fixed positioned divs on left or top that aren't the map itself
-        if ((position === 'absolute' || position === 'fixed') &&
-            (left === '0px' || left === '10px' || left === '20px' || 
-             top === '0px' || top === '10px' || top === '20px') &&
-            !htmlDiv.classList.contains('mapboxgl-map') &&
-            !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
-            htmlDiv.offsetWidth < 200 && htmlDiv.offsetHeight < 200) {
-          htmlDiv.style.display = 'none';
-          htmlDiv.style.visibility = 'hidden';
-          htmlDiv.style.opacity = '0';
-          htmlDiv.style.width = '0';
-          htmlDiv.style.height = '0';
-        }
+        const handleMapLoad = () => {
+          if (previewMap.current) {
+            // Resize map to ensure it renders correctly
+            previewMap.current.resize();
+            hideAllMapboxElements();
+          }
+        };
         
-        // Also hide any divs with grey or white backgrounds regardless of position
-        if (bgColor && 
-            (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
-             bgColor.includes('rgb(255, 255, 255)') || // white
-             bgColor.includes('rgb(241, 245, 249)') || // slate-100
-             bgColor.includes('rgb(233, 233, 235)')) && // similar grey
-            !htmlDiv.classList.contains('mapboxgl-map') &&
-            !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
-            htmlDiv.offsetWidth > 0 && htmlDiv.offsetHeight > 0 &&
-            htmlDiv.offsetWidth < 300 && htmlDiv.offsetHeight < 300) {
-          htmlDiv.style.display = 'none';
-          htmlDiv.style.visibility = 'hidden';
-          htmlDiv.style.opacity = '0';
-          htmlDiv.style.width = '0';
-          htmlDiv.style.height = '0';
-        }
-      });
-
-      // Ensure container background is transparent
-      container.style.backgroundColor = 'transparent';
-      
-      // Hide any canvas overlays that might show grey/white
-      const canvas = container.querySelector('canvas');
-      if (canvas) {
-        canvas.style.backgroundColor = 'transparent';
-      }
-
-      // Hide any elements with grey or white backgrounds in the top-left area
-      const allElements = container.querySelectorAll('*');
-      allElements.forEach((el: Element) => {
-        const htmlEl = el as HTMLElement;
-        const rect = htmlEl.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
+        previewMap.current.on('load', handleMapLoad);
+        previewMap.current.on('style.load', handleMapLoad);
+        previewMap.current.on('render', hideAllMapboxElements);
         
-        // Check if element is in top-left corner and has grey/white background
-        if (rect.left < containerRect.left + 100 && 
-            rect.top < containerRect.top + 100 &&
-            rect.width > 0 && rect.height > 0 &&
-            !htmlEl.classList.contains('mapboxgl-map') &&
-            !htmlEl.classList.contains('mapboxgl-canvas') &&
-            !htmlEl.classList.contains('mapboxgl-canvas-container')) {
-          const bgColor = window.getComputedStyle(htmlEl).backgroundColor;
-          if (bgColor && (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
-                          bgColor.includes('rgb(255, 255, 255)') || // white
-                          bgColor.includes('rgb(241, 245, 249)'))) { // slate-100
-            htmlEl.style.display = 'none';
-            htmlEl.style.visibility = 'hidden';
-            htmlEl.style.opacity = '0';
+        // Store render listener for cleanup
+        (previewMap.current as any)._renderListeners = [hideAllMapboxElements];
+        
+        // Also hide after delays to catch late-loading elements
+        setTimeout(hideAllMapboxElements, 50);
+        setTimeout(hideAllMapboxElements, 100);
+        setTimeout(hideAllMapboxElements, 200);
+        setTimeout(hideAllMapboxElements, 500);
+        setTimeout(hideAllMapboxElements, 1000);
+        setTimeout(hideAllMapboxElements, 2000);
+
+        // Use MutationObserver to watch for any dynamically added Mapbox elements
+        const observer = new MutationObserver(() => {
+          hideAllMapboxElements();
+        });
+
+        if (previewMapContainer.current && previewMap.current) {
+          const container = previewMap.current.getContainer();
+          if (container) {
+            observer.observe(container, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['class', 'style']
+            });
           }
         }
-      });
-    };
 
-      // Hide elements immediately and on load
-      hideAllMapboxElements();
-      
-      const handleMapLoad = () => {
-        if (previewMap.current) {
-          // Resize map to ensure it renders correctly
-          previewMap.current.resize();
+        // Also observe the document body in case elements are added outside the container
+        const bodyObserver = new MutationObserver(() => {
+          if (previewMap.current) {
+            hideAllMapboxElements();
+          }
+        });
+        
+        bodyObserver.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+
+        // Continuous check every 100ms for the first 5 seconds
+        let checkCount = 0;
+        const maxChecks = 50; // 5 seconds at 100ms intervals
+        const continuousCheck = setInterval(() => {
           hideAllMapboxElements();
-        }
-      };
-      
-      previewMap.current.on('load', handleMapLoad);
-      previewMap.current.on('style.load', handleMapLoad);
-      previewMap.current.on('render', hideAllMapboxElements);
-      
-      // Store render listener for cleanup
-      (previewMap.current as any)._renderListeners = [hideAllMapboxElements];
-      
-      // Also hide after delays to catch late-loading elements
-      setTimeout(hideAllMapboxElements, 50);
-      setTimeout(hideAllMapboxElements, 100);
-      setTimeout(hideAllMapboxElements, 200);
-      setTimeout(hideAllMapboxElements, 500);
-      setTimeout(hideAllMapboxElements, 1000);
-      setTimeout(hideAllMapboxElements, 2000);
+          checkCount++;
+          if (checkCount >= maxChecks) {
+            clearInterval(continuousCheck);
+          }
+        }, 100);
 
-      // Use MutationObserver to watch for any dynamically added Mapbox elements
-      const observer = new MutationObserver(() => {
-        hideAllMapboxElements();
-      });
-
-      if (previewMapContainer.current && previewMap.current) {
-        const container = previewMap.current.getContainer();
-        if (container) {
-          observer.observe(container, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['class', 'style']
-          });
-        }
+        // Store observers and interval for cleanup
+        (previewMap.current as any)._mapboxObserver = observer;
+        (previewMap.current as any)._bodyObserver = bodyObserver;
+        (previewMap.current as any)._continuousCheck = continuousCheck;
+        (previewMap.current as any)._handleMoveEnd = handleMoveEnd;
+        (previewMap.current as any)._handleMove = handleMove;
+        (previewMap.current as any)._handleMapLoad = handleMapLoad;
+      } catch (error) {
+        console.error('❌ Failed to initialize preview map:', error);
       }
-
-      // Also observe the document body in case elements are added outside the container
-      const bodyObserver = new MutationObserver(() => {
-        if (previewMap.current) {
-          hideAllMapboxElements();
-        }
-      });
-      
-      bodyObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      // Continuous check every 100ms for the first 5 seconds
-      let checkCount = 0;
-      const maxChecks = 50; // 5 seconds at 100ms intervals
-      const continuousCheck = setInterval(() => {
-        hideAllMapboxElements();
-        checkCount++;
-        if (checkCount >= maxChecks) {
-          clearInterval(continuousCheck);
-        }
-      }, 100);
-
-      // Store observers and interval for cleanup
-      (previewMap.current as any)._mapboxObserver = observer;
-      (previewMap.current as any)._bodyObserver = bodyObserver;
-      (previewMap.current as any)._continuousCheck = continuousCheck;
-      (previewMap.current as any)._handleMoveEnd = handleMoveEnd;
-      (previewMap.current as any)._handleMove = handleMove;
-      (previewMap.current as any)._handleMapLoad = handleMapLoad;
     };
 
     // Start initialization
