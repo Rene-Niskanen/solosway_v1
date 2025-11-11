@@ -713,6 +713,52 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
+            {/* Blur Overlays - cover everything outside the preview frame */}
+            {/* Top blur overlay */}
+            <div 
+              className="fixed left-0 right-0 z-[10001] pointer-events-none"
+              style={{
+                top: 0,
+                height: '80px',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                backgroundColor: 'rgba(241, 245, 249, 0.3)'
+              }}
+            />
+            {/* Bottom blur overlay */}
+            <div 
+              className="fixed left-0 right-0 z-[10001] pointer-events-none"
+              style={{
+                bottom: 0,
+                height: '80px',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                backgroundColor: 'rgba(241, 245, 249, 0.3)'
+              }}
+            />
+            {/* Left blur overlay */}
+            <div 
+              className="fixed top-0 bottom-0 z-[10001] pointer-events-none"
+              style={{
+                left: 0,
+                width: '72px',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                backgroundColor: 'rgba(241, 245, 249, 0.3)'
+              }}
+            />
+            {/* Right blur overlay */}
+            <div 
+              className="fixed top-0 bottom-0 z-[10001] pointer-events-none"
+              style={{
+                right: 0,
+                width: '72px',
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                backgroundColor: 'rgba(241, 245, 249, 0.3)'
+              }}
+            />
+            
             {/* Preview Mode Overlay Frame - equal padding on all sides, accounting for sidebar */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
@@ -738,39 +784,6 @@ const LocationPickerModal: React.FC<{
               className="w-full h-full relative"
             />
             
-            {/* Fixed Center Pin Overlay - Blue circle with white target icon */}
-            <div 
-              className="fixed z-[10001] pointer-events-none"
-              style={{
-                top: '50%',
-                left: '50vw', // Center of screen (no sidebar offset)
-                transform: 'translate(-50%, -50%)'
-              }}
-            >
-              {/* Blue circle background */}
-              <div className="relative w-12 h-12 bg-blue-600 rounded-full border-4 border-white shadow-lg flex items-center justify-center">
-                {/* White target/crosshair icon */}
-                <svg 
-                  width="24" 
-                  height="24" 
-                  viewBox="0 0 24 24" 
-                  fill="none" 
-                  stroke="white" 
-                  strokeWidth="2.5" 
-                  strokeLinecap="round"
-                  className="drop-shadow-sm"
-                >
-                  {/* Outer circle */}
-                  <circle cx="12" cy="12" r="8" stroke="white" fill="none" />
-                  {/* Horizontal line */}
-                  <line x1="12" y1="4" x2="12" y2="20" stroke="white" />
-                  {/* Vertical line */}
-                  <line x1="4" y1="12" x2="20" y2="12" stroke="white" />
-                  {/* Center dot */}
-                  <circle cx="12" cy="12" r="1.5" fill="white" />
-                </svg>
-              </div>
-            </div>
 
 
             {/* Confirm Button - Top Right */}
