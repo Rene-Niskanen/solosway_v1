@@ -116,6 +116,8 @@ const LocationPickerModal: React.FC<{
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   // Track if coordinate change is from user interaction (map click) to prevent sync loop
   const isUserInteractionRef = React.useRef<boolean>(false);
+  // Track if zoom was explicitly set by user (vs calculated by reverse geocoding)
+  const isZoomUserSelectedRef = React.useRef<boolean>(false);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
@@ -303,12 +305,18 @@ const LocationPickerModal: React.FC<{
           };
 
           const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
+            if (!map.current) return;
+            
             const { lng, lat } = e.lngLat;
             const coords: [number, number] = [lng, lat];
+            
+            // Get the current zoom level from the map to match what the user sees
+            const currentZoom = map.current.getZoom();
             
             // Mark this as user interaction to prevent sync effect from running
             isUserInteractionRef.current = true;
             setSelectedCoordinates(coords);
+            setSelectedZoom(currentZoom);
             
             // Reset flag after state update
             setTimeout(() => {
@@ -630,7 +638,27 @@ const LocationPickerModal: React.FC<{
           const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
           setSelectedLocationName(feature.place_name);
           setLocationInput(feature.place_name);
-          setSelectedZoom(calculatedZoom);
+          
+          // Only update zoom if it wasn't explicitly set by user, or if the calculated zoom is significantly different
+          // This prevents overwriting user's intended zoom level
+          if (!isZoomUserSelectedRef.current) {
+            setSelectedZoom(calculatedZoom);
+            console.log('📍 LocationPicker: Reverse geocode updated zoom (not user-selected)', calculatedZoom);
+          } else {
+            const currentZoom = selectedZoom;
+            const zoomDiff = Math.abs(currentZoom - calculatedZoom);
+            // Only update if calculated zoom is significantly different (more than 2 levels)
+            if (zoomDiff > 2) {
+              setSelectedZoom(calculatedZoom);
+              console.log('📍 LocationPicker: Reverse geocode updated zoom (significant difference)', {
+                old: currentZoom,
+                new: calculatedZoom,
+                diff: zoomDiff
+              });
+            } else {
+              console.log('📍 LocationPicker: Reverse geocode kept user-selected zoom', currentZoom);
+            }
+          }
         }
       }
     } catch (error) {
@@ -639,16 +667,73 @@ const LocationPickerModal: React.FC<{
   };
 
   const handleConfirm = () => {
-    if (!selectedCoordinates) return;
+    if (!selectedCoordinates) {
+      console.error('❌ LocationPicker: Cannot confirm - no coordinates selected');
+      return;
+    }
+
+    // Always use the selectedCoordinates and selectedZoom state values
+    // In preview mode, these are updated by the preview map's moveend handler
+    // In modal mode, these are set by geocoding or map clicks
+    // This ensures we save what the user explicitly selected, not what the map happens to show
+    const finalCoordinates = selectedCoordinates;
+    const finalZoom = selectedZoom || 9.5;
+    
+    // Validate coordinates are valid
+    if (!Array.isArray(finalCoordinates) || finalCoordinates.length !== 2) {
+      console.error('❌ LocationPicker: Invalid coordinates format', finalCoordinates);
+      return;
+    }
+    
+    if (typeof finalCoordinates[0] !== 'number' || typeof finalCoordinates[1] !== 'number') {
+      console.error('❌ LocationPicker: Coordinates must be numbers', finalCoordinates);
+      return;
+    }
+    
+    if (isNaN(finalCoordinates[0]) || isNaN(finalCoordinates[1])) {
+      console.error('❌ LocationPicker: Coordinates contain NaN', finalCoordinates);
+      return;
+    }
 
     const locationData = {
-      name: selectedLocationName || locationInput,
-      coordinates: selectedCoordinates,
-      zoom: selectedZoom
+      name: selectedLocationName || locationInput || 'Unknown Location',
+      coordinates: finalCoordinates,
+      zoom: finalZoom
     };
 
+    console.log('📍 LocationPicker: Confirming location with data:', {
+      name: locationData.name,
+      coordinates: locationData.coordinates,
+      zoom: locationData.zoom,
+      isPreviewMode
+    });
+
     if (typeof window !== 'undefined') {
-      localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, JSON.stringify(locationData));
+      try {
+        const jsonData = JSON.stringify(locationData);
+        localStorage.setItem(DEFAULT_MAP_LOCATION_KEY, jsonData);
+        
+        // Verify the save worked
+        const verify = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+        if (verify) {
+          const parsed = JSON.parse(verify);
+          if (parsed.coordinates[0] === finalCoordinates[0] && 
+              parsed.coordinates[1] === finalCoordinates[1] &&
+              parsed.zoom === finalZoom) {
+            console.log('✅ LocationPicker: Location saved and verified successfully', parsed);
+          } else {
+            console.error('❌ LocationPicker: Saved data does not match intended data', {
+              intended: locationData,
+              saved: parsed
+            });
+          }
+        } else {
+          console.error('❌ LocationPicker: Failed to save location - localStorage returned null');
+        }
+      } catch (error) {
+        console.error('❌ LocationPicker: Error saving location to localStorage:', error);
+        return;
+      }
     }
 
     setIsOpen(false);
@@ -674,11 +759,13 @@ const LocationPickerModal: React.FC<{
     const handleMoveEnd = () => {
       if (previewMap.current) {
         const currentZoom = previewMap.current.getZoom();
+        // In preview mode, user is explicitly adjusting the view, so mark zoom as user-selected
+        isZoomUserSelectedRef.current = true;
         setSelectedZoom(currentZoom);
         // Get center of viewport (where the pin is visually)
         const center = previewMap.current.getCenter();
         setSelectedCoordinates([center.lng, center.lat]);
-        // Reverse geocode to update location name
+        // Reverse geocode to update location name (won't overwrite user-selected zoom)
         reverseGeocode(center.lng, center.lat);
       }
     };
