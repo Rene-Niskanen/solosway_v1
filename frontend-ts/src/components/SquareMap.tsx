@@ -661,6 +661,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
         
+        // Smoothly fly to the property location, centering it on screen with consistent zoom
+        const propertyCoordinates: [number, number] = [property.longitude, property.latitude];
+        map.current.flyTo({
+          center: propertyCoordinates,
+          zoom: 17.5, // Consistent zoom level matching reference image proximity
+          duration: 2000, // 2 second smooth transition
+          essential: true, // Ensure animation completes
+          easing: (t) => {
+            // Custom easing function for extremely smooth animation
+            // Ease-in-out-cubic for smooth acceleration and deceleration
+            return t < 0.5
+              ? 4 * t * t * t
+              : 1 - Math.pow(-2 * t + 2, 3) / 2;
+          }
+        });
+        
         // Hide the base marker for this property by filtering it out
         if (map.current.getLayer('property-markers')) {
           map.current.setFilter('property-markers', [
