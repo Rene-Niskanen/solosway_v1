@@ -710,14 +710,14 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
           >
-            {/* Preview Mode Overlay Frame - positioned to avoid sidebar and buttons */}
+            {/* Preview Mode Overlay Frame - equal padding on all sides, accounting for sidebar */}
             <div 
               className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
               style={{
-                top: '80px', // Below top buttons and "Preview Mode" label
-                left: '72px', // After sidebar (56px) + padding (16px)
-                right: '4px', // Equal padding on right
-                bottom: '80px', // Above bottom buttons if any
+                top: '80px', // Below top buttons and "Preview Mode" label (equal padding)
+                left: '72px', // After sidebar (56px) + padding (16px) = equal visual padding
+                right: '16px', // Equal padding on right
+                bottom: '80px', // Equal padding on bottom (matches top)
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
               }}
             />
