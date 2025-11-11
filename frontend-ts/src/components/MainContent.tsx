@@ -867,7 +867,14 @@ const LocationPickerModal: React.FC<{
           previewMap.current.off('load', handleMapLoad);
           previewMap.current.off('style.load', handleMapLoad);
         }
-        previewMap.current.off('render', hideAllMapboxElements);
+        // Remove render listener - it uses hideAllMapboxElements which is scoped to initMap
+        // We'll just remove all listeners
+        const renderListeners = (previewMap.current as any)._renderListeners;
+        if (renderListeners) {
+          renderListeners.forEach((listener: any) => {
+            previewMap.current?.off('render', listener);
+          });
+        }
         previewMap.current.remove();
         previewMap.current = null;
       }
