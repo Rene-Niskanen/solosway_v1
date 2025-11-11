@@ -166,13 +166,21 @@ const LocationPickerModal: React.FC<{
         map.current.on('error', (e) => {
           console.error('❌ Map error:', e);
         });
+
+        // Force map to render immediately
+        map.current.on('style.load', () => {
+          if (map.current) {
+            console.log('✅ LocationPicker: Map style loaded');
+            map.current.resize();
+          }
+        });
       } catch (error) {
         console.error('❌ LocationPicker: Failed to create map:', error);
         return;
       }
 
       // Wait for map to load before adding marker
-      map.current.on('load', () => {
+      const handleMapLoad = () => {
         if (!map.current) return;
 
         console.log('✅ LocationPicker: Map loaded successfully');
@@ -193,7 +201,25 @@ const LocationPickerModal: React.FC<{
         const logo = container.querySelector('.mapboxgl-ctrl-logo');
         if (attrib) (attrib as HTMLElement).style.display = 'none';
         if (logo) (logo as HTMLElement).style.display = 'none';
-      });
+
+        // Force a repaint to ensure map is visible
+        setTimeout(() => {
+          if (map.current) {
+            map.current.resize();
+          }
+        }, 100);
+      };
+
+      map.current.on('load', handleMapLoad);
+      
+      // Also try to resize after a short delay as fallback
+      setTimeout(() => {
+        if (map.current && !map.current.loaded()) {
+          console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
+        } else if (map.current) {
+          map.current.resize();
+        }
+      }, 500);
 
       // Handle map clicks
       map.current.on('click', (e) => {
@@ -280,9 +306,10 @@ const LocationPickerModal: React.FC<{
     setGeocodeError('');
 
     try {
-      // Include postcode type for UK postcodes like "BS7 0PU"
+      // For postcodes, try without type restrictions first, then fallback to specific types
+      // Remove type restrictions to allow all location types including postcodes
       const response = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1&types=place,locality,neighborhood,district,region,postcode`
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${mapboxToken}&limit=1`
       );
 
       if (!response.ok) {
