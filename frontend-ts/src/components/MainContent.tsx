@@ -586,34 +586,86 @@ const LocationPickerModal: React.FC<{
       const container = previewMap.current.getContainer();
       if (!container) return;
 
-      // Hide all Mapbox control elements
+      // Hide ALL elements with mapboxgl classes (most aggressive approach)
+      const allMapboxElements = container.querySelectorAll('[class*="mapboxgl"]');
+      allMapboxElements.forEach((el: Element) => {
+        const htmlEl = el as HTMLElement;
+        // Only hide control elements, not the map canvas itself
+        if (!htmlEl.classList.contains('mapboxgl-map') && 
+            !htmlEl.classList.contains('mapboxgl-canvas') &&
+            !htmlEl.classList.contains('mapboxgl-canvas-container')) {
+          htmlEl.style.display = 'none';
+          htmlEl.style.visibility = 'hidden';
+          htmlEl.style.opacity = '0';
+          htmlEl.style.pointerEvents = 'none';
+        }
+      });
+
+      // Hide all Mapbox control elements (specific selectors)
       const allControls = container.querySelectorAll('[class*="mapboxgl-ctrl"]');
       allControls.forEach((ctrl: Element) => {
         const htmlCtrl = ctrl as HTMLElement;
         htmlCtrl.style.display = 'none';
         htmlCtrl.style.visibility = 'hidden';
         htmlCtrl.style.opacity = '0';
+        htmlCtrl.style.pointerEvents = 'none';
+        htmlCtrl.style.width = '0';
+        htmlCtrl.style.height = '0';
       });
 
       // Hide attribution
       const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
       if (attrib) {
-        (attrib as HTMLElement).style.display = 'none';
-        (attrib as HTMLElement).style.visibility = 'hidden';
+        const htmlAttrib = attrib as HTMLElement;
+        htmlAttrib.style.display = 'none';
+        htmlAttrib.style.visibility = 'hidden';
+        htmlAttrib.style.opacity = '0';
+        htmlAttrib.style.width = '0';
+        htmlAttrib.style.height = '0';
       }
 
       // Hide logo
       const logo = container.querySelector('.mapboxgl-ctrl-logo');
       if (logo) {
-        (logo as HTMLElement).style.display = 'none';
-        (logo as HTMLElement).style.visibility = 'hidden';
+        const htmlLogo = logo as HTMLElement;
+        htmlLogo.style.display = 'none';
+        htmlLogo.style.visibility = 'hidden';
+        htmlLogo.style.opacity = '0';
+        htmlLogo.style.width = '0';
+        htmlLogo.style.height = '0';
       }
 
       // Hide any navigation controls
       const navControls = container.querySelectorAll('.mapboxgl-ctrl-group');
       navControls.forEach((ctrl: Element) => {
-        (ctrl as HTMLElement).style.display = 'none';
-        (ctrl as HTMLElement).style.visibility = 'hidden';
+        const htmlCtrl = ctrl as HTMLElement;
+        htmlCtrl.style.display = 'none';
+        htmlCtrl.style.visibility = 'hidden';
+        htmlCtrl.style.opacity = '0';
+        htmlCtrl.style.width = '0';
+        htmlCtrl.style.height = '0';
+      });
+
+      // Hide any divs positioned on the left or top that might be controls
+      const allDivs = container.querySelectorAll('div');
+      allDivs.forEach((div: Element) => {
+        const htmlDiv = div as HTMLElement;
+        const computedStyle = window.getComputedStyle(htmlDiv);
+        const position = computedStyle.position;
+        const left = computedStyle.left;
+        const top = computedStyle.top;
+        
+        // Hide any absolutely/fixed positioned divs on left or top that aren't the map itself
+        if ((position === 'absolute' || position === 'fixed') &&
+            (left === '0px' || left === '10px' || left === '20px' || 
+             top === '0px' || top === '10px' || top === '20px') &&
+            !htmlDiv.classList.contains('mapboxgl-map') &&
+            !htmlDiv.classList.contains('mapboxgl-canvas-container') &&
+            htmlDiv.offsetWidth < 200 && htmlDiv.offsetHeight < 200) {
+          htmlDiv.style.display = 'none';
+          htmlDiv.style.visibility = 'hidden';
+          htmlDiv.style.opacity = '0';
+        }
       });
 
       // Ensure container background is transparent
@@ -624,6 +676,31 @@ const LocationPickerModal: React.FC<{
       if (canvas) {
         canvas.style.backgroundColor = 'transparent';
       }
+
+      // Hide any elements with grey or white backgrounds in the top-left area
+      const allElements = container.querySelectorAll('*');
+      allElements.forEach((el: Element) => {
+        const htmlEl = el as HTMLElement;
+        const rect = htmlEl.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        
+        // Check if element is in top-left corner and has grey/white background
+        if (rect.left < containerRect.left + 100 && 
+            rect.top < containerRect.top + 100 &&
+            rect.width > 0 && rect.height > 0 &&
+            !htmlEl.classList.contains('mapboxgl-map') &&
+            !htmlEl.classList.contains('mapboxgl-canvas') &&
+            !htmlEl.classList.contains('mapboxgl-canvas-container')) {
+          const bgColor = window.getComputedStyle(htmlEl).backgroundColor;
+          if (bgColor && (bgColor.includes('rgb(229, 229, 235)') || // #E9E9EB grey
+                          bgColor.includes('rgb(255, 255, 255)') || // white
+                          bgColor.includes('rgb(241, 245, 249)'))) { // slate-100
+            htmlEl.style.display = 'none';
+            htmlEl.style.visibility = 'hidden';
+            htmlEl.style.opacity = '0';
+          }
+        }
+      });
     };
 
     // Hide elements immediately and on load

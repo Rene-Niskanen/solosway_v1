@@ -333,4 +333,34 @@
     opacity: 0 !important;
     pointer-events: none !important;
   }
+
+  /* Aggressively hide all Mapbox controls in preview mode */
+  .preview-map-container .mapboxgl-ctrl,
+  .preview-map-container .mapboxgl-ctrl-attrib,
+  .preview-map-container .mapboxgl-ctrl-logo,
+  .preview-map-container .mapboxgl-ctrl-group,
+  .preview-map-container [class*="mapboxgl-ctrl"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+  }
+
+  /* Hide any grey or white boxes in preview mode map */
+  .preview-map-container > div:not(.mapboxgl-map):not(.mapboxgl-canvas-container) {
+    background-color: transparent !important;
+  }
+
+  /* Specifically target elements in top-left that might be controls */
+  .preview-map-container div[style*="left: 0"],
+  .preview-map-container div[style*="left: 10px"],
+  .preview-map-container div[style*="left: 20px"],
+  .preview-map-container div[style*="top: 0"],
+  .preview-map-container div[style*="top: 10px"],
+  .preview-map-container div[style*="top: 20px"] {
+    display: none !important;
+  }
 }
