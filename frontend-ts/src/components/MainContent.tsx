@@ -712,13 +712,6 @@ const LocationPickerModal: React.FC<{
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999] bg-slate-100"
-            style={{
-              backgroundColor: '#f1f5f9', // Ensure slate-100 background covers everything
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0
-            }}
           >
             {/* Seamless Blur Overlay - covers everything outside the preview frame */}
             <div 
@@ -726,33 +719,40 @@ const LocationPickerModal: React.FC<{
               style={{
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
-                backgroundColor: 'rgba(241, 245, 249, 0.4)',
-                // Use clip-path to create a frame shape that covers everything except the preview area
-                // This ensures seamless blur without mask artifacts
-                clipPath: `polygon(
-                  0% 0%, 
-                  0% 100%, 
-                  72px 100%, 
-                  72px calc(100% - 80px), 
-                  calc(100% - 72px) calc(100% - 80px), 
-                  calc(100% - 72px) 80px, 
-                  72px 80px, 
-                  72px 0%, 
-                  100% 0%, 
-                  100% 100%
+                backgroundColor: 'rgba(241, 245, 249, 0.3)',
+                // Use mask to create transparent hole in center matching preview frame
+                maskImage: `linear-gradient(to right, 
+                  black 0, 
+                  black 72px, 
+                  transparent 72px, 
+                  transparent calc(100% - 72px), 
+                  black calc(100% - 72px), 
+                  black 100%
+                ), linear-gradient(to bottom, 
+                  black 0, 
+                  black 80px, 
+                  transparent 80px, 
+                  transparent calc(100% - 80px), 
+                  black calc(100% - 80px), 
+                  black 100%
                 )`,
-                WebkitClipPath: `polygon(
-                  0% 0%, 
-                  0% 100%, 
-                  72px 100%, 
-                  72px calc(100% - 80px), 
-                  calc(100% - 72px) calc(100% - 80px), 
-                  calc(100% - 72px) 80px, 
-                  72px 80px, 
-                  72px 0%, 
-                  100% 0%, 
-                  100% 100%
-                )`
+                WebkitMaskImage: `linear-gradient(to right, 
+                  black 0, 
+                  black 72px, 
+                  transparent 72px, 
+                  transparent calc(100% - 72px), 
+                  black calc(100% - 72px), 
+                  black 100%
+                ), linear-gradient(to bottom, 
+                  black 0, 
+                  black 80px, 
+                  transparent 80px, 
+                  transparent calc(100% - 80px), 
+                  black calc(100% - 80px), 
+                  black 100%
+                )`,
+                maskComposite: 'intersect',
+                WebkitMaskComposite: 'source-in'
               }}
             />
             
