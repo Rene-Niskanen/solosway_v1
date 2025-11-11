@@ -529,82 +529,73 @@ const LocationPickerModal: React.FC<{
 
   // Initialize preview mode map
   React.useEffect(() => {
-    console.log('🔍 Preview mode useEffect triggered', {
-      isPreviewMode,
-      selectedCoordinates,
-      hasContainer: !!previewMapContainer.current
-    });
-
-    if (!isPreviewMode) {
-      console.log('❌ Preview mode not active, skipping map init');
-      return;
-    }
-
-    if (!selectedCoordinates) {
-      console.error('❌ No selected coordinates, cannot initialize map');
+    if (!isPreviewMode || !selectedCoordinates) {
+      // Clean up map when preview mode is closed
+      if (!isPreviewMode && previewMap.current) {
+        previewMap.current.remove();
+        previewMap.current = null;
+      }
       return;
     }
 
     // Wait for container to be available and have dimensions
+    let retryCount = 0;
+    const maxRetries = 50; // 5 seconds max wait
+    
     const initMap = () => {
+      retryCount++;
+      
+      if (retryCount > maxRetries) {
+        console.error('❌ Failed to initialize map: container never became ready');
+        return;
+      }
+
       if (!previewMapContainer.current) {
-        console.log('⏳ Waiting for preview map container...');
         setTimeout(initMap, 100);
         return;
       }
 
       const container = previewMapContainer.current;
+      const rect = container.getBoundingClientRect();
+      const hasDimensions = rect.width > 0 && rect.height > 0;
       
-      // Check if container is visible and has dimensions
-      const computedStyle = window.getComputedStyle(container);
-      const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden' && computedStyle.opacity !== '0';
-      
-      if (!isVisible || container.offsetWidth === 0 || container.offsetHeight === 0) {
-        console.log('⏳ Container not ready yet, waiting...', {
-          isVisible,
-          width: container.offsetWidth,
-          height: container.offsetHeight,
-          computedWidth: computedStyle.width,
-          computedHeight: computedStyle.height,
-          display: computedStyle.display,
-          visibility: computedStyle.visibility,
-          opacity: computedStyle.opacity
-        });
+      if (!hasDimensions) {
         setTimeout(initMap, 100);
         return;
       }
 
-      console.log('✅ Container ready, initializing map...', {
-        width: container.offsetWidth,
-        height: container.offsetHeight
-      });
+      // Container is ready - initialize map
+      try {
+        mapboxgl.accessToken = mapboxToken;
 
-      mapboxgl.accessToken = mapboxToken;
-
-      // Clean up any existing map first
-      if (previewMap.current) {
-        previewMap.current.remove();
-        previewMap.current = null;
-      }
-
-      previewMap.current = new mapboxgl.Map({
-        container: container,
-        style: 'mapbox://styles/mapbox/light-v11',
-        center: selectedCoordinates,
-        zoom: selectedZoom,
-        attributionControl: false,
-        logoPosition: 'bottom-left' // Set but we'll hide it
-      });
-      
-      console.log('✅ Map instance created');
-      
-      // Resize map after initialization to ensure it renders correctly
-      setTimeout(() => {
+        // Clean up any existing map first
         if (previewMap.current) {
-          console.log('🔄 Resizing map...');
-          previewMap.current.resize();
+          previewMap.current.remove();
+          previewMap.current = null;
         }
-      }, 200);
+
+        previewMap.current = new mapboxgl.Map({
+          container: container,
+          style: 'mapbox://styles/mapbox/light-v11',
+          center: selectedCoordinates,
+          zoom: selectedZoom || 9.5,
+          attributionControl: false,
+          logoPosition: 'bottom-left'
+        });
+        
+        // Force resize immediately
+        previewMap.current.once('load', () => {
+          if (previewMap.current) {
+            previewMap.current.resize();
+          }
+        });
+        
+        // Also resize after a short delay
+        setTimeout(() => {
+          if (previewMap.current) {
+            previewMap.current.resize();
+          }
+        }, 300);
       
       // Ensure map container has no white background and remove all unwanted elements
       if (previewMapContainer.current && previewMap.current) {
@@ -1067,17 +1058,17 @@ const LocationPickerModal: React.FC<{
             {/* Full Screen Map */}
             <div 
               ref={previewMapContainer}
-              className="w-full h-full relative preview-map-container"
+              className="preview-map-container"
               style={{
                 position: 'absolute',
                 left: 0,
                 top: 0,
                 right: 0,
                 bottom: 0,
-                width: '100%',
-                height: '100%',
-                backgroundColor: 'transparent', // Ensure no white background
-                overflow: 'hidden' // Prevent any overflow elements
+                width: '100vw',
+                height: '100vh',
+                backgroundColor: 'transparent',
+                overflow: 'hidden'
               }}
             />
             
