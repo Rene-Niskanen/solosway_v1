@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
@@ -714,13 +714,22 @@ const LocationPickerModal: React.FC<{
             <div className="fixed left-0 top-0 h-full w-14 bg-white/80 backdrop-blur-sm border-r border-slate-200 z-[10000]">
               <div className="flex flex-col items-center py-6 space-y-4">
                 <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
-                  <MapPin className="w-5 h-5 text-slate-400" />
+                  <LayoutDashboard className="w-5 h-5 text-slate-400" />
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
-                  <MapPin className="w-5 h-5 text-slate-400" />
+                  <Upload className="w-5 h-5 text-slate-400" />
                 </div>
                 <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
-                  <MapPin className="w-5 h-5 text-slate-400" />
+                  <BarChart3 className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
+                  <Database className="w-5 h-5 text-slate-400" />
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center opacity-70">
+                  <Settings className="w-5 h-5 text-blue-600" />
+                </div>
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
+                  <User className="w-5 h-5 text-slate-400" />
                 </div>
               </div>
             </div>
@@ -732,7 +741,7 @@ const LocationPickerModal: React.FC<{
                 top: '4px',
                 left: '60px', // Start after sidebar (56px + 4px margin)
                 right: '4px',
-                bottom: '100px', // Above search bar and buttons
+                bottom: '80px', // Above buttons only (no search bar)
                 boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
               }}
             />
@@ -749,8 +758,7 @@ const LocationPickerModal: React.FC<{
               ref={previewMapContainer}
               className="w-full h-full relative"
               style={{
-                marginLeft: '56px', // Offset for sidebar
-                paddingBottom: '80px' // Space for search bar
+                marginLeft: '56px' // Offset for sidebar
               }}
             />
             
@@ -788,15 +796,6 @@ const LocationPickerModal: React.FC<{
               </div>
             </div>
 
-            {/* Non-functional Search Bar at Bottom */}
-            <div className="fixed bottom-0 left-0 right-0 z-[10000] p-4 bg-white/80 backdrop-blur-sm border-t border-slate-200">
-              <div className="max-w-2xl mx-auto">
-                <div className="flex items-center space-x-3 bg-slate-50/80 rounded-lg px-4 py-3 border border-slate-200 opacity-60">
-                  <div className="flex-1 text-slate-400 text-sm">Search for properties...</div>
-                  <div className="w-8 h-8 rounded-full bg-slate-200"></div>
-                </div>
-              </div>
-            </div>
 
             {/* Confirm Button - Top Right */}
             <div className="fixed top-4 right-4 z-[10001] flex space-x-2">
