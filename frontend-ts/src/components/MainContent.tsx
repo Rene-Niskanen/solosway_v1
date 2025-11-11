@@ -298,27 +298,29 @@ const LocationPickerModal: React.FC<{
       attributionControl: false
     });
 
-    // Add marker
-    previewMarker.current = new mapboxgl.Marker({ color: '#3b82f6' })
-      .setLngLat(selectedCoordinates)
-      .addTo(previewMap.current);
-
-    // Update zoom and location when map moves
+    // Update zoom and location when map moves - pin stays centered visually
     const handleMoveEnd = () => {
       if (previewMap.current) {
         const currentZoom = previewMap.current.getZoom();
         setSelectedZoom(currentZoom);
+        // Get center of viewport (where the pin is visually)
         const center = previewMap.current.getCenter();
         setSelectedCoordinates([center.lng, center.lat]);
-        if (previewMarker.current) {
-          previewMarker.current.setLngLat([center.lng, center.lat]);
-        }
         // Reverse geocode to update location name
         reverseGeocode(center.lng, center.lat);
       }
     };
 
+    // Also update on move (not just moveend) for smoother updates
+    const handleMove = () => {
+      if (previewMap.current) {
+        const center = previewMap.current.getCenter();
+        setSelectedCoordinates([center.lng, center.lat]);
+      }
+    };
+
     previewMap.current.on('moveend', handleMoveEnd);
+    previewMap.current.on('move', handleMove);
 
     // Hide Mapbox branding
     const hideBranding = () => {
@@ -337,12 +339,9 @@ const LocationPickerModal: React.FC<{
     return () => {
       if (previewMap.current) {
         previewMap.current.off('moveend', handleMoveEnd);
+        previewMap.current.off('move', handleMove);
         previewMap.current.remove();
         previewMap.current = null;
-      }
-      if (previewMarker.current) {
-        previewMarker.current.remove();
-        previewMarker.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -466,10 +465,24 @@ const LocationPickerModal: React.FC<{
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] bg-white"
+            className="fixed inset-0 z-[9999] bg-slate-100"
           >
+            {/* Preview Mode Overlay Frame */}
+            <div className="absolute inset-0 pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg m-4 shadow-2xl" 
+              style={{
+                boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
+              }}
+            />
+            
+            {/* Preview Mode Label */}
+            <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
+              <div className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg">
+                Preview Mode
+              </div>
+            </div>
+
             {/* Non-functional Sidebar */}
-            <div className="fixed left-0 top-0 h-full w-14 bg-white border-r border-slate-200 z-[10000]">
+            <div className="fixed left-0 top-0 h-full w-14 bg-white/80 backdrop-blur-sm border-r border-slate-200 z-[10000]">
               <div className="flex flex-col items-center py-6 space-y-4">
                 <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center opacity-50">
                   <MapPin className="w-5 h-5 text-slate-400" />
@@ -486,17 +499,32 @@ const LocationPickerModal: React.FC<{
             {/* Full Screen Map */}
             <div 
               ref={previewMapContainer}
-              className="w-full h-full"
+              className="w-full h-full relative"
               style={{
                 marginLeft: '56px', // Offset for sidebar
                 paddingBottom: '80px' // Space for search bar
               }}
-            />
+            >
+              {/* Fixed Center Pin Overlay - stays in center of visible map area */}
+              <div 
+                className="absolute z-[10001] pointer-events-none"
+                style={{
+                  top: '50%',
+                  left: 'calc(50% + 28px)', // Center of map area accounting for sidebar
+                  transform: 'translate(-50%, -50%)'
+                }}
+              >
+                <div className="relative">
+                  <MapPin className="w-8 h-8 text-blue-600 drop-shadow-lg" fill="currentColor" />
+                  <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-blue-600 rounded-full border-2 border-white"></div>
+                </div>
+              </div>
+            </div>
 
             {/* Non-functional Search Bar at Bottom */}
-            <div className="fixed bottom-0 left-0 right-0 z-[10000] p-4 bg-white border-t border-slate-200">
+            <div className="fixed bottom-0 left-0 right-0 z-[10000] p-4 bg-white/80 backdrop-blur-sm border-t border-slate-200">
               <div className="max-w-2xl mx-auto">
-                <div className="flex items-center space-x-3 bg-slate-50 rounded-lg px-4 py-3 border border-slate-200 opacity-50">
+                <div className="flex items-center space-x-3 bg-slate-50/80 rounded-lg px-4 py-3 border border-slate-200 opacity-60">
                   <div className="flex-1 text-slate-400 text-sm">Search for properties...</div>
                   <div className="w-8 h-8 rounded-full bg-slate-200"></div>
                 </div>
@@ -508,13 +536,13 @@ const LocationPickerModal: React.FC<{
               <Button
                 variant="outline"
                 onClick={() => setIsPreviewMode(false)}
-                className="bg-white"
+                className="bg-white shadow-lg"
               >
                 Back
               </Button>
               <Button
                 onClick={handleConfirm}
-                className="bg-blue-600 hover:bg-blue-700"
+                className="bg-blue-600 hover:bg-blue-700 shadow-lg"
               >
                 Confirm Location
               </Button>
