@@ -284,6 +284,44 @@ const LocationPickerModal: React.FC<{
     };
   }, [isOpen, mapboxToken]);
 
+  // Sync map with selected coordinates whenever they change
+  React.useEffect(() => {
+    if (!map.current || !selectedCoordinates) return;
+
+    const syncMap = () => {
+      if (!map.current || !selectedCoordinates) return;
+
+      try {
+        if (map.current.loaded()) {
+          map.current.flyTo({
+            center: selectedCoordinates,
+            zoom: selectedZoom || 9.5,
+            duration: 600
+          });
+
+          // Update or create marker
+          if (marker.current) {
+            marker.current.setLngLat(selectedCoordinates);
+          } else {
+            marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+              .setLngLat(selectedCoordinates)
+              .addTo(map.current);
+          }
+          console.log('✅ LocationPicker: Map synced with coordinates');
+        } else {
+          // Wait for map to load
+          map.current.once('load', syncMap);
+        }
+      } catch (error) {
+        console.error('❌ LocationPicker: Error syncing map:', error);
+        // Retry after a delay
+        setTimeout(syncMap, 500);
+      }
+    };
+
+    syncMap();
+  }, [selectedCoordinates, selectedZoom]);
+
   const geocodeLocation = React.useCallback(async (query: string) => {
     if (!query) {
       console.log('📍 Geocode: Empty query');
@@ -344,49 +382,78 @@ const LocationPickerModal: React.FC<{
         setSelectedLocationName(locationName);
         setSelectedZoom(calculatedZoom);
 
-        // Update map when it's ready (don't block on map being ready)
+        // Update map when it's ready - with aggressive retry logic
+        let retryCount = 0;
+        const maxRetries = 10;
+        
         const updateMap = () => {
           if (map.current) {
             // Ensure map is resized
             map.current.resize();
             
-            if (map.current.loaded()) {
-              map.current.flyTo({
-                center: coords,
-                zoom: calculatedZoom,
-                duration: 600 // Faster animation for immediate feedback
-              });
+            try {
+              if (map.current.loaded()) {
+                // Map is loaded, update it
+                map.current.flyTo({
+                  center: coords,
+                  zoom: calculatedZoom,
+                  duration: 600
+                });
 
-              // Update marker
-              if (marker.current) {
-                marker.current.setLngLat(coords);
-              }
-            } else {
-              // Map not loaded yet, wait for it
-              map.current.once('load', () => {
-                if (map.current) {
-                  map.current.flyTo({
-                    center: coords,
-                    zoom: calculatedZoom,
-                    duration: 600
-                  });
-                  if (marker.current) {
-                    marker.current.setLngLat(coords);
-                  }
+                // Update or create marker
+                if (marker.current) {
+                  marker.current.setLngLat(coords);
+                } else {
+                  // Create marker if it doesn't exist
+                  marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+                    .setLngLat(coords)
+                    .addTo(map.current);
                 }
-              });
+                
+                console.log('✅ Geocode: Map updated successfully');
+              } else {
+                // Map not loaded yet, wait for it
+                console.log('📍 Geocode: Map not loaded, waiting for load event...');
+                map.current.once('load', () => {
+                  if (map.current) {
+                    map.current.flyTo({
+                      center: coords,
+                      zoom: calculatedZoom,
+                      duration: 600
+                    });
+                    if (marker.current) {
+                      marker.current.setLngLat(coords);
+                    } else {
+                      marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
+                        .setLngLat(coords)
+                        .addTo(map.current);
+                    }
+                    console.log('✅ Geocode: Map updated after load event');
+                  }
+                });
+              }
+            } catch (error) {
+              console.error('❌ Geocode: Error updating map:', error);
+              // Retry if we haven't exceeded max retries
+              if (retryCount < maxRetries) {
+                retryCount++;
+                setTimeout(updateMap, 300);
+              }
             }
           } else {
-            // Map not initialized yet, try again after a delay
-            console.log('📍 Geocode: Map not ready, will update when available');
-            setTimeout(() => {
-              if (map.current && map.current.loaded()) {
-                updateMap();
-              }
-            }, 500);
+            // Map not initialized yet, retry with exponential backoff
+            if (retryCount < maxRetries) {
+              retryCount++;
+              const delay = Math.min(300 * retryCount, 2000); // Max 2 seconds
+              console.log(`📍 Geocode: Map not ready (attempt ${retryCount}/${maxRetries}), retrying in ${delay}ms...`);
+              setTimeout(updateMap, delay);
+            } else {
+              console.error('❌ Geocode: Map not available after max retries');
+            }
           }
         };
 
+        // Start the update process
         updateMap();
       } else {
         setGeocodeError('Location not found. Try a different search term.');
