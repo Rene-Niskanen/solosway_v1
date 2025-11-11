@@ -115,7 +115,43 @@ const LocationPickerModal: React.FC<{
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize map when modal opens
+  // Reload saved location when modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      // Get the latest saved location from localStorage
+      const getSavedLocation = () => {
+        if (typeof window !== 'undefined') {
+          const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+                return {
+                  coordinates: parsed.coordinates as [number, number],
+                  zoom: parsed.zoom || 9.5,
+                  name: parsed.name || ''
+                };
+              }
+            } catch {}
+          }
+        }
+        return {
+          coordinates: [-0.1276, 51.5074] as [number, number],
+          zoom: 9.5,
+          name: 'London, UK'
+        };
+      };
+
+      const saved = getSavedLocation();
+      setLocationInput(saved.name);
+      setSelectedCoordinates(saved.coordinates);
+      setSelectedLocationName(saved.name);
+      setSelectedZoom(saved.zoom);
+      console.log('📍 LocationPicker: Loaded saved location on modal open', saved);
+    }
+  }, [isOpen]);
+
+  // Initialize map when modal opens and location is loaded
   React.useEffect(() => {
     // Clean up any existing map first
     if (map.current) {
@@ -130,6 +166,13 @@ const LocationPickerModal: React.FC<{
 
     if (!isOpen || !mapContainer.current) {
       console.log('📍 LocationPicker: Modal not open or container not ready', { isOpen, hasContainer: !!mapContainer.current });
+      return;
+    }
+
+    // Wait a bit for the state to be updated from the isOpen effect
+    // This ensures we use the latest saved location
+    if (!selectedCoordinates) {
+      console.log('📍 LocationPicker: Waiting for coordinates to be loaded...');
       return;
     }
 
@@ -149,35 +192,10 @@ const LocationPickerModal: React.FC<{
 
     mapboxgl.accessToken = mapboxToken;
     
-    // Get initial location from saved or default to London
-    const getInitialLocation = () => {
-      if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed.coordinates) {
-              return {
-                center: parsed.coordinates as [number, number],
-                zoom: parsed.zoom || 9.5,
-                name: parsed.name || ''
-              };
-            }
-          } catch {}
-        }
-      }
-      return {
-        center: [-0.1276, 51.5074] as [number, number],
-        zoom: 9.5,
-        name: 'London, UK'
-      };
-    };
-
-    const initial = getInitialLocation();
-    setLocationInput(initial.name);
-    setSelectedCoordinates(initial.center);
-    setSelectedLocationName(initial.name);
-    setSelectedZoom(initial.zoom);
+    // Use the current state values (already loaded by the isOpen effect)
+    // These will be the saved location if it exists, or defaults
+    const initialCenter = selectedCoordinates;
+    const initialZoom = selectedZoom;
 
     // Wait for dialog animation to complete (200ms) plus buffer for rendering
     // Use a longer delay to account for Radix UI dialog animations
@@ -203,8 +221,8 @@ const LocationPickerModal: React.FC<{
 
         // Container is ready, proceed with initialization
         console.log('📍 LocationPicker: Creating map instance...', {
-          center: initial.center,
-          zoom: initial.zoom,
+          center: initialCenter,
+          zoom: initialZoom,
           container: mapContainer.current,
           containerSize: {
             width: mapContainer.current.offsetWidth,
@@ -216,8 +234,8 @@ const LocationPickerModal: React.FC<{
           map.current = new mapboxgl.Map({
             container: mapContainer.current,
             style: 'mapbox://styles/mapbox/light-v11',
-            center: initial.center,
-            zoom: initial.zoom,
+            center: initialCenter,
+            zoom: initialZoom,
             attributionControl: false
           });
 
@@ -312,7 +330,7 @@ const LocationPickerModal: React.FC<{
         marker.current = null;
       }
     };
-  }, [isOpen, mapboxToken]);
+  }, [isOpen, mapboxToken, selectedCoordinates, selectedZoom]);
 
   // Sync map with selected coordinates whenever they change
   React.useEffect(() => {
