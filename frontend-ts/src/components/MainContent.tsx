@@ -291,31 +291,6 @@ const LocationPickerModal: React.FC<{
     }
 
     console.log('📍 Geocode: Starting geocoding for:', query);
-
-    // Wait for map to be initialized and loaded
-    if (!map.current) {
-      console.log('📍 Geocode: Map not initialized, waiting...');
-      // Map not initialized yet, wait and retry once
-      setTimeout(() => {
-        if (map.current) {
-          geocodeLocation(query);
-        } else {
-          console.error('❌ Geocode: Map still not initialized after wait');
-        }
-      }, 300);
-      return;
-    }
-
-    // Check if map is loaded, wait for it if not
-    if (!map.current.loaded()) {
-      console.log('📍 Geocode: Map not loaded yet, waiting for load event...');
-      map.current.once('load', () => {
-        geocodeLocation(query);
-      });
-      return;
-    }
-
-    console.log('📍 Geocode: Map ready, fetching location...');
     setIsGeocoding(true);
     setGeocodeError('');
 
@@ -358,40 +333,50 @@ const LocationPickerModal: React.FC<{
         setSelectedLocationName(locationName);
         setSelectedZoom(calculatedZoom);
 
-        // Update map immediately with smooth animation
-        if (map.current) {
-          // Ensure map is resized
-          map.current.resize();
-          
-          if (map.current.loaded()) {
-            map.current.flyTo({
-              center: coords,
-              zoom: calculatedZoom,
-              duration: 600 // Faster animation for immediate feedback
-            });
+        // Update map when it's ready (don't block on map being ready)
+        const updateMap = () => {
+          if (map.current) {
+            // Ensure map is resized
+            map.current.resize();
+            
+            if (map.current.loaded()) {
+              map.current.flyTo({
+                center: coords,
+                zoom: calculatedZoom,
+                duration: 600 // Faster animation for immediate feedback
+              });
 
-            // Update marker
-            if (marker.current) {
-              marker.current.setLngLat(coords);
+              // Update marker
+              if (marker.current) {
+                marker.current.setLngLat(coords);
+              }
+            } else {
+              // Map not loaded yet, wait for it
+              map.current.once('load', () => {
+                if (map.current) {
+                  map.current.flyTo({
+                    center: coords,
+                    zoom: calculatedZoom,
+                    duration: 600
+                  });
+                  if (marker.current) {
+                    marker.current.setLngLat(coords);
+                  }
+                }
+              });
             }
           } else {
-            // Map not loaded yet, wait for it
-            map.current.once('load', () => {
-              if (map.current) {
-                map.current.flyTo({
-                  center: coords,
-                  zoom: calculatedZoom,
-                  duration: 600
-                });
-                if (marker.current) {
-                  marker.current.setLngLat(coords);
-                }
+            // Map not initialized yet, try again after a delay
+            console.log('📍 Geocode: Map not ready, will update when available');
+            setTimeout(() => {
+              if (map.current && map.current.loaded()) {
+                updateMap();
               }
-            });
+            }, 500);
           }
-        } else {
-          console.warn('Map not initialized yet, coordinates set but map not updated');
-        }
+        };
+
+        updateMap();
       } else {
         setGeocodeError('Location not found');
         console.log('No features found for query:', query);
