@@ -207,9 +207,9 @@ export const SearchBar = ({
                   }}
                 >
                     {isMapVisible ? (
-                      <LayoutDashboard className="w-6 h-6" strokeWidth={1.5} />
+                      <LayoutDashboard className="w-5 h-5" strokeWidth={1.5} />
                     ) : (
-                      <Map className="w-6 h-6" strokeWidth={1.5} />
+                      <Map className="w-5 h-5" strokeWidth={1.5} />
                     )}
                 </motion.button>
               )}
