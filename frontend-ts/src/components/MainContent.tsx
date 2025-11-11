@@ -720,34 +720,39 @@ const LocationPickerModal: React.FC<{
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
                 backgroundColor: 'rgba(241, 245, 249, 0.3)',
-                // Create a transparent "hole" in the middle matching the preview frame
-                // The polygon goes around the outside, creating a frame shape
-                clipPath: `polygon(
-                  0% 0%, 
-                  0% 100%, 
-                  72px 100%, 
-                  72px calc(100% - 80px), 
-                  calc(100% - 72px) calc(100% - 80px), 
-                  calc(100% - 72px) 80px, 
-                  72px 80px, 
-                  72px 0%, 
-                  100% 0%, 
-                  100% 100%, 
-                  0% 100%
+                // Use mask to create transparent hole in center matching preview frame
+                maskImage: `linear-gradient(to right, 
+                  black 0, 
+                  black 72px, 
+                  transparent 72px, 
+                  transparent calc(100% - 72px), 
+                  black calc(100% - 72px), 
+                  black 100%
+                ), linear-gradient(to bottom, 
+                  black 0, 
+                  black 80px, 
+                  transparent 80px, 
+                  transparent calc(100% - 80px), 
+                  black calc(100% - 80px), 
+                  black 100%
                 )`,
-                WebkitClipPath: `polygon(
-                  0% 0%, 
-                  0% 100%, 
-                  72px 100%, 
-                  72px calc(100% - 80px), 
-                  calc(100% - 72px) calc(100% - 80px), 
-                  calc(100% - 72px) 80px, 
-                  72px 80px, 
-                  72px 0%, 
-                  100% 0%, 
-                  100% 100%, 
-                  0% 100%
-                )`
+                WebkitMaskImage: `linear-gradient(to right, 
+                  black 0, 
+                  black 72px, 
+                  transparent 72px, 
+                  transparent calc(100% - 72px), 
+                  black calc(100% - 72px), 
+                  black 100%
+                ), linear-gradient(to bottom, 
+                  black 0, 
+                  black 80px, 
+                  transparent 80px, 
+                  transparent calc(100% - 80px), 
+                  black calc(100% - 80px), 
+                  black 100%
+                )`,
+                maskComposite: 'intersect',
+                WebkitMaskComposite: 'source-in'
               }}
             />
             
