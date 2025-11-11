@@ -315,15 +315,17 @@ const LocationPickerModal: React.FC<{
             
             // Mark this as user interaction to prevent sync effect from running
             isUserInteractionRef.current = true;
+            // Mark zoom as user-selected so reverse geocoding doesn't overwrite it
+            isZoomUserSelectedRef.current = true;
             setSelectedCoordinates(coords);
             setSelectedZoom(currentZoom);
             
-            // Reset flag after state update
+            // Reset flags after state update
             setTimeout(() => {
               isUserInteractionRef.current = false;
             }, 100);
             
-            // Reverse geocode to get location name
+            // Reverse geocode to get location name (but it won't overwrite user-selected zoom)
             reverseGeocode(lng, lat);
             
             // Don't update marker - using dotted border frame instead
