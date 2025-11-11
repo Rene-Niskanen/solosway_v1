@@ -625,36 +625,43 @@ const LocationPickerModal: React.FC<{
           return;
         }
         
-        // Force explicit dimensions immediately
-        container.style.width = window.innerWidth + 'px';
-        container.style.height = window.innerHeight + 'px';
+        // Force explicit dimensions immediately with !important
+        container.style.setProperty('width', window.innerWidth + 'px', 'important');
+        container.style.setProperty('height', window.innerHeight + 'px', 'important');
+        container.style.setProperty('display', 'block', 'important');
+        container.style.setProperty('visibility', 'visible', 'important');
+        container.style.setProperty('opacity', '1', 'important');
+        
+        // Force a reflow to ensure dimensions are calculated
+        void container.offsetHeight;
         
         const rect = container.getBoundingClientRect();
-        const computedStyle = window.getComputedStyle(container);
         
-        // Check dimensions after forcing them
-        const hasDimensions = rect.width > 0 && rect.height > 0;
+        // Check if style dimensions are set (even if getBoundingClientRect returns 0)
+        const styleWidth = container.style.width || window.getComputedStyle(container).width;
+        const styleHeight = container.style.height || window.getComputedStyle(container).height;
+        const hasStyleDimensions = (styleWidth && styleWidth !== '0px' && styleWidth !== 'auto') ||
+                                  (styleHeight && styleHeight !== '0px' && styleHeight !== 'auto');
         
-        // Don't check visibility too strictly - just ensure dimensions exist
-        if (!hasDimensions) {
-          if (retryCount % 10 === 0) { // Log every 10 retries
-            console.log('⏳ Waiting for container dimensions...', {
-              retryCount,
-              width: rect.width,
-              height: rect.height,
-              styleWidth: container.style.width,
-              styleHeight: container.style.height,
-              innerWidth: window.innerWidth,
-              innerHeight: window.innerHeight
-            });
-          }
+        // Also check getBoundingClientRect
+        const hasRectDimensions = rect.width > 0 && rect.height > 0;
+        
+        // If we have style dimensions but not rect dimensions, that's okay - proceed
+        // Mapbox can work with explicit style dimensions even if getBoundingClientRect is 0
+        if (!hasRectDimensions && !hasStyleDimensions && retryCount < 5) {
+          // Only wait a few times if we truly have no dimensions at all
           setTimeout(initMap, 100);
           return;
         }
         
+        // We have dimensions (either from rect or style), proceed with initialization
         console.log('✅ Container ready!', {
-          width: rect.width,
-          height: rect.height,
+          rectWidth: rect.width,
+          rectHeight: rect.height,
+          styleWidth: styleWidth,
+          styleHeight: styleHeight,
+          hasRectDimensions,
+          hasStyleDimensions,
           coordinates: selectedCoordinates,
           zoom: selectedZoom
         });
