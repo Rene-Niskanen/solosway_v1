@@ -1007,7 +1007,8 @@ export const MainContent = ({
   resetTrigger: parentResetTrigger,
   onNavigate,
   homeClicked = false,
-  onHomeResetComplete
+  onHomeResetComplete,
+  onCloseSidebar
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const [chatQuery, setChatQuery] = React.useState<string>("");
