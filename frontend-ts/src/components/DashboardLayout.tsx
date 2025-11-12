@@ -8,6 +8,7 @@ import { ChatPanel } from './ChatPanel';
 import { SearchBar } from './SearchBar';
 import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
+import { ProfileDropdown } from './ProfileDropdown';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -262,7 +263,6 @@ const DashboardLayoutContent = ({
       className={`flex h-screen w-full overflow-hidden relative bg-white border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
       style={{ backgroundColor: '#ffffff' }}
     >
-
       {/* Chat Return Notification */}
       <ChatReturnNotification
         isVisible={showChatNotification}
@@ -288,6 +288,11 @@ const DashboardLayoutContent = ({
         activeItem={currentView}
         isCollapsed={isSidebarCollapsed}
         onToggle={handleSidebarToggle}
+        onNavigate={handleViewChange}
+        onSignOut={() => {
+          // Handle sign out
+          console.log('Sign out clicked');
+        }}
       />
       
       {/* Main Content - with higher z-index when map is visible */}
@@ -302,6 +307,10 @@ const DashboardLayoutContent = ({
         onNavigate={handleViewChange}
         homeClicked={homeClicked}
         onHomeResetComplete={() => setHomeClicked(false)}
+        onCloseSidebar={() => setIsSidebarCollapsed(true)}
+        onRestoreSidebarState={(shouldBeCollapsed: boolean) => setIsSidebarCollapsed(shouldBeCollapsed)}
+        getSidebarState={() => isSidebarCollapsed}
+        isSidebarCollapsed={isSidebarCollapsed}
       />
     </motion.div>
   );

@@ -2,16 +2,13 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Database, User, BarChart3, Upload, Home, PanelLeft, Settings } from "lucide-react";
+import { Database, BarChart3, Home, PanelLeft, LayoutDashboard } from "lucide-react";
+import { ProfileDropdown } from "./ProfileDropdown";
 
 const sidebarItems = [{
   icon: Home,
   id: 'home',
   label: 'Home'
-}, {
-  icon: Upload,
-  id: 'upload',
-  label: 'Upload'
 }, {
   icon: BarChart3,
   id: 'analytics',
@@ -20,14 +17,6 @@ const sidebarItems = [{
   icon: Database,
   id: 'notifications',
   label: 'Files'
-}, {
-  icon: Settings,
-  id: 'settings',
-  label: 'Settings'
-}, {
-  icon: User,
-  id: 'profile',
-  label: 'Profile'
 }] as any[];
 
 export interface SidebarProps {
@@ -38,6 +27,8 @@ export interface SidebarProps {
   activeItem?: string;
   isCollapsed?: boolean;
   onToggle?: () => void;
+  onNavigate?: (view: string) => void;
+  onSignOut?: () => void;
 }
 
 export const Sidebar = ({
@@ -47,10 +38,13 @@ export const Sidebar = ({
   isChatPanelOpen = false,
   activeItem = 'home',
   isCollapsed = false,
-  onToggle
+  onToggle,
+  onNavigate,
+  onSignOut
 }: SidebarProps) => {
   const [mousePosition, setMousePosition] = React.useState({ x: 0, y: 0 });
   const [showToggleButton, setShowToggleButton] = React.useState(false);
+  const [isTopIconHovered, setIsTopIconHovered] = React.useState(false);
   
   // Mouse proximity detection
   React.useEffect(() => {
@@ -94,48 +88,77 @@ export const Sidebar = ({
         ease: [0.4, 0, 0.2, 1]
       }}
       className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} transition-all duration-300 bg-white ${className || ''}`} 
-      style={{ background: isCollapsed ? 'transparent' : '#ffffff', backgroundColor: isCollapsed ? 'transparent' : '#ffffff' }}
+      style={{ background: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)', backgroundColor: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)' }}
     >
       {!isCollapsed && (
         <>
       {/* Chat Toggle Button */}
-      <motion.button initial={{
-      opacity: 0,
-      scale: 0.95
-    }} animate={{
-      opacity: 1,
-      scale: 1
-    }} transition={{
-      duration: 0.12,
-      ease: [0.4, 0, 0.2, 1],
-      delay: 0.02
-    }} whileHover={{
-      scale: 1.02,
-      transition: {
-        duration: 0.08,
-        ease: [0.4, 0, 0.2, 1]
-      }
-    }} whileTap={{
-      scale: 0.98,
-      transition: {
-        duration: 0.05
-      }
-        }} onClick={onChatToggle} className={`
-          w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center mb-6
-          transition-all duration-300 ease-out group cursor-pointer
-        `} aria-label="Toggle Chat History">
-        <AnimatePresence>
+      <motion.button 
+        initial={{
+          opacity: 0,
+          scale: 0.95
+        }} 
+        animate={{
+          opacity: 1,
+          scale: 1
+        }} 
+        transition={{
+          duration: 0.12,
+          ease: [0.4, 0, 0.2, 1],
+          delay: 0.02
+        }} 
+        whileHover={{
+          scale: 1.02,
+          transition: {
+            duration: 0.08,
+            ease: [0.4, 0, 0.2, 1]
+          }
+        }} 
+        whileTap={{
+          scale: 0.98,
+          transition: {
+            duration: 0.05
+          }
+        }} 
+        onMouseEnter={() => setIsTopIconHovered(true)}
+        onMouseLeave={() => setIsTopIconHovered(false)}
+        onClick={onChatToggle} 
+        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center mb-6 transition-all duration-300 ease-out group cursor-pointer"
+        aria-label="Toggle Chat History"
+      >
+        <AnimatePresence mode="wait">
+          {!isTopIconHovered ? (
+            <motion.img
+              key="logo"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 0.45, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              transition={{ duration: 0.1, ease: [0.4, 0, 0.2, 1] }}
+              src="/velora-dash-logo.png"
+              alt="VELORA"
+              className="w-6 h-6 lg:w-8 lg:h-8 object-contain drop-shadow-sm"
+            />
+          ) : (
+            <motion.div
+              key="icon"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              transition={{ duration: 0.1, ease: [0.4, 0, 0.2, 1] }}
+            >
+              <PanelLeft className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm transition-all duration-300 ease-out" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
+            </motion.div>
+          )}
         </AnimatePresence>
-        
-        <PanelLeft className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm transition-all duration-300 ease-out" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
       </motion.button>
 
       {/* Navigation Items */}
-      <div className="flex flex-col space-y-4">
+      <div className="flex flex-col space-y-4 flex-1">
         {sidebarItems.map((item, index) => {
-        const Icon = item.icon;
         // Home icon is active when on search/dashboard view
         const isActive = item.id === 'home' ? activeItem === 'search' : activeItem === item.id;
+        // Always use LayoutDashboard for home icon
+        const Icon = item.id === 'home' ? LayoutDashboard : item.icon;
         return <motion.button key={item.id} initial={{
           opacity: 0,
           y: 8,
@@ -172,32 +195,14 @@ export const Sidebar = ({
             </motion.button>;
       })}
       
-      {/* VELORA Dash Logo - positioned below last icon with same spacing */}
-      <motion.div
-        initial={{
-          opacity: 0,
-          y: 8,
-          scale: 0.95
-        }}
-        animate={{
-          opacity: 1,
-          y: 0,
-          scale: 1
-        }}
-        transition={{
-          duration: 0.12,
-          ease: [0.4, 0, 0.2, 1],
-          delay: sidebarItems.length * 0.02 + 0.04
-        }}
-        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center"
-      >
-        <img 
-          src="/velora-dash-logo.png" 
-          alt="VELORA" 
-          className="w-6 h-6 lg:w-8 lg:h-8 object-contain"
-          style={{ opacity: 0.45 }}
+      </div>
+
+      {/* Profile Icon - Bottom of Sidebar */}
+      <div className="mt-auto mb-6">
+        <ProfileDropdown 
+          onNavigate={onNavigate}
+          onSignOut={onSignOut}
         />
-      </motion.div>
       </div>
         </>
       )}

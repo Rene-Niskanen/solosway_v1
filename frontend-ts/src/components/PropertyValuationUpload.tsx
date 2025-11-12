@@ -10,6 +10,7 @@ export interface PropertyValuationUploadProps {
   className?: string;
   onUpload?: (file: File) => void;
   onContinueWithReport?: () => void;
+  compact?: boolean; // When true, renders as a compact card instead of fullscreen
 }
 interface UploadedFile {
   id: string;
@@ -39,7 +40,8 @@ const uploadSteps = [{
 export default function PropertyValuationUpload({
   className,
   onUpload,
-  onContinueWithReport
+  onContinueWithReport,
+  compact = false
 }: PropertyValuationUploadProps) {
   const { addDocument, updateDocumentStatus, addActivity } = useSystem();
   const [isDragOver, setIsDragOver] = React.useState(false);
@@ -305,6 +307,240 @@ export default function PropertyValuationUpload({
   };
   const completedFiles = uploadedFiles.filter(f => f.status === 'completed');
   const canContinue = completedFiles.length > 0;
+  
+  // Compact mode rendering (for integration in FileManager)
+  if (compact) {
+    return (
+      <div className={`w-full ${className || ''}`}>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className="bg-white rounded-xl border border-gray-200/80 shadow-sm overflow-hidden"
+        >
+          {/* Card Header - Enhanced */}
+          <div className="flex-shrink-0 px-6 py-5 border-b border-gray-200/60">
+            <div className="flex items-center space-x-4">
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-100 to-blue-100 rounded-lg flex items-center justify-center shadow-sm">
+                <Upload className="w-5 h-5 text-indigo-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 tracking-tight">Upload Documents</h2>
+                <p className="text-sm text-gray-500 font-medium mt-0.5">Drag and drop or click to upload</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Upload Section - Enhanced */}
+          {currentStep === 1 && (
+            <div className="p-6">
+              <motion.div 
+                onClick={() => fileInputRef.current?.click()} 
+                onDragOver={handleDragOver} 
+                onDragLeave={handleDragLeave} 
+                onDrop={handleDrop} 
+                className={`relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-300 ${
+                  isDragOver 
+                    ? 'border-indigo-400 bg-gradient-to-br from-indigo-50 to-blue-50 shadow-md' 
+                    : 'border-gray-300/80 hover:border-indigo-400 hover:bg-gradient-to-br hover:from-indigo-50/50 hover:to-blue-50/30 hover:shadow-sm'
+                }`} 
+                whileHover={{ scale: 1.005 }}
+                whileTap={{ scale: 0.995 }}
+              >
+                <input 
+                  ref={fileInputRef} 
+                  type="file" 
+                  multiple 
+                  accept=".pdf,.jpg,.jpeg,.png" 
+                  onChange={handleFileSelect} 
+                  className="hidden" 
+                />
+
+                <div className="flex flex-col items-center space-y-4">
+                  <motion.div 
+                    className="w-14 h-14 bg-gradient-to-br from-indigo-100 to-blue-100 rounded-xl flex items-center justify-center shadow-sm"
+                    animate={{
+                      scale: isDragOver ? 1.1 : 1,
+                      rotate: isDragOver ? 5 : 0
+                    }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <Plus className="w-7 h-7 text-indigo-600" />
+                  </motion.div>
+                  
+                  <div>
+                    <h3 className="text-base font-bold text-gray-900 mb-1.5 tracking-tight">
+                      {isDragOver ? 'Drop your files here' : 'Choose files or drag and drop'}
+                    </h3>
+                    <p className="text-sm text-gray-500 font-medium">
+                      PDF, JPG, PNG files up to 100MB each
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Uploaded Files List - Compact */}
+              <AnimatePresence>
+                {uploadedFiles.length > 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.3 }}
+                    className="mt-4 overflow-hidden"
+                  >
+                    <h3 className="text-sm font-bold text-gray-900 mb-4 tracking-tight">
+                      Uploaded Files ({uploadedFiles.length})
+                    </h3>
+                    <div className="space-y-3 max-h-48 overflow-y-auto pr-3">
+                      <AnimatePresence>
+                        {uploadedFiles.map(file => (
+                          <motion.div 
+                            key={file.id}
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            transition={{ duration: 0.2 }}
+                            className="flex items-center p-4 bg-gray-50 rounded-lg border border-gray-200/80 group hover:shadow-md hover:border-gray-300 transition-all duration-200"
+                          >
+                            <div className="flex items-center space-x-3 flex-1 min-w-0">
+                              <div className="relative flex-shrink-0">
+                                {file.preview ? (
+                                  <div className="w-10 h-10 rounded-lg overflow-hidden bg-gray-100">
+                                    <img src={file.preview} alt={file.name} className="w-full h-full object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                                    file.type === 'PDF' 
+                                      ? 'bg-gradient-to-br from-rose-100 to-orange-100' 
+                                      : 'bg-gradient-to-br from-indigo-100 to-blue-100'
+                                  }`}>
+                                    {file.type === 'PDF' ? (
+                                      <FileText className="w-5 h-5 text-rose-600" />
+                                    ) : (
+                                      <Image className="w-5 h-5 text-indigo-600" />
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {/* Status Indicator */}
+                                <div className="absolute -top-1 -right-1">
+                                  {file.status === 'completed' ? (
+                                    <div className="w-4 h-4 bg-gradient-to-br from-emerald-500 to-green-600 rounded-full flex items-center justify-center shadow-sm">
+                                      <Check className="w-2.5 h-2.5 text-white" />
+                                    </div>
+                                  ) : file.status === 'uploading' ? (
+                                    <div className="w-4 h-4 bg-gradient-to-br from-indigo-500 to-blue-500 rounded-full flex items-center justify-center">
+                                      <motion.div
+                                        animate={{ rotate: 360 }}
+                                        transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                                        className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="w-4 h-4 bg-gradient-to-br from-rose-500 to-red-500 rounded-full flex items-center justify-center">
+                                      <AlertCircle className="w-2.5 h-2.5 text-white" />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium text-gray-900 truncate text-sm">{file.name}</p>
+                                <div className="flex items-center space-x-2 mt-0.5">
+                                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">
+                                    {file.type}
+                                  </span>
+                                  <span className="text-xs text-gray-500">{file.size}</span>
+                                  {file.status === 'uploading' && (
+                                    <span className="text-xs text-indigo-600 font-medium">Uploading...</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <button 
+                              onClick={() => handleDelete(file.id)} 
+                              className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {/* Processing State - Compact */}
+          {(currentStep === 2 || currentStep === 3 || showCompletionTick) && (
+            <div className="p-6 text-center">
+              {showCompletionTick ? (
+                <motion.div 
+                  initial={{ scale: 0, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                  className="w-12 h-12 bg-gradient-to-br from-emerald-500 to-green-600 rounded-full mx-auto mb-3 flex items-center justify-center shadow-lg shadow-emerald-500/30"
+                >
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ delay: 0.2, duration: 0.3, ease: "easeOut" }}
+                  >
+                    <CheckCircle className="w-6 h-6 text-white" />
+                  </motion.div>
+                </motion.div>
+              ) : (
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                  className="w-12 h-12 border-4 border-gray-200 border-t-indigo-500 rounded-full mx-auto mb-3"
+                />
+              )}
+              
+              <p className="text-sm text-gray-600">
+                {showCompletionTick 
+                  ? 'Documents successfully processed!' 
+                  : currentStep === 2 
+                    ? 'Extracting information...' 
+                    : 'AI analyzing...'}
+              </p>
+            </div>
+          )}
+
+          {/* Action Button - Enhanced */}
+          {uploadedFiles.length > 0 && currentStep === 1 && (
+            <div className="flex-shrink-0 px-6 py-5 border-t border-gray-200/60 bg-gray-50/50">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-600 font-medium">
+                  <span>{completedFiles.length} of {uploadedFiles.length} files ready</span>
+                </div>
+                
+                <motion.button 
+                  onClick={handleContinue} 
+                  disabled={!canContinue} 
+                  className={`px-6 py-2.5 rounded-lg font-bold text-white transition-all duration-200 text-sm ${
+                    canContinue 
+                      ? 'bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 shadow-md hover:shadow-lg' 
+                      : 'bg-gray-300 cursor-not-allowed'
+                  }`}
+                  whileHover={canContinue ? { scale: 1.02 } : {}}
+                  whileTap={canContinue ? { scale: 0.98 } : {}}
+                >
+                  Continue Analysis
+                </motion.button>
+              </div>
+            </div>
+          )}
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Fullscreen mode rendering (original)
   return <div className={`fixed inset-0 flex items-center justify-center overflow-hidden z-50 ${className || ''}`} style={{
     background: `
              radial-gradient(ellipse at 20% 80%, rgba(16, 185, 129, 0.3) 0%, transparent 50%),

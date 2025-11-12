@@ -7,6 +7,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
 import { useBackendApi } from './BackendApi';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { DEFAULT_MAP_LOCATION_KEY } from './MainContent';
 // import { openaiService, QueryAnalysis } from '../services/openai';
 
 interface SquareMapProps {
@@ -34,6 +35,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const currentMarker = useRef<mapboxgl.Marker | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const backendApi = useBackendApi();
+  // Store pending location change when map isn't visible
+  const pendingLocationChange = useRef<{ coordinates: [number, number]; zoom: number } | null>(null);
+  // Track last applied location to avoid unnecessary updates
+  const lastAppliedLocation = useRef<{ coordinates: [number, number]; zoom: number } | null>(null);
+  // Track last added properties to prevent duplicate additions
+  const lastAddedPropertiesRef = useRef<string>('');
   
   // Debug: Log Mapbox token status
   React.useEffect(() => {
@@ -464,6 +471,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const addPropertyMarkers = (properties: any[], shouldClearExisting: boolean = true) => {
     if (!map.current) return;
 
+    // Create a signature of the properties to detect if they've actually changed
+    const propertiesSignature = JSON.stringify(
+      properties.map(p => ({ id: p.id, lng: p.longitude, lat: p.latitude }))
+    );
+    
+    // If properties haven't changed and source already exists, don't re-add
+    if (!shouldClearExisting && propertiesSignature === lastAddedPropertiesRef.current) {
+      console.log('📍 Properties unchanged, skipping marker re-addition');
+      return;
+    }
+    
+    lastAddedPropertiesRef.current = propertiesSignature;
+
     console.log(`addPropertyMarkers called with ${properties.length} properties, shouldClearExisting: ${shouldClearExisting}`);
 
     // Clear existing markers only if requested (not during style changes)
@@ -511,29 +531,57 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
 
     // Add property data as a single unified GeoJSON source (more efficient)
+    // Validate and ensure coordinates are fixed (lng, lat format for GeoJSON)
     const geojson: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
-      features: properties.map(property => ({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [property.longitude, property.latitude]
-        },
-        properties: {
-          id: property.id,
-          address: property.address,
-          price: property.price,
-          bedrooms: property.bedrooms,
-          bathrooms: property.bathrooms,
-          squareFeet: property.squareFeet,
-          type: property.type,
-          condition: property.condition,
-          features: property.features,
-          summary: property.summary,
-          image: property.image,
-          agent: property.agent
-        }
-      }))
+      features: properties
+        .filter(property => {
+          // Validate coordinates exist and are valid numbers
+          const hasValidCoords = 
+            property.longitude != null && 
+            property.latitude != null &&
+            typeof property.longitude === 'number' &&
+            typeof property.latitude === 'number' &&
+            !isNaN(property.longitude) &&
+            !isNaN(property.latitude) &&
+            property.longitude >= -180 && property.longitude <= 180 &&
+            property.latitude >= -90 && property.latitude <= 90;
+          
+          if (!hasValidCoords) {
+            console.warn('⚠️ Invalid coordinates for property:', property.id, property.address, {
+              longitude: property.longitude,
+              latitude: property.latitude
+            });
+          }
+          return hasValidCoords;
+        })
+        .map(property => {
+          // Ensure coordinates are fixed and in correct format [lng, lat]
+          const lng = Number(property.longitude);
+          const lat = Number(property.latitude);
+          
+          return {
+            type: 'Feature' as const,
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [lng, lat] as [number, number] // Fixed: [longitude, latitude] for GeoJSON
+            },
+            properties: {
+              id: property.id,
+              address: property.address,
+              price: property.price,
+              bedrooms: property.bedrooms,
+              bathrooms: property.bathrooms,
+              squareFeet: property.squareFeet,
+              type: property.type,
+              condition: property.condition,
+              features: property.features,
+              summary: property.summary,
+              image: property.image,
+              agent: property.agent
+            }
+          };
+        })
     };
 
     console.log(`Creating unified source with ${properties.length} properties`);
@@ -661,6 +709,41 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
         
+        // Smoothly fly to the property location, centering it on screen with consistent zoom
+        const propertyCoordinates: [number, number] = [property.longitude, property.latitude];
+        map.current.flyTo({
+          center: propertyCoordinates,
+          zoom: 17.5, // Consistent zoom level matching reference image proximity
+          duration: 2000, // 2 second smooth transition
+          essential: true, // Ensure animation completes
+          offset: [-80, 0], // Shift center slightly to the left (negative x = left)
+          easing: (t) => {
+            // Custom easing function for extremely smooth animation
+            // Ease-in-out-cubic for smooth acceleration and deceleration
+            return t < 0.5
+              ? 4 * t * t * t
+              : 1 - Math.pow(-2 * t + 2, 3) / 2;
+          }
+        });
+        
+        // Hide the base marker for this property by filtering it out
+        if (map.current.getLayer('property-markers')) {
+          map.current.setFilter('property-markers', [
+            '!=',
+            ['get', 'id'],
+            property.id
+          ]);
+        }
+        
+        // Also hide the outer ring for this property
+        if (map.current.getLayer('property-outer')) {
+          map.current.setFilter('property-outer', [
+            '!=',
+            ['get', 'id'],
+            property.id
+          ]);
+        }
+        
         // Create individual marker layers for this specific property only
         const propertyId = `property-${property.id}`;
         const outerId = `property-outer-${property.id}`;
@@ -782,6 +865,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Clear selected property effects
   const clearSelectedPropertyEffects = () => {
     if (map.current) {
+      // Restore base marker layers to show all properties (remove filters)
+      if (map.current.getLayer('property-markers')) {
+        map.current.setFilter('property-markers', null);
+      }
+      if (map.current.getLayer('property-outer')) {
+        map.current.setFilter('property-outer', null);
+      }
+      
       // Clear all possible property effect layers
       const allLayers = map.current.getStyle().layers;
         allLayers.forEach(layer => {
@@ -1394,12 +1485,43 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     try {
       console.log('🗺️ Creating Mapbox map instance...');
+      
+      // Get default map location from localStorage
+      const getDefaultMapLocation = () => {
+        if (typeof window !== 'undefined') {
+          const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+                return {
+                  center: parsed.coordinates as [number, number],
+                  zoom: parsed.zoom || 9.5 // Use saved zoom or default to 9.5 (zoomed out)
+                };
+              }
+            } catch {
+              // If parsing fails, fall through to default
+            }
+          }
+        }
+        // Default to London (since most properties are there) - zoomed out
+        return { center: [-0.1276, 51.5074] as [number, number], zoom: 9.5 };
+      };
+      
+      const defaultLocation = getDefaultMapLocation();
+      
+      // Track the initial location
+      lastAppliedLocation.current = {
+        coordinates: defaultLocation.center,
+        zoom: defaultLocation.zoom
+      };
+      
       // Create map with worldwide access (no bounds restriction)
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11', // Light style (no color) - default
-        center: [-2.5879, 51.4545], // Start with Bristol center
-        zoom: 10.5, // Initial zoom level
+        center: defaultLocation.center,
+        zoom: defaultLocation.zoom,
         bearing: 15, // Slight rotation for better view
         pitch: 45, // 3D perspective angle
         interactive: true,
@@ -1524,10 +1646,220 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
   }, [searchQuery, isVisible]);
 
+  // Store isVisible in a ref so event handler can access current value
+  const isVisibleRef = useRef(isVisible);
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+
+  // Listen for default map location changes from settings (always active, not dependent on isVisible)
+  useEffect(() => {
+    const handleLocationChange = (event: CustomEvent) => {
+      const locationData = event.detail;
+      if (!locationData || !locationData.coordinates || !Array.isArray(locationData.coordinates) || locationData.coordinates.length !== 2) {
+        console.log('🗺️ SquareMap: Invalid location data in event', locationData);
+        return;
+      }
+
+      const newLocation = {
+        coordinates: locationData.coordinates as [number, number],
+        zoom: locationData.zoom || 9.5
+      };
+
+      // Use ref to get current isVisible value
+      const currentIsVisible = isVisibleRef.current;
+
+      console.log('🗺️ SquareMap: Received location change event', {
+        newLocation,
+        mapReady: !!map.current,
+        isVisible: currentIsVisible,
+        lastLocation: lastAppliedLocation.current
+      });
+
+      // Check if this is the same location we already applied
+      const lastLocation = lastAppliedLocation.current;
+      if (lastLocation && 
+          lastLocation.coordinates[0] === newLocation.coordinates[0] &&
+          lastLocation.coordinates[1] === newLocation.coordinates[1] &&
+          lastLocation.zoom === newLocation.zoom) {
+        console.log('🗺️ SquareMap: Location unchanged, skipping update');
+        return;
+      }
+
+      // If map is ready and visible, apply immediately
+      if (map.current && currentIsVisible) {
+        console.log('🗺️ SquareMap: Default location changed, updating map view immediately', newLocation);
+        lastAppliedLocation.current = newLocation;
+        map.current.flyTo({
+          center: newLocation.coordinates,
+          zoom: newLocation.zoom,
+          duration: 1000, // Smooth transition
+          essential: true
+        });
+      } else {
+        // Store for later when map becomes visible
+        console.log('🗺️ SquareMap: Map not ready or not visible, storing location change for later', {
+          newLocation,
+          mapReady: !!map.current,
+          isVisible: currentIsVisible
+        });
+        pendingLocationChange.current = newLocation;
+      }
+    };
+
+    // Add event listener for default map location changes (always active)
+    window.addEventListener('defaultMapLocationChanged', handleLocationChange as EventListener);
+    console.log('🗺️ SquareMap: Event listener attached for defaultMapLocationChanged');
+
+    // Cleanup
+    return () => {
+      window.removeEventListener('defaultMapLocationChanged', handleLocationChange as EventListener);
+      console.log('🗺️ SquareMap: Event listener removed for defaultMapLocationChanged');
+    };
+  }, []); // Empty deps - listener stays attached, uses refs to access current values
+
+  // Check localStorage and apply pending location when map becomes visible
+  useEffect(() => {
+    if (!isVisible || !map.current) {
+      console.log('🗺️ SquareMap: Visibility check skipped', { isVisible, mapReady: !!map.current });
+      return;
+    }
+
+    console.log('🗺️ SquareMap: Map became visible, checking for location updates');
+
+    // Small delay to ensure map is fully ready
+    const timeoutId = setTimeout(() => {
+      if (!map.current) {
+        console.log('🗺️ SquareMap: Map no longer available after timeout');
+        return;
+      }
+
+      // Function to apply location change
+      const applyLocationChange = (location: { coordinates: [number, number]; zoom: number }, source: string) => {
+        if (!map.current) return;
+
+        // Check if this is different from current map center
+        const currentCenter = map.current.getCenter();
+        const currentZoom = map.current.getZoom();
+        const coordDiff = Math.abs(currentCenter.lng - location.coordinates[0]) + Math.abs(currentCenter.lat - location.coordinates[1]);
+        const zoomDiff = Math.abs(currentZoom - location.zoom);
+
+        // Only update if location or zoom has changed significantly
+        if (coordDiff > 0.001 || zoomDiff > 0.1) {
+          console.log(`🗺️ SquareMap: Applying location change from ${source}`, {
+            location,
+            currentCenter: { lng: currentCenter.lng, lat: currentCenter.lat },
+            currentZoom,
+            coordDiff,
+            zoomDiff
+          });
+          lastAppliedLocation.current = location;
+          map.current.flyTo({
+            center: location.coordinates,
+            zoom: location.zoom,
+            duration: 1000,
+            essential: true
+          });
+        } else {
+          console.log(`🗺️ SquareMap: Location already matches (from ${source}), skipping update`, {
+            location,
+            currentCenter: { lng: currentCenter.lng, lat: currentCenter.lat },
+            currentZoom
+          });
+          lastAppliedLocation.current = location;
+        }
+      };
+
+      // First, check for pending location change from event
+      if (pendingLocationChange.current) {
+        const pending = pendingLocationChange.current;
+        pendingLocationChange.current = null;
+        console.log('🗺️ SquareMap: Found pending location change, applying', pending);
+        applyLocationChange(pending, 'pending event');
+        return;
+      }
+
+      // Always check localStorage for the default location (in case event was missed)
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem(DEFAULT_MAP_LOCATION_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (parsed.coordinates && Array.isArray(parsed.coordinates) && parsed.coordinates.length === 2) {
+              const savedLocation = {
+                coordinates: parsed.coordinates as [number, number],
+                zoom: parsed.zoom || 9.5
+              };
+
+              // Check if this differs from last applied location OR from current map center
+              const lastLocation = lastAppliedLocation.current;
+              const currentCenter = map.current.getCenter();
+              const currentZoom = map.current.getZoom();
+              
+              // Compare with both last applied AND current map position
+              // Use more lenient comparison for coordinates (0.0001 degrees ≈ 11 meters)
+              const coordDiffFromLast = lastLocation ? 
+                  Math.abs(lastLocation.coordinates[0] - savedLocation.coordinates[0]) + 
+                  Math.abs(lastLocation.coordinates[1] - savedLocation.coordinates[1]) : 999;
+              const zoomDiffFromLast = lastLocation ? 
+                  Math.abs(lastLocation.zoom - savedLocation.zoom) : 999;
+              
+              const coordDiffFromCurrent = Math.abs(currentCenter.lng - savedLocation.coordinates[0]) + 
+                  Math.abs(currentCenter.lat - savedLocation.coordinates[1]);
+              const zoomDiffFromCurrent = Math.abs(currentZoom - savedLocation.zoom);
+              
+              const differsFromLast = !lastLocation || coordDiffFromLast > 0.0001 || zoomDiffFromLast > 0.1;
+              const differsFromCurrent = coordDiffFromCurrent > 0.0001 || zoomDiffFromCurrent > 0.1;
+
+              console.log('🗺️ SquareMap: Comparing saved location with current state', {
+                savedLocation,
+                lastLocation,
+                currentCenter: { lng: currentCenter.lng, lat: currentCenter.lat },
+                currentZoom,
+                coordDiffFromLast,
+                zoomDiffFromLast,
+                coordDiffFromCurrent,
+                zoomDiffFromCurrent,
+                differsFromLast,
+                differsFromCurrent
+              });
+
+              if (differsFromLast || differsFromCurrent) {
+                console.log('🗺️ SquareMap: Found location in localStorage that differs, applying', {
+                  savedLocation,
+                  lastLocation,
+                  currentCenter: { lng: currentCenter.lng, lat: currentCenter.lat },
+                  currentZoom,
+                  differsFromLast,
+                  differsFromCurrent
+                });
+                applyLocationChange(savedLocation, 'localStorage');
+              } else {
+                console.log('🗺️ SquareMap: Location in localStorage matches both last applied and current map, skipping', {
+                  savedLocation,
+                  lastLocation,
+                  currentCenter: { lng: currentCenter.lng, lat: currentCenter.lat },
+                  currentZoom
+                });
+              }
+            }
+          } catch (error) {
+            console.error('🗺️ SquareMap: Error parsing saved location', error);
+          }
+        } else {
+          console.log('🗺️ SquareMap: No saved location in localStorage');
+        }
+      }
+    }, 200); // Slightly longer delay to ensure map is ready
+
+    return () => clearTimeout(timeoutId);
+  }, [isVisible]);
+
   return (
     <AnimatePresence>
       {isVisible && (
         <motion.div
+          key="square-map-container"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -1650,14 +1982,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       )}
       
       {/* Property Details Panel */}
-      <PropertyDetailsPanel
-        property={selectedProperty}
-        isVisible={showPropertyDetailsPanel}
-        onClose={() => {
-          setShowPropertyDetailsPanel(false);
-          setShowPropertyCard(false); // Also close the old property card
-        }}
-      />
+      {showPropertyDetailsPanel && (
+        <PropertyDetailsPanel
+          key="property-details-panel"
+          property={selectedProperty}
+          isVisible={showPropertyDetailsPanel}
+          onClose={() => {
+            setShowPropertyDetailsPanel(false);
+            setShowPropertyCard(false); // Also close the old property card
+            setSelectedProperty(null); // Clear selected property
+            clearSelectedPropertyEffects(); // Restore base markers
+          }}
+        />
+      )}
     </AnimatePresence>
   );
 });
