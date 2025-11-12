@@ -67,9 +67,13 @@ const LocationPickerModal: React.FC<{
   savedLocation: string;
   onLocationSaved: () => void;
   onCloseSidebar?: () => void;
-}> = ({ savedLocation, onLocationSaved, onCloseSidebar }) => {
+  onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
+  getSidebarState?: () => boolean;
+}> = ({ savedLocation, onLocationSaved, onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  // Store sidebar state before entering preview mode
+  const sidebarStateBeforePreviewRef = React.useRef<boolean | null>(null);
   const [locationInput, setLocationInput] = React.useState<string>('');
   // Initialize with empty values - will be loaded from localStorage when modal opens
   const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
@@ -86,6 +90,8 @@ const LocationPickerModal: React.FC<{
   const previewMarker = React.useRef<mapboxgl.Marker | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const geocodeTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const askButtonCheckIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+  const previewAskButtonCheckIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
   // Track if coordinate change is from user interaction (map click) to prevent sync loop
   const isUserInteractionRef = React.useRef<boolean>(false);
   // Track if zoom was explicitly set by user (vs calculated by reverse geocoding)
@@ -803,8 +809,42 @@ const LocationPickerModal: React.FC<{
       style: 'mapbox://styles/mapbox/light-v11',
       center: selectedCoordinates,
       zoom: selectedZoom,
-      attributionControl: false
+      attributionControl: false,
+      interactive: true,
+      dragPan: true,
+      scrollZoom: true,
+      boxZoom: true,
+      doubleClickZoom: true
     });
+
+    // Disable Mapbox "Ask" button that appears on touch devices
+    const removeAskButton = () => {
+      if (!previewMap.current) return;
+      const container = previewMap.current.getContainer();
+      if (container) {
+        const askButton = container.querySelector('[data-testid="mapbox-gl-ask-button"]');
+        if (askButton) {
+          (askButton as HTMLElement).style.display = 'none';
+          (askButton as HTMLElement).remove();
+        }
+        const controls = container.querySelectorAll('.mapboxgl-ctrl, button');
+        controls.forEach((ctrl) => {
+          const ctrlElement = ctrl as HTMLElement;
+          if (ctrlElement.textContent?.includes('Ask') || 
+              ctrlElement.getAttribute('data-testid')?.includes('ask') ||
+              ctrlElement.getAttribute('aria-label')?.includes('Ask')) {
+            ctrlElement.style.display = 'none';
+            ctrlElement.remove();
+          }
+        });
+      }
+    };
+
+    previewMap.current.on('load', removeAskButton);
+    // Also check periodically and on touch events
+    previewAskButtonCheckIntervalRef.current = setInterval(removeAskButton, 100);
+    previewMap.current.on('touchstart', removeAskButton);
+    previewMap.current.on('touchend', removeAskButton);
 
     // Update zoom and location when map moves - pin stays centered visually
     const handleMoveEnd = () => {
@@ -825,29 +865,16 @@ const LocationPickerModal: React.FC<{
         setSelectedCoordinates(newCoordinates);
         // Reverse geocode to update location name (won't overwrite user-selected zoom)
         reverseGeocode(center.lng, center.lat);
-        // Reset flag after state updates
+        // Reset flag after state updates complete (longer delay to prevent feedback loop)
         setTimeout(() => {
           isUpdatingFromDragRef.current = false;
-        }, 100);
+        }, 200);
       }
     };
 
-    // Also update on move (not just moveend) for smoother updates
-    const handleMove = () => {
-      if (previewMap.current) {
-        isUpdatingFromDragRef.current = true;
-        const center = previewMap.current.getCenter();
-        const newCoordinates: [number, number] = [center.lng, center.lat];
-        setSelectedCoordinates(newCoordinates);
-        // Reset flag after state update
-        setTimeout(() => {
-          isUpdatingFromDragRef.current = false;
-        }, 50);
-      }
-    };
-
+    // Don't update state on move - only on moveend to prevent glitchiness
+    // The map will handle smooth dragging internally without state updates
     previewMap.current.on('moveend', handleMoveEnd);
-    previewMap.current.on('move', handleMove);
 
     // Hide Mapbox branding
     const hideBranding = () => {
@@ -864,10 +891,15 @@ const LocationPickerModal: React.FC<{
     setTimeout(hideBranding, 100);
 
     return () => {
+      if (previewAskButtonCheckIntervalRef.current) {
+        clearInterval(previewAskButtonCheckIntervalRef.current);
+        previewAskButtonCheckIntervalRef.current = null;
+      }
       if (previewMap.current) {
         previewMap.current.off('moveend', handleMoveEnd);
-        previewMap.current.off('move', handleMove);
         previewMap.current.off('load', hideBranding);
+        previewMap.current.off('touchstart', removeAskButton);
+        previewMap.current.off('touchend', removeAskButton);
         previewMap.current.remove();
         previewMap.current = null;
       }
@@ -900,31 +932,47 @@ const LocationPickerModal: React.FC<{
     <>
       <motion.button
         onClick={() => setIsOpen(true)}
-        className="w-full px-4 py-3 border-2 border-dashed border-slate-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors text-left bg-white"
-        whileHover={{ scale: 1.01 }}
-        whileTap={{ scale: 0.99 }}
+        className="w-full group relative bg-white border border-slate-200 rounded-lg hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
+        whileHover={{ scale: 1.001 }}
+        whileTap={{ scale: 0.999 }}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex-1">
-            <div className="font-medium text-slate-700 mb-1">Set Default Map Location</div>
-            <div className="text-sm text-slate-500">
-              {savedLocation || 'Click to set location'}
-            </div>
+        <div className="flex items-start gap-4 px-5 py-4">
+          {/* Minimal icon */}
+          <div className="flex-shrink-0 pt-0.5">
+            <MapPin className="w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-colors" strokeWidth={1.5} />
           </div>
-          <MapPin className="w-5 h-5 text-slate-400 ml-4" />
+          
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="font-medium text-slate-900 mb-1 text-sm">
+              Default Map Location
+            </div>
+            <div className="text-xs text-slate-500 mb-3">
+              Choose where the map opens when you first view it
+            </div>
+            {savedLocation && (
+              <div className="text-sm text-slate-600 font-normal">
+                {savedLocation}
+              </div>
+            )}
+          </div>
+          
+          {/* Subtle arrow */}
+          <div className="flex-shrink-0 text-slate-300 group-hover:text-slate-400 transition-colors pt-0.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
         </div>
       </motion.button>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Set Default Map Location</DialogTitle>
-            <DialogDescription>
-              Search for a location or click on the map to set where the map opens by default.
-            </DialogDescription>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0">
+          <DialogHeader className="px-6 pt-6 pb-5 border-b border-slate-100">
+            <DialogTitle className="text-xl font-semibold text-slate-900 tracking-tight">Set Default Map Location</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="px-6 py-5 space-y-5">
             {/* Location Input */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Search Location</label>
@@ -935,22 +983,28 @@ const LocationPickerModal: React.FC<{
                   setLocationInput(e.target.value);
                   setGeocodeError('');
                 }}
-                placeholder="e.g., London, Bristol, Manchester..."
-                className="w-full px-4 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-slate-700"
+                placeholder="Search for a location..."
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-400 text-slate-900 placeholder:text-slate-400 transition-all duration-200 bg-white"
               />
               {isGeocoding && (
-                <p className="text-xs text-slate-500">Searching...</p>
+                <p className="text-xs text-slate-500 flex items-center gap-1.5">
+                  <span className="inline-block w-1 h-1 bg-slate-400 rounded-full animate-pulse" />
+                  Searching...
+                </p>
               )}
               {geocodeError && (
-                <p className="text-xs text-red-600">{geocodeError}</p>
+                <p className="text-xs text-red-600 flex items-center gap-1.5">
+                  <span className="inline-block w-1 h-1 bg-red-500 rounded-full" />
+                  {geocodeError}
+                </p>
               )}
             </div>
 
             {/* Map Preview */}
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <label className="text-sm font-medium text-slate-700">Map Preview</label>
               <div 
-                className="w-full h-96 rounded-lg border border-slate-300 overflow-hidden bg-slate-100 relative"
+                className="w-full h-96 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 relative shadow-sm"
                 style={{ minHeight: '384px', width: '100%' }}
               >
                 {/* Map Container */}
@@ -960,68 +1014,62 @@ const LocationPickerModal: React.FC<{
                   style={{ position: 'relative', zIndex: 1, pointerEvents: 'auto' }}
                 />
                 
-                {/* Dotted Border Frame Overlay - similar to fullscreen preview */}
+                {/* Refined Border Frame Overlay */}
                 <div 
-                  className="absolute pointer-events-none z-10 border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
+                  className="absolute pointer-events-none z-10 border-2 border-slate-300/50 border-dashed rounded-lg" 
                   style={{
-                    top: '20px',
-                    left: '20px',
-                    right: '20px',
-                    bottom: '20px',
-                    boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
+                    top: '24px',
+                    left: '24px',
+                    right: '24px',
+                    bottom: '24px',
                   }}
                 />
               </div>
-              <p className="text-xs text-slate-500">
-                Click on the map to set the location, or search above to find a place.
-              </p>
             </div>
 
-            {/* Selected Location Display */}
+            {/* Selected Location Display - Simplified */}
             {selectedLocationName && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="text-sm font-medium text-blue-900 mb-1">Selected Location:</div>
-                <div className="text-sm text-blue-700">{selectedLocationName}</div>
-                {selectedCoordinates && (
-                  <div className="text-xs text-blue-600 mt-1">
-                    Coordinates: {selectedCoordinates[1].toFixed(4)}, {selectedCoordinates[0].toFixed(4)}
-                  </div>
-                )}
-                {selectedZoom && (
-                  <div className="text-xs text-blue-600 mt-1">
-                    Zoom Level: {selectedZoom.toFixed(1)}
-                  </div>
-                )}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
+                <div className="text-sm font-medium text-slate-900 leading-relaxed">{selectedLocationName}</div>
               </div>
             )}
           </div>
 
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIsOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsOpen(false);
-                // Close sidebar when entering preview mode
-                onCloseSidebar?.();
-                setIsPreviewMode(true);
-              }}
-              className="mr-2"
-            >
-              Adjust Zoom & Preview
-            </Button>
-            <Button
-              onClick={handleConfirm}
-              disabled={!selectedCoordinates}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              Confirm Location
-            </Button>
+          <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+            <div className="flex items-center justify-between w-full">
+              <Button
+                variant="outline"
+                onClick={() => setIsOpen(false)}
+                className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+              >
+                Cancel
+              </Button>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setIsOpen(false);
+                    // Store sidebar state before closing
+                    if (getSidebarState) {
+                      sidebarStateBeforePreviewRef.current = getSidebarState();
+                    }
+                    // Close sidebar when entering preview mode
+                    onCloseSidebar?.();
+                    setIsPreviewMode(true);
+                  }}
+                  className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+                >
+                  Adjust Zoom & Preview
+                </Button>
+                <Button
+                  onClick={handleConfirm}
+                  disabled={!selectedCoordinates}
+                  className="bg-slate-900 hover:bg-slate-800 text-white disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm min-w-[140px]"
+                >
+                  Confirm Location
+                </Button>
+              </div>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1044,24 +1092,24 @@ const LocationPickerModal: React.FC<{
               height: '100vh'
             }}
           >
-            {/* Preview Mode Overlay Frame - equal padding on all sides, accounting for sidebar */}
-            <div 
-              className="absolute pointer-events-none z-[10002] border-4 border-blue-400 border-dashed rounded-lg shadow-2xl" 
-              style={{
-                top: '80px', // Below top buttons and "Preview Mode" label (equal padding)
-                left: '72px', // After sidebar (56px) + padding (16px) = 72px from left edge
-                right: '72px', // Equal padding from right edge (matches left)
-                bottom: '80px', // Equal padding on bottom (matches top)
-                boxShadow: '0 0 0 4px rgba(59, 130, 246, 0.1), 0 0 40px rgba(59, 130, 246, 0.2)'
-              }}
-            />
-            
             {/* Preview Mode Label */}
             <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
-              <div className="bg-blue-500 text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg">
+              <div className="bg-slate-900 text-white px-4 py-2 rounded-full text-xs font-semibold tracking-wide shadow-lg backdrop-blur-sm bg-opacity-90">
                 Preview Mode
               </div>
             </div>
+
+            {/* Preview Mode Overlay Frame - with proper padding from screen edges */}
+            <div 
+              className="absolute pointer-events-none z-[10002] border-2 border-slate-400/70 border-dashed rounded-lg" 
+              style={{
+                top: '80px', // Padding below Preview Mode label
+                left: '48px', // Increased padding from left edge (after collapsed sidebar)
+                right: '48px', // Increased padding from right edge
+                bottom: '80px', // Enough space above buttons to see the border
+                boxShadow: '0 0 0 1px rgba(148, 163, 184, 0.2)'
+              }}
+            />
 
             {/* Full Screen Map - positioned to cover top white area */}
             <div 
@@ -1080,24 +1128,38 @@ const LocationPickerModal: React.FC<{
             
 
 
-            {/* Buttons - Inside dotted lines, just above bottom */}
+            {/* Buttons - Inside dotted lines, positioned appropriately */}
             <div 
-              className="absolute z-[10001] flex space-x-2"
+              className="absolute z-[10001] flex gap-3"
               style={{
-                bottom: '100px', // Just above bottom border (80px border + 20px padding)
-                right: '92px' // Inside right border (72px border + 20px padding)
+                bottom: '96px', // Positioned above the bottom border with spacing
+                right: '64px' // Aligned with right border padding
               }}
             >
               <Button
                 variant="outline"
-                onClick={() => setIsPreviewMode(false)}
-                className="text-sm px-3 py-1.5 h-auto bg-slate-50 hover:bg-slate-100 border-slate-300 text-slate-700 shadow-sm"
+                onClick={() => {
+                  setIsPreviewMode(false);
+                  // Restore sidebar state
+                  if (onRestoreSidebarState && sidebarStateBeforePreviewRef.current !== null) {
+                    onRestoreSidebarState(sidebarStateBeforePreviewRef.current);
+                    sidebarStateBeforePreviewRef.current = null;
+                  }
+                }}
+                className="px-4 py-2 h-auto bg-white hover:bg-slate-50 border-slate-200 text-slate-700 shadow-sm backdrop-blur-sm font-medium"
               >
                 Back
               </Button>
               <Button
-                onClick={handleConfirm}
-                className="text-sm px-3 py-1.5 h-auto bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+                onClick={() => {
+                  handleConfirm();
+                  // Restore sidebar state after confirming
+                  if (onRestoreSidebarState && sidebarStateBeforePreviewRef.current !== null) {
+                    onRestoreSidebarState(sidebarStateBeforePreviewRef.current);
+                    sidebarStateBeforePreviewRef.current = null;
+                  }
+                }}
+                className="px-4 py-2 h-auto bg-slate-900 hover:bg-slate-800 text-white shadow-sm font-medium min-w-[140px]"
               >
                 Confirm Location
               </Button>
@@ -1110,7 +1172,11 @@ const LocationPickerModal: React.FC<{
 };
 
 // Settings View Component with Sidebar Navigation
-const SettingsView: React.FC<{ onCloseSidebar?: () => void }> = ({ onCloseSidebar }) => {
+const SettingsView: React.FC<{ 
+  onCloseSidebar?: () => void;
+  onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
+  getSidebarState?: () => boolean;
+}> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
   const [activeCategory, setActiveCategory] = React.useState<string>('appearance');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
 
@@ -1144,7 +1210,7 @@ const SettingsView: React.FC<{ onCloseSidebar?: () => void }> = ({ onCloseSideba
 
   const settingsCategories = [
     { id: 'appearance', label: 'Appearance', icon: Palette },
-    { id: 'map-location', label: 'Default Map Location', icon: MapPin },
+    { id: 'map-settings', label: 'Map Settings', icon: MapPin },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'privacy', label: 'Privacy', icon: Shield },
     { id: 'language', label: 'Language & Region', icon: Globe },
@@ -1153,19 +1219,22 @@ const SettingsView: React.FC<{ onCloseSidebar?: () => void }> = ({ onCloseSideba
 
   const renderSettingsContent = () => {
     switch (activeCategory) {
-      case 'map-location':
+      case 'map-settings':
         return (
           <div className="space-y-6">
-            <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Default Map Location</h3>
-              <p className="text-sm text-slate-600">
-                Choose where the map opens when you first view it. You can search for a location or click on the map to set it.
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Map Settings</h3>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                Configure your map preferences and default settings.
               </p>
             </div>
+            
             <LocationPickerModal 
               savedLocation={savedLocation}
               onLocationSaved={handleLocationSaved}
               onCloseSidebar={onCloseSidebar}
+              onRestoreSidebarState={onRestoreSidebarState}
+              getSidebarState={getSidebarState}
             />
           </div>
         );
@@ -1310,6 +1379,9 @@ export interface MainContentProps {
   homeClicked?: boolean;
   onHomeResetComplete?: () => void;
   onCloseSidebar?: () => void;
+  onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
+  getSidebarState?: () => boolean;
+  isSidebarCollapsed?: boolean;
 }
 export const MainContent = ({
   className,
@@ -1323,7 +1395,10 @@ export const MainContent = ({
   onNavigate,
   homeClicked = false,
   onHomeResetComplete,
-  onCloseSidebar
+  onCloseSidebar,
+  onRestoreSidebarState,
+  getSidebarState,
+  isSidebarCollapsed = false
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const [chatQuery, setChatQuery] = React.useState<string>("");
@@ -1682,7 +1757,7 @@ export const MainContent = ({
               </motion.div>}
           </AnimatePresence>;
       case 'notifications':
-        return <div className="w-full max-w-none">
+        return <div className="w-full h-full max-w-none m-0 p-0">
             <FileManager />
           </div>;
       case 'profile':
@@ -1698,7 +1773,11 @@ export const MainContent = ({
             <PropertyValuationUpload onUpload={file => console.log('File uploaded:', file.name)} onContinueWithReport={() => console.log('Continue with report clicked')} />
           </div>;
       case 'settings':
-        return <SettingsView onCloseSidebar={onCloseSidebar} />;
+        return <SettingsView 
+          onCloseSidebar={onCloseSidebar}
+          onRestoreSidebarState={onRestoreSidebarState}
+          getSidebarState={getSidebarState}
+        />;
       default:
         return <div className="flex items-center justify-center flex-1 relative">
             {/* Interactive Dot Grid Background */}
@@ -1719,7 +1798,11 @@ export const MainContent = ({
           </div>;
     }
   };
-  return <div className={`flex-1 relative bg-white ${className || ''}`} style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}>
+  // Calculate left margin based on sidebar state
+  // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed
+  const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
+  
+  return <div className={`flex-1 relative bg-white ${leftMargin} ${className || ''}`} style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}>
       {/* Background based on current view - Hidden to show white background */}
       {/* Background components commented out to show white background */}
       
@@ -1736,7 +1819,7 @@ export const MainContent = ({
                 : currentView === 'notifications'
                   ? 'bg-white'
                   : 'bg-white'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0' : 'p-8 lg:p-16'}`} style={{ backgroundColor: '#ffffff' }}>
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ backgroundColor: '#ffffff' }}>
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 

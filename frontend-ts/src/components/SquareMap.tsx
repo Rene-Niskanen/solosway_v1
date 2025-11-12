@@ -39,6 +39,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const pendingLocationChange = useRef<{ coordinates: [number, number]; zoom: number } | null>(null);
   // Track last applied location to avoid unnecessary updates
   const lastAppliedLocation = useRef<{ coordinates: [number, number]; zoom: number } | null>(null);
+  // Track last added properties to prevent duplicate additions
+  const lastAddedPropertiesRef = useRef<string>('');
   
   // Debug: Log Mapbox token status
   React.useEffect(() => {
@@ -469,6 +471,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const addPropertyMarkers = (properties: any[], shouldClearExisting: boolean = true) => {
     if (!map.current) return;
 
+    // Create a signature of the properties to detect if they've actually changed
+    const propertiesSignature = JSON.stringify(
+      properties.map(p => ({ id: p.id, lng: p.longitude, lat: p.latitude }))
+    );
+    
+    // If properties haven't changed and source already exists, don't re-add
+    if (!shouldClearExisting && propertiesSignature === lastAddedPropertiesRef.current) {
+      console.log('📍 Properties unchanged, skipping marker re-addition');
+      return;
+    }
+    
+    lastAddedPropertiesRef.current = propertiesSignature;
+
     console.log(`addPropertyMarkers called with ${properties.length} properties, shouldClearExisting: ${shouldClearExisting}`);
 
     // Clear existing markers only if requested (not during style changes)
@@ -516,29 +531,57 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
 
     // Add property data as a single unified GeoJSON source (more efficient)
+    // Validate and ensure coordinates are fixed (lng, lat format for GeoJSON)
     const geojson: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
-      features: properties.map(property => ({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [property.longitude, property.latitude]
-        },
-        properties: {
-          id: property.id,
-          address: property.address,
-          price: property.price,
-          bedrooms: property.bedrooms,
-          bathrooms: property.bathrooms,
-          squareFeet: property.squareFeet,
-          type: property.type,
-          condition: property.condition,
-          features: property.features,
-          summary: property.summary,
-          image: property.image,
-          agent: property.agent
-        }
-      }))
+      features: properties
+        .filter(property => {
+          // Validate coordinates exist and are valid numbers
+          const hasValidCoords = 
+            property.longitude != null && 
+            property.latitude != null &&
+            typeof property.longitude === 'number' &&
+            typeof property.latitude === 'number' &&
+            !isNaN(property.longitude) &&
+            !isNaN(property.latitude) &&
+            property.longitude >= -180 && property.longitude <= 180 &&
+            property.latitude >= -90 && property.latitude <= 90;
+          
+          if (!hasValidCoords) {
+            console.warn('⚠️ Invalid coordinates for property:', property.id, property.address, {
+              longitude: property.longitude,
+              latitude: property.latitude
+            });
+          }
+          return hasValidCoords;
+        })
+        .map(property => {
+          // Ensure coordinates are fixed and in correct format [lng, lat]
+          const lng = Number(property.longitude);
+          const lat = Number(property.latitude);
+          
+          return {
+            type: 'Feature' as const,
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [lng, lat] as [number, number] // Fixed: [longitude, latitude] for GeoJSON
+            },
+            properties: {
+              id: property.id,
+              address: property.address,
+              price: property.price,
+              bedrooms: property.bedrooms,
+              bathrooms: property.bathrooms,
+              squareFeet: property.squareFeet,
+              type: property.type,
+              condition: property.condition,
+              features: property.features,
+              summary: property.summary,
+              image: property.image,
+              agent: property.agent
+            }
+          };
+        })
     };
 
     console.log(`Creating unified source with ${properties.length} properties`);
