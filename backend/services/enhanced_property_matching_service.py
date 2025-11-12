@@ -8,6 +8,7 @@ import logging
 import math
 import re
 from typing import Dict, Any, List, Tuple, Optional
+from uuid import UUID
 from datetime import datetime
 from difflib import SequenceMatcher
 from supabase import create_client, Client
@@ -77,16 +78,17 @@ class EnhancedPropertyMatchingService:
             Property matching result with confidence and match type
         """
         try:
+            business_uuid = str(UUID(str(business_id))) if business_id else None
             logger.info(f"🔍 Enhanced property matching for: {address_data.get('original_address', 'N/A')}")
             
             # Step 1: Try exact hash match (fastest)
-            exact_match = self._find_exact_match(address_data, business_id)
+            exact_match = self._find_exact_match(address_data, business_uuid)
             if exact_match:
                 logger.info(f"✅ Exact match found: {exact_match.get('id', 'unknown')}")
                 return self._create_match_result(exact_match, 'exact_match', 1.0, document_id)
             
             # Step 2: Try fuzzy address matching
-            fuzzy_matches = self._find_fuzzy_matches(address_data, business_id)
+            fuzzy_matches = self._find_fuzzy_matches(address_data, business_uuid)
             if fuzzy_matches:
                 best_fuzzy = fuzzy_matches[0]
                 if best_fuzzy['confidence'] >= self.config['min_confidence_threshold']:
@@ -96,7 +98,7 @@ class EnhancedPropertyMatchingService:
             # Step 3: Try spatial proximity matching
             spatial_matches = []  # Initialize as empty list
             if address_data.get('latitude') and address_data.get('longitude'):
-                spatial_matches = self._find_spatial_matches(address_data, business_id)
+                spatial_matches = self._find_spatial_matches(address_data, business_uuid)
                 if spatial_matches:
                     best_spatial = spatial_matches[0]
                     if best_spatial['confidence'] >= self.config['min_confidence_threshold']:
@@ -118,7 +120,7 @@ class EnhancedPropertyMatchingService:
             
             # Step 5: Create new property if no matches found
             logger.info("🆕 No suitable matches found, creating new property")
-            result = self._create_new_property(address_data, document_id, business_id, extracted_data)
+            result = self._create_new_property(address_data, document_id, business_uuid, extracted_data)
             logger.info(f"🆕 New property creation result: {result}")
             return result
             
@@ -138,7 +140,7 @@ class EnhancedPropertyMatchingService:
         try:
             result = self.supabase.table('properties').select('*').eq(
                 'address_hash', address_data['address_hash']
-            ).eq('business_id', business_id).execute()
+            ).eq('business_uuid', business_id).execute()
             
             if result.data:
                 return result.data[0]
@@ -153,7 +155,7 @@ class EnhancedPropertyMatchingService:
         try:
             # Get all properties for business
             result = self.supabase.table('properties').select('*').eq(
-                'business_id', business_id
+                'business_uuid', business_id
             ).execute()
             
             if not result.data:
@@ -198,7 +200,7 @@ class EnhancedPropertyMatchingService:
             
             # Get all properties with coordinates for business
             result = self.supabase.table('properties').select('*').eq(
-                'business_id', business_id
+                'business_uuid', business_id
             ).not_.is_('latitude', 'null').not_.is_('longitude', 'null').execute()
             
             if not result.data:

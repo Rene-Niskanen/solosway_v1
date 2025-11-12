@@ -1,5 +1,5 @@
-from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
-from flask_login import login_required, current_user
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
+from flask_login import login_required, current_user, login_user, logout_user
 from .models import Document, DocumentStatus, Property, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
@@ -17,6 +17,39 @@ from .tasks import process_document_task
 from .services.deletion_service import DeletionService
 from sqlalchemy import text
 import json
+from uuid import UUID
+def _ensure_business_uuid():
+    """Ensure the current user has a business UUID and return it as a string."""
+    existing = getattr(current_user, "business_id", None)
+    if existing:
+        try:
+            # Handle legacy string IDs like "SoloSway" by validating
+            normalized = UUID(str(existing))
+            return str(normalized)
+        except ValueError:
+            pass  # Fall through to Supabase lookup and normalization
+
+    company_name = getattr(current_user, "company_name", None)
+    if not company_name:
+        return None
+
+    try:
+        from .services.supabase_auth_service import SupabaseAuthService
+
+        auth_service = SupabaseAuthService()
+        business_uuid = auth_service.ensure_business_uuid(company_name)
+        if business_uuid:
+            try:
+                # Persist UUID to the local user record for future requests
+                current_user.business_id = UUID(str(business_uuid))
+                db.session.commit()
+            except Exception as commit_error:
+                db.session.rollback()
+                logger.warning(f"Failed to persist business UUID locally: {commit_error}")
+            return str(business_uuid)
+    except Exception as fetch_error:
+        logger.warning(f"Failed to ensure business UUID: {fetch_error}")
+    return None
 
 views = Blueprint('views', __name__)
 
@@ -211,7 +244,8 @@ def get_all_properties():
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
@@ -225,7 +259,7 @@ def get_all_properties():
         
         property_hub_service = SupabasePropertyHubService()
         property_hubs = property_hub_service.get_all_property_hubs(
-            current_user.company_name,
+            business_uuid_str,
             limit=limit,
             offset=offset,
             sort_by=sort_by,
@@ -247,7 +281,7 @@ def get_all_properties():
                 'formatted_address': property_data.get('formatted_address'),
                 'latitude': property_data.get('latitude'),
                 'longitude': property_data.get('longitude'),
-                'business_id': property_data.get('business_id'),
+                'business_id': business_uuid_str,
                 'created_at': property_data.get('created_at'),
                 'updated_at': property_data.get('updated_at'),
                 'last_enrichment_at': property_data.get('last_enrichment_at'),
@@ -384,7 +418,8 @@ def search_properties():
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
@@ -404,8 +439,8 @@ def search_properties():
         offset = data.get('offset', 0)
         
         property_hub_service = SupabasePropertyHubService()
-        property_hubs = property_hub_service.search_property_hubs(
-            business_id=current_user.company_name,
+        results = property_hub_service.search_property_hubs(
+            business_id=business_uuid_str,
             query=query,
             filters=filters,
             limit=limit,
@@ -414,7 +449,7 @@ def search_properties():
         
         # Transform property hubs to match expected frontend format
         properties = []
-        for hub in property_hubs:
+        for hub in results:
             property_data = hub.get('property', {})
             property_details = hub.get('property_details', {})
             documents = hub.get('documents', [])
@@ -427,7 +462,7 @@ def search_properties():
                 'formatted_address': property_data.get('formatted_address'),
                 'latitude': property_data.get('latitude'),
                 'longitude': property_data.get('longitude'),
-                'business_id': property_data.get('business_id'),
+                'business_id': business_uuid_str,
                 'created_at': property_data.get('created_at'),
                 'updated_at': property_data.get('updated_at'),
                 'last_enrichment_at': property_data.get('last_enrichment_at'),
@@ -466,7 +501,7 @@ def search_properties():
             'data': properties,
             'metadata': {
                 'count': len(properties),
-                'business_id': current_user.company_name,
+                'business_id': business_uuid_str,
                 'timestamp': datetime.utcnow().isoformat(),
                 'search_params': {
                     'query': query,
@@ -491,19 +526,20 @@ def get_enriched_property(property_id):
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
             }), 400
         
         property_hub_service = SupabasePropertyHubService()
-        property_hub = property_hub_service.get_property_hub(str(property_id), current_user.company_name)
+        property_hub = property_hub_service.get_property_hub(str(property_id), business_uuid_str)
         
         if not property_hub:
             return jsonify({
                 'success': False,
-                'error': 'Property not found'
+                'error': 'Property hub not found'
             }), 404
         
         # Return the complete property hub as enriched data
@@ -512,7 +548,7 @@ def get_enriched_property(property_id):
             'data': property_hub,
             'metadata': {
                 'property_id': str(property_id),
-                'business_id': current_user.company_name,
+                'business_id': business_uuid_str,
                 'timestamp': datetime.utcnow().isoformat(),
                 'enrichment_source': 'property_hub_service'
             }
@@ -732,6 +768,11 @@ def proxy_upload():
             return jsonify({'error': 'No file selected'}), 400
         
         logger.info(f"✅ File received: {file.filename} ({file.content_length} bytes)")
+
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User is not associated with a business'}), 400
+        business_uuid = UUID(business_uuid_str)
         
         # Generate unique S3 key
         filename = secure_filename(file.filename)
@@ -769,7 +810,7 @@ def proxy_upload():
                 file_type=file.content_type,
                 file_size=file.content_length or 0,
                 uploaded_by_user_id=current_user.id,
-                business_id=current_user.company_name
+                business_id=business_uuid
             )
             db.session.add(new_document)
             db.session.commit()
@@ -788,6 +829,7 @@ def proxy_upload():
                     'file_size': file.content_length or 0,
                     'uploaded_by_user_id': str(current_user.id),
                     'business_id': current_user.company_name,
+                    'business_uuid': business_uuid_str,
                     'status': 'uploaded'
                 })
                 if success:
@@ -808,7 +850,7 @@ def proxy_upload():
                     document_id=new_document.id,
                     file_content=file_content,
                     original_filename=filename,
-                    business_id=new_document.business_id
+                    business_id=business_uuid_str
                 )
                 logger.info(f"✅ Processing task created: {task.id}")
             except Exception as e:
@@ -922,7 +964,7 @@ def get_document_status(document_id):
         if not document:
             return jsonify({'error': 'Document not found'}), 404
         
-        if document.get('business_id') != current_user.company_name:
+        if str(document.get('business_id')) != str(current_user.business_id):
             return jsonify({'error': 'Unauthorized'}), 403
         
         # Get processing history (still from PostgreSQL for now)
@@ -959,7 +1001,7 @@ def confirm_upload(document_id):
     try:
         document = Document.query.get_or_404(document_id)
         
-        if document.business_id != current_user.company_name:
+        if str(document.get('business_id')) != str(current_user.business_id):
             return jsonify({'error': 'Unauthorized'}), 403
         
         data = request.get_json()
@@ -1187,14 +1229,25 @@ def root():
 def api_dashboard():
     """Get dashboard data with documents and properties from Supabase"""
     try:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User is not associated with a business'}), 400
+
+        business_uuid = UUID(business_uuid_str)
         # Get user's documents from Supabase
         doc_service = SupabaseDocumentService()
-        documents = doc_service.get_documents_for_business(current_user.company_name, limit=10)
+        documents = doc_service.get_documents_for_business(business_uuid, limit=10)
         
         # Get user's properties (still from PostgreSQL for now)
-        from .models import Property
+        properties = []
         try:
-            properties = Property.query.filter_by(business_id=current_user.company_name).order_by(Property.created_at.desc()).limit(10).all()
+            properties = (
+                Property.query
+                .filter_by(business_id=business_uuid)
+                .order_by(Property.created_at.desc())
+                .limit(10)
+                .all()
+            )
         except Exception as e:
             logger.warning(f"Error querying properties from PostgreSQL: {e}")
             properties = []
@@ -1229,6 +1282,7 @@ def api_dashboard():
             'email': current_user.email,
             'first_name': current_user.first_name,
             'company_name': current_user.company_name,
+            'business_id': str(current_user.business_id) if current_user.business_id else None,
             'company_website': current_user.company_website,
             'role': current_user.role.name
         }
@@ -1245,7 +1299,7 @@ def api_dashboard():
         })
         
     except Exception as e:
-        logger.error(f"Dashboard error: {str(e)}", exc_info=True)
+        current_app.logger.exception("Dashboard error")
         return jsonify({'error': str(e)}), 500
 
 # API endpoint for creating appraisals
@@ -1399,10 +1453,16 @@ def get_documents():
     """
     Fetches all documents associated with the current user's business.
     """
-    if not current_user.company_name:
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
         return jsonify({'error': 'User is not associated with a business'}), 400
 
-    documents = Document.query.filter_by(business_id=current_user.company_name).order_by(Document.created_at.desc()).all()
+    documents = (
+        Document.query
+        .filter_by(business_id=UUID(business_uuid_str))
+        .order_by(Document.created_at.desc())
+        .all()
+    )
     
     return jsonify([doc.serialize() for doc in documents])
 
@@ -1413,13 +1473,14 @@ def get_files():
     Alias for /api/documents - TypeScript frontend compatibility.
     Fetches all documents associated with the current user's business from Supabase.
     """
-    if not current_user.company_name:
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
         return jsonify({'error': 'User is not associated with a business'}), 400
 
     try:
         # Use Supabase document service
         doc_service = SupabaseDocumentService()
-        documents = doc_service.get_documents_for_business(current_user.company_name)
+        documents = doc_service.get_documents_for_business(business_uuid_str)
         
         return jsonify({
             'success': True,
@@ -1455,7 +1516,7 @@ def delete_document(document_id):
     if not document:
         return jsonify({'error': 'Document not found'}), 404
 
-    if document.business_id != current_user.company_name:
+    if str(document.get('business_id')) != str(current_user.business_id):
         return jsonify({'error': 'Unauthorized'}), 403
 
     deletion_results = {
@@ -1670,9 +1731,14 @@ def upload_file_to_gateway():
     s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
     
     # 2.5. Check for duplicate documents
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+    business_uuid = UUID(business_uuid_str)
+    
     existing_document = Document.query.filter_by(
         original_filename=filename,
-        business_id=current_user.company_name
+        business_id=business_uuid
     ).first()
 
     if existing_document:
@@ -1683,13 +1749,16 @@ def upload_file_to_gateway():
     
     # 3. Create and save the Document record BEFORE uploading
     try:
+        if not current_user.business_id:
+            raise ValueError("User is not associated with a business UUID")
+
         new_document = Document(
             original_filename=filename,
             s3_path=s3_key,
             file_type=file.mimetype,
             file_size=file.content_length,
             uploaded_by_user_id=current_user.id,
-            business_id=current_user.company_name
+            business_id=business_uuid
         )
         db.session.add(new_document)
         db.session.commit()
@@ -1727,7 +1796,7 @@ def upload_file_to_gateway():
         document_id=new_document.id,
         file_content=file_content, 
         original_filename=filename, 
-        business_id=current_user.company_name
+        business_id=business_uuid_str
     )
 
     # 6. Return the data of the newly created document to the client
@@ -1753,7 +1822,7 @@ def process_document(document_id):
     if not document:
         return jsonify({'error': 'Document not found'}), 404
     
-    if document.business_id != current_user.company_name:
+    if str(document.get('business_id')) != str(current_user.business_id):
         return jsonify({'error': 'Unauthorized'}), 403
     
     if document.status == 'COMPLETED':
@@ -1832,14 +1901,15 @@ def get_property_hub(property_id):
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
             }), 400
         
         property_hub_service = SupabasePropertyHubService()
-        property_hub = property_hub_service.get_property_hub(str(property_id), current_user.company_name)
+        property_hub = property_hub_service.get_property_hub(str(property_id), business_uuid_str)
         
         if not property_hub:
             return jsonify({
@@ -1852,7 +1922,7 @@ def get_property_hub(property_id):
             'data': property_hub,
             'metadata': {
                 'property_id': str(property_id),
-                'business_id': current_user.company_name,
+                'business_id': business_uuid_str,
                 'timestamp': datetime.utcnow().isoformat(),
                 'completeness_score': property_hub.get('summary', {}).get('completeness_score', 0.0)
             }
@@ -1875,7 +1945,8 @@ def get_all_property_hubs():
         from .services.performance_service import performance_service, track_performance
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify(APIResponseFormatter.format_error_response(
                 'User not associated with a business',
                 'BUSINESS_REQUIRED'
@@ -1892,7 +1963,7 @@ def get_all_property_hubs():
         
         property_hub_service = SupabasePropertyHubService()
         property_hubs = property_hub_service.get_all_property_hubs(
-            current_user.company_name,
+            business_uuid_str,
             limit=limit,
             offset=offset,
             sort_by=sort_by,
@@ -1958,7 +2029,8 @@ def search_property_hubs():
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
@@ -1979,7 +2051,7 @@ def search_property_hubs():
         
         property_hub_service = SupabasePropertyHubService()
         results = property_hub_service.search_property_hubs(
-            business_id=current_user.company_name,
+            business_id=business_uuid_str,
             query=query,
             filters=filters,
             limit=limit,
@@ -1991,7 +2063,7 @@ def search_property_hubs():
             'data': results,
             'metadata': {
                 'count': len(results),
-                'business_id': current_user.company_name,
+                'business_id': business_uuid_str,
                 'timestamp': datetime.utcnow().isoformat(),
                 'search_params': {
                     'query': query,
@@ -2017,14 +2089,15 @@ def get_property_hub_documents(property_id):
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         
         # Validate business access
-        if not current_user.company_name:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
                 'error': 'User not associated with a business'
             }), 400
         
         property_hub_service = SupabasePropertyHubService()
-        property_hub = property_hub_service.get_property_hub(str(property_id), current_user.company_name)
+        property_hub = property_hub_service.get_property_hub(str(property_id), business_uuid_str)
         
         if not property_hub:
             return jsonify({
@@ -2045,7 +2118,7 @@ def get_property_hub_documents(property_id):
             },
             'metadata': {
                 'property_id': str(property_id),
-                'business_id': current_user.company_name,
+                'business_id': business_uuid_str,
                 'timestamp': datetime.utcnow().isoformat()
             }
         }), 200
