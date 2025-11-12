@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { LogOut, User, ArrowRight, ChevronRight, Settings, MessageCircle } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -18,6 +19,8 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
   const [isOpen, setIsOpen] = React.useState(false);
   const [userData, setUserData] = React.useState<any>(null);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const [dropdownPosition, setDropdownPosition] = React.useState({ left: 0, bottom: 0 });
 
   // Fetch user data on mount
   React.useEffect(() => {
@@ -34,10 +37,45 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
     fetchUserData();
   }, []);
 
+  // Calculate dropdown position based on button position
+  const updateDropdownPosition = React.useCallback(() => {
+    if (buttonRef.current) {
+      const buttonRect = buttonRef.current.getBoundingClientRect();
+      // Position dropdown to the right of the button (left-16 = 4rem = 64px from sidebar edge)
+      // Bottom position: distance from bottom of viewport (bottom-6 = 1.5rem = 24px)
+      // Move left by 2px to hide the sidebar border line
+      const bottom = window.innerHeight - buttonRect.bottom + 24; // 24px = bottom-6
+      setDropdownPosition({
+        left: buttonRect.left + buttonRect.width + 14, // 14px offset (16px - 2px to hide border)
+        bottom: bottom
+      });
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      updateDropdownPosition();
+      
+      // Update position on window resize or scroll
+      window.addEventListener('resize', updateDropdownPosition);
+      window.addEventListener('scroll', updateDropdownPosition, true);
+      
+      return () => {
+        window.removeEventListener('resize', updateDropdownPosition);
+        window.removeEventListener('scroll', updateDropdownPosition, true);
+      };
+    }
+  }, [isOpen, updateDropdownPosition]);
+
   // Close dropdown when clicking outside
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+      if (
+        dropdownRef.current && 
+        !dropdownRef.current.contains(event.target as Node) &&
+        buttonRef.current &&
+        !buttonRef.current.contains(event.target as Node)
+      ) {
         setIsOpen(false);
       }
     };
@@ -78,6 +116,7 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
     <div className="relative" ref={dropdownRef}>
       {/* Profile Icon Button - ChatGPT style */}
       <button
+        ref={buttonRef}
         onClick={() => setIsOpen(!isOpen)}
         className="relative w-8 h-8 rounded-full overflow-hidden transition-all duration-300 ease-out group cursor-pointer hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border border-gray-300/50"
         aria-label="Profile menu"
@@ -98,28 +137,33 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
         </Avatar>
       </button>
 
-      {/* Dropdown Menu */}
-      <AnimatePresence>
-        {isOpen && (
-          <>
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[99998]"
-              onClick={() => setIsOpen(false)}
-            />
+      {/* Dropdown Menu - Portaled to document.body */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <>
+              {/* Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100001]"
+                onClick={() => setIsOpen(false)}
+              />
 
-            {/* Dropdown Content - ChatGPT simple design */}
-            <motion.div
-              initial={{ opacity: 0, y: 10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 10, scale: 0.95 }}
-              transition={{ duration: 0.2 }}
-              className="fixed left-16 bottom-6 w-64 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-[99999]"
-              style={{ zIndex: 99999 }}
-            >
+              {/* Dropdown Content - ChatGPT simple design */}
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="fixed w-64 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-[100002]"
+                style={{ 
+                  zIndex: 100002,
+                  left: `${dropdownPosition.left}px`,
+                  bottom: `${dropdownPosition.bottom}px`
+                }}
+              >
               {/* User Email - Simple top section */}
               <div className="px-4 py-3 border-b border-gray-200">
                 <div className="flex items-center gap-3">
@@ -206,7 +250,9 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
             </motion.div>
           </>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+      )}
     </div>
   );
 };
