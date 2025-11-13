@@ -10,8 +10,7 @@ import { BackendApiProvider } from "./components/BackendApi";
 import { AuthGuard } from "./components/AuthGuard";
 import { Landing } from "./components/Landing";
 import { BookDemo } from "./components/BookDemo";
-import Login from "./components/Login";
-import { SignUp } from "./components/SignUp";
+import Auth from "./components/Auth";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,8 +27,9 @@ const App = () => (
               {/* Public routes - no authentication required */}
               <Route path="/" element={<Landing />} />
               <Route path="/book-demo" element={<BookDemo />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/signup" element={<SignUp />} />
+              <Route path="/auth" element={<Auth />} />
+              <Route path="/login" element={<Auth />} />
+              <Route path="/signup" element={<Auth />} />
               
               {/* Protected routes - require authentication */}
               <Route path="/dashboard" element={

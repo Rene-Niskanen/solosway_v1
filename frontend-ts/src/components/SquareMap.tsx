@@ -41,6 +41,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const lastAppliedLocation = useRef<{ coordinates: [number, number]; zoom: number } | null>(null);
   // Track last added properties to prevent duplicate additions
   const lastAddedPropertiesRef = useRef<string>('');
+  // Store HTML property name markers
+  const propertyMarkersRef = useRef<mapboxgl.Marker[]>([]);
+  // Store the currently displayed property name marker
+  const currentPropertyNameMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  // Store map click timeout for deselection
+  const mapClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Debug: Log Mapbox token status
   React.useEffect(() => {
@@ -467,6 +473,38 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
   };
 
+  // Helper function to extract shortened property name from address
+  const getPropertyName = (address: string): string | null => {
+    if (!address) return null;
+    
+    // Try to extract a meaningful property name
+    // Examples: "10 Park Drive, 8 Park Dr, London E14 9ZW, UK" -> "8 & 10 Park Drive"
+    // "24 Rudthorpe Road" -> "24 Rudthorpe Road"
+    
+    // Split by comma to get parts
+    const parts = address.split(',').map(p => p.trim());
+    
+    // If first part looks like a property address (contains numbers and street name)
+    if (parts[0] && /^\d+/.test(parts[0])) {
+      // Check if there's a second part that might be a variant (like "8 Park Dr")
+      if (parts[1] && /^\d+/.test(parts[1])) {
+        // Extract numbers from both parts
+        const firstNum = parts[0].match(/^\d+/)?.[0];
+        const secondNum = parts[1].match(/^\d+/)?.[0];
+        const streetName = parts[0].replace(/^\d+\s*/, '').replace(/\s+\d+.*$/, '');
+        
+        if (firstNum && secondNum && streetName) {
+          return `${secondNum} & ${firstNum} ${streetName}`;
+        }
+      }
+      
+      // Otherwise, just return the first part (e.g., "24 Rudthorpe Road")
+      return parts[0];
+    }
+    
+    return null;
+  };
+
   // Add property markers to map using Mapbox's native symbol layers (most stable approach)
   const addPropertyMarkers = (properties: any[], shouldClearExisting: boolean = true) => {
     if (!map.current) return;
@@ -489,6 +527,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     // Clear existing markers only if requested (not during style changes)
     if (shouldClearExisting) {
       console.log('Clearing existing markers in addPropertyMarkers...');
+      
+      // Clear current property name marker
+      if (currentPropertyNameMarkerRef.current) {
+        currentPropertyNameMarkerRef.current.remove();
+        currentPropertyNameMarkerRef.current = null;
+      }
       
       // Get all existing sources and layers
       const allSources = map.current.getStyle().sources;
@@ -560,6 +604,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           const lng = Number(property.longitude);
           const lat = Number(property.latitude);
           
+          // Extract property name for every property automatically
+          const propertyName = getPropertyName(property.address);
+          
           return {
             type: 'Feature' as const,
             geometry: {
@@ -569,6 +616,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             properties: {
               id: property.id,
               address: property.address,
+              propertyName: propertyName || property.address, // Store extracted property name
               price: property.price,
               bedrooms: property.bedrooms,
               bathrooms: property.bathrooms,
@@ -651,8 +699,16 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         }
       });
 
+    // Don't create HTML markers initially - they'll be shown when a property is clicked and zoomed in
+
     // Add click handler for the markers with individual property animation
     map.current.on('click', 'property-click-target', (e) => {
+      // Cancel any pending map click timeout
+      if (mapClickTimeoutRef.current) {
+        clearTimeout(mapClickTimeoutRef.current);
+        mapClickTimeoutRef.current = null;
+      }
+      
       const feature = e.features[0];
       
       // 🔍 PHASE 1 DEBUG: Debug property selection
@@ -708,6 +764,105 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         });
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
+        
+        // Remove any existing property name marker
+        if (currentPropertyNameMarkerRef.current) {
+          currentPropertyNameMarkerRef.current.remove();
+          currentPropertyNameMarkerRef.current = null;
+        }
+        
+        // Show property name marker immediately when clicked
+        // Use property name from feature properties if available, otherwise extract it
+        const propertyName = feature.properties.propertyName || getPropertyName(property.address);
+        
+        // Create property name marker using Mapbox Marker (stays fixed to pin automatically)
+        if (propertyName && property.longitude && property.latitude && map.current) {
+            // Get current zoom to calculate appropriate offset
+            const currentZoom = map.current.getZoom();
+            
+            // Create marker element
+            const markerElement = document.createElement('div');
+            markerElement.className = 'property-name-marker';
+            markerElement.style.cssText = `
+              position: relative;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              pointer-events: none;
+            `;
+            
+            markerElement.innerHTML = `
+              <div style="
+                position: relative;
+                display: flex;
+                align-items: center;
+                background: white;
+                border-radius: 8px;
+                padding: 6px 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                white-space: nowrap;
+              ">
+                <!-- Black circle with orange pin icon -->
+                <div style="
+                  width: 20px;
+                  height: 20px;
+                  background: #1a1a1a;
+                  border-radius: 50%;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  margin-right: 8px;
+                  flex-shrink: 0;
+                ">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
+                  </svg>
+                </div>
+                <!-- Property name text -->
+                <span style="
+                  font-size: 13px;
+                  font-weight: 500;
+                  color: #1a1a1a;
+                  line-height: 1.2;
+                ">${propertyName}</span>
+                <!-- White pointer line -->
+                <div style="
+                  position: absolute;
+                  bottom: -6px;
+                  left: 50%;
+                  transform: translateX(-50%);
+                  width: 2px;
+                  height: 6px;
+                  background: white;
+                "></div>
+              </div>
+            `;
+            
+            // Calculate offset to position label above the pin
+            // The pin is centered at the coordinates and has a visual size of ~10px (radius 8 + stroke 2)
+            // The label has a height of ~32px (6px padding top + 20px content + 6px padding bottom)
+            // We want the label to appear above the pin with ~12px spacing
+            // Using anchor: 'center' anchors the center of the label to the coordinate
+            // To position above: offset upward by half label height + half pin size + spacing
+            const labelHeight = 32; // Total label height in pixels
+            const pinVisualSize = 10; // Pin visual size (radius 8 + stroke 2)
+            const spacing = 12; // Desired spacing between label and pin
+            const totalOffset = (labelHeight / 2) + (pinVisualSize / 2) + spacing; // Upward offset from center
+            
+            // Create Mapbox Marker - anchor at center, offset upward
+            // This centers the label horizontally and positions it above the pin
+            const marker = new mapboxgl.Marker({
+              element: markerElement,
+              anchor: 'center',
+              offset: [0, -totalOffset] // Offset upward to position above the pin
+            })
+              .setLngLat([property.longitude, property.latitude])
+              .addTo(map.current);
+            
+            // Store marker reference for cleanup
+            currentPropertyNameMarkerRef.current = marker;
+        }
         
         // Smoothly fly to the property location, centering it on screen with consistent zoom
         const propertyCoordinates: [number, number] = [property.longitude, property.latitude];
@@ -842,6 +997,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
     });
 
+    // Note: Click-off handling is done via document-level event listener (see useEffect below)
+
     // Add simple hover effects for property layers
     const propertyLayers = ['property-click-target', 'property-outer', 'property-markers'];
     
@@ -864,6 +1021,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
   // Clear selected property effects
   const clearSelectedPropertyEffects = () => {
+    // Remove property name marker if it exists
+    if (currentPropertyNameMarkerRef.current) {
+      currentPropertyNameMarkerRef.current.remove();
+      currentPropertyNameMarkerRef.current = null;
+    }
     if (map.current) {
       // Restore base marker layers to show all properties (remove filters)
       if (map.current.getLayer('property-markers')) {
@@ -906,6 +1068,84 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   useEffect(() => {
     clearSelectedPropertyEffects();
   }, [searchResults]);
+
+  // Handle click outside to deselect property (same pattern as dropdown menu)
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      // Only deselect if a property is currently selected
+      if (!selectedProperty || !showPropertyDetailsPanel) return;
+
+      const target = event.target as Node;
+      
+      // Check if click is on the property details panel
+      const propertyPanel = document.querySelector('[data-property-panel]');
+      if (propertyPanel && propertyPanel.contains(target)) {
+        return;
+      }
+
+      // Check if click is on a property name marker
+      const propertyMarker = document.querySelector('.property-name-marker');
+      if (propertyMarker && propertyMarker.contains(target)) {
+        return;
+      }
+
+      // Check if click is on the map canvas
+      const mapCanvas = map.current?.getCanvasContainer();
+      if (mapCanvas && mapCanvas.contains(target)) {
+        // Click is on the map - check if it's on a property marker layer
+        if (map.current) {
+          const mapContainer = map.current.getContainer();
+          const mapRect = mapContainer.getBoundingClientRect();
+          
+          // Convert screen coordinates to map coordinates
+          const mapPoint = [
+            event.clientX - mapRect.left,
+            event.clientY - mapRect.top
+          ];
+          
+          // Check if click is on a property marker
+          const features = map.current.queryRenderedFeatures(mapPoint as [number, number], {
+            layers: ['property-click-target', 'property-markers', 'property-outer']
+          });
+          
+          // If no property features were clicked, deselect
+          if (features.length === 0) {
+            clearSelectedPropertyEffects();
+            setSelectedProperty(null);
+            setShowPropertyCard(false);
+            setShowPropertyDetailsPanel(false);
+            
+            // Remove property name marker
+            if (currentPropertyNameMarkerRef.current) {
+              currentPropertyNameMarkerRef.current.remove();
+              currentPropertyNameMarkerRef.current = null;
+            }
+          }
+        }
+        return;
+      }
+
+      // Click is outside both the property panel and map - deselect
+      clearSelectedPropertyEffects();
+      setSelectedProperty(null);
+      setShowPropertyCard(false);
+      setShowPropertyDetailsPanel(false);
+      
+      // Remove property name marker
+      if (currentPropertyNameMarkerRef.current) {
+        currentPropertyNameMarkerRef.current.remove();
+        currentPropertyNameMarkerRef.current = null;
+      }
+    };
+
+    if (showPropertyDetailsPanel && selectedProperty) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showPropertyDetailsPanel, selectedProperty]);
 
   // Basic query processing (OpenAI temporarily disabled)
   const processQueryWithLLM = async (query: string): Promise<any> => {

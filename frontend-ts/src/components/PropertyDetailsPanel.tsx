@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, CloudUpload } from 'lucide-react';
+import { File, CloudUpload, X } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 
 interface PropertyDetailsPanelProps {
@@ -137,6 +137,38 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
            '/property-1.png';
   };
 
+  // Get shortened property name (same logic as SquareMap)
+  const getPropertyName = (address: string): string => {
+    if (!address) return 'Unknown Address';
+    
+    // Try to extract a meaningful property name
+    // Examples: "10 Park Drive, 8 Park Dr, London E14 9ZW, UK" -> "8 & 10 Park Drive"
+    // "24 Rudthorpe Road" -> "24 Rudthorpe Road"
+    
+    // Split by comma to get parts
+    const parts = address.split(',').map(p => p.trim());
+    
+    // If first part looks like a property address (contains numbers and street name)
+    if (parts[0] && /^\d+/.test(parts[0])) {
+      // Check if there's a second part that might be a variant (like "8 Park Dr")
+      if (parts[1] && /^\d+/.test(parts[1])) {
+        // Extract numbers from both parts
+        const firstNum = parts[0].match(/^\d+/)?.[0];
+        const secondNum = parts[1].match(/^\d+/)?.[0];
+        const streetName = parts[0].replace(/^\d+\s*/, '').replace(/\s+\d+.*$/, '');
+        
+        if (firstNum && secondNum && streetName) {
+          return `${secondNum} & ${firstNum} ${streetName}`;
+        }
+      }
+      
+      // Otherwise, just return the first part (e.g., "24 Rudthorpe Road")
+      return parts[0];
+    }
+    
+    return address;
+  };
+
   // Get letting info
   const getLettingInfo = () => {
     if (property.transaction_date && property.rentPcm > 0) {
@@ -158,28 +190,21 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 20 }}
         className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
+        data-property-panel
       >
-        {/* Address Overlay - Floating Island Above Card */}
-        <div className="relative mb-3 flex justify-center z-10">
-          <div className="bg-white/95 backdrop-blur-sm rounded-lg px-4 py-2 shadow-lg max-w-[90%]">
-            <h2 className="text-sm font-semibold text-gray-900 leading-tight text-center truncate">
-              {property.address || 'Unknown Address'}
-            </h2>
-          </div>
-        </div>
-
-        {/* Card Container */}
-        <div className="bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden flex-1"
-          style={{
-            background: 'rgba(255, 255, 255, 0.98)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)'
-          }}
-        >
+        {/* Card Container - Modern White Card */}
+        <div className="bg-white rounded-xl shadow-xl flex flex-col overflow-hidden flex-1 border border-gray-100">
           {/* Scrollable Content Container */}
           <div className="flex-1 overflow-y-auto">
-            {/* Property Image Section */}
-            <div className="relative w-full" style={{ aspectRatio: '3/2' }}>
+            {/* Header - Address Bar */}
+            <div className="bg-white border-b border-gray-100 px-4 py-3">
+              <h2 className="text-sm font-medium text-gray-900 leading-tight truncate">
+                {getPropertyName(property.address || 'Unknown Address')}
+              </h2>
+            </div>
+
+            {/* Property Image Section - Large Prominent Image */}
+            <div className="relative w-full" style={{ aspectRatio: '16/10' }}>
               <img
                 src={getPropertyImage()}
                 alt={property.address || 'Property'}
@@ -189,151 +214,158 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   img.src = '/property-1.png';
                 }}
               />
-              {/* Close Button Overlay */}
+              
+              {/* Close Button - Top Right */}
               <button
                 onClick={onClose}
-                className="absolute top-2 right-2 w-8 h-8 bg-gray-200/90 rounded-full flex items-center justify-center hover:bg-gray-300/90 transition-colors shadow-sm"
+                className="absolute top-3 right-3 w-8 h-8 bg-white/95 backdrop-blur-sm rounded-full flex items-center justify-center hover:bg-white transition-colors shadow-md z-10"
               >
-                <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <X className="w-4 h-4 text-gray-700" strokeWidth={2.5} />
               </button>
             </div>
 
-          {/* Content Section */}
-          <div className="p-4 space-y-3">
-
-            {/* Add Document Button and View Toggle Buttons */}
-            <div className="flex items-center gap-2">
-              {/* Add Document Button */}
-              <button
-                onClick={() => {
-                  // TODO: Wire up document upload functionality
-                  console.log('Add Document clicked');
-                }}
-                className="flex-1 py-2.5 px-4 rounded-md font-medium transition-colors text-sm border flex items-center justify-center gap-3"
-                style={{
-                  backgroundColor: '#F5F9F5',
-                  color: '#5C5C5C',
-                  borderColor: '#C9C2C2'
-                }}
-              >
-                <CloudUpload className="w-4 h-4" />
-                <span>Add File</span>
-              </button>
-
-              {/* Property Card (3) Button */}
-              <button
-                onClick={() => {
-                  // TODO: Wire up card size toggle functionality
-                  console.log('Property Card (3) clicked');
-                }}
-                className="w-12 h-[42px] rounded-md flex items-center justify-center transition-colors bg-transparent"
-              >
-                <img 
-                  src="/Property Card (3) Button.png" 
-                  alt="Property Card View 3" 
-                  className="w-full h-full object-contain"
-                  onError={(e) => {
-                    console.error('Failed to load Property Card (3) Button image');
+            {/* Content Section */}
+            <div className="p-4 space-y-4">
+              {/* Add File Button and View Toggle Buttons */}
+              <div className="flex items-center gap-2">
+                {/* Add File Button - Modern Green-Grey Style */}
+                <button
+                  onClick={() => {
+                    // TODO: Wire up document upload functionality
+                    console.log('Add Document clicked');
                   }}
-                />
-              </button>
+                  className="flex-1 py-3 px-4 rounded-lg font-medium transition-all text-sm flex items-center justify-center gap-2 bg-[#E8F5E9] hover:bg-[#C8E6C9] text-gray-700 border border-[#C5E1C6] shadow-sm hover:shadow-md"
+                >
+                  <CloudUpload className="w-4 h-4" strokeWidth={2} />
+                  <span>Add File</span>
+                </button>
 
-              {/* Property Card (2) Button */}
-              <button
-                onClick={() => {
-                  // TODO: Wire up card size toggle functionality
-                  console.log('Property Card (2) clicked');
-                }}
-                className="w-12 h-[42px] rounded-md flex items-center justify-center transition-colors bg-transparent"
-              >
-                <img 
-                  src="/Property card (2) Button.png" 
-                  alt="Property Card View 2" 
-                  className="w-full h-full object-contain"
-                  onError={(e) => {
-                    console.error('Failed to load Property Card (2) Button image');
+                {/* Property Card (3) Button */}
+                <button
+                  onClick={() => {
+                    // TODO: Wire up card size toggle functionality
+                    console.log('Property Card (3) clicked');
                   }}
-                />
-              </button>
-            </div>
+                  className="w-12 h-12 rounded-lg flex items-center justify-center transition-all hover:bg-gray-50 border border-gray-200"
+                >
+                  <img 
+                    src="/Property Card (3) Button.png" 
+                    alt="Property Card View 3" 
+                    className="w-full h-full object-contain p-1"
+                    onError={(e) => {
+                      console.error('Failed to load Property Card (3) Button image');
+                    }}
+                  />
+                </button>
 
-            {/* Property Details Grid (2 columns) - All items in rounded pills */}
-            <div className="grid grid-cols-2 gap-2 text-sm pt-2">
-              {/* Row 1: Document Count (Left) | Price (Right) */}
-              <div className="px-3 py-2 rounded-full bg-white flex items-center gap-2">
-                {loading ? (
-                  <span className="text-gray-600">Loading...</span>
-                ) : (
-                  <>
-                    <File className="w-4 h-4 text-gray-700 flex-shrink-0" />
+                {/* Property Card (2) Button */}
+                <button
+                  onClick={() => {
+                    // TODO: Wire up card size toggle functionality
+                    console.log('Property Card (2) clicked');
+                  }}
+                  className="w-12 h-12 rounded-lg flex items-center justify-center transition-all hover:bg-gray-50 border border-gray-200"
+                >
+                  <img 
+                    src="/Property card (2) Button.png" 
+                    alt="Property Card View 2" 
+                    className="w-full h-full object-contain p-1"
+                    onError={(e) => {
+                      console.error('Failed to load Property Card (2) Button image');
+                    }}
+                  />
+                </button>
+              </div>
+
+              {/* Property Details Grid - Modern Two Column Layout */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Left Column */}
+                <div className="space-y-3">
+                  {/* Document Count */}
+                  <div className="flex items-center gap-2 text-sm">
+                    <File className="w-4 h-4 text-gray-500 flex-shrink-0" />
                     <span className="text-gray-700">
-                      {(() => {
-                        let docCount = 0;
-                        if (documents.length > 0) {
-                          docCount = documents.length;
-                        } else if (property.propertyHub?.documents?.length) {
-                          docCount = property.propertyHub.documents.length;
-                        } else if (property.documentCount) {
-                          docCount = property.documentCount;
-                        }
-                        return `${docCount} Document${docCount !== 1 ? 's' : ''}`;
-                      })()}
+                      {loading ? (
+                        'Loading...'
+                      ) : (
+                        (() => {
+                          let docCount = 0;
+                          if (documents.length > 0) {
+                            docCount = documents.length;
+                          } else if (property.propertyHub?.documents?.length) {
+                            docCount = property.propertyHub.documents.length;
+                          } else if (property.documentCount) {
+                            docCount = property.documentCount;
+                          }
+                          return `${docCount} Document${docCount !== 1 ? 's' : ''}`;
+                        })()
+                      )}
                     </span>
-                  </>
-                )}
+                  </div>
+
+                  {/* Square Footage */}
+                  {property.square_feet && (
+                    <div className="text-sm text-gray-700">
+                      {property.square_feet.toLocaleString()} sqft
+                    </div>
+                  )}
+
+                  {/* EPC Rating */}
+                  {property.epc_rating && (
+                    <div className="text-sm text-gray-700">
+                      EPC: {property.epc_rating} Rating
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column */}
+                <div className="space-y-3">
+                  {/* Price */}
+                  <div className="text-sm text-gray-700 font-medium">
+                    {getPrimaryPrice()}
+                  </div>
+
+                  {/* Property Type */}
+                  <div className="text-sm text-gray-700">
+                    {property.property_type || property.bedrooms ? (
+                      <>
+                        {property.bedrooms ? `${property.bedrooms} Bed` : ''}
+                        {property.bedrooms && property.property_type ? ' · ' : ''}
+                        {property.property_type || 'Dwellinghouse'}
+                      </>
+                    ) : (
+                      'Dwellinghouse'
+                    )}
+                  </div>
+
+                  {/* Tenure */}
+                  {property.tenure && (
+                    <div className="text-sm text-gray-700">
+                      {property.tenure}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="px-3 py-2 rounded-full bg-white text-gray-700">
-                {getPrimaryPrice()}
-              </div>
-
-              {/* Row 2: Square Footage (Left) | Bed/Type (Right) */}
-              {property.square_feet && (
-                <div className="px-3 py-2 rounded-full bg-white">
-                  <span className="text-gray-700">{property.square_feet.toLocaleString()} sqft</span>
-                </div>
-              )}
-
-              <div className="px-3 py-2 rounded-full bg-white">
-                <span className="text-gray-700">
-                  {property.bedrooms ? `${property.bedrooms} Bed` : ''}
-                  {property.bedrooms && property.property_type ? ' · ' : ''}
-                  {property.property_type || ''}
-                </span>
-              </div>
-
-              {/* Row 3: EPC Rating (Left) | Tenure (Right) */}
-              {property.epc_rating && (
-                <div className="px-3 py-2 rounded-full bg-white">
-                  <span className="text-gray-700">EPC: {property.epc_rating} Rating</span>
-                </div>
-              )}
-
-              {property.tenure && (
-                <div className="px-3 py-2 rounded-full bg-white">
-                  <span className="text-gray-700">{property.tenure}</span>
-                </div>
-              )}
-
-              {/* Row 4: Rent Info (Left) | Letting Info (Right) */}
-              {property.rentPcm > 0 && (
-                <div className="px-3 py-2 rounded-full bg-white">
-                  <span className="text-gray-700">
-                    £{property.rentPcm.toLocaleString()} pcm
-                    {yieldPercentage && ` · ${yieldPercentage}%`}
-                  </span>
-                </div>
-              )}
-
-              {lettingInfo && (
-                <div className="px-3 py-2 rounded-full bg-white">
-                  <span className="text-gray-700">{lettingInfo}</span>
+              {/* Additional Info (Rent, Yield, Letting) - Full Width if Present */}
+              {(property.rentPcm > 0 || lettingInfo) && (
+                <div className="pt-2 border-t border-gray-100 space-y-2">
+                  {property.rentPcm > 0 && (
+                    <div className="text-sm text-gray-700">
+                      <span className="font-medium">Rent:</span> £{property.rentPcm.toLocaleString()} pcm
+                      {yieldPercentage && (
+                        <span className="text-gray-500 ml-2">({yieldPercentage}% yield)</span>
+                      )}
+                    </div>
+                  )}
+                  {lettingInfo && (
+                    <div className="text-sm text-gray-700">
+                      <span className="font-medium">Letting:</span> {lettingInfo}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          </div>
           </div>
         </div>
       </motion.div>
