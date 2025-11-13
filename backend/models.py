@@ -38,6 +38,7 @@ class User(db.Model, UserMixin):
     first_name = db.Column(db.String(150))
     company_name = db.Column(db.String(150))
     company_website = db.Column(db.String(200))
+    business_id = db.Column(UUID(as_uuid=True))
 
     # New fields for invite-only system
     role = db.Column(db.Enum(UserRole), default=UserRole.USER, nullable=False)
@@ -53,7 +54,7 @@ class Document(db.Model):
     s3_path = db.Column(db.String(1024), nullable=False, unique=True)
     file_type = db.Column(db.String(100))
     file_size = db.Column(db.Integer) # Size in bytes
-    business_id = db.Column(db.String(150), nullable=False, index=True)
+    business_id = db.Column(UUID(as_uuid=True), nullable=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=func.now())
     status = db.Column(db.Enum(DocumentStatus), nullable=False, default=DocumentStatus.UPLOADED)
     
@@ -85,7 +86,7 @@ class Document(db.Model):
             's3_path': self.s3_path,
             'file_type': self.file_type,
             'file_size': self.file_size,
-            'business_id': self.business_id,
+            'business_id': str(self.business_id),
             'created_at': self.created_at.isoformat(),
             'status': self.status.name,
             'uploaded_by_user_id': self.uploaded_by_user_id
@@ -141,7 +142,7 @@ class Property(db.Model):
     formatted_address = db.Column(db.String(500))
     latitude = db.Column(db.Float)
     longitude = db.Column(db.Float)
-    business_id = db.Column(db.String(150), index=True)
+    business_id = db.Column(UUID(as_uuid=True), nullable=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=func.now())
     updated_at = db.Column(db.DateTime(timezone=True), default=func.now(), onupdate=func.now())
     last_enrichment_at = db.Column(db.DateTime(timezone=True))
@@ -163,7 +164,7 @@ class Property(db.Model):
             'formatted_address': self.formatted_address,
             'latitude': self.latitude,
             'longitude': self.longitude,
-            'business_id': self.business_id,
+            'business_id': str(self.business_id),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'last_enrichment_at': self.last_enrichment_at.isoformat() if self.last_enrichment_at else None,

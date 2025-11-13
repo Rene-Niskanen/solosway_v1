@@ -17,7 +17,19 @@ class SupabaseDocumentService:
     def get_documents_for_business(self, business_id, limit=100):
         """Get all documents for a business from Supabase"""
         try:
-            result = self.supabase.table('documents').select('*').eq('business_id', business_id).order('created_at', desc=True).limit(limit).execute()
+            if not business_id:
+                logger.warning("SupabaseDocumentService.get_documents_for_business called with empty business_id")
+                return []
+
+            result = (
+                self.supabase
+                .table('documents')
+                .select('*')
+                .eq('business_uuid', str(business_id))
+                .order('created_at', desc=True)
+                .limit(limit)
+                .execute()
+            )
             return result.data if result.data else []
         except Exception as e:
             logger.error(f"Error fetching documents from Supabase: {e}")

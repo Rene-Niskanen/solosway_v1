@@ -8,6 +8,7 @@ import logging
 import time
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
+from uuid import UUID
 from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,33 @@ class SupabasePropertyHubService:
         except Exception as e:
             logger.error(f"❌ Failed to initialize Supabase client: {e}")
             raise
-    
+
+    # ------------------------------------------------------------------
+    # Business helpers
+    # ------------------------------------------------------------------
+    def _normalize_business_uuid(self, business_id: str | None) -> str | None:
+        """Ensure we always use a UUID when querying Supabase."""
+        if not business_id:
+            return None
+
+        try:
+            return str(UUID(str(business_id)))
+        except (ValueError, TypeError):
+            try:
+                result = (
+                    self.supabase
+                    .table('business_id_map')
+                    .select('uuid_id')
+                    .eq('legacy_id', business_id)
+                    .limit(1)
+                    .execute()
+                )
+                if result.data:
+                    return result.data[0]['uuid_id']
+            except Exception as e:
+                logger.warning(f"Failed to normalize business id '{business_id}': {e}")
+            return None
+
     def create_property_with_relationships(
         self, 
         address_data: Dict[str, Any], 
@@ -57,7 +84,11 @@ class SupabasePropertyHubService:
         """
         try:
             logger.info(f"🏠 Creating property hub for document {document_id}")
-            logger.info(f"   Business ID: {business_id}")
+            business_uuid = self._normalize_business_uuid(business_id)
+            if not business_uuid:
+                raise ValueError("Unable to resolve business UUID for property creation")
+
+            logger.info(f"   Business ID: {business_uuid}")
             logger.info(f"   Address: {address_data.get('normalized_address', 'N/A')}")
             
             # Use enhanced property matching service
@@ -68,7 +99,7 @@ class SupabasePropertyHubService:
             match_result = matching_service.find_or_create_property(
                 address_data=address_data,
                 document_id=document_id,
-                business_id=business_id,
+                business_id=business_uuid,
                 extracted_data=extracted_data
             )
             
@@ -86,7 +117,7 @@ class SupabasePropertyHubService:
             relationship_result = matching_service.create_document_relationship(
                 document_id=document_id,
                 property_id=property_id,
-                business_id=business_id,
+                business_id=business_uuid,
                 address_data=address_data,
                 match_type=match_type,
                 confidence=confidence
@@ -96,12 +127,12 @@ class SupabasePropertyHubService:
             details_result = None
             if extracted_data and match_result['action'] == 'created_new':
                 details_result = self._create_property_details(
-                    property_id, extracted_data, business_id, address_data
+                    property_id, extracted_data, business_uuid, address_data
                 )
             elif extracted_data and match_result['action'] == 'linked_to_existing':
                 # Update existing property details with new data
                 details_result = self._update_property_details(
-                    property_id, extracted_data, business_id, address_data
+                    property_id, extracted_data, business_uuid, address_data
                 )
             
             logger.info(f"✅ Property hub processed successfully: {property_id}")
@@ -184,7 +215,7 @@ class SupabasePropertyHubService:
         try:
             property_data = {
                 'id': property_id,
-                'business_id': business_id,
+                'business_uuid': business_id,
                 'address_hash': address_data['address_hash'],
                 'normalized_address': address_data['normalized_address'],
                 'formatted_address': address_data.get('formatted_address'),
@@ -250,6 +281,11 @@ class SupabasePropertyHubService:
     def _update_property_details(self, property_id: str, extracted_data: Dict, business_id: str, address_data: Dict = None) -> Optional[Dict[str, Any]]:
         """Update existing property details with new extracted data"""
         try:
+            normalized_uuid = self._normalize_business_uuid(business_id)
+            if not normalized_uuid:
+                logger.warning(f"   ⚠️ Cannot update property details without valid business UUID: {business_id}")
+                return None
+
             # Check if property details already exist
             existing_result = self.supabase.table('property_details').select('*').eq('property_id', property_id).execute()
             
@@ -270,6 +306,9 @@ class SupabasePropertyHubService:
                     'updated_at': datetime.utcnow().isoformat(),
                     'last_enrichment': datetime.utcnow().isoformat()
                 })
+
+                if existing_details.get('business_uuid') is None:
+                    update_data['business_uuid'] = normalized_uuid
                 
                 if update_data:
                     result = self.supabase.table('property_details').update(update_data).eq('property_id', property_id).execute()
@@ -281,7 +320,7 @@ class SupabasePropertyHubService:
                 return existing_details
             else:
                 # Create new details if none exist
-                return self._create_property_details(property_id, extracted_data, business_id, address_data)
+                return self._create_property_details(property_id, extracted_data, normalized_uuid, address_data)
                 
         except Exception as e:
             logger.error(f"   ❌ Failed to update property details: {e}")
@@ -290,6 +329,11 @@ class SupabasePropertyHubService:
     def _create_property_details(self, property_id: str, extracted_data: Dict, business_id: str, address_data: Dict = None) -> Optional[Dict[str, Any]]:
         """Create property details in property_details table with full schema"""
         try:
+            normalized_uuid = self._normalize_business_uuid(business_id)
+            if not normalized_uuid:
+                logger.warning(f"   ⚠️ Cannot create property details without valid business UUID: {business_id}")
+                return None
+
             details_data = {
                 'property_id': property_id,
                 'property_type': extracted_data.get('property_type'),
@@ -329,6 +373,7 @@ class SupabasePropertyHubService:
                 'geocoding_confidence': address_data.get('geocoding_confidence') if address_data else None,
                 'geocoding_status': address_data.get('geocoding_status') if address_data else None,
                 'source_document_id': extracted_data.get('source_document_id'),
+                'business_uuid': normalized_uuid,
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }
@@ -453,10 +498,15 @@ class SupabasePropertyHubService:
         """
         try:
             logger.info(f"🏠 Getting property hub: {property_id}")
-            logger.info(f"   Business ID: {business_id}")
+            business_uuid = self._normalize_business_uuid(business_id)
+            if not business_uuid:
+                logger.warning(f"   ⚠️ Unable to resolve business UUID for property hub: {business_id}")
+                return None
+
+            logger.info(f"   Business ID: {business_uuid}")
             
             # 1. Get property from properties table
-            property_result = self.supabase.table('properties').select('*').eq('id', property_id).eq('business_id', business_id).execute()
+            property_result = self.supabase.table('properties').select('*').eq('id', property_id).eq('business_uuid', business_uuid).execute()
             
             if not property_result.data:
                 logger.warning(f"   ⚠️ Property not found: {property_id}")
@@ -536,10 +586,22 @@ class SupabasePropertyHubService:
             List of property hub summaries
         """
         try:
-            logger.info(f"🏠 Getting all property hubs for business: {business_id}")
+            normalized_uuid = self._normalize_business_uuid(business_id)
+            if not normalized_uuid:
+                logger.warning(f"No UUID mapping found for business_id '{business_id}'")
+                return []
+
+            logger.info(f"🏠 Getting all property hubs for business: {normalized_uuid}")
             
             # Get all properties for business
-            properties_result = self.supabase.table('properties').select('*').eq('business_id', business_id).order('created_at', desc=True).execute()
+            properties_result = (
+                self.supabase
+                .table('properties')
+                .select('*')
+                .eq('business_uuid', normalized_uuid)
+                .order('created_at', desc=True)
+                .execute()
+            )
             
             if not properties_result.data:
                 logger.info(f"   ⚠️ No properties found for business: {business_id}")
@@ -558,7 +620,15 @@ class SupabasePropertyHubService:
                     prop_data['document_count'] = doc_count_result.count if doc_count_result.count else 0
                     
                     # Get latest document
-                    latest_rel_result = self.supabase.table('document_relationships').select('*').eq('property_id', prop['id']).order('created_at', desc=True).limit(1).execute()
+                    latest_rel_result = (
+                        self.supabase
+                        .table('document_relationships')
+                        .select('*')
+                        .eq('property_id', prop['id'])
+                        .order('created_at', desc=True)
+                        .limit(1)
+                        .execute()
+                    )
                     if latest_rel_result.data:
                         latest_doc_result = self.supabase.table('documents').select('original_filename, status, created_at').eq('id', latest_rel_result.data[0]['document_id']).execute()
                         if latest_doc_result.data:
@@ -814,7 +884,12 @@ class SupabasePropertyHubService:
         start_time = time.time()
         
         try:
-            logger.info(f"🔍 Getting all property hubs for business: {business_id}")
+            normalized_uuid = self._normalize_business_uuid(business_id)
+            if not normalized_uuid:
+                logger.warning(f"No UUID mapping found for business_id '{business_id}'")
+                return []
+
+            logger.info(f"🔍 Getting all property hubs for business: {normalized_uuid}")
             
             # Validate sort parameters
             valid_sort_fields = ['created_at', 'updated_at', 'completeness_score', 'formatted_address']
@@ -825,7 +900,12 @@ class SupabasePropertyHubService:
                 sort_order = 'desc'
             
             # Get properties with pagination and sorting
-            query = self.supabase.table('properties').select('*').eq('business_id', business_id)
+            query = (
+                self.supabase
+                .table('properties')
+                .select('*')
+                .eq('business_uuid', normalized_uuid)
+            )
             
             # Apply sorting
             query = query.order(sort_by, desc=(sort_order == 'desc'))
@@ -847,7 +927,7 @@ class SupabasePropertyHubService:
             property_hubs = []
             for property_data in result.data:
                 property_id = property_data['id']
-                hub = self.get_property_hub(property_id, business_id)
+                hub = self.get_property_hub(property_id, normalized_uuid)
                 if hub:
                     property_hubs.append(hub)
             
@@ -891,12 +971,22 @@ class SupabasePropertyHubService:
             List of matching property hubs
         """
         try:
-            logger.info(f"🔍 Searching property hubs for business: {business_id}")
+            normalized_uuid = self._normalize_business_uuid(business_id)
+            if not normalized_uuid:
+                logger.warning(f"No UUID mapping found for business_id '{business_id}'")
+                return []
+
+            logger.info(f"🔍 Searching property hubs for business: {normalized_uuid}")
             logger.info(f"   Query: '{query}'")
             logger.info(f"   Filters: {filters}")
             
             # Start with base query
-            base_query = self.supabase.table('properties').select('*').eq('business_id', business_id)
+            base_query = (
+                self.supabase
+                .table('properties')
+                .select('*')
+                .eq('business_uuid', normalized_uuid)
+            )
             
             # Apply text search if query provided
             if query:
@@ -935,7 +1025,7 @@ class SupabasePropertyHubService:
             property_hubs = []
             for property_data in result.data:
                 property_id = property_data['id']
-                hub = self.get_property_hub(property_id, business_id)
+                hub = self.get_property_hub(property_id, normalized_uuid)
                 if hub:
                     # Apply additional filters on the hub data
                     if self._matches_filters(hub, filters):

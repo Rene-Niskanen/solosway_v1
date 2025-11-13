@@ -31,7 +31,7 @@ class SupabaseVectorService:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
         openai.api_key = self.openai_api_key
-        self.embedding_model = "text-embedding-ada-002"
+        self.embedding_model = "text-embedding-3-small"
         
         # Table names
         self.document_vectors_table = "document_vectors"
@@ -437,7 +437,7 @@ class SupabaseVectorService:
                     'chunk_index': i,
                     'classification_type': metadata.get('classification_type'),
                     'address_hash': metadata.get('address_hash'),
-                    'business_id': metadata.get('business_id'),
+                    'business_uuid': metadata.get('business_uuid'),
                     'page_number': chunk_page,
                     'bbox': json.dumps(chunk_bbox) if chunk_bbox else None,
                     'block_count': len(chunk_blocks),
@@ -500,7 +500,7 @@ class SupabaseVectorService:
                     'embedding': embedding,
                     'chunk_index': i,
                     'address_hash': metadata.get('address_hash'),
-                    'business_id': metadata.get('business_id'),
+                    'business_uuid': metadata.get('business_uuid'),
                     'property_address': metadata.get('property_address'),
                     'source_document_id': str(metadata.get('source_document_id')) if metadata.get('source_document_id') else None,
                     'created_at': datetime.utcnow().isoformat()
@@ -578,7 +578,7 @@ class SupabaseVectorService:
             # This requires a custom SQL query in Supabase
             result = self.supabase.rpc('search_document_vectors', {
                 'query_embedding': query_embedding,
-                'business_id': business_id,
+                'filter_business_id': str(business_id) if business_id else None,
                 'match_threshold': similarity_threshold,
                 'match_count': limit
             }).execute()
@@ -618,7 +618,7 @@ class SupabaseVectorService:
             # Use pgvector cosine similarity search
             result = self.supabase.rpc('search_property_vectors', {
                 'query_embedding': query_embedding,
-                'business_id': business_id,
+                'business_uuid': str(business_id) if business_id else None,
                 'match_threshold': similarity_threshold,
                 'match_count': limit
             }).execute()
@@ -720,10 +720,10 @@ class SupabaseVectorService:
         """
         try:
             # Count document vectors
-            doc_vector_count = self.supabase.table(self.document_vectors_table).select('id', count='exact').eq('business_id', business_id).execute()
+            doc_vector_count = self.supabase.table(self.document_vectors_table).select('id', count='exact').eq('business_uuid', str(business_id)).execute()
             
             # Count property vectors
-            prop_vector_count = self.supabase.table(self.property_vectors_table).select('id', count='exact').eq('business_id', business_id).execute()
+            prop_vector_count = self.supabase.table(self.property_vectors_table).select('id', count='exact').eq('business_uuid', str(business_id)).execute()
             
             return {
                 'document_vectors': doc_vector_count.count if doc_vector_count.count else 0,
