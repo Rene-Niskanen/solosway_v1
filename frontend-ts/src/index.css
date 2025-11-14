@@ -333,4 +333,14 @@
     opacity: 0 !important;
     pointer-events: none !important;
   }
+
+  /* Modal centering - override Framer Motion transforms */
+  .modal-centered {
+    transform: translate(-50%, -50%) !important;
+  }
+
+  /* Property files modal positioning - override Framer Motion transforms */
+  .property-files-modal-positioned {
+    transform: translate(-50%, calc(-100% - 10px)) !important;
+  }
 }

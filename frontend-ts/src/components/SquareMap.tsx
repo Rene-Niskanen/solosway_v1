@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Moon } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
@@ -16,6 +17,7 @@ interface SquareMapProps {
   onLocationUpdate?: (location: { lat: number; lng: number; address: string }) => void;
   onSearch?: (query: string) => void;
   hasPerformedSearch?: boolean;
+  isInChatMode?: boolean;
 }
 
 export interface SquareMapRef {
@@ -28,7 +30,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   searchQuery,
   onLocationUpdate,
   onSearch,
-  hasPerformedSearch = false
+  hasPerformedSearch = false,
+  isInChatMode = false
 }, ref) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -66,18 +69,20 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [propertyMarkers, setPropertyMarkers] = useState<any[]>([]);
   const [selectedPropertyPosition, setSelectedPropertyPosition] = useState<{ x: number; y: number } | null>(null);
-  const [isColorfulMap, setIsColorfulMap] = useState(true);
+  // Initialize to false to match the actual initial map style (light-v11)
+  const [isColorfulMap, setIsColorfulMap] = useState(false);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
 
   // Close property card when navigating away from map view
+  // BUT: Don't close if chat mode is active (user might be viewing property while in chat)
   React.useEffect(() => {
-    if (!isVisible) {
+    if (!isVisible && !isInChatMode) {
       setShowPropertyDetailsPanel(false);
       setShowPropertyCard(false);
       setSelectedProperty(null);
     }
-  }, [isVisible]);
+  }, [isVisible, isInChatMode]);
 
   // Helper function to truncate text
   const truncateText = (text: string, maxLength: number = 200) => {
@@ -114,8 +119,26 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Property search functionality
 
   // Load properties from backend
-  const loadProperties = async () => {
-    if (!map.current) return;
+  const loadProperties = async (retryCount = 0) => {
+    if (!map.current) {
+      if (retryCount < 5) {
+        console.log(`🔄 Map not ready, retrying property load (attempt ${retryCount + 1}/5)...`);
+        setTimeout(() => loadProperties(retryCount + 1), 200);
+        return;
+      }
+      console.warn('⚠️ Map not available after 5 attempts');
+      return;
+    }
+
+    // Ensure map style is loaded before adding markers
+    if (!map.current.isStyleLoaded()) {
+      if (retryCount < 5) {
+        console.log(`🔄 Map style not ready, retrying property load (attempt ${retryCount + 1}/5)...`);
+        setTimeout(() => loadProperties(retryCount + 1), 200);
+        return;
+      }
+      console.warn('⚠️ Map style not ready after 5 attempts, proceeding anyway');
+    }
 
     console.log('🗺️ Loading properties from backend...');
     
@@ -176,9 +199,28 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Set the search results and add markers
         setSearchResults(transformedProperties);
         setPropertyMarkers(transformedProperties);
-        addPropertyMarkers(transformedProperties, true);
         
-        console.log(`✅ Successfully loaded ${transformedProperties.length} properties from backend`);
+        // Add markers with retry if map isn't ready
+        const addMarkersWithRetry = (attempt = 0) => {
+          if (!map.current || !map.current.isStyleLoaded()) {
+            if (attempt < 5) {
+              setTimeout(() => addMarkersWithRetry(attempt + 1), 200);
+              return;
+            }
+          }
+          try {
+            addPropertyMarkers(transformedProperties, true);
+            console.log(`✅ Successfully loaded and displayed ${transformedProperties.length} properties from backend`);
+          } catch (error) {
+            console.error('❌ Error adding markers:', error);
+            // Retry once more
+            if (attempt < 3) {
+              setTimeout(() => addMarkersWithRetry(attempt + 1), 300);
+            }
+          }
+        };
+        
+        addMarkersWithRetry();
       } else {
         console.log('⚠️ Backend not connected, no properties to display');
         setSearchResults([]);
@@ -634,70 +676,109 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
     console.log(`Creating unified source with ${properties.length} properties`);
 
+    // Remove existing source if it exists (to avoid errors)
+    if (map.current.getSource('properties')) {
+      console.log('📍 Removing existing properties source before re-adding');
+      try {
+        // Remove layers first
+        const layersToRemove = ['property-click-target', 'property-markers', 'property-outer'];
+        layersToRemove.forEach(layerId => {
+          if (map.current.getLayer(layerId)) {
+            map.current.removeLayer(layerId);
+          }
+        });
+        // Then remove source
+        map.current.removeSource('properties');
+      } catch (error) {
+        console.warn('⚠️ Error removing existing source:', error);
+      }
+    }
+
     // Add the source
-    map.current.addSource('properties', {
-      type: 'geojson',
-      data: geojson
-    });
+    try {
+      map.current.addSource('properties', {
+        type: 'geojson',
+        data: geojson
+      });
+      console.log('✅ Properties source added successfully');
+    } catch (error) {
+      console.error('❌ Error adding properties source:', error);
+      // If source already exists, update it instead
+      const existingSource = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
+      if (existingSource) {
+        existingSource.setData(geojson);
+        console.log('✅ Updated existing properties source');
+      }
+      return;
+    }
 
       // Add large invisible click target for better interaction
-      map.current.addLayer({
-        id: 'property-click-target',
-        type: 'circle',
-        source: 'properties',
-        paint: {
-          'circle-radius': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            10, 20,
-            15, 25,
-            20, 30
-          ],
-          'circle-color': 'transparent',
-          'circle-stroke-width': 0
-        }
-      });
+      if (!map.current.getLayer('property-click-target')) {
+        map.current.addLayer({
+          id: 'property-click-target',
+          type: 'circle',
+          source: 'properties',
+          paint: {
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              10, 20,
+              15, 25,
+              20, 30
+            ],
+            'circle-color': 'transparent',
+            'circle-stroke-width': 0
+          }
+        });
+      }
 
       // Add subtle outer ring with pulse effect
-      map.current.addLayer({
-        id: 'property-outer',
-        type: 'circle',
-        source: 'properties',
-        paint: {
-          'circle-radius': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            10, 8,
-            15, 12,
-            20, 16
-          ],
-          'circle-color': 'rgba(0, 0, 0, 0.08)',
-          'circle-stroke-width': 0
-        }
-      });
+      if (!map.current.getLayer('property-outer')) {
+        map.current.addLayer({
+          id: 'property-outer',
+          type: 'circle',
+          source: 'properties',
+          paint: {
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              10, 8,
+              15, 12,
+              20, 16
+            ],
+            'circle-color': 'rgba(0, 0, 0, 0.08)',
+            'circle-stroke-width': 0
+          }
+        });
+      }
 
       // Add main property dot with responsive sizing and better visual feedback
-      map.current.addLayer({
-        id: 'property-markers',
-        type: 'circle',
-        source: 'properties',
-        paint: {
-          'circle-radius': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            10, 4,
-            15, 5,
-            20, 6
-          ],
-          'circle-color': '#374151',
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
-          'circle-opacity': 0.9
-        }
-      });
+      if (!map.current.getLayer('property-markers')) {
+        map.current.addLayer({
+          id: 'property-markers',
+          type: 'circle',
+          source: 'properties',
+          paint: {
+            'circle-radius': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              10, 4,
+              15, 5,
+              20, 6
+            ],
+            'circle-color': '#374151',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff',
+            'circle-opacity': 0.9
+          }
+        });
+        console.log('✅ Property marker layers added successfully');
+      } else {
+        console.log('📍 Property marker layers already exist');
+      }
 
     // Don't create HTML markers initially - they'll be shown when a property is clicked and zoomed in
 
@@ -1076,20 +1157,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       if (!selectedProperty || !showPropertyDetailsPanel) return;
 
       const target = event.target as Node;
+      const targetElement = target as Element;
       
-      // Check if click is on the property details panel
+      // SPECIFIC RULE: Only close property card if click is EXPLICITLY on map or property panel
+      // Do NOT close for "anywhere outside" - be specific about what closes it
+      
+      // Check if click is on the property details panel - allow closing
       const propertyPanel = document.querySelector('[data-property-panel]');
       if (propertyPanel && propertyPanel.contains(target)) {
-        return;
+        return; // Click is on property panel itself - don't close
       }
 
-      // Check if click is on a property name marker
-      const propertyMarker = document.querySelector('.property-name-marker');
-      if (propertyMarker && propertyMarker.contains(target)) {
-        return;
-      }
-
-      // Check if click is on the map canvas
+      // Check if click is on the map canvas - allow closing
       const mapCanvas = map.current?.getCanvasContainer();
       if (mapCanvas && mapCanvas.contains(target)) {
         // Click is on the map - check if it's on a property marker layer
@@ -1108,7 +1187,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             layers: ['property-click-target', 'property-markers', 'property-outer']
           });
           
-          // If no property features were clicked, deselect
+          // If no property features were clicked, deselect (clicked on empty map area)
           if (features.length === 0) {
             clearSelectedPropertyEffects();
             setSelectedProperty(null);
@@ -1125,17 +1204,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         return;
       }
 
-      // Click is outside both the property panel and map - deselect
-      clearSelectedPropertyEffects();
-      setSelectedProperty(null);
-      setShowPropertyCard(false);
-      setShowPropertyDetailsPanel(false);
-      
-      // Remove property name marker
-      if (currentPropertyNameMarkerRef.current) {
-        currentPropertyNameMarkerRef.current.remove();
-        currentPropertyNameMarkerRef.current = null;
-      }
+      // Click is NOT on map or property panel - KEEP PROPERTY CARD OPEN
+      // Do NOT close for clicks anywhere else (chat, sidebar, etc.)
+      return;
     };
 
     if (showPropertyDetailsPanel && selectedProperty) {
@@ -1145,7 +1216,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showPropertyDetailsPanel, selectedProperty]);
+  }, [showPropertyDetailsPanel, selectedProperty, isInChatMode]);
 
   // Basic query processing (OpenAI temporarily disabled)
   const processQueryWithLLM = async (query: string): Promise<any> => {
@@ -1319,7 +1390,15 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
   // Function to toggle map style between light and colorful
   const toggleMapStyle = () => {
+    console.log('🎨 toggleMapStyle called', { isColorfulMap, isChangingStyle, hasMap: !!map.current });
     if (map.current && !isChangingStyle) {
+      // Calculate the new state BEFORE updating to avoid stale state issues
+      const willBeColorful = !isColorfulMap;
+      console.log('🎨 Toggling map style', { from: isColorfulMap, to: willBeColorful });
+      
+      // Update state immediately with the calculated value - BEFORE setting isChangingStyle
+      // This ensures the UI reflects the change immediately
+      setIsColorfulMap(willBeColorful);
       setIsChangingStyle(true);
       
       // Store current view state before style change
@@ -1328,17 +1407,59 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       const currentPitch = map.current.getPitch();
       const currentBearing = map.current.getBearing();
       
-      // Store current property markers to re-add them
-      const currentProperties = searchResults;
+      // Store current property markers to re-add them - use propertyMarkers state which contains all displayed properties
+      const currentProperties = propertyMarkers.length > 0 ? propertyMarkers : searchResults;
+      console.log('🎨 Storing properties for restoration:', { 
+        propertyMarkersCount: propertyMarkers.length, 
+        searchResultsCount: searchResults.length,
+        currentPropertiesCount: currentProperties.length 
+      });
       
-      const newStyle = isColorfulMap ? 'mapbox://styles/mapbox/light-v11' : 'mapbox://styles/mapbox/streets-v12';
+      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/streets-v12' : 'mapbox://styles/mapbox/light-v11';
       
       // Set the new style
       map.current.setStyle(newStyle);
-      setIsColorfulMap(!isColorfulMap);
+      
+      // Function to restore markers with retry logic
+      const restoreMarkers = (retryCount = 0) => {
+        if (!map.current) {
+          console.warn('⚠️ Cannot restore markers - map not available');
+          return;
+        }
+        
+        // Check if map is ready and source can be added
+        if (!map.current.isStyleLoaded()) {
+          if (retryCount < 5) {
+            console.log(`🔄 Map style not ready, retrying marker restoration (attempt ${retryCount + 1}/5)...`);
+            setTimeout(() => restoreMarkers(retryCount + 1), 200);
+            return;
+          } else {
+            console.warn('⚠️ Map style not ready after 5 attempts, proceeding anyway');
+          }
+        }
+        
+        // Re-add property markers if they exist
+        if (currentProperties && currentProperties.length > 0) {
+          console.log(`📍 Restoring ${currentProperties.length} property markers after style change`);
+          try {
+            // Force re-add markers by clearing the signature check
+            lastAddedPropertiesRef.current = '';
+            addPropertyMarkers(currentProperties, false);
+            console.log('✅ Property markers restored successfully');
+          } catch (error) {
+            console.error('❌ Error restoring markers:', error);
+            // Retry once more after a delay
+            if (retryCount < 3) {
+              setTimeout(() => restoreMarkers(retryCount + 1), 300);
+            }
+          }
+        } else {
+          console.log('📍 No properties to restore after style change');
+        }
+      };
       
       // Wait for style to load, then restore view and markers
-      map.current.once('styledata', () => {
+      const styleDataHandler = () => {
         // Permanently hide all Mapbox branding elements
         const hideMapboxBranding = () => {
           // Hide attribution control
@@ -1377,22 +1498,55 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           essential: true
         });
         
-        // Re-add property markers if they exist (don't clear existing ones during style change)
-        if (currentProperties && currentProperties.length > 0) {
-          setTimeout(() => {
-            addPropertyMarkers(currentProperties, false);
-          }, 100);
-        }
+        // Restore markers with retry logic - wait a bit longer to ensure style is fully loaded
+        setTimeout(() => {
+          restoreMarkers();
+        }, 300);
         
         // Re-hide labels if we're switching to light style and haven't searched yet
-        if (!isColorfulMap && !hasPerformedSearch) {
-          setTimeout(() => hideMapLabels(), 200);
+        // Use the calculated value instead of state to avoid stale closure
+        if (!willBeColorful && !hasPerformedSearch) {
+          setTimeout(() => hideMapLabels(), 400);
         }
         
         // Reset loading state
         setTimeout(() => {
+          console.log('🎨 Map style change complete, resetting isChangingStyle');
           setIsChangingStyle(false);
-        }, 400);
+        }, 500);
+      };
+      
+      // Fallback: if styledata doesn't fire within 3 seconds, reset the flag and try to restore markers anyway
+      const fallbackTimeout = setTimeout(() => {
+        console.warn('⚠️ Map style change timed out - attempting to restore markers anyway');
+        restoreMarkers();
+        setIsChangingStyle(false);
+      }, 3000);
+      
+      // Track if markers have been restored to avoid duplicate restoration
+      let markersRestored = false;
+      
+      const markAsRestored = () => {
+        markersRestored = true;
+      };
+      
+      // Set up the event listener - this will fire when the style loads
+      map.current.once('styledata', () => {
+        clearTimeout(fallbackTimeout);
+        styleDataHandler();
+        markAsRestored();
+      });
+      
+      // Also listen for 'data' event as a backup - this fires when style data is fully loaded
+      map.current.once('data', () => {
+        console.log('🗺️ Map data event fired - style fully loaded');
+        // Only restore if styledata hasn't already handled it and style is loaded
+        if (!markersRestored && map.current && map.current.isStyleLoaded()) {
+          setTimeout(() => {
+            restoreMarkers();
+            markAsRestored();
+          }, 200);
+        }
       });
     }
   };
@@ -2181,14 +2335,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
                 </svg>
               ) : (
-                // Colorful mode icon (palette)
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
-                  <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
-                  <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
-                  <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
-                  <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>
-                </svg>
+                // Colorful mode icon (moon)
+                <Moon className="w-5 h-5" strokeWidth={2} />
               )}
             </motion.div>
           </motion.button>

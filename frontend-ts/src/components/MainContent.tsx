@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
@@ -1632,6 +1632,38 @@ export const MainContent = ({
       setResetTrigger(prev => prev + 1);
     }
   }, [parentResetTrigger]);
+
+  // Debug: Log ChatInterface ref when it changes
+  React.useEffect(() => {
+    const hasRef = !!chatInterfaceRef.current;
+    console.log('🔍 ChatInterface ref status:', { 
+      hasRef,
+      currentChatId,
+      isInChatMode,
+      refValue: chatInterfaceRef.current
+    });
+    if (hasRef) {
+      console.log('✅ ChatInterface ref is available!');
+    } else {
+      console.log('❌ ChatInterface ref is NOT available');
+    }
+  }, [currentChatId, isInChatMode]);
+
+  // Debug: Log SearchBar ref when it changes
+  React.useEffect(() => {
+    const hasRef = !!searchBarRef.current;
+    console.log('🔍 SearchBar ref status:', { 
+      hasRef,
+      currentView,
+      isInChatMode,
+      refValue: searchBarRef.current
+    });
+    if (hasRef) {
+      console.log('✅ SearchBar ref is available!');
+    } else {
+      console.log('❌ SearchBar ref is NOT available');
+    }
+  }, [currentView, isInChatMode]);
   const renderViewContent = () => {
     switch (currentView) {
       case 'home':
@@ -1652,8 +1684,17 @@ export const MainContent = ({
                 
                 
                  {/* Chat Interface with elevated z-index */}
-                <div className="relative z-10 w-full h-full">
+                <div className="relative z-10 w-full h-full" data-chat-container="true">
+                  <div
+                    onDragEnter={handleDragEnter}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className="w-full h-full"
+                    data-chat-wrapper="true"
+                  >
                   <ChatInterface 
+                      ref={chatInterfaceRefCallback}
                     key={`chat-${currentChatId || 'new'}`}
                     initialQuery={currentChatData?.query || ""} 
                     onBack={handleBackToSearch} 
@@ -1661,6 +1702,7 @@ export const MainContent = ({
                     loadedMessages={currentChatData?.messages}
                     isFromHistory={currentChatData?.isFromHistory}
                   />
+                  </div>
                 </div>
               </motion.div> : <motion.div key="search" initial={{
             opacity: 0
@@ -1742,6 +1784,7 @@ export const MainContent = ({
                   isInChatMode={isInChatMode}
                   currentView={currentView}
                   hasPerformedSearch={hasPerformedSearch}
+                  isSidebarCollapsed={isSidebarCollapsed}
                 />
                 
                 {/* Full Screen Map */}
@@ -1750,6 +1793,7 @@ export const MainContent = ({
                   isVisible={isMapVisible}
                   searchQuery={mapSearchQuery}
                   hasPerformedSearch={hasPerformedSearch}
+                  isInChatMode={isInChatMode}
                   onLocationUpdate={(location) => {
                     setCurrentLocation(location.address);
                   }}
@@ -1786,6 +1830,7 @@ export const MainContent = ({
             
             {/* Unified Search Bar - adapts based on context */}
             <SearchBar 
+              ref={searchBarRefCallback}
               onSearch={handleSearch} 
               onQueryStart={handleQueryStart} 
               onMapToggle={handleMapToggle}
@@ -1794,15 +1839,420 @@ export const MainContent = ({
               isInChatMode={isInChatMode}
               currentView={currentView}
               hasPerformedSearch={hasPerformedSearch}
+              onFileDrop={(file) => {
+                console.log('📎 MainContent: onFileDrop prop called for SearchBar with file:', file.name);
+                // This will be handled by SearchBar's handleFileUpload
+                // The prop is just for notification - SearchBar handles the file internally
+              }}
             />
           </div>;
     }
   };
+  // Drag and drop state
+  const [isDragging, setIsDragging] = React.useState(false);
+  const [dragCounter, setDragCounter] = React.useState(0);
+  const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
+  const chatInterfaceRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
+  const pendingFileDropRef = React.useRef<File | null>(null);
+  const [refsReady, setRefsReady] = React.useState(false);
+  
+  // File drop handler - can be passed directly to components
+  const handleFileDropToComponent = React.useCallback((file: File) => {
+    console.log('📎 MainContent: handleFileDropToComponent called with file:', file.name);
+    // This will be passed to SearchBar and ChatInterface as onFileDrop prop
+    // They can use it directly instead of relying on refs
+  }, []);
+  
+  // Memoize ref callbacks to ensure they're stable across renders
+  const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void } | null) => {
+    console.log('🔗 SearchBar ref callback called with:', instance);
+    searchBarRef.current = instance;
+    // Update state to trigger pending file processing
+    setRefsReady(prev => {
+      const newReady = !!instance || !!chatInterfaceRef.current;
+      console.log('🔗 SearchBar ref ready state:', { instance: !!instance, chatRef: !!chatInterfaceRef.current, newReady });
+      return newReady;
+    });
+  }, []);
+  
+  const chatInterfaceRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void } | null) => {
+    console.log('🔗 ChatInterface ref callback called with:', instance);
+    chatInterfaceRef.current = instance;
+    // Update state to trigger pending file processing
+    setRefsReady(prev => {
+      const newReady = !!instance || !!searchBarRef.current;
+      console.log('🔗 ChatInterface ref ready state:', { instance: !!instance, searchRef: !!searchBarRef.current, newReady });
+      return newReady;
+    });
+  }, []);
+
+  // Drag and drop handlers
+  const handleDragEnter = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only process file drags
+    if (!e.dataTransfer.types.includes('Files')) {
+      return;
+    }
+    
+    setDragCounter(prev => {
+      const newCount = prev + 1;
+      // Set dragging to true on first enter
+      if (newCount === 1) {
+      setIsDragging(true);
+    }
+      return newCount;
+    });
+  }, []);
+
+  const handleDragLeave = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if we're actually leaving the main container
+    // by checking if the related target is outside
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    
+    // Only decrement if we're actually leaving the container bounds
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+    setDragCounter(prev => {
+        const newCount = Math.max(0, prev - 1);
+      if (newCount === 0) {
+        setIsDragging(false);
+      }
+      return newCount;
+    });
+    }
+  }, []);
+
+  const handleDragOver = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Ensure dragging state is maintained while dragging over
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy';
+      // Keep dragging state active while over the area
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    setDragCounter(0);
+
+    // Check if this is a property document drag
+    const propertyDocumentData = e.dataTransfer.getData('application/json');
+    if (propertyDocumentData) {
+      try {
+        const docData = JSON.parse(propertyDocumentData);
+        if (docData.type === 'property-document' && docData.downloadUrl) {
+          console.log('📁 Property document dropped:', docData.filename);
+          
+          // Fetch the file from the backend
+          const response = await fetch(docData.downloadUrl, {
+            credentials: 'include'
+          });
+          
+          if (response.ok) {
+            const blob = await response.blob();
+            const file = new File([blob], docData.filename, { type: docData.fileType || 'application/pdf' });
+            
+            console.log('✅ Property document fetched:', file.name, file.size, 'bytes');
+            
+            // Pass to chat or search bar - check mode first, then refs
+            if (isInChatMode && chatInterfaceRef.current) {
+              console.log('📤 Passing property document to ChatInterface');
+              try {
+                chatInterfaceRef.current.handleFileDrop(file);
+                console.log('✅ Property document successfully passed to ChatInterface');
+              } catch (err) {
+                console.error('❌ Error passing file to ChatInterface:', err);
+                // Fallback: store for later
+                pendingFileDropRef.current = file;
+                setHasPendingFile(true);
+              }
+            } else if (!isInChatMode && searchBarRef.current) {
+              console.log('📤 Passing property document to SearchBar');
+              try {
+                searchBarRef.current.handleFileDrop(file);
+                console.log('✅ Property document successfully passed to SearchBar');
+              } catch (err) {
+                console.error('❌ Error passing file to SearchBar:', err);
+                // Fallback: store for later
+                pendingFileDropRef.current = file;
+                setHasPendingFile(true);
+              }
+            } else {
+              console.log('📦 Storing property document for later (refs not ready)', {
+                isInChatMode,
+                hasChatRef: !!chatInterfaceRef.current,
+                hasSearchRef: !!searchBarRef.current
+              });
+              pendingFileDropRef.current = file;
+              setHasPendingFile(true); // Trigger the polling mechanism
+            }
+          } else {
+            console.error('❌ Failed to fetch property document:', response.status, response.statusText);
+          }
+          return;
+        }
+      } catch (err) {
+        console.error('Error parsing property document data:', err);
+      }
+    }
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      // Only handle the first file for now
+      const file = files[0];
+      console.log('📁 File dropped:', file.name);
+      console.log('📊 Drop context:', {
+        isInChatMode,
+        currentView,
+        hasChatRef: !!chatInterfaceRef.current,
+        hasSearchRef: !!searchBarRef.current,
+        chatRefValue: chatInterfaceRef.current,
+        searchRefValue: searchBarRef.current
+      });
+      
+      // Try to pass file directly via refs first
+      if (chatInterfaceRef.current) {
+        console.log('📤 Passing file to ChatInterface (via ref)');
+        chatInterfaceRef.current.handleFileDrop(file);
+      } else if (searchBarRef.current) {
+        console.log('📤 Passing file to SearchBar (via ref)');
+        searchBarRef.current.handleFileDrop(file);
+      } else {
+        // Fallback: Try to trigger file upload via the file input element
+        // This works by finding the hidden file input and programmatically triggering it
+        console.warn('⚠️ No valid ref found, trying direct file input approach');
+        console.warn('⚠️ Details:', {
+          isInChatMode,
+          currentView,
+          hasChatRef: !!chatInterfaceRef.current,
+          hasSearchRef: !!searchBarRef.current
+        });
+        
+        // Find the file input in the currently visible component (SearchBar or ChatInterface)
+        const fileInputs = document.querySelectorAll('input[type="file"]');
+        let targetInput: HTMLInputElement | null = null;
+        
+        // Prefer the input in the active component
+        if (isInChatMode) {
+          // Look for input in ChatInterface
+          const chatContainer = document.querySelector('[class*="ChatInterface"]') || 
+                                document.querySelector('[class*="chat"]');
+          if (chatContainer) {
+            targetInput = chatContainer.querySelector('input[type="file"]') as HTMLInputElement;
+          }
+        } else {
+          // Look for input in SearchBar
+          const searchContainer = document.querySelector('[class*="SearchBar"]') ||
+                                  document.querySelector('form');
+          if (searchContainer) {
+            targetInput = searchContainer.querySelector('input[type="file"]') as HTMLInputElement;
+          }
+        }
+        
+        // Fallback to first available file input
+        if (!targetInput && fileInputs.length > 0) {
+          targetInput = fileInputs[0] as HTMLInputElement;
+        }
+        
+        if (targetInput) {
+          console.log('📤 Found file input, triggering upload via DataTransfer');
+          try {
+            // Create a new FileList with the dropped file using DataTransfer
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            targetInput.files = dataTransfer.files;
+            
+            // Trigger change event to notify the component
+            const changeEvent = new Event('change', { bubbles: true });
+            targetInput.dispatchEvent(changeEvent);
+            console.log('✅ File input change event dispatched');
+          } catch (error) {
+            console.error('❌ Error triggering file input:', error);
+            // Store as pending if direct approach fails
+            pendingFileDropRef.current = file;
+            setHasPendingFile(true);
+          }
+        } else {
+          console.warn('⚠️ No file input found, storing as pending');
+          pendingFileDropRef.current = file;
+          setHasPendingFile(true);
+        }
+      }
+    }
+  }, [currentView, isInChatMode]);
+
+  // Poll for refs to become available (fallback mechanism)
+  const [hasPendingFile, setHasPendingFile] = React.useState(false);
+  
+  // Process pending file drop when refs become available
+  React.useEffect(() => {
+    if (pendingFileDropRef.current && (chatInterfaceRef.current || searchBarRef.current)) {
+      const pendingFile = pendingFileDropRef.current;
+      console.log('🔄 Processing pending file drop:', pendingFile.name, { 
+        refsReady, 
+        hasChatRef: !!chatInterfaceRef.current, 
+        hasSearchRef: !!searchBarRef.current,
+        isInChatMode,
+        currentView
+      });
+      
+      // Check mode first, then appropriate ref
+      if (isInChatMode && chatInterfaceRef.current) {
+        console.log('📤 Processing pending file in ChatInterface');
+        try {
+          chatInterfaceRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in ChatInterface');
+        } catch (err) {
+          console.error('❌ Error processing pending file in ChatInterface:', err);
+        }
+      } else if (!isInChatMode && searchBarRef.current) {
+        console.log('📤 Processing pending file in SearchBar');
+        try {
+          searchBarRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in SearchBar');
+        } catch (err) {
+          console.error('❌ Error processing pending file in SearchBar:', err);
+        }
+      } else if (chatInterfaceRef.current) {
+        // Fallback: if chat ref is available, use it
+        console.log('📤 Processing pending file in ChatInterface (fallback)');
+        try {
+          chatInterfaceRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
+        } catch (err) {
+          console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
+        }
+      } else if (searchBarRef.current) {
+        // Fallback: if search ref is available, use it
+        console.log('📤 Processing pending file in SearchBar (fallback)');
+        try {
+          searchBarRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in SearchBar (fallback)');
+        } catch (err) {
+          console.error('❌ Error processing pending file in SearchBar (fallback):', err);
+        }
+      }
+    }
+  }, [refsReady, isInChatMode, currentView, hasPendingFile]);
+  
+  React.useEffect(() => {
+    if (hasPendingFile && pendingFileDropRef.current) {
+      console.log('🔄 Starting polling for pending file:', pendingFileDropRef.current.name);
+      
+      const interval = setInterval(() => {
+        const pendingFile = pendingFileDropRef.current;
+        if (!pendingFile) {
+          console.log('✅ Pending file cleared, stopping polling');
+          setHasPendingFile(false);
+          clearInterval(interval);
+          return;
+        }
+        
+        console.log('🔄 Polling for refs:', { 
+          hasChatRef: !!chatInterfaceRef.current, 
+          hasSearchRef: !!searchBarRef.current,
+          isInChatMode,
+          currentView
+        });
+        
+        // Check mode first, then appropriate ref
+        if (isInChatMode && chatInterfaceRef.current) {
+          console.log('📤 Processing pending file in ChatInterface (via polling)');
+          try {
+            chatInterfaceRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in ChatInterface');
+          } catch (err) {
+            console.error('❌ Error processing pending file in ChatInterface:', err);
+          }
+        } else if (!isInChatMode && searchBarRef.current) {
+          console.log('📤 Processing pending file in SearchBar (via polling)');
+          try {
+            searchBarRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in SearchBar');
+          } catch (err) {
+            console.error('❌ Error processing pending file in SearchBar:', err);
+          }
+        } else if (chatInterfaceRef.current) {
+          // Fallback: if chat ref is available, use it
+          console.log('📤 Processing pending file in ChatInterface (fallback)');
+          try {
+            chatInterfaceRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
+          } catch (err) {
+            console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
+          }
+        } else if (searchBarRef.current) {
+          // Fallback: if search ref is available, use it
+          console.log('📤 Processing pending file in SearchBar (fallback)');
+          try {
+            searchBarRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in SearchBar (fallback)');
+          } catch (err) {
+            console.error('❌ Error processing pending file in SearchBar (fallback):', err);
+          }
+        }
+      }, 100); // Check every 100ms
+      
+      // Clear interval after 5 seconds to avoid infinite polling
+      const timeout = setTimeout(() => {
+        clearInterval(interval);
+        if (pendingFileDropRef.current) {
+          console.warn('⚠️ Pending file drop timed out after 5 seconds:', pendingFileDropRef.current.name);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+        }
+      }, 5000);
+      
+      return () => {
+        clearInterval(interval);
+        clearTimeout(timeout);
+      };
+    }
+  }, [hasPendingFile, isInChatMode, currentView]);
+
   // Calculate left margin based on sidebar state
   // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed
   const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
   
-  return <div className={`flex-1 relative bg-white ${leftMargin} ${className || ''}`} style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}>
+  return <div 
+    className={`flex-1 relative bg-white ${leftMargin} ${className || ''}`} 
+    style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}
+    onDragEnter={handleDragEnter}
+    onDragOver={handleDragOver}
+    onDragLeave={handleDragLeave}
+    onDrop={handleDrop}
+  >
       {/* Background based on current view - Hidden to show white background */}
       {/* Background components commented out to show white background */}
       
@@ -1839,11 +2289,63 @@ export const MainContent = ({
           duration: 0.6,
           ease: [0.23, 1, 0.32, 1],
           delay: 0.1
-        }} className={`relative flex-1 flex flex-col overflow-hidden`}>{renderViewContent()}
+        }} className={`relative flex-1 flex flex-col overflow-visible`}>{renderViewContent()}
           </motion.div>
         </div>
       </div>
       
       {/* Search Bar positioning is now handled internally by the SearchBar component */}
+      
+      {/* Drag and Drop Overlay - Full Screen */}
+      <AnimatePresence>
+        {isDragging && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-white"
+            style={{ 
+              pointerEvents: 'none',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              width: '100vw',
+              height: '100vh'
+            }}
+          >
+            {/* Large container for upload icon */}
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+              className="relative"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              {/* Upload Icon - CloudUpload from Lucide */}
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ y: -6, opacity: 0, scale: 0.9 }}
+                  animate={{ y: 0, opacity: 1, scale: 1 }}
+                  exit={{ y: -6, opacity: 0, scale: 0.9 }}
+                  transition={{ delay: 0.1, duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
+                  className="relative"
+                >
+                  <CloudUpload
+                    size={72}
+                    strokeWidth={2}
+                    className="text-gray-500 drop-shadow-sm"
+                  />
+                </motion.div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>;
   };

@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, CloudUpload, X } from 'lucide-react';
+import { File, CloudUpload, X, Upload, FileText, MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
+import { PropertyFilesModal } from './PropertyFilesModal';
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -31,6 +32,14 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
+  const [modalPosition, setModalPosition] = useState<{ top: number; left: number } | undefined>();
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
+  const [hasFilesFetched, setHasFilesFetched] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
 
   // Load documents when property changes
   useEffect(() => {
@@ -178,113 +187,210 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     return null;
   };
 
+  // Get summary text
+  const summaryText = property.summary || property.propertyHub?.property_details?.notes || property.notes;
+  const maxLength = 120; // Approximate characters for 3 lines
+  const isLong = summaryText ? summaryText.length > maxLength : false;
+
+  // Check if text is actually truncated
+  useEffect(() => {
+    if (summaryRef.current && !isSummaryExpanded && summaryText) {
+      // Use requestAnimationFrame to ensure DOM is updated
+      requestAnimationFrame(() => {
+        if (summaryRef.current) {
+          const isTextTruncated = summaryRef.current.scrollHeight > summaryRef.current.clientHeight;
+          // Character length check as fallback
+          if (!isTextTruncated && isLong) {
+            // Text might still be truncated, keep expanded state false
+          }
+        }
+      });
+    }
+  }, [summaryText, isSummaryExpanded, isLong]);
+
+  // Render expandable summary
+  const renderSummary = () => {
+    if (!summaryText) return null;
+    
+    if (!isLong) {
+      return (
+        <p className="text-sm text-gray-600 leading-relaxed">
+          {summaryText}
+        </p>
+      );
+    }
+    
+    if (isSummaryExpanded) {
+      return (
+        <div>
+          <p
+            ref={summaryRef}
+            className="text-sm text-gray-600 leading-relaxed"
+          >
+            {summaryText}
+          </p>
+          <button
+            onClick={() => setIsSummaryExpanded(false)}
+            className="text-slate-600 hover:text-slate-700 underline mt-1 text-sm font-medium cursor-pointer"
+            type="button"
+          >
+            View less
+          </button>
+        </div>
+      );
+    }
+    
+    // Find a good break point (prefer word boundary)
+    const truncated = summaryText.substring(0, maxLength);
+    const lastSpace = truncated.lastIndexOf(' ');
+    const breakPoint = lastSpace > maxLength * 0.8 ? lastSpace : maxLength;
+    const displayText = summaryText.substring(0, breakPoint).trim();
+    
+    return (
+      <div>
+        <p ref={summaryRef} className="text-sm text-gray-600 leading-relaxed line-clamp-3">
+          {displayText}
+        </p>
+        <button
+          onClick={() => setIsSummaryExpanded(true)}
+          className="text-slate-600 hover:text-slate-700 underline mt-1 text-sm font-medium cursor-pointer"
+          type="button"
+        >
+          View more
+        </button>
+      </div>
+    );
+  };
+
   if (!isVisible || !property) return null;
 
   const yieldPercentage = calculateYield();
   const lettingInfo = getLettingInfo();
 
+  // Get property ID
+  const propertyId = property?.id?.toString() || property?.property_id?.toString();
+
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 20 }}
-        className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
-        data-property-panel
-      >
+    <>
+      <AnimatePresence>
+        <motion.div
+          ref={panelRef}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 20 }}
+          className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
+          data-property-panel
+        >
         {/* Card Container - Modern White Card */}
-        <div className="bg-white rounded-xl shadow-xl flex flex-col overflow-hidden flex-1 border border-gray-100">
+        <motion.div 
+          className="bg-white rounded-xl shadow-xl flex flex-col overflow-hidden flex-1 border border-gray-100"
+          layout={false}
+        >
           {/* Scrollable Content Container */}
           <div className="flex-1 overflow-y-auto">
-            {/* Header - Address Bar */}
-            <div className="bg-white border-b border-gray-100 px-4 py-3">
-              <h2 className="text-sm font-medium text-gray-900 leading-tight truncate">
-                {getPropertyName(property.address || 'Unknown Address')}
-              </h2>
-            </div>
-
-            {/* Property Image Section - Large Prominent Image */}
-            <div className="relative w-full" style={{ aspectRatio: '16/10' }}>
-              <img
-                src={getPropertyImage()}
-                alt={property.address || 'Property'}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  const img = e.target as HTMLImageElement;
-                  img.src = '/property-1.png';
-                }}
-              />
-              
-              {/* Close Button - Top Right */}
-              <button
-                onClick={onClose}
-                className="absolute top-3 right-3 w-8 h-8 bg-white/95 backdrop-blur-sm rounded-full flex items-center justify-center hover:bg-white transition-colors shadow-md z-10"
-              >
-                <X className="w-4 h-4 text-gray-700" strokeWidth={2.5} />
-              </button>
-            </div>
-
-            {/* Content Section */}
-            <div className="p-4 space-y-4">
-              {/* Add File Button and View Toggle Buttons */}
-              <div className="flex items-center gap-2">
-                {/* Add File Button - Modern Green-Grey Style */}
-                <button
-                  onClick={() => {
-                    // TODO: Wire up document upload functionality
-                    console.log('Add Document clicked');
+            {/* Container 1: Image, Title, Summary, View buttons */}
+            <div style={{ contain: 'layout style' }}>
+              {/* Property Image Section - Infinity Pool Style (no border) */}
+              <div className="relative w-full overflow-hidden rounded-t-xl" style={{ aspectRatio: '16/10' }}>
+                <img
+                  src={getPropertyImage()}
+                  alt={property.address || 'Property'}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const img = e.target as HTMLImageElement;
+                    img.src = '/property-1.png';
                   }}
-                  className="flex-1 py-3 px-4 rounded-lg font-medium transition-all text-sm flex items-center justify-center gap-2 bg-[#E8F5E9] hover:bg-[#C8E6C9] text-gray-700 border border-[#C5E1C6] shadow-sm hover:shadow-md"
-                >
-                  <CloudUpload className="w-4 h-4" strokeWidth={2} />
-                  <span>Add File</span>
-                </button>
-
-                {/* Property Card (3) Button */}
+                />
+                
+                {/* Close Button - Top Right */}
                 <button
-                  onClick={() => {
-                    // TODO: Wire up card size toggle functionality
-                    console.log('Property Card (3) clicked');
-                  }}
-                  className="w-12 h-12 rounded-lg flex items-center justify-center transition-all hover:bg-gray-50 border border-gray-200"
+                  onClick={onClose}
+                  className="absolute top-3 right-3 w-7 h-7 bg-white/95 backdrop-blur-sm rounded-full flex items-center justify-center hover:bg-white transition-colors shadow-md z-10"
                 >
-                  <img 
-                    src="/Property Card (3) Button.png" 
-                    alt="Property Card View 3" 
-                    className="w-full h-full object-contain p-1"
-                    onError={(e) => {
-                      console.error('Failed to load Property Card (3) Button image');
-                    }}
-                  />
-                </button>
-
-                {/* Property Card (2) Button */}
-                <button
-                  onClick={() => {
-                    // TODO: Wire up card size toggle functionality
-                    console.log('Property Card (2) clicked');
-                  }}
-                  className="w-12 h-12 rounded-lg flex items-center justify-center transition-all hover:bg-gray-50 border border-gray-200"
-                >
-                  <img 
-                    src="/Property card (2) Button.png" 
-                    alt="Property Card View 2" 
-                    className="w-full h-full object-contain p-1"
-                    onError={(e) => {
-                      console.error('Failed to load Property Card (2) Button image');
-                    }}
-                  />
+                  <X className="w-3 h-3 text-gray-700" strokeWidth={2.5} />
                 </button>
               </div>
 
-              {/* Property Details Grid - Modern Two Column Layout */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Left Column */}
-                <div className="space-y-3">
+              {/* Title and Summary Section */}
+              <div className="p-4 pb-6">
+                {/* Title - Moved below image */}
+                <h2 className="text-lg font-semibold text-gray-900 leading-tight mb-2">
+                  {getPropertyName(property.address || 'Unknown Address')}
+                </h2>
+
+                {/* Property Summary/Description - Expandable */}
+                <div>
+                  {renderSummary()}
+                </div>
+              </div>
+            </div>
+
+            {/* Container 2: Icons, Property Info, Action Buttons (completely independent) */}
+            <div className="px-6 py-5 pt-0" style={{ position: 'relative', transform: 'translateZ(0)', contain: 'layout style paint', isolation: 'isolate', marginTop: '0.5rem' }}>
+                {/* Action Buttons */}
+                <div className="flex gap-2 mb-6">
+                <button
+                  ref={viewFilesButtonRef}
+                  onClick={() => {
+                    if (isFilesModalOpen) {
+                      // Close the modal if it's already open
+                      setIsFilesModalOpen(false);
+                    } else {
+                      // Calculate position above the panel using viewport coordinates
+                      // Use requestAnimationFrame to ensure DOM is ready
+                      requestAnimationFrame(() => {
+                        if (panelRef.current) {
+                          const panelRect = panelRef.current.getBoundingClientRect();
+                          // Ensure modal doesn't go off-screen
+                          const modalWidth = 420; // Modal width (matches property card width)
+                          const viewportWidth = window.innerWidth;
+                          const leftPosition = Math.max(
+                            modalWidth / 2 + 10, // Minimum left position (10px padding)
+                            Math.min(
+                              panelRect.left + (panelRect.width / 2), // Center of panel
+                              viewportWidth - (modalWidth / 2) - 10 // Maximum right position
+                            )
+                          );
+                          
+                          setModalPosition({
+                            top: panelRect.top, // Top of the panel
+                            left: leftPosition // Center of the panel horizontally (constrained to viewport)
+                          });
+                          setIsFilesModalOpen(true);
+                        }
+                      });
+                    }
+                  }}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <FileText className="w-4 h-4" />
+                    <span>{isFilesModalOpen && hasFilesFetched ? 'Close Database' : 'View Files'}</span>
+                  </div>
+                </button>
+                
+                <button
+                  onClick={() => {
+                    // TODO: Wire up document upload functionality
+                    console.log('Upload clicked');
+                  }}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <Upload className="w-4 h-4" />
+                    <span>Upload</span>
+                  </div>
+                </button>
+                </div>
+
+                {/* Property Details with Icons - Horizontal Rows */}
+                <div className="space-y-3 mb-2">
+                {/* Row 1: Document Count, Square Footage, EPC Rating */}
+                <div className="flex items-center gap-6 flex-wrap">
                   {/* Document Count */}
-                  <div className="flex items-center gap-2 text-sm">
-                    <File className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                    <span className="text-gray-700">
+                  <div className="flex items-center text-xs text-gray-600">
+                    <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <span>
                       {loading ? (
                         'Loading...'
                       ) : (
@@ -305,70 +411,107 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                   {/* Square Footage */}
                   {property.square_feet && (
-                    <div className="text-sm text-gray-700">
-                      {property.square_feet.toLocaleString()} sqft
+                    <div className="flex items-center text-xs text-gray-600">
+                      <Ruler className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <span>{property.square_feet.toLocaleString()} sqft</span>
                     </div>
                   )}
 
                   {/* EPC Rating */}
                   {property.epc_rating && (
-                    <div className="text-sm text-gray-700">
-                      EPC: {property.epc_rating} Rating
+                    <div className="flex items-center text-xs text-gray-600">
+                      <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <span>EPC: {property.epc_rating} Rating</span>
                     </div>
                   )}
                 </div>
 
-                {/* Right Column */}
-                <div className="space-y-3">
+                {/* Row 2: Price, Property Type, Tenure */}
+                <div className="flex items-center gap-6 flex-wrap">
                   {/* Price */}
-                  <div className="text-sm text-gray-700 font-medium">
-                    {getPrimaryPrice()}
+                  <div className="flex items-center text-xs text-gray-600">
+                    <DollarSign className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <span>{getPrimaryPrice()}</span>
                   </div>
 
                   {/* Property Type */}
-                  <div className="text-sm text-gray-700">
-                    {property.property_type || property.bedrooms ? (
-                      <>
-                        {property.bedrooms ? `${property.bedrooms} Bed` : ''}
-                        {property.bedrooms && property.property_type ? ' · ' : ''}
-                        {property.property_type || 'Dwellinghouse'}
-                      </>
-                    ) : (
-                      'Dwellinghouse'
-                    )}
+                  <div className="flex items-center text-xs text-gray-600">
+                    <Home className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <span>{property.property_type || 'Dwellinghouse'}</span>
                   </div>
 
                   {/* Tenure */}
                   {property.tenure && (
-                    <div className="text-sm text-gray-700">
-                      {property.tenure}
+                    <div className="flex items-center text-xs text-gray-600">
+                      <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <span>{property.tenure}</span>
                     </div>
                   )}
                 </div>
-              </div>
 
-              {/* Additional Info (Rent, Yield, Letting) - Full Width if Present */}
-              {(property.rentPcm > 0 || lettingInfo) && (
-                <div className="pt-2 border-t border-gray-100 space-y-2">
-                  {property.rentPcm > 0 && (
-                    <div className="text-sm text-gray-700">
-                      <span className="font-medium">Rent:</span> £{property.rentPcm.toLocaleString()} pcm
-                      {yieldPercentage && (
-                        <span className="text-gray-500 ml-2">({yieldPercentage}% yield)</span>
-                      )}
-                    </div>
-                  )}
-                  {lettingInfo && (
-                    <div className="text-sm text-gray-700">
-                      <span className="font-medium">Letting:</span> {lettingInfo}
-                    </div>
-                  )}
+                {/* Row 3: Bedrooms & Bathrooms - Only show if values exist and > 0 */}
+                {(property.bedrooms > 0 || property.bathrooms > 0) && (
+                  <div className="flex items-center gap-6 text-xs text-gray-600">
+                    {property.bedrooms > 0 && (
+                      <div className="flex items-center">
+                        <Bed className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                        <span>{property.bedrooms}</span>
+                      </div>
+                    )}
+                    {property.bathrooms > 0 && (
+                      <div className="flex items-center">
+                        <Bath className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                        <span>{property.bathrooms}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 </div>
-              )}
+
+                {/* Additional Info (Rent, Yield, Letting) - Full Width if Present */}
+                {(property.rentPcm > 0 || lettingInfo) && (
+                  <div className="pt-4 mt-4 border-t border-gray-100 space-y-2">
+                    {property.rentPcm > 0 && (
+                      <div className="text-sm text-gray-700">
+                        <span className="font-medium">Rent:</span> £{property.rentPcm.toLocaleString()} pcm
+                        {yieldPercentage && (
+                          <span className="text-gray-500 ml-2">({yieldPercentage}% yield)</span>
+                        )}
+                      </div>
+                    )}
+                    {lettingInfo && (
+                      <div className="text-sm text-gray-700">
+                        <span className="font-medium">Letting:</span> {lettingInfo}
+                      </div>
+                    )}
+                  </div>
+                )}
             </div>
           </div>
-        </div>
-      </motion.div>
-    </AnimatePresence>
+        </motion.div>
+        </motion.div>
+      </AnimatePresence>
+      
+      {/* Property Files Modal - Outside AnimatePresence to avoid key conflicts */}
+        {propertyId && (
+          <PropertyFilesModal
+            key={`files-modal-${propertyId}`}
+            propertyId={propertyId}
+            propertyAddress={property?.formatted_address || property?.address}
+            isOpen={isFilesModalOpen}
+            onClose={() => {
+              setIsFilesModalOpen(false);
+              setHasFilesFetched(false);
+            }}
+            position={modalPosition}
+            onLoadingStateChange={(isLoading, hasFetched) => {
+              setIsFilesLoading(isLoading);
+              setHasFilesFetched(hasFetched);
+            }}
+            isMapVisible={true}
+            isSidebarCollapsed={false}
+          />
+        )}
+    </>
   );
 };
