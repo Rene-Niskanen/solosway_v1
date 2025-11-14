@@ -5,6 +5,7 @@ from . import db
 from flask_login import login_user, login_required, logout_user, current_user
 from .services.supabase_auth_service import SupabaseAuthService
 import logging
+from uuid import UUID, uuid4
 
 auth = Blueprint('auth', __name__)
 logger = logging.getLogger(__name__)
@@ -34,7 +35,12 @@ def login():
         user_data = auth_service.get_user_by_email(email)
         
         if user_data and auth_service.verify_password(user_data, password):
-            # Create User object for Flask-Login
+            business_uuid = user_data.get('business_uuid')
+            if not business_uuid:
+                legacy_business = user_data.get('business_id') or user_data.get('company_name')
+                business_uuid = auth_service.ensure_business_uuid(legacy_business)
+                auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+
             user = User()
             user.id = user_data['id']
             user.email = user_data['email']
@@ -43,6 +49,7 @@ def login():
             user.company_website = user_data['company_website']
             user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
             user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+            user.business_id = UUID(business_uuid) if business_uuid else None
             
             flash('Logged in successfully!', category='success')
             login_user(user, remember=True)
@@ -80,7 +87,11 @@ def api_login():
         logger.info(f"User found: {user_data is not None}")
         
         if user_data and auth_service.verify_password(user_data, password):
-            # Create User object for Flask-Login
+            legacy_business = user_data.get('business_id') or user_data.get('company_name')
+            business_uuid = user_data.get('business_uuid') or auth_service.ensure_business_uuid(legacy_business)
+            if not user_data.get('business_uuid'):
+                auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+
             user = User()
             user.id = user_data['id']
             user.email = user_data['email']
@@ -89,6 +100,7 @@ def api_login():
             user.company_website = user_data['company_website']
             user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
             user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+            user.business_id = UUID(business_uuid) if business_uuid else None
             
             login_user(user, remember=True)
             logger.info(f"Login successful for user: {email}")
@@ -121,11 +133,15 @@ def api_signup():
     
     try:
         # Create user in Supabase
+        business_uuid = auth_service.ensure_business_uuid(company_name)
+
         user_data = {
             'email': email,
             'password': generate_password_hash(password),
             'first_name': first_name,
             'company_name': company_name,
+            'business_uuid': business_uuid,
+            'business_id': business_uuid,
             'role': 'user',
             'status': 'active',
             'created_at': 'now()',
@@ -137,6 +153,11 @@ def api_signup():
             return jsonify({'success': False, 'error': 'Failed to create user in Supabase'}), 500
         
         # Create User object for Flask-Login
+        business_uuid = new_user_data.get('business_uuid')
+        if not business_uuid:
+            business_uuid = auth_service.ensure_business_uuid(company_name)
+            auth_service.update_user(new_user_data['id'], {'business_uuid': business_uuid})
+
         user = User()
         user.id = new_user_data['id']
         user.email = new_user_data['email']
@@ -145,6 +166,7 @@ def api_signup():
         user.company_website = new_user_data.get('company_website')
         user.role = UserRole.USER
         user.status = UserStatus.ACTIVE
+        user.business_id = UUID(business_uuid) if business_uuid else None
         
         # Automatically log in the user after successful signup
         login_user(user, remember=True)
@@ -196,7 +218,8 @@ def sign_up():
                 first_name=first_name, 
                 password=generate_password_hash(password1, method='pbkdf2:sha256'),
                 company_name=company_name,
-                company_website=company_website
+                company_website=company_website,
+                business_id=uuid4()
             )
             db.session.add(new_user)
             db.session.commit()
@@ -246,7 +269,8 @@ def api_sign_up():
             company_name=company_name,
             company_website=company_website,
             role=UserRole.USER,
-            status=UserStatus.ACTIVE
+            status=UserStatus.ACTIVE,
+            business_id=uuid4()
         )
         try:
             db.session.add(new_user)
@@ -312,7 +336,8 @@ def web_signup():
                 password=generate_password_hash(password1, method='pbkdf2:sha256'),
                 company_name=company_name,
                 role=UserRole.USER,
-                status=UserStatus.ACTIVE
+                status=UserStatus.ACTIVE,
+                business_id=uuid4()
             )
             db.session.add(new_user)
             db.session.commit()

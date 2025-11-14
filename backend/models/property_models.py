@@ -11,7 +11,7 @@ class Property(db.Model):
     __tablename__ = 'properties'
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    business_id = db.Column(db.String(150), nullable=False)
+    business_id = db.Column(UUID(as_uuid=True), nullable=False)
     address_hash = db.Column(db.String(64), nullable=False)
     normalized_address = db.Column(db.String(500), nullable=False)
     formatted_address = db.Column(db.String(500))

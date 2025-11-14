@@ -20,6 +20,7 @@ import time
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import logging
+from uuid import UUID
 
 # Reducto imports
 from .services.reducto_service import ReductoService
@@ -1196,7 +1197,8 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 f.write(file_content)
             
             print(f"Successfully saved direct content to {temp_file_path}")
-            print(f"Processing document for business_id: {business_id}")
+            business_uuid = str(UUID(str(business_id))) if business_id else None
+            print(f"Processing document for business_id: {business_uuid}")
             print(f"Image extraction directory: {temp_image_dir}")
         
             # --- 2. Parse with Reducto ---
@@ -1525,7 +1527,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         extracted_data = subject_properties[0] if subject_properties else {}
                         
                         print(f"   📍 Address: {address_data.get('original_address', 'N/A')}")
-                        print(f"   🏢 Business: {business_id}")
+                        print(f"   🏢 Business: {business_uuid}")
                         print(f"   📄 Document: {document_id}")
                         print(f"   🏠 Extracted data: {len(extracted_data)} fields")
                         
@@ -1533,7 +1535,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         hub_result = property_hub_service.create_property_with_relationships(
                             address_data=address_data,
                             document_id=str(document_id),
-                            business_id=business_id,
+                            business_id=business_uuid,
                             extracted_data=extracted_data
                         )
                         
@@ -1615,13 +1617,13 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 print(f"   First property address: {subject_properties[0].get('property_address', 'N/A')}")
                 print(f"   First property type: {subject_properties[0].get('property_type', 'N/A')}")
             print(f"   property_uuids: {property_uuids}")
-            print(f"   business_id: {business_id}")
+            print(f"   business_id: {business_uuid}")
             print(f"   document_id: {document_id}")
             
             # Store in Supabase - use correct key for the storage function
             supabase_success = store_extracted_properties_in_supabase(
                 {"subject_property": subject_properties[0] if subject_properties else None}, 
-                        business_id,
+                        business_uuid,
                 document_id, 
                 property_uuids, 
                 geocoding_map
@@ -1741,7 +1743,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Prepare metadata
                         metadata = {
-                            'business_id': business_id,
+                            'business_id': business_uuid,
                             'document_id': str(document_id),
                             'property_id': str(property_uuids[0]) if property_uuids else None,
                             'classification_type': classification_type or 'valuation_report',
@@ -1790,7 +1792,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Prepare metadata for property vector
                         metadata = {
-                            'business_id': business_id,
+                            'business_id': business_uuid,
                             'property_id': str(property_uuid),
                             'property_address': prop.get('property_address', ''),
                             'address_hash': None,  # Will be computed if needed

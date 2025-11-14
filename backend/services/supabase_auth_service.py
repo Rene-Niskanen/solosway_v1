@@ -2,6 +2,7 @@ import os
 from supabase import create_client
 from werkzeug.security import check_password_hash
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -63,3 +64,40 @@ class SupabaseAuthService:
         except Exception as e:
             logger.error(f"Error updating user in Supabase: {e}")
             return None
+
+    # Business mapping helpers -------------------------------------------------
+    def get_business_uuid(self, legacy_id: str) -> str | None:
+        """Lookup business UUID from mapping table."""
+        if not legacy_id:
+            return None
+        try:
+            result = (
+                self.supabase
+                .table('business_id_map')
+                .select('uuid_id')
+                .eq('legacy_id', legacy_id)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0]['uuid_id']
+        except Exception as e:
+            logger.error(f"Error fetching business UUID for {legacy_id}: {e}")
+        return None
+
+    def ensure_business_uuid(self, legacy_id: str) -> str:
+        """Get or create a business UUID for the given legacy identifier."""
+        existing = self.get_business_uuid(legacy_id)
+        if existing:
+            return existing
+
+        new_uuid = str(uuid.uuid4())
+        try:
+            self.supabase.table('business_id_map').insert({
+                'legacy_id': legacy_id,
+                'uuid_id': new_uuid
+            }).execute()
+            return new_uuid
+        except Exception as e:
+            logger.error(f"Error creating business UUID for {legacy_id}: {e}")
+            return new_uuid
