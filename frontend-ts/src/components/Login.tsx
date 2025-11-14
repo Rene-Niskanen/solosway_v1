@@ -67,7 +67,7 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           <p className="text-gray-600">Sign in to access your property data</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-6" autoComplete="off" data-lpignore="true" data-form-type="other">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
               Email Address
@@ -99,6 +99,9 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               placeholder="Enter your password"
               disabled={isLoading}
+              autoComplete="current-password"
+              data-form-type="other"
+              data-lpignore="true"
             />
           </div>
 

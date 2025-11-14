@@ -1,10 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowUp, Copy, ThumbsUp, ThumbsDown, Check, ArrowLeft, X, ChevronRight } from "lucide-react";
+import { ArrowUp, Copy, ThumbsUp, ThumbsDown, Check, ArrowLeft, X, ChevronRight, Mic } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
+import { FileAttachment, FileAttachmentData } from './FileAttachment';
+import { DocumentPreviewModal } from './DocumentPreviewModal';
+import { toast } from "@/hooks/use-toast";
 import PropertyResultsDisplay from './PropertyResultsDisplay';
 import { SquareMap } from './SquareMap';
 // Import the same mock data that the map view uses
@@ -212,17 +215,26 @@ export interface ChatInterfaceProps {
 const smoothEasing = [0.4, 0, 0.2, 1] as const;
 const snapEasing = [0.6, 0, 0.4, 1] as const;
 const preciseEasing = [0.25, 0.1, 0.25, 1] as const;
-export default function ChatInterface({
+const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatInterfaceProps>(({
   initialQuery = "",
   onBack,
   onMessagesUpdate,
   className,
   loadedMessages,
   isFromHistory = false
-}: ChatInterfaceProps) {
+}, ref) => {
+  console.log('🎯 ChatInterface component rendering/mounting');
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
+  const MAX_FILES = 4;
+  const [isMultiLine, setIsMultiLine] = useState(false);
+  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  
+  // Determine if we should use rounded corners (when there's content or attachment)
+  const hasContent = inputValue.trim().length > 0 || attachedFiles.length > 0;
   const [isInitialized, setIsInitialized] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [likedMessages, setLikedMessages] = useState<Set<string>>(new Set());
@@ -240,7 +252,7 @@ export default function ChatInterface({
     priceRange?: { min?: number; max?: number };
   }>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   // Sleek and smooth scroll function that ensures the full response is visible
@@ -734,9 +746,59 @@ export default function ChatInterface({
       setIsTyping(false);
     }
   };
+  const handleFileUpload = useCallback((file: File) => {
+    console.log('📎 ChatInterface: handleFileUpload called with file:', file.name);
+    
+    // Check if we've reached the maximum number of files
+    if (attachedFiles.length >= MAX_FILES) {
+      console.warn(`⚠️ Maximum of ${MAX_FILES} files allowed`);
+      toast({
+        description: `Maximum of ${MAX_FILES} files allowed. Please remove a file before adding another.`,
+        duration: 3000,
+      });
+      return;
+    }
+    
+    const fileData: FileAttachmentData = {
+      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      file,
+      name: file.name,
+      type: file.type,
+      size: file.size
+    };
+    setAttachedFiles(prev => [...prev, fileData]);
+    console.log('✅ ChatInterface: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
+  }, [attachedFiles.length]);
+
+  // Expose handleFileDrop via ref for drag-and-drop
+  useImperativeHandle(ref, () => {
+    console.log('🔗 ChatInterface: useImperativeHandle called, exposing handleFileDrop');
+    const exposed = {
+      handleFileDrop: handleFileUpload
+    };
+    console.log('🔗 ChatInterface: Exposed object:', exposed);
+    return exposed;
+  }, [handleFileUpload]);
+
+  // Verify ref is set after mount
+  useEffect(() => {
+    if (ref && typeof ref !== 'function') {
+      console.log('✅ ChatInterface: Ref is available after mount:', !!ref.current);
+    }
+  }, [ref]);
+
+  const handleRemoveFile = (id: string) => {
+    setAttachedFiles(prev => prev.filter(file => file.id !== id));
+    // If the removed file is being previewed, close the preview modal
+    if (previewFile?.id === id) {
+      setIsPreviewOpen(false);
+      setPreviewFile(null);
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim() || isTyping) return;
+    if ((!inputValue.trim() && attachedFiles.length === 0) || isTyping) return;
     
     try {
     
@@ -751,12 +813,27 @@ export default function ChatInterface({
       id: `user-${Date.now()}`,
       content: submittedText,
       role: 'user',
-      timestamp: new Date()
+      timestamp: new Date(),
+      // TODO: Include file attachment when backend is ready
+      // attachedFile: attachedFile ? {
+      //   id: attachedFile.id,
+      //   name: attachedFile.name,
+      //   type: attachedFile.type,
+      //   size: attachedFile.size
+      // } : undefined
     };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     onMessagesUpdate?.(newMessages);
     setInputValue("");
+    setAttachedFiles([]);
+    setIsMultiLine(false);
+    
+    // Reset textarea height after sending
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+      inputRef.current.style.height = '24px';
+    }
     setIsTyping(true);
     
     // Scroll to bottom after user message
@@ -935,18 +1012,26 @@ export default function ChatInterface({
     setInlineMapMessageId(null);
   };
 
-  return (<motion.div initial={{
-    opacity: 0,
-    y: 4
-  }} animate={{
-    opacity: 1,
-    y: 0
-  }} transition={{
-    duration: 0.2,
-    ease: smoothEasing
-  }} className={`fixed inset-0 flex flex-col h-screen w-screen relative ${className || ''}`}>
-      {/* Fullscreen Chat Container - Plain White Background */}
-      <div className="w-screen h-screen relative overflow-hidden">
+  return (
+    <>
+      <motion.div 
+        data-chat-interface="true"
+        initial={{
+          opacity: 0,
+          y: 4
+        }} 
+        animate={{
+          opacity: 1,
+          y: 0
+        }} 
+        transition={{
+          duration: 0.2,
+          ease: smoothEasing
+        }} 
+        className={`fixed inset-0 flex flex-col h-screen w-screen relative ${className || ''}`}
+      >
+        {/* Fullscreen Chat Container - Plain White Background */}
+        <div className="w-screen h-screen relative overflow-hidden">
         {/* White Background */}
         <div className="absolute inset-0 bg-white">
         </div>
@@ -972,7 +1057,7 @@ export default function ChatInterface({
           }}
         >
           {/* Centered Content Container */}
-          <div className="max-w-3xl mx-auto px-4 space-y-6">
+          <div className="max-w-7xl mx-auto px-4 space-y-6">
           <AnimatePresence initial={false}>
             {messages.map((message, index) => {
               // Check if this is a property-related assistant message
@@ -1087,7 +1172,7 @@ export default function ChatInterface({
                     delay: 0.15,
                     ease: smoothEasing
                   }} className="flex justify-start pl-4">
-                    <div className="w-full max-w-2xl">
+                    <div className="w-full">
                       <PropertyResultsDisplay 
                         properties={currentPropertyResults} 
                         onMapButtonClick={() => handleMapButtonClick(message.id)}
@@ -1219,107 +1304,226 @@ export default function ChatInterface({
           <div className="max-w-3xl mx-auto">
           <form onSubmit={handleSendMessage} className="relative">
               <motion.div 
-                className="relative flex items-center rounded-full px-6 py-2"
+                layout
+                className="relative flex flex-col"
                 style={{
                   background: '#ffffff',
-                  borderRadius: '9999px',
                   border: '1px solid #E5E7EB',
-                  boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)'
+                  boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                  paddingTop: '8px',
+                  paddingBottom: '8px',
+                  paddingRight: '24px',
+                  willChange: 'border-radius, padding-left',
+                  borderRadius: hasContent
+                    ? '12px' // ChatGPT-style rounded corners when there's content or attachment
+                    : '9999px' // Fully rounded when no content
+                }}
+                animate={{
+                  paddingLeft: attachedFiles.length > 0 ? '20px' : '32px',
+                  borderRadius: hasContent
+                    ? '12px' // ChatGPT-style rounded corners when there's content or attachment
+                    : '9999px' // Fully rounded when no content
+                }}
+                transition={{ 
+                  paddingLeft: {
+                    duration: 0.3,
+                    ease: [0.4, 0, 0.2, 1]
+                  },
+                  borderRadius: {
+                    duration: 0.25,
+                    ease: [0.4, 0, 0.2, 1]
+                  },
+                  layout: {
+                    duration: 0.3,
+                    ease: [0.4, 0, 0.2, 1]
+                  }
                 }}
               >
-              <div className="flex-1 relative">
-                <motion.input 
-                  ref={inputRef} 
-                  type="text" 
-                  value={inputValue} 
-                  onChange={e => setInputValue(e.target.value)} 
-                  onFocus={() => {
-                    setIsInputActivated(true);
-                    setIsFocused(true);
-                  }}
-                  onBlur={() => setIsFocused(false)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      if (inputValue.trim() && !isTyping) {
-                        handleSendMessage(e as any);
-                      }
-                    }
-                  }} 
-                  placeholder="Ask anything..." 
-                  className="w-full bg-transparent focus:outline-none text-lg font-normal text-slate-700 placeholder:text-slate-400"
-                  autoComplete="off"
-                  disabled={isTyping} 
-                />
-              </div>
+              {/* File Attachments Display - Inside chat input container, top-left */}
+              <AnimatePresence mode="wait">
+                {attachedFiles.length > 0 && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ 
+                      duration: 0.1,
+                      ease: "easeOut"
+                    }}
+                    className="mb-4 flex flex-wrap gap-2 justify-start"
+                    layout={false}
+                  >
+                    {attachedFiles.map((file) => (
+                      <FileAttachment
+                        key={file.id}
+                        attachment={file}
+                        onRemove={handleRemoveFile}
+                        onPreview={(file) => {
+                          setPreviewFile(file);
+                          setIsPreviewOpen(true);
+                        }}
+                      />
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
               
-              <div className="flex items-center space-x-3 ml-4">
+              {/* Input row */}
+              <div className={`relative flex ${isMultiLine ? 'items-start' : 'items-end'}`}>
+                <div className={`flex-1 relative flex ${isMultiLine ? 'items-start' : 'items-end'} min-h-[24px]`} style={{ marginBottom: isMultiLine ? '8px' : '0px' }}>
+                  <motion.textarea 
+                    layout={false}
+                    ref={inputRef} 
+                    value={inputValue} 
+                    onChange={e => {
+                      const value = e.target.value;
+                      setInputValue(value);
+                      
+                      // Auto-resize textarea
+                      if (inputRef.current) {
+                        inputRef.current.style.height = 'auto';
+                        const scrollHeight = inputRef.current.scrollHeight;
+                        const maxHeight = 350; // Max height in pixels (similar to ChatGPT)
+                        inputRef.current.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
+                        inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+                        
+                        // Check if text is multi-line (threshold: ~2 lines = ~44px with 22px line-height)
+                        const threshold = 44;
+                        setIsMultiLine(scrollHeight > threshold);
+                        
+                        // Reset if text is cleared
+                        if (!value.trim()) {
+                          setIsMultiLine(false);
+                        }
+                      }
+                    }} 
+                    onFocus={() => {
+                      setIsInputActivated(true);
+                      setIsFocused(true);
+                    }}
+                    onBlur={() => setIsFocused(false)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        if ((inputValue.trim() || attachedFiles.length > 0) && !isTyping) {
+                          handleSendMessage(e as any);
+                        }
+                      }
+                    }} 
+                    placeholder="Ask anything..." 
+                    className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-thumb]:rounded-full"
+                    style={{
+                      minHeight: '24px',
+                      maxHeight: '350px',
+                      fontSize: '16px',
+                      lineHeight: '22px',
+                      paddingTop: '0px',
+                      paddingBottom: '10px',
+                      paddingRight: '12px',
+                      scrollbarWidth: 'thin',
+                      scrollbarColor: '#D1D5DB transparent',
+                      verticalAlign: 'baseline'
+                    }}
+                    autoComplete="off"
+                    disabled={isTyping}
+                    rows={1}
+                  />
+                </div>
+                
+                <div className="flex items-end space-x-3 ml-4 self-end">
                 <ImageUploadButton
                   onImageUpload={(query) => {
                     setInputValue(query);
                     handleSendMessage({ preventDefault: () => {} } as any);
                   }}
+                  onFileUpload={handleFileUpload}
                   size="md"
                 />
                 
-                <motion.button 
-                  type="submit" 
-                  onClick={handleSendMessage} 
-                  className={`flex items-center justify-center relative ${!isTyping ? '' : 'cursor-not-allowed'}`}
-                  style={{
-                    width: '32px',
-                    height: '32px',
-                    minWidth: '32px',
-                    minHeight: '32px',
-                    borderRadius: '50%'
-                  }}
-                  animate={{
-                    backgroundColor: inputValue.trim() ? '#415C85' : 'transparent'
-                  }}
-                  disabled={isTyping}
-                  whileHover={!isTyping && inputValue.trim() ? { 
-                    scale: 1.05
-                  } : {}}
-                  whileTap={!isTyping && inputValue.trim() ? { 
-                    scale: 0.95
-                  } : {}}
-                  transition={{
-                    duration: 0.2,
-                    ease: [0.16, 1, 0.3, 1]
-                  }}
+                {/* Voice/Microphone Button */}
+                <motion.button
+                  type="button"
+                  className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors"
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.9 }}
+                  title="Voice input"
                 >
-                  <motion.div
-                    key="chevron-right"
-                    initial={{ opacity: 1 }}
-                    animate={{ opacity: inputValue.trim() ? 0 : 1 }}
-                    transition={{
-                      duration: 0.2,
-                      ease: [0.16, 1, 0.3, 1]
-                    }}
-                    className="absolute inset-0 flex items-center justify-center"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
-                  </motion.div>
-                  <motion.div
-                    key="arrow-up"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: inputValue.trim() ? 1 : 0 }}
-                    transition={{
-                      duration: 0.2,
-                      ease: [0.16, 1, 0.3, 1]
-                    }}
-                    className="absolute inset-0 flex items-center justify-center"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
-                  </motion.div>
+                  <Mic className="w-[18px] h-[18px]" strokeWidth={1.5} />
                 </motion.button>
+                
+                  <motion.button 
+                    type="submit" 
+                    onClick={handleSendMessage} 
+                    className={`flex items-center justify-center relative ${!isTyping ? '' : 'cursor-not-allowed'}`}
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      minWidth: '32px',
+                      minHeight: '32px',
+                      borderRadius: '50%'
+                    }}
+                    animate={{
+                      backgroundColor: (inputValue.trim() || attachedFiles.length > 0) ? '#415C85' : 'transparent'
+                    }}
+                    disabled={isTyping || (!inputValue.trim() && attachedFiles.length === 0)}
+                    whileHover={(!isTyping && (inputValue.trim() || attachedFiles.length > 0)) ? { 
+                      scale: 1.05
+                    } : {}}
+                    whileTap={(!isTyping && (inputValue.trim() || attachedFiles.length > 0)) ? { 
+                      scale: 0.95
+                    } : {}}
+                    transition={{
+                      duration: 0.2,
+                      ease: [0.16, 1, 0.3, 1]
+                    }}
+                  >
+                    <motion.div
+                      key="chevron-right"
+                      initial={{ opacity: 1 }}
+                      animate={{ opacity: (inputValue.trim() || attachedFiles.length > 0) ? 0 : 1 }}
+                      transition={{
+                        duration: 0.2,
+                        ease: [0.16, 1, 0.3, 1]
+                      }}
+                      className="absolute inset-0 flex items-center justify-center"
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                    </motion.div>
+                    <motion.div
+                      key="arrow-up"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: (inputValue.trim() || attachedFiles.length > 0) ? 1 : 0 }}
+                      transition={{
+                        duration: 0.2,
+                        ease: [0.16, 1, 0.3, 1]
+                      }}
+                      className="absolute inset-0 flex items-center justify-center"
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                    </motion.div>
+                  </motion.button>
+                </div>
               </div>
             </motion.div>
           </form>
           </div>
         </div>
-    </motion.div>
+      </motion.div>
+      {/* Document Preview Modal */}
+      <DocumentPreviewModal
+        file={previewFile}
+        isOpen={isPreviewOpen}
+        onClose={() => {
+          setIsPreviewOpen(false);
+          setPreviewFile(null);
+        }}
+      />
+    </>
   );
-}
+});
+
+ChatInterface.displayName = 'ChatInterface';
+
+export default ChatInterface;

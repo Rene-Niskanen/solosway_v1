@@ -6,27 +6,30 @@ import { Paperclip } from "lucide-react";
 
 export interface ImageUploadButtonProps {
   onImageUpload?: (searchQuery: string) => void;
+  onFileUpload?: (file: File) => void;
   className?: string;
   size?: 'sm' | 'md' | 'lg';
 }
 
 export const ImageUploadButton = ({
   onImageUpload,
+  onFileUpload,
   className = "",
   size = 'md'
 }: ImageUploadButtonProps) => {
   const [isImageModalOpen, setIsImageModalOpen] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const sizeClasses = {
-    sm: 'w-8 h-8',
-    md: 'w-8 h-8', 
-    lg: 'w-8 h-8'
+    sm: 'w-7 h-7',
+    md: 'w-7 h-7', 
+    lg: 'w-7 h-7'
   };
 
   const iconSizes = {
-    sm: 'w-5 h-5',
-    md: 'w-5 h-5',
-    lg: 'w-5 h-5'
+    sm: 'w-[18px] h-[18px]',
+    md: 'w-[18px] h-[18px]',
+    lg: 'w-[18px] h-[18px]'
   };
 
   const handleImageProcessed = (searchQuery: string) => {
@@ -36,12 +39,39 @@ export const ImageUploadButton = ({
     setIsImageModalOpen(false);
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && onFileUpload) {
+      onFileUpload(file);
+    }
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleButtonClick = () => {
+    // If onFileUpload is provided, use file input; otherwise use image modal
+    if (onFileUpload) {
+      fileInputRef.current?.click();
+    } else {
+      setIsImageModalOpen(true);
+    }
+  };
+
   return (
     <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="*/*"
+        onChange={handleFileSelect}
+        className="hidden"
+      />
       <motion.button
         type="button"
-        onClick={() => setIsImageModalOpen(true)}
-        className={`flex items-center justify-center transition-all duration-200 text-slate-600 hover:text-green-500 ${sizeClasses[size]} ${className}`}
+        onClick={handleButtonClick}
+        className={`flex items-center justify-center transition-all duration-200 text-black hover:text-gray-700 ${sizeClasses[size]} ${className}`}
         whileHover={{ 
           scale: 1.08,
           x: 1
@@ -50,7 +80,7 @@ export const ImageUploadButton = ({
           scale: 0.9,
           x: -1
         }}
-        title="Upload property screenshot"
+        title={onFileUpload ? "Upload file" : "Upload property screenshot"}
       >
         <Paperclip className={iconSizes[size]} strokeWidth={1.5} />
       </motion.button>

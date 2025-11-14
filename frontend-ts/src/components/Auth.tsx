@@ -244,7 +244,7 @@ const Auth: React.FC = () => {
             </h1>
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-8">
+          <form onSubmit={handleSubmit} className="space-y-8" autoComplete="off" data-lpignore="true" data-form-type="other">
             {/* Error Message */}
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
@@ -351,10 +351,12 @@ const Auth: React.FC = () => {
                   style={{ transition: 'none', WebkitTapHighlightColor: 'transparent' }}
                   placeholder="Password"
                   disabled={loading}
-                  autoComplete="off"
+                  autoComplete={isLoginMode ? "current-password" : "new-password"}
                   autoCorrect="off"
                   autoCapitalize="off"
                   spellCheck="false"
+                  data-form-type="other"
+                  data-lpignore="true"
                 />
               </div>
             </div>
@@ -379,10 +381,12 @@ const Auth: React.FC = () => {
                   style={{ transition: 'none', WebkitTapHighlightColor: 'transparent' }}
                   placeholder="Confirm password"
                   disabled={loading}
-                  autoComplete="off"
+                  autoComplete="new-password"
                   autoCorrect="off"
                   autoCapitalize="off"
                   spellCheck="false"
+                  data-form-type="other"
+                  data-lpignore="true"
                 />
               </div>
             </div>
