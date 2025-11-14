@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { File, CloudUpload, X, Upload, FileText, MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
+import { PropertyFilesModal } from './PropertyFilesModal';
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -33,6 +34,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const summaryRef = useRef<HTMLParagraphElement>(null);
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
+  const [modalPosition, setModalPosition] = useState<{ top: number; left: number } | undefined>();
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
+  const [hasFilesFetched, setHasFilesFetched] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
 
   // Load documents when property changes
   useEffect(() => {
@@ -260,15 +267,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const yieldPercentage = calculateYield();
   const lettingInfo = getLettingInfo();
 
+  // Get property ID
+  const propertyId = property?.id?.toString() || property?.property_id?.toString();
+
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 20 }}
-        className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
-        data-property-panel
-      >
+    <>
+      <AnimatePresence>
+        <motion.div
+          ref={panelRef}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 20 }}
+          className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
+          data-property-panel
+        >
         {/* Card Container - Modern White Card */}
         <motion.div 
           className="bg-white rounded-xl shadow-xl flex flex-col overflow-hidden flex-1 border border-gray-100"
@@ -318,15 +330,42 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 {/* Action Buttons */}
                 <div className="flex gap-2 mb-6">
                 <button
+                  ref={viewFilesButtonRef}
                   onClick={() => {
-                    // TODO: Wire up view files functionality
-                    console.log('View Files clicked');
+                    if (isFilesModalOpen) {
+                      // Close the modal if it's already open
+                      setIsFilesModalOpen(false);
+                    } else {
+                      // Calculate position above the panel using viewport coordinates
+                      // Use requestAnimationFrame to ensure DOM is ready
+                      requestAnimationFrame(() => {
+                        if (panelRef.current) {
+                          const panelRect = panelRef.current.getBoundingClientRect();
+                          // Ensure modal doesn't go off-screen
+                          const modalWidth = 420; // Modal width (matches property card width)
+                          const viewportWidth = window.innerWidth;
+                          const leftPosition = Math.max(
+                            modalWidth / 2 + 10, // Minimum left position (10px padding)
+                            Math.min(
+                              panelRect.left + (panelRect.width / 2), // Center of panel
+                              viewportWidth - (modalWidth / 2) - 10 // Maximum right position
+                            )
+                          );
+                          
+                          setModalPosition({
+                            top: panelRect.top, // Top of the panel
+                            left: leftPosition // Center of the panel horizontally (constrained to viewport)
+                          });
+                          setIsFilesModalOpen(true);
+                        }
+                      });
+                    }
                   }}
                   className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
                 >
                   <div className="flex items-center justify-center gap-1.5">
                     <FileText className="w-4 h-4" />
-                    <span>View Files</span>
+                    <span>{isFilesModalOpen && hasFilesFetched ? 'Close Database' : 'View Files'}</span>
                   </div>
                 </button>
                 
@@ -450,7 +489,29 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             </div>
           </div>
         </motion.div>
-      </motion.div>
-    </AnimatePresence>
+        </motion.div>
+      </AnimatePresence>
+      
+      {/* Property Files Modal - Outside AnimatePresence to avoid key conflicts */}
+        {propertyId && (
+          <PropertyFilesModal
+            key={`files-modal-${propertyId}`}
+            propertyId={propertyId}
+            propertyAddress={property?.formatted_address || property?.address}
+            isOpen={isFilesModalOpen}
+            onClose={() => {
+              setIsFilesModalOpen(false);
+              setHasFilesFetched(false);
+            }}
+            position={modalPosition}
+            onLoadingStateChange={(isLoading, hasFetched) => {
+              setIsFilesLoading(isLoading);
+              setHasFilesFetched(hasFetched);
+            }}
+            isMapVisible={true}
+            isSidebarCollapsed={false}
+          />
+        )}
+    </>
   );
 };

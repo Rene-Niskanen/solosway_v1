@@ -1940,11 +1940,72 @@ export const MainContent = ({
     }
   }, []);
 
-  const handleDrop = React.useCallback((e: React.DragEvent) => {
+  const handleDrop = React.useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
     setDragCounter(0);
+
+    // Check if this is a property document drag
+    const propertyDocumentData = e.dataTransfer.getData('application/json');
+    if (propertyDocumentData) {
+      try {
+        const docData = JSON.parse(propertyDocumentData);
+        if (docData.type === 'property-document' && docData.downloadUrl) {
+          console.log('📁 Property document dropped:', docData.filename);
+          
+          // Fetch the file from the backend
+          const response = await fetch(docData.downloadUrl, {
+            credentials: 'include'
+          });
+          
+          if (response.ok) {
+            const blob = await response.blob();
+            const file = new File([blob], docData.filename, { type: docData.fileType || 'application/pdf' });
+            
+            console.log('✅ Property document fetched:', file.name, file.size, 'bytes');
+            
+            // Pass to chat or search bar - check mode first, then refs
+            if (isInChatMode && chatInterfaceRef.current) {
+              console.log('📤 Passing property document to ChatInterface');
+              try {
+                chatInterfaceRef.current.handleFileDrop(file);
+                console.log('✅ Property document successfully passed to ChatInterface');
+              } catch (err) {
+                console.error('❌ Error passing file to ChatInterface:', err);
+                // Fallback: store for later
+                pendingFileDropRef.current = file;
+                setHasPendingFile(true);
+              }
+            } else if (!isInChatMode && searchBarRef.current) {
+              console.log('📤 Passing property document to SearchBar');
+              try {
+                searchBarRef.current.handleFileDrop(file);
+                console.log('✅ Property document successfully passed to SearchBar');
+              } catch (err) {
+                console.error('❌ Error passing file to SearchBar:', err);
+                // Fallback: store for later
+                pendingFileDropRef.current = file;
+                setHasPendingFile(true);
+              }
+            } else {
+              console.log('📦 Storing property document for later (refs not ready)', {
+                isInChatMode,
+                hasChatRef: !!chatInterfaceRef.current,
+                hasSearchRef: !!searchBarRef.current
+              });
+              pendingFileDropRef.current = file;
+              setHasPendingFile(true); // Trigger the polling mechanism
+            }
+          } else {
+            console.error('❌ Failed to fetch property document:', response.status, response.statusText);
+          }
+          return;
+        }
+      } catch (err) {
+        console.error('Error parsing property document data:', err);
+      }
+    }
 
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
@@ -2031,38 +2092,76 @@ export const MainContent = ({
     }
   }, [currentView, isInChatMode]);
 
-  // Process pending file drop when refs become available
-  React.useEffect(() => {
-    if (pendingFileDropRef.current) {
-      const pendingFile = pendingFileDropRef.current;
-      console.log('🔄 Checking for pending file drop:', pendingFile.name, { 
-        refsReady, 
-        hasChatRef: !!chatInterfaceRef.current, 
-        hasSearchRef: !!searchBarRef.current 
-      });
-      
-      if (chatInterfaceRef.current) {
-        console.log('📤 Processing pending file in ChatInterface');
-        chatInterfaceRef.current.handleFileDrop(pendingFile);
-        pendingFileDropRef.current = null;
-        setHasPendingFile(false);
-      } else if (searchBarRef.current) {
-        console.log('📤 Processing pending file in SearchBar');
-        searchBarRef.current.handleFileDrop(pendingFile);
-        pendingFileDropRef.current = null;
-        setHasPendingFile(false);
-      }
-    }
-  }, [refsReady, isInChatMode, currentView]);
-  
   // Poll for refs to become available (fallback mechanism)
   const [hasPendingFile, setHasPendingFile] = React.useState(false);
   
+  // Process pending file drop when refs become available
+  React.useEffect(() => {
+    if (pendingFileDropRef.current && (chatInterfaceRef.current || searchBarRef.current)) {
+      const pendingFile = pendingFileDropRef.current;
+      console.log('🔄 Processing pending file drop:', pendingFile.name, { 
+        refsReady, 
+        hasChatRef: !!chatInterfaceRef.current, 
+        hasSearchRef: !!searchBarRef.current,
+        isInChatMode,
+        currentView
+      });
+      
+      // Check mode first, then appropriate ref
+      if (isInChatMode && chatInterfaceRef.current) {
+        console.log('📤 Processing pending file in ChatInterface');
+        try {
+          chatInterfaceRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in ChatInterface');
+        } catch (err) {
+          console.error('❌ Error processing pending file in ChatInterface:', err);
+        }
+      } else if (!isInChatMode && searchBarRef.current) {
+        console.log('📤 Processing pending file in SearchBar');
+        try {
+          searchBarRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in SearchBar');
+        } catch (err) {
+          console.error('❌ Error processing pending file in SearchBar:', err);
+        }
+      } else if (chatInterfaceRef.current) {
+        // Fallback: if chat ref is available, use it
+        console.log('📤 Processing pending file in ChatInterface (fallback)');
+        try {
+          chatInterfaceRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
+        } catch (err) {
+          console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
+        }
+      } else if (searchBarRef.current) {
+        // Fallback: if search ref is available, use it
+        console.log('📤 Processing pending file in SearchBar (fallback)');
+        try {
+          searchBarRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ Pending file successfully processed in SearchBar (fallback)');
+        } catch (err) {
+          console.error('❌ Error processing pending file in SearchBar (fallback):', err);
+        }
+      }
+    }
+  }, [refsReady, isInChatMode, currentView, hasPendingFile]);
+  
   React.useEffect(() => {
     if (hasPendingFile && pendingFileDropRef.current) {
+      console.log('🔄 Starting polling for pending file:', pendingFileDropRef.current.name);
+      
       const interval = setInterval(() => {
         const pendingFile = pendingFileDropRef.current;
         if (!pendingFile) {
+          console.log('✅ Pending file cleared, stopping polling');
           setHasPendingFile(false);
           clearInterval(interval);
           return;
@@ -2070,21 +2169,58 @@ export const MainContent = ({
         
         console.log('🔄 Polling for refs:', { 
           hasChatRef: !!chatInterfaceRef.current, 
-          hasSearchRef: !!searchBarRef.current 
+          hasSearchRef: !!searchBarRef.current,
+          isInChatMode,
+          currentView
         });
         
-        if (chatInterfaceRef.current) {
+        // Check mode first, then appropriate ref
+        if (isInChatMode && chatInterfaceRef.current) {
           console.log('📤 Processing pending file in ChatInterface (via polling)');
-          chatInterfaceRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          clearInterval(interval);
-        } else if (searchBarRef.current) {
+          try {
+            chatInterfaceRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in ChatInterface');
+          } catch (err) {
+            console.error('❌ Error processing pending file in ChatInterface:', err);
+          }
+        } else if (!isInChatMode && searchBarRef.current) {
           console.log('📤 Processing pending file in SearchBar (via polling)');
-          searchBarRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          clearInterval(interval);
+          try {
+            searchBarRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in SearchBar');
+          } catch (err) {
+            console.error('❌ Error processing pending file in SearchBar:', err);
+          }
+        } else if (chatInterfaceRef.current) {
+          // Fallback: if chat ref is available, use it
+          console.log('📤 Processing pending file in ChatInterface (fallback)');
+          try {
+            chatInterfaceRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
+          } catch (err) {
+            console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
+          }
+        } else if (searchBarRef.current) {
+          // Fallback: if search ref is available, use it
+          console.log('📤 Processing pending file in SearchBar (fallback)');
+          try {
+            searchBarRef.current.handleFileDrop(pendingFile);
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
+            clearInterval(interval);
+            console.log('✅ Pending file successfully processed in SearchBar (fallback)');
+          } catch (err) {
+            console.error('❌ Error processing pending file in SearchBar (fallback):', err);
+          }
         }
       }, 100); // Check every 100ms
       
@@ -2092,7 +2228,7 @@ export const MainContent = ({
       const timeout = setTimeout(() => {
         clearInterval(interval);
         if (pendingFileDropRef.current) {
-          console.warn('⚠️ Pending file drop timed out after 5 seconds');
+          console.warn('⚠️ Pending file drop timed out after 5 seconds:', pendingFileDropRef.current.name);
           pendingFileDropRef.current = null;
           setHasPendingFile(false);
         }
@@ -2103,7 +2239,7 @@ export const MainContent = ({
         clearTimeout(timeout);
       };
     }
-  }, [hasPendingFile]);
+  }, [hasPendingFile, isInChatMode, currentView]);
 
   // Calculate left margin based on sidebar state
   // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed

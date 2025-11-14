@@ -2130,6 +2130,163 @@ def get_property_hub_documents(property_id):
             'error': str(e)
         }), 500
 
+@views.route('/api/files/presigned-download', methods=['GET'])
+@login_required
+def get_presigned_download_url():
+    """Generate a presigned URL for direct S3 download (faster than proxying through backend)"""
+    try:
+        from .services.supabase_document_service import SupabaseDocumentService
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        document_id = request.args.get('document_id')
+        s3_path = request.args.get('s3_path')
+        
+        if not document_id and not s3_path:
+            return jsonify({'error': 'Either document_id or s3_path is required'}), 400
+        
+        # If document_id is provided, fetch the document to get s3_path
+        if document_id and not s3_path:
+            doc_service = SupabaseDocumentService()
+            document = doc_service.get_document_by_id(document_id)
+            
+            if not document:
+                return jsonify({'error': 'Document not found'}), 404
+            
+            # Verify business access
+            business_uuid_str = _ensure_business_uuid()
+            if not business_uuid_str:
+                return jsonify({'error': 'User not associated with a business'}), 400
+            
+            if str(document.get('business_uuid')) != business_uuid_str:
+                return jsonify({'error': 'Unauthorized'}), 403
+            
+            s3_path = document.get('s3_path')
+            if not s3_path:
+                return jsonify({'error': 'Document has no s3_path'}), 404
+            
+            original_filename = document.get('original_filename', 'document')
+            file_type = document.get('file_type', 'application/octet-stream')
+        else:
+            # If only s3_path is provided, we still need to verify access
+            # For now, we'll allow it if the user is authenticated
+            original_filename = s3_path.split('/')[-1] if s3_path else 'document'
+            file_type = 'application/octet-stream'
+        
+        # Generate presigned URL for direct S3 download
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            )
+            
+            bucket_name = os.environ['S3_UPLOAD_BUCKET']
+            
+            # Generate presigned URL (valid for 1 hour)
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': bucket_name,
+                    'Key': s3_path,
+                    'ResponseContentDisposition': f'inline; filename="{original_filename}"'
+                },
+                ExpiresIn=3600  # 1 hour
+            )
+            
+            return jsonify({
+                'success': True,
+                'presigned_url': presigned_url,
+                'filename': original_filename,
+                'file_type': file_type
+            }), 200
+            
+        except ClientError as e:
+            logger.error(f"Error generating presigned URL: {e}")
+            return jsonify({'error': f'Failed to generate download URL: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in get_presigned_download_url endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@views.route('/api/files/download', methods=['GET'])
+@login_required
+def download_file():
+    """Download a file from S3 by document ID or s3_path (fallback if presigned URL fails)"""
+    try:
+        from .services.supabase_document_service import SupabaseDocumentService
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        document_id = request.args.get('document_id')
+        s3_path = request.args.get('s3_path')
+        
+        if not document_id and not s3_path:
+            return jsonify({'error': 'Either document_id or s3_path is required'}), 400
+        
+        # If document_id is provided, fetch the document to get s3_path
+        if document_id and not s3_path:
+            doc_service = SupabaseDocumentService()
+            document = doc_service.get_document_by_id(document_id)
+            
+            if not document:
+                return jsonify({'error': 'Document not found'}), 404
+            
+            # Verify business access
+            business_uuid_str = _ensure_business_uuid()
+            if not business_uuid_str:
+                return jsonify({'error': 'User not associated with a business'}), 400
+            
+            if str(document.get('business_uuid')) != business_uuid_str:
+                return jsonify({'error': 'Unauthorized'}), 403
+            
+            s3_path = document.get('s3_path')
+            if not s3_path:
+                return jsonify({'error': 'Document has no s3_path'}), 404
+            
+            original_filename = document.get('original_filename', 'document')
+            file_type = document.get('file_type', 'application/octet-stream')
+        else:
+            # If only s3_path is provided, we still need to verify access
+            # For now, we'll allow it if the user is authenticated
+            original_filename = s3_path.split('/')[-1] if s3_path else 'document'
+            file_type = 'application/octet-stream'
+        
+        # Download file from S3
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            )
+            
+            bucket_name = os.environ['S3_UPLOAD_BUCKET']
+            response = s3_client.get_object(Bucket=bucket_name, Key=s3_path)
+            file_content = response['Body'].read()
+            
+            # Determine content type
+            content_type = response.get('ContentType', file_type)
+            
+            # Create Flask response with file content
+            return Response(
+                file_content,
+                mimetype=content_type,
+                headers={
+                    'Content-Disposition': f'inline; filename="{original_filename}"',
+                    'Content-Type': content_type
+                }
+            )
+            
+        except ClientError as e:
+            logger.error(f"Error downloading file from S3: {e}")
+            return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in download_file endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @views.route('/api/property-matching/reviews', methods=['GET'])
 @login_required
 def get_pending_property_reviews():

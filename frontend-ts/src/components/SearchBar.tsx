@@ -146,6 +146,27 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
     }
   }, [resetTrigger]);
   
+  // Close preview modal when leaving map view
+  // This ensures preview doesn't persist when switching to dashboard/home
+  const prevIsMapVisibleRef = useRef(isMapVisible);
+  useEffect(() => {
+    const prevIsMapVisible = prevIsMapVisibleRef.current;
+    const hasViewChanged = prevIsMapVisible !== isMapVisible;
+    prevIsMapVisibleRef.current = isMapVisible;
+    
+    // Only close preview when leaving map view (going from map to dashboard)
+    // Don't close when entering map view or if preview isn't open
+    if (hasViewChanged && prevIsMapVisible === true && !isMapVisible && isPreviewOpen) {
+      // Use a small timeout to allow view transition to start smoothly
+      const timeoutId = setTimeout(() => {
+        setIsPreviewOpen(false);
+        setPreviewFile(null);
+      }, 100);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isMapVisible, isPreviewOpen]);
+  
   // Cleanup timeouts on unmount
   useEffect(() => {
     return () => {
@@ -615,8 +636,14 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
-                      setPreviewFile(file);
-                      setIsPreviewOpen(true);
+                      // Toggle preview: if clicking the same file that's already previewed, close it
+                      if (previewFile?.id === file.id && isPreviewOpen) {
+                        setIsPreviewOpen(false);
+                        setPreviewFile(null);
+                      } else {
+                        setPreviewFile(file);
+                        setIsPreviewOpen(true);
+                      }
                     }}
                   />
                   ))}

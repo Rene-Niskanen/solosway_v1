@@ -256,27 +256,21 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             initial={{ 
               opacity: 0, 
               scale: 0.95, 
-              ...(isMapVisible 
-                ? { x: -20, y: -20 } 
-                : { x: '-50%', y: '-50%' }
-              )
+              x: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
+              y: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
             }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
-              ...(isMapVisible 
-                ? { x: 0, y: 0 } 
-                : { x: '-50%', y: '-50%' }
-              ),
+              x: isMapVisible ? 0 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
+              y: isMapVisible ? 0 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
               height: typeof modalHeight === 'number' ? `${modalHeight}px` : modalHeight,
             }}
             exit={{ 
               opacity: 0, 
               scale: 0.95, 
-              ...(isMapVisible 
-                ? { x: -20, y: -20 } 
-                : { x: '-50%', y: '-50%' }
-              )
+              x: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
+              y: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
             }}
             transition={{ 
               duration: 0.2,
@@ -306,13 +300,13 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                     maxWidth: '1152px',
                     maxHeight: '90vh',
                     zIndex: 50,
-                    // Transform is handled by Framer Motion animate prop for centering
+                    // Transform handled by CSS class .modal-centered to override Framer Motion
                     // For images, height is animated via Framer Motion, for PDFs use static height
                     ...(isImage ? {} : { height: typeof modalHeight === 'number' ? `${modalHeight}px` : modalHeight })
                   }
               )
             }}
-            className="flex flex-col bg-white rounded-lg shadow-2xl overflow-hidden"
+            className={`flex flex-col bg-white rounded-lg shadow-2xl overflow-hidden ${!isMapVisible ? 'modal-centered' : ''}`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Top Bar - File Name and Controls (Browser-like) */}

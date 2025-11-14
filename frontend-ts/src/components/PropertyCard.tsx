@@ -5,6 +5,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Upload, FileText } from "lucide-react";
 import { PropertyData } from './PropertyResultsDisplay';
+import { PropertyFilesModal } from './PropertyFilesModal';
 
 interface PropertyCardProps {
   property: PropertyData;
@@ -17,6 +18,12 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   onUpload,
   onViewFiles
 }) => {
+  const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
+  const [modalPosition, setModalPosition] = useState<{ top: number; left: number } | undefined>();
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
+  const [hasFilesFetched, setHasFilesFetched] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
   // Format price
   const formatPrice = (price: number) => {
     if (price >= 1000000) {
@@ -98,6 +105,9 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
       setIsTruncated(false);
     }
   }, [property.summary, isSummaryExpanded, isLong]);
+
+  // Get property ID - check multiple possible fields
+  const propertyId = (property as any).property_id || (property as any).id?.toString() || property.id?.toString();
 
   // Render expandable summary
   const renderSummary = () => {
@@ -263,12 +273,44 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           {/* Action Buttons */}
           <div className="flex gap-2 mb-6">
           <button
-            onClick={() => onViewFiles?.(property)}
+            ref={viewFilesButtonRef}
+            onClick={(e) => {
+              if (isFilesModalOpen) {
+                // Close the modal if it's already open
+                setIsFilesModalOpen(false);
+              } else {
+                // Calculate position above the card using viewport coordinates
+                // Use requestAnimationFrame to ensure DOM is ready
+                requestAnimationFrame(() => {
+                  if (cardRef.current) {
+                    const cardRect = cardRef.current.getBoundingClientRect();
+                    // Position modal above the card, centered horizontally
+                    // Ensure modal doesn't go off-screen
+                    const modalWidth = 420; // Modal width (matches property card width)
+                    const viewportWidth = window.innerWidth;
+                    const leftPosition = Math.max(
+                      modalWidth / 2 + 10, // Minimum left position (10px padding)
+                      Math.min(
+                        cardRect.left + (cardRect.width / 2), // Center of card
+                        viewportWidth - (modalWidth / 2) - 10 // Maximum right position
+                      )
+                    );
+                    
+                    setModalPosition({
+                      top: cardRect.top, // Top of the card
+                      left: leftPosition // Center of the card horizontally (constrained to viewport)
+                    });
+                    setIsFilesModalOpen(true);
+                  }
+                });
+                onViewFiles?.(property);
+              }
+            }}
             className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
           >
             <div className="flex items-center justify-center gap-1.5">
               <FileText className="w-4 h-4" />
-              <span>View Files</span>
+              <span>{isFilesModalOpen && hasFilesFetched ? 'Close Database' : 'View Files'}</span>
             </div>
           </button>
           
@@ -283,6 +325,27 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           </button>
           </div>
       </div>
+
+      {/* Property Files Modal */}
+      {propertyId && (
+        <PropertyFilesModal
+          key={`files-modal-${propertyId}`}
+          propertyId={propertyId}
+          propertyAddress={property.address}
+          isOpen={isFilesModalOpen}
+          onClose={() => {
+            setIsFilesModalOpen(false);
+            setHasFilesFetched(false);
+          }}
+          position={modalPosition}
+          onLoadingStateChange={(isLoading, hasFetched) => {
+            setIsFilesLoading(isLoading);
+            setHasFilesFetched(hasFetched);
+          }}
+          isMapVisible={false}
+          isSidebarCollapsed={false}
+        />
+      )}
     </div>
   );
 };

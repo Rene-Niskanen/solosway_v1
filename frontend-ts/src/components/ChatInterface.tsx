@@ -1359,8 +1359,14 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         attachment={file}
                         onRemove={handleRemoveFile}
                         onPreview={(file) => {
-                          setPreviewFile(file);
-                          setIsPreviewOpen(true);
+                          // Toggle preview: if clicking the same file that's already previewed, close it
+                          if (previewFile?.id === file.id && isPreviewOpen) {
+                            setIsPreviewOpen(false);
+                            setPreviewFile(null);
+                          } else {
+                            setPreviewFile(file);
+                            setIsPreviewOpen(true);
+                          }
                         }}
                       />
                     ))}
