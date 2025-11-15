@@ -1,8 +1,8 @@
-import os
-from supabase import create_client
 from werkzeug.security import check_password_hash
 import logging
 import uuid
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -10,10 +10,7 @@ class SupabaseAuthService:
     """Authentication service using Supabase as primary database"""
     
     def __init__(self):
-        self.supabase = create_client(
-            os.environ['SUPABASE_URL'],
-            os.environ['SUPABASE_SERVICE_KEY']
-        )
+        self.supabase = get_supabase_client()
     
     def get_user_by_email(self, email):
         """Get user by email from Supabase"""

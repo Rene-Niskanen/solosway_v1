@@ -4,13 +4,14 @@ Day 8: Performance Optimization for SupabasePropertyHubService
 Optimized query methods and caching strategies
 """
 
-import os
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 from functools import lru_cache
 import time
+
+from .supabase_client_factory import get_supabase_client
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -23,11 +24,7 @@ class OptimizedSupabasePropertyHubService:
     def __init__(self):
         """Initialize optimized service with connection pooling"""
         try:
-            from supabase import create_client
-            self.supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            self.supabase = get_supabase_client()
             logger.info("✅ Optimized SupabasePropertyHubService initialized")
             
             # Performance tracking

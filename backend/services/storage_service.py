@@ -7,16 +7,14 @@ import os
 import boto3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from supabase import create_client
+
+from .supabase_client_factory import get_supabase_client
 
 class StorageService:
     """Unified storage service for property images"""
     
     def __init__(self):
-        self.supabase = create_client(
-            os.environ['SUPABASE_URL'],
-            os.environ['SUPABASE_SERVICE_KEY']
-        )
+        self.supabase = get_supabase_client()
         
         self.s3_client = boto3.client(
             's3',

@@ -3,10 +3,11 @@ from sqlalchemy import or_, and_, func
 import json
 import logging
 from typing import List, Dict, Any, Optional
-import os
 # Cassandra imports removed - using Supabase only
 import uuid
-from supabase import create_client, Client
+from supabase import Client
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,7 @@ class PropertySearchService:
         """Get or create Supabase client"""
         if not self.supabase_client:
             try:
-                self.supabase_client = create_client(
-                    os.environ['SUPABASE_URL'],
-                    os.environ['SUPABASE_SERVICE_KEY']
-                )
+                self.supabase_client = get_supabase_client()
                 logger.info("✅ Connected to Supabase")
             except Exception as e:
                 logger.error(f"❌ Failed to connect to Supabase: {e}")
@@ -202,11 +200,7 @@ class PropertySearchService:
         
         try:
             # Get the source property from Supabase
-            from supabase import create_client
-            supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            supabase = get_supabase_client()
             
             source_result = supabase.table('property_details').select('*').eq('property_id', property_id).execute()
             if not source_result.data:

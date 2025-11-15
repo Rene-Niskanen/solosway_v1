@@ -2,7 +2,6 @@
 Enhanced Property Matching Service
 Provides intelligent property matching with fuzzy matching, spatial proximity, and confidence scoring
 """
-import os
 import uuid
 import logging
 import math
@@ -11,8 +10,9 @@ from typing import Dict, Any, List, Tuple, Optional
 from uuid import UUID
 from datetime import datetime
 from difflib import SequenceMatcher
-from supabase import create_client, Client
 from geopy.distance import geodesic
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,7 @@ class EnhancedPropertyMatchingService:
     def __init__(self):
         """Initialize Supabase client and matching parameters"""
         try:
-            self.supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            self.supabase = get_supabase_client()
             logger.info("✅ EnhancedPropertyMatchingService initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Supabase client: {e}")
@@ -331,7 +328,9 @@ class EnhancedPropertyMatchingService:
             # Create property
             property_data = {
                 'id': property_id,
+                # Store normalized UUID in both legacy and new columns for compatibility
                 'business_id': business_id,
+                'business_uuid': business_id,
                 'address_hash': address_data['address_hash'],
                 'normalized_address': address_data['normalized_address'],
                 'formatted_address': address_data.get('formatted_address'),
