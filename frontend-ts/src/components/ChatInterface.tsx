@@ -230,7 +230,9 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
+  const MAX_PREVIEW_TABS = 4;
+  const [previewFiles, setPreviewFiles] = useState<FileAttachmentData[]>([]);
+  const [activePreviewTabIndex, setActivePreviewTabIndex] = useState(0);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   
   // Determine if we should use rounded corners (when there's content or attachment)
@@ -790,10 +792,17 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
   const handleRemoveFile = (id: string) => {
     setAttachedFiles(prev => prev.filter(file => file.id !== id));
     // If the removed file is being previewed, close the preview modal
-    if (previewFile?.id === id) {
-      setIsPreviewOpen(false);
-      setPreviewFile(null);
-    }
+    // Remove from preview tabs if it was open
+    setPreviewFiles(prev => {
+      const newFiles = prev.filter(f => f.id !== id);
+      if (newFiles.length === 0) {
+        setIsPreviewOpen(false);
+        setActivePreviewTabIndex(0);
+      } else if (activePreviewTabIndex >= newFiles.length) {
+        setActivePreviewTabIndex(newFiles.length - 1);
+      }
+      return newFiles;
+    });
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -1359,12 +1368,24 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         attachment={file}
                         onRemove={handleRemoveFile}
                         onPreview={(file) => {
-                          // Toggle preview: if clicking the same file that's already previewed, close it
-                          if (previewFile?.id === file.id && isPreviewOpen) {
-                            setIsPreviewOpen(false);
-                            setPreviewFile(null);
+                          // Check if file is already in preview tabs
+                          const existingTabIndex = previewFiles.findIndex(f => f.id === file.id);
+                          
+                          if (existingTabIndex !== -1) {
+                            // File is already open - switch to that tab
+                            setActivePreviewTabIndex(existingTabIndex);
+                            setIsPreviewOpen(true);
                           } else {
-                            setPreviewFile(file);
+                            // Add new tab (limit to MAX_PREVIEW_TABS)
+                            if (previewFiles.length >= MAX_PREVIEW_TABS) {
+                              // Remove oldest tab (first one) and add new one
+                              setPreviewFiles(prev => [...prev.slice(1), file]);
+                              setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
+                            } else {
+                              // Add new tab
+                              setPreviewFiles(prev => [...prev, file]);
+                              setActivePreviewTabIndex(previewFiles.length);
+                            }
                             setIsPreviewOpen(true);
                           }
                         }}
@@ -1519,11 +1540,73 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
       </motion.div>
       {/* Document Preview Modal */}
       <DocumentPreviewModal
-        file={previewFile}
+        files={previewFiles}
+        activeTabIndex={activePreviewTabIndex}
         isOpen={isPreviewOpen}
         onClose={() => {
           setIsPreviewOpen(false);
-          setPreviewFile(null);
+          setPreviewFiles([]);
+          setActivePreviewTabIndex(0);
+        }}
+        onTabChange={(index) => {
+          console.log('📑 ChatInterface onTabChange called:', {
+            index,
+            previousIndex: activePreviewTabIndex,
+            filesCount: previewFiles.length,
+            fileName: previewFiles[index]?.name,
+            stackTrace: new Error().stack?.split('\n').slice(0, 8).join('\n')
+          });
+          setActivePreviewTabIndex(index);
+          console.log('✅ ChatInterface activePreviewTabIndex updated to:', index);
+        }}
+        onTabClose={(index) => {
+          setPreviewFiles(prev => {
+            const newFiles = prev.filter((_, i) => i !== index);
+            if (newFiles.length === 0) {
+              setIsPreviewOpen(false);
+              setActivePreviewTabIndex(0);
+            } else if (activePreviewTabIndex >= newFiles.length) {
+              setActivePreviewTabIndex(newFiles.length - 1);
+            } else if (activePreviewTabIndex > index) {
+              // If we closed a tab before the active one, adjust index
+              setActivePreviewTabIndex(activePreviewTabIndex - 1);
+            }
+            return newFiles;
+          });
+        }}
+        onAddAttachment={() => {
+          // Trigger file input click to add new attachment to preview
+          const fileInput = document.createElement('input');
+          fileInput.type = 'file';
+          fileInput.accept = '*/*';
+          fileInput.multiple = false;
+          fileInput.onchange = (e) => {
+            const target = e.target as HTMLInputElement;
+            const file = target.files?.[0];
+            if (file) {
+              // Create FileAttachmentData from the file
+              const fileData: FileAttachmentData = {
+                id: `preview-${Date.now()}-${Math.random()}`,
+                file: file,
+                name: file.name,
+                type: file.type,
+                size: file.size
+              };
+              
+              // Add to preview tabs (limit to MAX_PREVIEW_TABS)
+              if (previewFiles.length >= MAX_PREVIEW_TABS) {
+                // Remove oldest tab (first one) and add new one
+                setPreviewFiles(prev => [...prev.slice(1), fileData]);
+                setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
+              } else {
+                // Add new tab
+                setPreviewFiles(prev => [...prev, fileData]);
+                setActivePreviewTabIndex(previewFiles.length);
+              }
+              setIsPreviewOpen(true);
+            }
+          };
+          fileInput.click();
         }}
       />
     </>

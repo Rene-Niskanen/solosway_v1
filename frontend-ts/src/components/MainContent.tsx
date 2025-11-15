@@ -1721,7 +1721,7 @@ export const MainContent = ({
                 <div className="flex flex-col items-center mb-12">
                   {/* VELORA Logo */}
                   <img 
-                    src="/VELORA (new) .png" 
+                    src="/2222.png" 
                     alt="VELORA" 
                     className="max-w-[280px] h-auto mb-6"
                     style={{ maxHeight: '120px' }}
@@ -1730,20 +1730,6 @@ export const MainContent = ({
                     }}
                     onError={(e) => {
                       console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
-                      // Try URL-encoded version if direct path fails
-                      const img = e.target as HTMLImageElement;
-                      const currentSrc = img.src;
-                      
-                      // If direct path failed, try URL-encoded version
-                      if (!currentSrc.includes('%20')) {
-                        const encodedPath = '/VELORA%20(new)%20.png';
-                        console.log(`🔄 Trying URL-encoded path: ${encodedPath}`);
-                        img.src = encodedPath;
-                      } else {
-                        // If all attempts fail, hide the image
-                        console.error('❌ VELORA logo failed to load with all attempts.');
-                        img.style.display = 'none';
-                      }
                     }}
                   />
                   

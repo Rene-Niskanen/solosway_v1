@@ -23,6 +23,24 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   onRemove,
   onPreview
 }) => {
+  const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
+  const isImage = attachment.type.startsWith('image/');
+  const isPDF = attachment.type === 'application/pdf';
+  const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+                 attachment.type === 'application/msword' ||
+                 (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
+
+  // Create preview URL for images
+  React.useEffect(() => {
+    if (isImage) {
+      const url = URL.createObjectURL(attachment.file);
+      setImagePreviewUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    }
+  }, [attachment.file, isImage]);
+
   const getFileTypeLabel = (type: string): string => {
     if (type.includes('pdf')) return 'PDF';
     if (type.includes('word') || type.includes('document')) return 'DOC';
@@ -76,6 +94,58 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     }, 100);
   };
 
+  // For images, show a small rectangular preview
+  if (isImage && imagePreviewUrl) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.1, ease: "easeOut" }}
+        className="relative bg-white rounded-lg border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 overflow-hidden"
+        style={{ 
+          width: '120px',
+          height: '80px',
+          display: 'inline-block',
+          flexShrink: 0,
+          padding: 0,
+          margin: 0,
+        }}
+        layout={false}
+        onClick={handleFileClick}
+        title={`Click to open ${attachment.name}`}
+      >
+        {/* Image Preview */}
+        <img
+          src={imagePreviewUrl}
+          alt={attachment.name}
+          className="w-full h-full object-cover"
+          style={{
+            display: 'block',
+            padding: 0,
+            margin: 0,
+            width: '100%',
+            height: '100%',
+          }}
+        />
+        
+        {/* Remove Button - Bottom right corner */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(attachment.id);
+          }}
+          className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-black/70 flex items-center justify-center flex-shrink-0 hover:bg-black transition-colors"
+          title="Remove file"
+        >
+          <X className="w-3 h-3 text-white" strokeWidth={2.5} />
+        </button>
+      </motion.div>
+    );
+  }
+
+  // For non-image files, show the original file attachment UI
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -84,22 +154,28 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       transition={{ duration: 0.1, ease: "easeOut" }}
       className="relative bg-white rounded-lg border border-gray-200 px-2.5 py-2 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100"
       style={{ 
-        maxWidth: 'fit-content',
-        display: 'inline-block'
+        width: 'auto',
+        height: 'auto',
+        maxWidth: 'none',
+        minWidth: 'auto',
+        display: 'inline-block',
+        flexShrink: 0,
+        flexGrow: 0,
+        alignSelf: 'flex-start',
       }}
       layout={false}
       onClick={handleFileClick}
       title={`Click to open ${attachment.name}`}
     >
-      <div className="flex items-center gap-2">
-        {/* File Icon - Red square with white document outline */}
-        <div className="w-6 h-6 bg-red-500 rounded flex items-center justify-center flex-shrink-0">
+      <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
+        {/* File Icon - Red for PDF, Blue for DOCX, Gray for others */}
+        <div className={`w-6 h-6 ${isPDF ? 'bg-red-500' : isDOCX ? 'bg-blue-500' : 'bg-gray-500'} rounded flex items-center justify-center flex-shrink-0`}>
           <FileText className="w-4 h-4 text-white" strokeWidth={2} />
         </div>
         
         {/* File Info */}
-        <div className="flex flex-col min-w-0">
-          <span className="text-xs font-medium text-black truncate">
+        <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
+          <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: 'nowrap' }}>
             {formatFileName(attachment.name)}
           </span>
           <span className="text-[10px] text-gray-500 font-normal">

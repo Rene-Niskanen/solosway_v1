@@ -47,8 +47,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   const [isHovered, setIsHovered] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
+  const MAX_PREVIEW_TABS = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
+  const [previewFiles, setPreviewFiles] = useState<FileAttachmentData[]>([]);
+  const [activePreviewTabIndex, setActivePreviewTabIndex] = useState(0);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -160,7 +162,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       // Use a small timeout to allow view transition to start smoothly
       const timeoutId = setTimeout(() => {
         setIsPreviewOpen(false);
-        setPreviewFile(null);
+        setPreviewFiles([]);
+        setActivePreviewTabIndex(0);
       }, 100);
       
       return () => clearTimeout(timeoutId);
@@ -509,11 +512,17 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
 
   const handleRemoveFile = (id: string) => {
     setAttachedFiles(prev => prev.filter(file => file.id !== id));
-    // If the removed file is being previewed, close the preview modal
-    if (previewFile?.id === id) {
-      setIsPreviewOpen(false);
-      setPreviewFile(null);
-    }
+    // Remove from preview tabs if it was open
+    setPreviewFiles(prev => {
+      const newFiles = prev.filter(f => f.id !== id);
+      if (newFiles.length === 0) {
+        setIsPreviewOpen(false);
+        setActivePreviewTabIndex(0);
+      } else if (activePreviewTabIndex >= newFiles.length) {
+        setActivePreviewTabIndex(newFiles.length - 1);
+      }
+      return newFiles;
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -636,12 +645,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
-                      // Toggle preview: if clicking the same file that's already previewed, close it
-                      if (previewFile?.id === file.id && isPreviewOpen) {
-                        setIsPreviewOpen(false);
-                        setPreviewFile(null);
+                      // Check if file is already in preview tabs
+                      const existingTabIndex = previewFiles.findIndex(f => f.id === file.id);
+                      
+                      if (existingTabIndex !== -1) {
+                        // File is already open - switch to that tab
+                        setActivePreviewTabIndex(existingTabIndex);
+                        setIsPreviewOpen(true);
                       } else {
-                        setPreviewFile(file);
+                        // Add new tab (limit to MAX_PREVIEW_TABS)
+                        if (previewFiles.length >= MAX_PREVIEW_TABS) {
+                          // Remove oldest tab (first one) and add new one
+                          setPreviewFiles(prev => [...prev.slice(1), file]);
+                          setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
+                        } else {
+                          // Add new tab
+                          setPreviewFiles(prev => [...prev, file]);
+                          setActivePreviewTabIndex(previewFiles.length);
+                        }
                         setIsPreviewOpen(true);
                       }
                     }}
@@ -740,7 +761,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     });
                     onMapToggle?.();
                   }}
-                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 ${
+                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none ${
                     isMapVisible 
                         ? 'text-slate-500 hover:text-blue-500'
                         : 'text-slate-500 hover:text-green-500'
@@ -835,7 +856,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     <motion.button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors"
+                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors focus:outline-none outline-none"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                     >
@@ -846,7 +867,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                 <motion.button 
                   type="submit" 
                   onClick={handleSubmit} 
-                  className={`flex items-center justify-center relative ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                   style={{
                     width: '32px',
                     height: '32px',
@@ -905,13 +926,75 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       
       {/* Document Preview Modal */}
       <DocumentPreviewModal
-        file={previewFile}
+        files={previewFiles}
+        activeTabIndex={activePreviewTabIndex}
         isOpen={isPreviewOpen}
         isMapVisible={isMapVisible}
         isSidebarCollapsed={isSidebarCollapsed}
         onClose={() => {
           setIsPreviewOpen(false);
-          setPreviewFile(null);
+          setPreviewFiles([]);
+          setActivePreviewTabIndex(0);
+        }}
+        onTabChange={(index) => {
+          console.log('📑 SearchBar onTabChange called:', {
+            index,
+            previousIndex: activePreviewTabIndex,
+            filesCount: previewFiles.length,
+            fileName: previewFiles[index]?.name,
+            stackTrace: new Error().stack?.split('\n').slice(0, 8).join('\n')
+          });
+          setActivePreviewTabIndex(index);
+          console.log('✅ SearchBar activePreviewTabIndex updated to:', index);
+        }}
+        onTabClose={(index) => {
+          setPreviewFiles(prev => {
+            const newFiles = prev.filter((_, i) => i !== index);
+            if (newFiles.length === 0) {
+              setIsPreviewOpen(false);
+              setActivePreviewTabIndex(0);
+            } else if (activePreviewTabIndex >= newFiles.length) {
+              setActivePreviewTabIndex(newFiles.length - 1);
+            } else if (activePreviewTabIndex > index) {
+              // If we closed a tab before the active one, adjust index
+              setActivePreviewTabIndex(activePreviewTabIndex - 1);
+            }
+            return newFiles;
+          });
+        }}
+        onAddAttachment={() => {
+          // Trigger file input click to add new attachment to preview
+          const fileInput = document.createElement('input');
+          fileInput.type = 'file';
+          fileInput.accept = '*/*';
+          fileInput.multiple = false;
+          fileInput.onchange = (e) => {
+            const target = e.target as HTMLInputElement;
+            const file = target.files?.[0];
+            if (file) {
+              // Create FileAttachmentData from the file
+              const fileData: FileAttachmentData = {
+                id: `preview-${Date.now()}-${Math.random()}`,
+                file: file,
+                name: file.name,
+                type: file.type,
+                size: file.size
+              };
+              
+              // Add to preview tabs (limit to MAX_PREVIEW_TABS)
+              if (previewFiles.length >= MAX_PREVIEW_TABS) {
+                // Remove oldest tab (first one) and add new one
+                setPreviewFiles(prev => [...prev.slice(1), fileData]);
+                setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
+              } else {
+                // Add new tab
+                setPreviewFiles(prev => [...prev, fileData]);
+                setActivePreviewTabIndex(previewFiles.length);
+              }
+              setIsPreviewOpen(true);
+            }
+          };
+          fileInput.click();
         }}
       />
     </motion.div>

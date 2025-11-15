@@ -344,3 +344,54 @@
     transform: translate(-50%, calc(-100% - 10px)) !important;
   }
 }
+
+/* Remove blue outline from buttons and interactive elements */
+button:focus,
+button:focus-visible,
+button:active {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Keep focus-visible for keyboard navigation accessibility, but remove blue outline */
+button:focus-visible:not(:focus-within) {
+  outline: 2px solid transparent !important;
+  outline-offset: 2px !important;
+}
+
+/* Completely hidden scrollbar for tabs container - still scrollable */
+.tabs-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  padding-bottom: 4px;
+  margin-bottom: -4px;
+}
+
+.tabs-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+/* Translucent scrollbar for DOCX preview */
+.docx-scrollbar {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.docx-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.docx-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.docx-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+.docx-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
