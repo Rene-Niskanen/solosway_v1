@@ -4,6 +4,8 @@ from sqlalchemy import func, desc
 import logging
 from typing import Dict, Any, List, Optional
 
+from .supabase_client_factory import get_supabase_client
+
 logger = logging.getLogger(__name__)
 
 class AnalyticsService:
@@ -62,15 +64,9 @@ class AnalyticsService:
             doc_count = doc_query.count()
             
             # Get Supabase property count
+            supabase = None
             try:
-                from supabase import create_client
-                import os
-                
-                supabase = create_client(
-                    os.environ['SUPABASE_URL'],
-                    os.environ['SUPABASE_SERVICE_KEY']
-                )
-                
+                supabase = get_supabase_client()
                 supabase_result = supabase.table('property_details').select('property_id', count='exact').eq('business_id', business_id).execute()
                 prop_count = supabase_result.count if supabase_result.count is not None else 0
                 
@@ -96,6 +92,8 @@ class AnalyticsService:
             recent_properties = 0
             
             try:
+                if supabase is None:
+                    supabase = get_supabase_client()
                 # Get property data from Supabase
                 # First get properties, then get their details
                 properties_result = supabase.table('properties').select('*').eq('business_id', business_id).execute()

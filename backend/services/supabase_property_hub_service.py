@@ -2,14 +2,15 @@
 Supabase Property Hub Service
 Handles all property operations using only Supabase tables
 """
-import os
 import uuid
 import logging
 import time
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from uuid import UUID
-from supabase import create_client, Client
+from supabase import Client
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,7 @@ class SupabasePropertyHubService:
     def __init__(self):
         """Initialize Supabase client"""
         try:
-            self.supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            self.supabase = get_supabase_client()
             logger.info("✅ SupabasePropertyHubService initialized successfully")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Supabase client: {e}")

@@ -8,7 +8,8 @@ import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import requests
-from supabase import create_client
+
+from .supabase_client_factory import get_supabase_client
 
 # Try to import optional dependencies
 try:
@@ -31,20 +32,9 @@ class HealthCheckService:
     def check_database_health(self) -> Dict[str, Any]:
         """Check database connectivity and performance"""
         try:
-            # Check Supabase connection
-            supabase_url = os.environ.get('SUPABASE_URL')
-            supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
-            
-            if not supabase_url or not supabase_key:
-                return {
-                    'status': 'unhealthy',
-                    'error': 'Supabase credentials not configured',
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            
             # Test connection with a simple query
             start_time = time.time()
-            supabase = create_client(supabase_url, supabase_key)
+            supabase = get_supabase_client()
             
             # Simple query to test connection
             result = supabase.table('properties').select('id').limit(1).execute()

@@ -2,13 +2,14 @@
 Document Storage Service for Supabase
 Manages document metadata, processing history, and access logs
 """
-import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import uuid
-from supabase import create_client, Client
+from supabase import Client
 import json
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +18,7 @@ class DocumentStorageService:
     
     def __init__(self):
         """Initialize Supabase client"""
-        self.supabase_url = os.environ.get('SUPABASE_URL')
-        self.supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
-        
-        if not self.supabase_url or not self.supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required")
-        
-        # Initialize Supabase client
-        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        self.supabase: Client = get_supabase_client()
         
         # Table names
         self.documents_table = "documents"

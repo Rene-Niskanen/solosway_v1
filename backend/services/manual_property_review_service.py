@@ -2,12 +2,13 @@
 Manual Property Matching Review Service
 Handles manual review of ambiguous property matches
 """
-import os
 import uuid
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from supabase import create_client, Client
+from supabase import Client
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,7 @@ class ManualPropertyReviewService:
     def __init__(self):
         """Initialize Supabase client"""
         try:
-            self.supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            self.supabase = get_supabase_client()
             logger.info("✅ ManualPropertyReviewService initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Supabase client: {e}")

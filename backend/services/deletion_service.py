@@ -1,7 +1,8 @@
-import os
 import requests
 import uuid
 import logging
+
+from .supabase_client_factory import get_supabase_client
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -199,14 +200,7 @@ class DeletionService:
     
     def _get_supabase_client(self):
         """Get Supabase client"""
-        from supabase import create_client, Client
-        supabase_url = os.environ.get('SUPABASE_URL')
-        supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
-        
-        if not supabase_url or not supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required")
-        
-        return create_client(supabase_url, supabase_key)
+        return get_supabase_client()
     
     def delete_supabase_property_details(self, document_id):
         """Delete property details from Supabase"""
