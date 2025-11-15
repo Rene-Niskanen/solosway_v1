@@ -1,8 +1,9 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, db
+from .models import Document, DocumentStatus, Property, DocumentRelationship, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
+from .services.supabase_client_factory import get_supabase_client
 from datetime import datetime
 import os
 import uuid
@@ -50,6 +51,73 @@ def _ensure_business_uuid():
     except Exception as fetch_error:
         logger.warning(f"Failed to ensure business UUID: {fetch_error}")
     return None
+
+
+def _normalize_uuid_str(value):
+    """Convert various UUID-like inputs to a canonical string form."""
+    if not value:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
+    """
+    Remove Supabase property hub records when no documents remain linked to a property.
+    Returns list of property IDs that were fully removed from Supabase.
+    """
+    cleaned_properties = []
+    if not property_ids:
+        return cleaned_properties
+
+    supabase = None
+    for property_id in property_ids:
+        if not property_id:
+            continue
+
+        # Check if any local document relationships still reference this property
+        remaining_relationships = DocumentRelationship.query.filter_by(property_id=property_id).count()
+        if remaining_relationships > 0:
+            continue
+
+        try:
+            if supabase is None:
+                supabase = get_supabase_client()
+
+            pid_str = str(property_id)
+
+            # Delete property vectors first
+            try:
+                supabase.table('property_vectors').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property vectors for property {pid_str}: {e}")
+
+            # Delete property details rows
+            try:
+                supabase.table('property_details').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property details for property {pid_str}: {e}")
+
+            # Delete supabase document_relationships (if any remain)
+            try:
+                supabase.table('document_relationships').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete Supabase document relationships for property {pid_str}: {e}")
+
+            # Finally delete the property record itself
+            try:
+                supabase.table('properties').delete().eq('id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property {pid_str} from Supabase properties table: {e}")
+
+            cleaned_properties.append(pid_str)
+            logger.info(f"Cleaned Supabase property hub data for property {pid_str}")
+        except Exception as e:
+            logger.warning(f"Could not clean Supabase property {property_id}: {e}")
+
+    return cleaned_properties
 
 views = Blueprint('views', __name__)
 
@@ -1535,8 +1603,43 @@ def delete_document(document_id):
     if not document:
         return jsonify({'error': 'Document not found'}), 404
 
-    if str(document.get('business_id')) != str(current_user.business_id):
+    user_business_uuid = _normalize_uuid_str(getattr(current_user, "business_id", None)) or _ensure_business_uuid()
+    document_business_uuid = _normalize_uuid_str(getattr(document, "business_id", None))
+
+    if not user_business_uuid:
+        logger.warning("Current user has no business UUID; denying delete request.")
         return jsonify({'error': 'Unauthorized'}), 403
+
+    if document_business_uuid != user_business_uuid:
+        logger.warning(
+            "Document business mismatch (doc=%s, user=%s). Falling back to Supabase verification.",
+            document_business_uuid,
+            user_business_uuid,
+        )
+        supabase_business_uuid = None
+        try:
+            doc_service = SupabaseDocumentService()
+            supabase_doc = doc_service.get_document_by_id(str(document_id))
+            if supabase_doc:
+                supabase_business_uuid = _normalize_uuid_str(
+                    supabase_doc.get('business_uuid') or supabase_doc.get('business_id')
+                )
+        except Exception as supabase_error:
+            logger.warning(f"Failed to verify document ownership via Supabase: {supabase_error}")
+            supabase_business_uuid = None
+
+        if supabase_business_uuid != user_business_uuid:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        # Align local document row for future requests if missing business_id
+        if not document_business_uuid and supabase_business_uuid:
+            try:
+                document.business_id = UUID(supabase_business_uuid)
+                db.session.commit()
+                document_business_uuid = supabase_business_uuid
+            except Exception as sync_error:
+                db.session.rollback()
+                logger.warning(f"Failed to sync document business_id locally: {sync_error}")
 
     deletion_results = {
         's3': False,
@@ -1679,6 +1782,14 @@ def delete_document(document_id):
             logger.info("   No impacted properties detected; skipping recompute")
     except Exception as e:
         logger.warning(f"   WARNING: Property recompute failed - {e}")
+
+    # 8. Remove Supabase property hub records when no documents remain
+    logger.info("[SUPABASE PROPERTY HUB CLEANUP]")
+    orphaned_supabase_props = _cleanup_orphan_supabase_properties(impacted_property_ids)
+    if orphaned_supabase_props:
+        logger.info(f"   Removed Supabase property hub data for properties: {orphaned_supabase_props}")
+    else:
+        logger.info("   No Supabase properties required cleanup")
 
     # 8. Delete the PostgreSQL document record
     logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
@@ -1841,7 +1952,7 @@ def process_document(document_id):
     if not document:
         return jsonify({'error': 'Document not found'}), 404
     
-    if str(document.get('business_id')) != str(current_user.business_id):
+    if str(document.business_id) != str(current_user.business_id):
         return jsonify({'error': 'Unauthorized'}), 403
     
     if document.status == 'COMPLETED':

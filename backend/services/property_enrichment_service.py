@@ -2,6 +2,8 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
 
+from .supabase_client_factory import get_supabase_client
+
 logger = logging.getLogger(__name__)
 
 class PropertyEnrichmentService:
@@ -112,13 +114,7 @@ class PropertyEnrichmentService:
         
         # Get property data from Supabase property_details
         try:
-            from supabase import create_client
-            import os
-            
-            supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            supabase = get_supabase_client()
             
             # Get comparable properties for this property
             result = supabase.table('property_details').select('*').eq('property_id', property_id).execute()
@@ -171,13 +167,7 @@ class PropertyEnrichmentService:
         
         # Get property data from Supabase property_details
         try:
-            from supabase import create_client
-            import os
-            
-            supabase = create_client(
-                os.environ['SUPABASE_URL'],
-                os.environ['SUPABASE_SERVICE_KEY']
-            )
+            supabase = get_supabase_client()
             
             # Get comparable properties for this property
             result = supabase.table('property_details').select('*').eq('property_id', property_id).execute()

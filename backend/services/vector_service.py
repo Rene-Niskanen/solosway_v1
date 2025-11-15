@@ -5,10 +5,12 @@ import os
 import logging
 from typing import Dict, Any, List, Optional
 import openai
-from supabase import create_client, Client
+from supabase import Client
 import json
 import uuid
 from datetime import datetime
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +18,7 @@ class SupabaseVectorService:
     """Service for managing vector embeddings in Supabase with pgvector"""
     
     def __init__(self):
-        self.supabase_url = os.environ.get('SUPABASE_URL')
-        self.supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
-        
-        if not self.supabase_url or not self.supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required")
-        
-        # Initialize Supabase client
-        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        self.supabase: Client = get_supabase_client()
         
         # Initialize OpenAI for embeddings
         self.openai_api_key = os.environ.get('OPENAI_API_KEY')
@@ -344,6 +339,10 @@ class SupabaseVectorService:
             Success status
         """
         try:
+            business_uuid = metadata.get('business_uuid') or metadata.get('business_id')
+            if business_uuid:
+                business_uuid = str(business_uuid)
+
             if not chunks:
                 logger.warning("No chunks to store for document")
                 return True
@@ -437,7 +436,8 @@ class SupabaseVectorService:
                     'chunk_index': i,
                     'classification_type': metadata.get('classification_type'),
                     'address_hash': metadata.get('address_hash'),
-                    'business_uuid': metadata.get('business_uuid'),
+                    'business_uuid': business_uuid,
+                    'business_id': business_uuid,
                     'page_number': chunk_page,
                     'bbox': json.dumps(chunk_bbox) if chunk_bbox else None,
                     'block_count': len(chunk_blocks),
@@ -472,6 +472,10 @@ class SupabaseVectorService:
             Success status
         """
         try:
+            business_uuid = metadata.get('business_uuid') or metadata.get('business_id')
+            if business_uuid:
+                business_uuid = str(business_uuid)
+
             if not property_text:
                 logger.warning("No property text to store")
                 return True
@@ -500,7 +504,8 @@ class SupabaseVectorService:
                     'embedding': embedding,
                     'chunk_index': i,
                     'address_hash': metadata.get('address_hash'),
-                    'business_uuid': metadata.get('business_uuid'),
+                    'business_uuid': business_uuid,
+                    'business_id': business_uuid,
                     'property_address': metadata.get('property_address'),
                     'source_document_id': str(metadata.get('source_document_id')) if metadata.get('source_document_id') else None,
                     'created_at': datetime.utcnow().isoformat()

@@ -1,9 +1,10 @@
-import os
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from ..models import db, DocumentProcessingHistory
 import uuid
+
+from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -15,21 +16,13 @@ class ProcessingHistoryService:
     """
 
     def __init__(self):
-        # Initialize Supabase client for dual-write
-        self.supabase_url = os.environ.get('SUPABASE_URL')
-        self.supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
-        
-        if self.supabase_url and self.supabase_key:
-            try:
-                from supabase import create_client, Client
-                self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-                self.use_supabase = True
-                logger.info("✅ ProcessingHistoryService initialized with Supabase")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize Supabase client: {e}")
-                self.supabase = None
-                self.use_supabase = False
-        else:
+        """Initialize Supabase client for dual-write logging."""
+        try:
+            self.supabase = get_supabase_client()
+            self.use_supabase = True
+            logger.info("✅ ProcessingHistoryService initialized with Supabase")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to initialize Supabase client: {e}")
             self.supabase = None
             self.use_supabase = False
             logger.info("ProcessingHistoryService using local PostgreSQL only")
