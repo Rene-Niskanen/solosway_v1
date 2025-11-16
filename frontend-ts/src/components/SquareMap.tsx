@@ -2493,6 +2493,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           }, 300);
         }
         
+        // Ensure all interaction controls are enabled if map is visible
+        if (isVisible && map.current) {
+          map.current.scrollZoom.enable();
+          map.current.boxZoom.enable();
+          map.current.dragRotate.enable();
+          map.current.dragPan.enable();
+          map.current.keyboard.enable();
+          map.current.doubleClickZoom.enable();
+          map.current.touchZoomRotate.enable();
+        }
+        
         console.log('✅ Mapbox map loaded successfully!');
         // Permanently hide all Mapbox branding elements
         const hideMapboxBranding = () => {
@@ -2612,12 +2623,30 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             map.current.resize();
             // Re-enable interactions
             map.current.getCanvas().style.pointerEvents = 'auto';
+            // Explicitly enable all zoom and interaction controls
+            map.current.scrollZoom.enable();
+            map.current.boxZoom.enable();
+            map.current.dragRotate.enable();
+            map.current.dragPan.enable();
+            map.current.keyboard.enable();
+            map.current.doubleClickZoom.enable();
+            map.current.touchZoomRotate.enable();
           }
         }, 100);
       } else {
         // Disable interactions when hidden
         if (map.current.getCanvas()) {
           map.current.getCanvas().style.pointerEvents = 'none';
+        }
+        // Explicitly disable all zoom and interaction controls
+        if (map.current) {
+          map.current.scrollZoom.disable();
+          map.current.boxZoom.disable();
+          map.current.dragRotate.disable();
+          map.current.dragPan.disable();
+          map.current.keyboard.disable();
+          map.current.doubleClickZoom.disable();
+          map.current.touchZoomRotate.disable();
         }
       }
     }
