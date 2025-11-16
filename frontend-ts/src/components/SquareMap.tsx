@@ -1342,8 +1342,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Handle click outside to deselect property (same pattern as dropdown menu)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      // Only deselect if a property is currently selected
-      if (!selectedProperty || !showPropertyDetailsPanel) return;
+      // Handle clicks when property is selected (either details panel is open OR just title is showing)
+      if (!selectedProperty) return;
 
       const target = event.target as Node;
       const targetElement = target as Element;
@@ -1398,7 +1398,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       return;
     };
 
-    if (showPropertyDetailsPanel && selectedProperty) {
+    // Listen for clicks when property is selected (either details panel open OR just title showing)
+    if (selectedProperty) {
       document.addEventListener('mousedown', handleClickOutside);
     }
 
