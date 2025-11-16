@@ -19,10 +19,10 @@ class ProcessingHistoryService:
         """Initialize Supabase client for dual-write logging."""
         try:
             self.supabase = get_supabase_client()
-            self.use_supabase = True
-            logger.info("✅ ProcessingHistoryService initialized with Supabase")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to initialize Supabase client: {e}")
+                self.use_supabase = True
+                logger.info("✅ ProcessingHistoryService initialized with Supabase")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize Supabase client: {e}")
             self.supabase = None
             self.use_supabase = False
             logger.info("ProcessingHistoryService using local PostgreSQL only")
