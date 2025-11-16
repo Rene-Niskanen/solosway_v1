@@ -41,8 +41,33 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [imageRenderedWidth, setImageRenderedWidth] = React.useState<number | null>(null);
   const [forceUpdate, setForceUpdate] = React.useState(0);
   const [headerHeight, setHeaderHeight] = React.useState(50);
-  const [calculatedModalHeight, setCalculatedModalHeight] = React.useState<string | number>('85vh');
-  const [calculatedModalWidth, setCalculatedModalWidth] = React.useState<string | number>('90vw');
+  
+  // Set initial dimensions immediately based on file type (no shrinking effect)
+  // Calculate dimensions synchronously before state initialization
+  const getInitialDimensions = React.useMemo(() => {
+    const fileType = file?.type || '';
+    const fileName = file?.name || '';
+    const isDOCXFile = fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+                       fileType === 'application/msword' ||
+                       (fileName && (fileName.toLowerCase().endsWith('.docx') || fileName.toLowerCase().endsWith('.doc')));
+    const isPDFFile = fileType === 'application/pdf';
+    const isImageFile = fileType.startsWith('image/');
+    
+    console.log('📐 Calculating initial dimensions - isMapVisible:', isMapVisible, 'isPDF:', isPDFFile, 'isDOCX:', isDOCXFile);
+    
+    // All documents should open at the default map view dimensions (640px × 75vh)
+    if (isDOCXFile || isPDFFile) {
+      return { height: '75vh', width: '640px' };
+    } else if (isImageFile) {
+      // For images, use default that will be recalculated, but prevent visible shrinking
+      return { height: '85vh', width: '90vw' };
+    } else {
+      return { height: '75vh', width: '640px' }; // Default to map view dimensions
+    }
+  }, [file?.type, file?.name, isMapVisible]);
+  
+  const [calculatedModalHeight, setCalculatedModalHeight] = React.useState<string | number>(getInitialDimensions.height);
+  const [calculatedModalWidth, setCalculatedModalWidth] = React.useState<string | number>(getInitialDimensions.width);
   const [isResizing, setIsResizing] = React.useState(false);
   const [resizeDirection, setResizeDirection] = React.useState<string | null>(null);
   const [resizeStartPos, setResizeStartPos] = React.useState<{ x: number; y: number } | null>(null);
@@ -66,7 +91,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const tabRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
   const currentBlobUrlRef = React.useRef<string | null>(null);
 
-  // Create URL when file changes - use data URL for PDFs to avoid download issues
+  // Create URL when file changes - use preloaded blob URL if available
   React.useEffect(() => {
     console.log('🔄 File change effect triggered:', {
       hasFile: !!file,
@@ -84,17 +109,49 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       // Revoke old blob URL first (if any)
       const oldUrl = currentBlobUrlRef.current || blobUrl;
       if (oldUrl && oldUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(oldUrl);
+        // Only revoke if it's not a preloaded blob (check if it's in our cache)
+        const isPreloaded = (window as any).__preloadedAttachmentBlobs && 
+                           Object.values((window as any).__preloadedAttachmentBlobs).includes(oldUrl);
+        if (!isPreloaded) {
+          URL.revokeObjectURL(oldUrl);
+        }
         currentBlobUrlRef.current = null;
       }
       
-      // Create blob URL immediately for all file types
-      // Download prevention is handled in the tab click handler
-      console.log('🖼️ DocumentPreviewModal: Creating blob URL for file:', file.name, file.type);
-      const url = URL.createObjectURL(file.file);
-      currentBlobUrlRef.current = url;
-      console.log('✅ Blob URL created:', url.substring(0, 50) + '...');
-      setBlobUrl(url);
+      // First, check for preloaded blob URL (Instagram-style preloading)
+      const preloadedBlobUrl = (window as any).__preloadedAttachmentBlobs?.[file.id];
+      if (preloadedBlobUrl) {
+        console.log('✅ Using preloaded blob URL for file:', file.name);
+        currentBlobUrlRef.current = preloadedBlobUrl;
+        setBlobUrl(preloadedBlobUrl);
+      } else {
+        // Create blob URL if not preloaded
+        console.log('🖼️ DocumentPreviewModal: Creating blob URL for file:', file.name, file.type);
+        try {
+          // Check if file.file is valid before creating blob URL
+          if (!file.file) {
+            console.error('❌ No file object:', file);
+            setBlobUrl(null);
+            return;
+          }
+          // Type check: file.file should be a File or Blob
+          const fileObj = file.file as File | Blob;
+          if (!(fileObj instanceof File) && !(fileObj instanceof Blob)) {
+            console.error('❌ Invalid file object type:', file);
+            setBlobUrl(null);
+            return;
+          }
+          const url = URL.createObjectURL(file.file);
+          currentBlobUrlRef.current = url;
+          console.log('✅ Blob URL created:', url.substring(0, 50) + '...');
+          setBlobUrl(url);
+        } catch (error) {
+          console.error('❌ Error creating blob URL:', error);
+          setBlobUrl(null);
+          // If blob URL creation fails, the file object might be stale
+          // This can happen when re-selecting the same document
+        }
+      }
       
       // Set initial zoom to fit document to container - use page-fit for both views
       // This ensures the document is properly sized relative to the preview container
@@ -653,119 +710,90 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     };
   }, [isImage, isMapVisible, blobUrl]);
 
+  // Track if we've already calculated dimensions to prevent infinite loops
+  const dimensionsCalculatedRef = React.useRef(false);
+  const lastNaturalDimsRef = React.useRef<{ width: number | null; height: number | null }>({ width: null, height: null });
+  
   // Calculate modal dimensions based on content type
   // For images: fit tightly to image dimensions (with minimal padding and header)
   // For PDFs: use standard dimensions
+  // Only recalculate if dimensions haven't been set yet or for images (which need image dimensions)
   React.useEffect(() => {
+    // For PDFs and DOCX, dimensions are already set correctly in initial state - skip recalculation
+    if (!isImage && (isPDF || isDOCX)) {
+      return; // Dimensions already correct, no need to recalculate
+    }
+    
     if (isImage) {
-      console.log('📐 Starting dimension calculation - isMapVisible:', isMapVisible, 'hasNaturalDims:', !!imageNaturalWidth, 'hasRenderedDims:', !!imageRenderedWidth);
-      // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
-        // Try to get actual rendered dimensions from the image element
-        let imageHeight = imageRenderedHeight;
-        let imageWidth = imageRenderedWidth;
+      // Only calculate once when we first get natural dimensions, or if natural dimensions changed
+      const naturalDimsChanged = 
+        lastNaturalDimsRef.current.width !== imageNaturalWidth ||
+        lastNaturalDimsRef.current.height !== imageNaturalHeight;
+      
+      // If we've already calculated and natural dims haven't changed, skip
+      if (dimensionsCalculatedRef.current && !naturalDimsChanged) {
+        return;
+      }
+      
+      // If we don't have natural dimensions yet, wait
+      if (!imageNaturalHeight || !imageNaturalWidth) {
+        return;
+      }
+      
+      // Update ref to track we're calculating
+      dimensionsCalculatedRef.current = true;
+      lastNaturalDimsRef.current = { width: imageNaturalWidth, height: imageNaturalHeight };
+      
+      // Calculate width first based on viewport constraints
+      // For map view, use smaller max width (accounting for sidebar)
+      // For dashboard view, use larger max width
+      const maxWidth = isMapVisible 
+        ? Math.min(window.innerWidth * 0.4, 600) // Max 40% viewport or 600px for map view
+        : Math.min(window.innerWidth * 0.9, 1400); // Max 90% viewport or 1400px for dashboard
+      // Allow smaller minimum width - tabs will scroll if needed
+      const minWidth = isMapVisible ? 250 : 300; // Minimum width for usability
+      
+      // Start with natural width, but constrain it
+      let calculatedWidth = imageNaturalWidth;
+      
+      // If image is wider than max, scale it down
+      if (calculatedWidth > maxWidth) {
+        calculatedWidth = maxWidth;
+      }
+      // If image is narrower than min, use min (but don't stretch the image)
+      if (calculatedWidth < minWidth && imageNaturalWidth >= minWidth) {
+        calculatedWidth = minWidth;
+      }
+      
+      // Calculate height based on aspect ratio (use natural dimensions only - NOT rendered to prevent feedback loop)
+      const imageAspectRatio = imageNaturalHeight / imageNaturalWidth;
+      const calculatedHeight = calculatedWidth * imageAspectRatio;
+      
+      // Set width
+      setCalculatedModalWidth(calculatedWidth);
+      
+      // Set height
+      if (calculatedHeight && calculatedHeight > 0) {
+        // Padding is 4px total (2px top + 2px bottom from inline style padding: '2px 4px')
+        const padding = 4; // 4px total (2px top + 2px bottom)
+        const maxHeight = window.innerHeight * 0.95; // Max 95% of viewport
+        // Add header height and padding to get total modal height
+        const totalHeight = calculatedHeight + headerHeight + padding;
         
-        // If we don't have rendered dimensions yet, try to get them from the ref
-        if (!imageHeight && imgRef.current) {
-          imageHeight = imgRef.current.offsetHeight;
-        }
-        if (!imageWidth && imgRef.current) {
-          imageWidth = imgRef.current.offsetWidth;
-        }
-        
-        // If we have natural dimensions, calculate from them
-        if (imageNaturalHeight && imageNaturalWidth) {
-          // Calculate width first based on viewport constraints
-          // For map view, use smaller max width (accounting for sidebar)
-          // For dashboard view, use larger max width
-          const maxWidth = isMapVisible 
-            ? Math.min(window.innerWidth * 0.4, 600) // Max 40% viewport or 600px for map view
-            : Math.min(window.innerWidth * 0.9, 1400); // Max 90% viewport or 1400px for dashboard
-          // Allow smaller minimum width - tabs will scroll if needed
-          const minWidth = isMapVisible ? 250 : 300; // Minimum width for usability
-          
-          // Start with natural width, but constrain it
-          let calculatedWidth = imageNaturalWidth;
-          
-          // If image is wider than max, scale it down
-          if (calculatedWidth > maxWidth) {
-            calculatedWidth = maxWidth;
-          }
-          // If image is narrower than min, use min (but don't stretch the image)
-          if (calculatedWidth < minWidth && imageNaturalWidth >= minWidth) {
-            calculatedWidth = minWidth;
-          }
-          
-          // Calculate height based on aspect ratio
-          const imageAspectRatio = imageNaturalHeight / imageNaturalWidth;
-          let calculatedHeight = calculatedWidth * imageAspectRatio;
-          
-          // Use rendered dimensions if available (they account for zoom/transform)
-          if (imageHeight && imageWidth) {
-            // Use rendered dimensions, but maintain aspect ratio
-            const renderedAspectRatio = imageHeight / imageWidth;
-            if (Math.abs(renderedAspectRatio - imageAspectRatio) < 0.1) {
-              // Rendered dimensions match natural aspect ratio, use them
-              calculatedHeight = imageHeight;
-              calculatedWidth = imageWidth;
-            }
-          }
-          
-          // Set width
-          console.log('📐 Setting modal width:', calculatedWidth, 'px (from natural width:', imageNaturalWidth, 'px)');
-          setCalculatedModalWidth(calculatedWidth);
-          
-          // Set height
-          if (calculatedHeight && calculatedHeight > 0) {
-            // Padding is 4px total (2px top + 2px bottom from inline style padding: '2px 4px')
-            const padding = 4; // 4px total (2px top + 2px bottom)
-            const maxHeight = window.innerHeight * 0.95; // Max 95% of viewport
-            // Add header height and padding to get total modal height
-            const totalHeight = calculatedHeight + headerHeight + padding;
-            
-            // Use calculated height if it's reasonable, otherwise use max
-            const newHeight = Math.min(totalHeight, maxHeight);
-            console.log('📐 Setting modal height:', newHeight, 'px (from image height:', calculatedHeight, 'px)');
-            setCalculatedModalHeight(newHeight);
-          }
-        } else if (imageHeight && imageWidth) {
-          // We have rendered dimensions but no natural dimensions yet
-          // Use rendered dimensions directly
-          console.log('📐 Using rendered dimensions - width:', imageWidth, 'px, height:', imageHeight, 'px');
-          setCalculatedModalWidth(imageWidth);
-          
-          const padding = 4;
-          const maxHeight = window.innerHeight * 0.95;
-          const totalHeight = imageHeight + headerHeight + padding;
-          const newHeight = Math.min(totalHeight, maxHeight);
-          setCalculatedModalHeight(newHeight);
-        }
-      });
-    } else if (!isImage) {
-      // For PDFs and DOCX, use standard dimensions
-      console.log('📐 Setting standard dimensions for PDF/DOCX');
-      if (isDOCX) {
-        if (isMapVisible) {
-          // For DOCX in map view, match reference image dimensions
-          setCalculatedModalHeight('75vh'); // Match reference image height
-          setCalculatedModalWidth('640px'); // Match reference image width
-        } else {
-          // For DOCX in dashboard view, use wider container for better document rendering
-          setCalculatedModalHeight('95vh');
-          setCalculatedModalWidth('1100px'); // Wider container for better document fit
-        }
-      } else {
-        // For PDFs, use exact same dimensions as DOCX
-        if (isMapVisible) {
-          setCalculatedModalHeight('75vh'); // Match DOCX height
-          setCalculatedModalWidth('640px'); // Match DOCX width
-        } else {
-          setCalculatedModalHeight('95vh');
-          setCalculatedModalWidth('1100px'); // Match DOCX width for consistency
-        }
+        // Use calculated height if it's reasonable, otherwise use max
+        const newHeight = Math.min(totalHeight, maxHeight);
+        setCalculatedModalHeight(newHeight);
       }
     }
-  }, [isImage, imageNaturalHeight, imageNaturalWidth, imageRenderedHeight, imageRenderedWidth, isMapVisible, headerHeight, forceUpdate, isDOCX, isPDF]);
+    // Removed PDF/DOCX dimension setting - they're already set correctly in initial state
+    // Removed imageRenderedHeight and imageRenderedWidth from dependencies to prevent feedback loop
+  }, [isImage, imageNaturalHeight, imageNaturalWidth, isMapVisible, headerHeight, isPDF, isDOCX]);
+  
+  // Reset calculation flag when file changes
+  React.useEffect(() => {
+    dimensionsCalculatedRef.current = false;
+    lastNaturalDimsRef.current = { width: null, height: null };
+  }, [file?.id]);
 
   const modalHeight = calculatedModalHeight;
   // Allow smaller minimum width - tabs will scroll if needed
@@ -1001,34 +1029,29 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           
           {/* Modal Content - Centered Dialog or Top-Left for Map View */}
           <motion.div
+            data-document-preview-modal="true"
             layout={false}
             initial={{ 
-              opacity: 0, 
-              scale: 0.95, 
-              x: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
-              y: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
+              opacity: 1, 
+              scale: 1, 
+              x: 0,
+              y: 0,
             }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
-              x: isMapVisible ? 0 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
-              y: isMapVisible ? 0 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
-              // During resize, don't animate dimensions - they're controlled by style prop
-              // Otherwise, let Framer Motion animate them
-              height: isResizing ? undefined : (typeof modalHeight === 'number' ? `${modalHeight}px` : modalHeight),
-              width: isResizing ? undefined : (typeof modalWidth === 'number' ? `${modalWidth}px` : undefined),
+              x: 0,
+              y: 0,
+              // Don't animate dimensions - they're controlled by style prop for instant display
             }}
             exit={{ 
               opacity: 0, 
-              scale: 0.95, 
-              x: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
-              y: isMapVisible ? -20 : 0, // Explicitly set to 0 for dashboard (CSS handles centering)
+              scale: 1, 
+              x: 0,
+              y: 0,
             }}
             transition={{ 
-              duration: isResizing ? 0 : 0.2,
-              // Disable all transitions during resize for immediate feedback
-              height: isResizing ? { duration: 0 } : { duration: 0.3, ease: 'easeOut' },
-              width: isResizing ? { duration: 0 } : { duration: 0.3, ease: 'easeOut' }
+              duration: 0, // Instant - no animation for all properties
             }}
             style={{
               position: 'fixed',
@@ -1052,18 +1075,24 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                     maxWidth: 'none', // Remove right-side limit in map view
                     zIndex: 100,
                     transform: 'none', // Override transform for map view
+                    // Prevent any visual transitions on dimensions
+                    transition: 'none',
                     // Resize cursor
                     ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})
                   } 
                 : { 
                     left: '50%', 
                     top: '50%', 
-                    width: typeof modalWidth === 'number' ? `${modalWidth}px` : '90vw',
-                    height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : 'auto'),
-                    maxWidth: isDOCX ? 'none' : '1400px', // Remove maxWidth constraint for DOCX
-                    minWidth: isDOCX ? '750px' : '300px', // Allow resizing for DOCX in dashboard view
-                    maxHeight: isDOCX ? '95vh' : '90vh',
+                    width: typeof modalWidth === 'number' ? `${modalWidth}px` : (typeof modalWidth === 'string' ? modalWidth : '640px'), // Default to 640px (map view width)
+                    height: typeof modalHeight === 'number' ? `${modalHeight}px` : (typeof modalHeight === 'string' ? modalHeight : '75vh'), // Default to 75vh (map view height)
+                    maxWidth: isDOCX ? 'none' : (typeof modalWidth === 'number' ? `${modalWidth}px` : typeof modalWidth === 'string' ? modalWidth : '640px'), // Use 640px as maxWidth for all documents
+                    minWidth: isDOCX ? '640px' : '300px', // Minimum width matches default
+                    maxHeight: '75vh', // Constrain max height to 75vh
+                    boxSizing: 'border-box', // Ensure padding/borders don't expand width
+                    overflow: 'hidden', // Prevent content from expanding modal
                     zIndex: 50,
+                    // Prevent any visual transitions on dimensions
+                    transition: 'none',
                     // Transform handled by CSS class .modal-centered to override Framer Motion
                     // Resize cursor
                     ...(isResizing ? { cursor: resizeDirection === 'se' ? 'nwse-resize' : resizeDirection === 'sw' ? 'nesw-resize' : resizeDirection === 'ne' ? 'nesw-resize' : resizeDirection === 'nw' ? 'nwse-resize' : resizeDirection === 'e' || resizeDirection === 'w' ? 'ew-resize' : resizeDirection === 'n' || resizeDirection === 's' ? 'ns-resize' : 'default' } : {})

@@ -7,8 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { toast } from "@/hooks/use-toast";
+import { usePreview } from '../contexts/PreviewContext';
 
 export interface SearchBarProps {
   className?: string;
@@ -47,11 +47,19 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   const [isHovered, setIsHovered] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
-  const MAX_PREVIEW_TABS = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFiles, setPreviewFiles] = useState<FileAttachmentData[]>([]);
-  const [activePreviewTabIndex, setActivePreviewTabIndex] = useState(0);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  
+  // Use shared preview context
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -487,6 +495,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       type: file.type,
       size: file.size
     };
+    
+    // Preload blob URL immediately (Instagram-style preloading)
+    // This ensures instant preview when user clicks the attachment
+    const preloadBlobUrl = () => {
+      try {
+        console.log('🚀 Preloading blob URL for attachment:', file.name);
+        const blobUrl = URL.createObjectURL(file);
+        
+        // Store preloaded blob URL in global cache
+        if (!(window as any).__preloadedAttachmentBlobs) {
+          (window as any).__preloadedAttachmentBlobs = {};
+        }
+        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        
+        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+      } catch (error) {
+        console.error('❌ Error preloading blob URL:', error);
+        // Don't throw - preloading failure shouldn't block file attachment
+      }
+    };
+    
+    // Preload immediately (don't await - let it happen in background)
+    preloadBlobUrl();
+    
     setAttachedFiles(prev => [...prev, fileData]);
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
@@ -511,6 +543,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   }, [ref]);
 
   const handleRemoveFile = (id: string) => {
+    // Clean up preloaded blob URL when file is removed
+    const preloadedBlobUrl = (window as any).__preloadedAttachmentBlobs?.[id];
+    if (preloadedBlobUrl) {
+      try {
+        URL.revokeObjectURL(preloadedBlobUrl);
+        delete (window as any).__preloadedAttachmentBlobs[id];
+        console.log('🧹 Cleaned up preloaded blob URL for attachment:', id);
+      } catch (error) {
+        console.error('Error cleaning up blob URL:', error);
+      }
+    }
+    
     setAttachedFiles(prev => prev.filter(file => file.id !== id));
     // Remove from preview tabs if it was open
     setPreviewFiles(prev => {
@@ -645,26 +689,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
-                      // Check if file is already in preview tabs
-                      const existingTabIndex = previewFiles.findIndex(f => f.id === file.id);
-                      
-                      if (existingTabIndex !== -1) {
-                        // File is already open - switch to that tab
-                        setActivePreviewTabIndex(existingTabIndex);
-                        setIsPreviewOpen(true);
-                      } else {
-                        // Add new tab (limit to MAX_PREVIEW_TABS)
-                        if (previewFiles.length >= MAX_PREVIEW_TABS) {
-                          // Remove oldest tab (first one) and add new one
-                          setPreviewFiles(prev => [...prev.slice(1), file]);
-                          setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
-                        } else {
-                          // Add new tab
-                          setPreviewFiles(prev => [...prev, file]);
-                          setActivePreviewTabIndex(previewFiles.length);
-                        }
-                        setIsPreviewOpen(true);
-                      }
+                      // Use shared preview context to add file (will add to existing preview if open)
+                      addPreviewFile(file);
                     }}
                   />
                   ))}
@@ -923,80 +949,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
             </motion.div>
           </form>
       </div>
-      
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        files={previewFiles}
-        activeTabIndex={activePreviewTabIndex}
-        isOpen={isPreviewOpen}
-        isMapVisible={isMapVisible}
-        isSidebarCollapsed={isSidebarCollapsed}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFiles([]);
-          setActivePreviewTabIndex(0);
-        }}
-        onTabChange={(index) => {
-          console.log('📑 SearchBar onTabChange called:', {
-            index,
-            previousIndex: activePreviewTabIndex,
-            filesCount: previewFiles.length,
-            fileName: previewFiles[index]?.name,
-            stackTrace: new Error().stack?.split('\n').slice(0, 8).join('\n')
-          });
-          setActivePreviewTabIndex(index);
-          console.log('✅ SearchBar activePreviewTabIndex updated to:', index);
-        }}
-        onTabClose={(index) => {
-          setPreviewFiles(prev => {
-            const newFiles = prev.filter((_, i) => i !== index);
-            if (newFiles.length === 0) {
-              setIsPreviewOpen(false);
-              setActivePreviewTabIndex(0);
-            } else if (activePreviewTabIndex >= newFiles.length) {
-              setActivePreviewTabIndex(newFiles.length - 1);
-            } else if (activePreviewTabIndex > index) {
-              // If we closed a tab before the active one, adjust index
-              setActivePreviewTabIndex(activePreviewTabIndex - 1);
-            }
-            return newFiles;
-          });
-        }}
-        onAddAttachment={() => {
-          // Trigger file input click to add new attachment to preview
-          const fileInput = document.createElement('input');
-          fileInput.type = 'file';
-          fileInput.accept = '*/*';
-          fileInput.multiple = false;
-          fileInput.onchange = (e) => {
-            const target = e.target as HTMLInputElement;
-            const file = target.files?.[0];
-            if (file) {
-              // Create FileAttachmentData from the file
-              const fileData: FileAttachmentData = {
-                id: `preview-${Date.now()}-${Math.random()}`,
-                file: file,
-                name: file.name,
-                type: file.type,
-                size: file.size
-              };
-              
-              // Add to preview tabs (limit to MAX_PREVIEW_TABS)
-              if (previewFiles.length >= MAX_PREVIEW_TABS) {
-                // Remove oldest tab (first one) and add new one
-                setPreviewFiles(prev => [...prev.slice(1), fileData]);
-                setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
-              } else {
-                // Add new tab
-                setPreviewFiles(prev => [...prev, fileData]);
-                setActivePreviewTabIndex(previewFiles.length);
-              }
-              setIsPreviewOpen(true);
-            }
-          };
-          fileInput.click();
-        }}
-      />
+      {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </motion.div>
   );
 });
