@@ -22,6 +22,10 @@ import { Button } from '@/components/ui/button';
 import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import { DocumentPreviewModal } from './DocumentPreviewModal';
+import { FileAttachmentData } from './FileAttachment';
+import { usePreview } from '../contexts/PreviewContext';
+import { RecentProjectsSection } from './RecentProjectsSection';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1411,8 +1415,81 @@ export const MainContent = ({
   const [userData, setUserData] = React.useState<any>(null);
   const mapRef = React.useRef<SquareMapRef>(null);
   
+  // Use shared preview context
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
+  
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
+
+  // Preload properties on mount (Instagram-style preloading)
+  // This ensures properties are ready when user clicks a project or starts a search
+  React.useEffect(() => {
+    const preloadProperties = async () => {
+      try {
+        console.log('🚀 Preloading properties on dashboard load...');
+        // Try to fetch properties - if backend isn't ready, it will fail gracefully
+        const allPropertyHubs = await backendApi.getAllPropertyHubs();
+          
+          if (allPropertyHubs && Array.isArray(allPropertyHubs)) {
+            // Transform property hub data to match expected format
+            const transformedProperties = allPropertyHubs.map((hub: any) => {
+              const property = hub.property || {};
+              const propertyDetails = hub.property_details || {};
+              const documents = hub.documents || [];
+              
+              return {
+                id: property.id,
+                address: property.formatted_address || property.normalized_address || '',
+                postcode: '',
+                property_type: propertyDetails.property_type || '',
+                bedrooms: propertyDetails.number_bedrooms || 0,
+                bathrooms: propertyDetails.number_bathrooms || 0,
+                soldPrice: propertyDetails.sold_price || 0,
+                rentPcm: propertyDetails.rent_pcm || 0,
+                askingPrice: propertyDetails.asking_price || 0,
+                price: propertyDetails.sold_price || propertyDetails.rent_pcm || propertyDetails.asking_price || 0,
+                square_feet: propertyDetails.size_sqft || 0,
+                days_on_market: propertyDetails.days_on_market || 0,
+                latitude: property.latitude,
+                longitude: property.longitude,
+                summary: propertyDetails.notes || `${propertyDetails.property_type || 'Property'} in ${property.formatted_address || 'Unknown location'}`,
+                features: propertyDetails.other_amenities || '',
+                condition: propertyDetails.condition || 8,
+                epc_rating: propertyDetails.epc_rating || '',
+                tenure: propertyDetails.tenure || '',
+                transaction_date: propertyDetails.last_transaction_date || '',
+                similarity: 90,
+                image: propertyDetails.primary_image_url || "/property-1.png",
+                agent: {
+                  name: "John Bell",
+                  company: "harperjamesproperty36"
+                },
+                propertyHub: hub,
+                documentCount: documents.length,
+                completenessScore: hub.summary?.completeness_score || 0
+              };
+            });
+            
+            // Store preloaded properties in a global variable for SquareMap to access
+            (window as any).__preloadedProperties = transformedProperties;
+            console.log(`✅ Preloaded ${transformedProperties.length} properties - ready for instant access`);
+          }
+        } catch (error) {
+          console.error('❌ Error preloading properties:', error);
+        }
+      };
+      
+      preloadProperties();
+    }, []);
 
   // Fetch user data on mount
   React.useEffect(() => {
@@ -1713,79 +1790,101 @@ export const MainContent = ({
           }} transition={{
             duration: 0.3,
             ease: [0.23, 1, 0.32, 1]
-          }} className="flex flex-col items-center justify-start flex-1 relative pt-32">
+          }} className="flex flex-col items-center justify-center flex-1 relative h-full">
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
                 
-                {/* VELORA Branding Section */}
-                <div className="flex flex-col items-center mb-12">
-                  {/* VELORA Logo */}
-                  <img 
-                    src="/VELORA (new) .png" 
-                    alt="VELORA" 
-                    className="max-w-[280px] h-auto mb-6"
-                    style={{ maxHeight: '120px' }}
-                    onLoad={() => {
-                      console.log('✅ VELORA logo loaded successfully');
-                    }}
-                    onError={(e) => {
-                      console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
-                      // Try URL-encoded version if direct path fails
-                      const img = e.target as HTMLImageElement;
-                      const currentSrc = img.src;
-                      
-                      // If direct path failed, try URL-encoded version
-                      if (!currentSrc.includes('%20')) {
-                        const encodedPath = '/VELORA%20(new)%20.png';
-                        console.log(`🔄 Trying URL-encoded path: ${encodedPath}`);
-                        img.src = encodedPath;
-                      } else {
-                        // If all attempts fail, hide the image
-                        console.error('❌ VELORA logo failed to load with all attempts.');
-                        img.style.display = 'none';
-                      }
-                    }}
-                  />
+                {/* Centered Content Container - Vertically and Horizontally Centered */}
+                <div className="flex flex-col items-center justify-center w-full max-w-6xl mx-auto px-4">
+                  {/* VELORA Branding Section */}
+                  <div className="flex flex-col items-center mb-16">
+                    {/* VELORA Logo */}
+                    <img 
+                      src="/VELORA%20LOGO%20%E2%80%93%201.png" 
+                      alt="VELORA" 
+                      className="max-w-[280px] h-auto mb-8"
+                      style={{ maxHeight: '120px' }}
+                      onLoad={() => {
+                        console.log('✅ VELORA logo loaded successfully');
+                      }}
+                      onError={(e) => {
+                        console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
+                      }}
+                    />
+                    
+                    {/* Dynamic Welcome Message */}
+                    {(() => {
+                      const getUserName = () => {
+                        if (userData?.first_name) {
+                          return userData.first_name;
+                        }
+                        if (userData?.email) {
+                          // Extract name from email (e.g., "user@example.com" → "user")
+                          const emailPrefix = userData.email.split('@')[0];
+                          // Capitalize first letter
+                          return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+                        }
+                        return '';
+                      };
+                      const userName = getUserName();
+                      return userName ? (
+                        <p className="text-gray-400 text-base font-light mb-0 text-center tracking-wide leading-relaxed max-w-2xl px-4">
+                          Welcome back <span className="font-normal text-gray-500">{userName}</span>, your workspace is synced and ready for your next move
+                        </p>
+                      ) : (
+                        <p className="text-gray-400 text-base font-light mb-0 text-center tracking-wide leading-relaxed max-w-2xl px-4">
+                          Welcome back, your workspace is synced and ready for your next move
+                        </p>
+                      );
+                    })()}
+                  </div>
                   
-                  {/* Dynamic Welcome Message */}
-                  {(() => {
-                    const getUserName = () => {
-                      if (userData?.first_name) {
-                        return userData.first_name;
-                      }
-                      if (userData?.email) {
-                        // Extract name from email (e.g., "user@example.com" → "user")
-                        const emailPrefix = userData.email.split('@')[0];
-                        // Capitalize first letter
-                        return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-                      }
-                      return '';
-                    };
-                    const userName = getUserName();
-                    return userName ? (
-                      <p className="text-slate-500 text-sm mb-12 text-center">
-                        Welcome back {userName}, your workspace is synced and ready for your next move
-                      </p>
-                    ) : (
-                      <p className="text-slate-500 text-sm mb-12 text-center">
-                        Welcome back, your workspace is synced and ready for your next move
-                      </p>
-                    );
-                  })()}
+                  {/* Recent Projects Section */}
+                  <div className="w-full mb-8">
+                    <RecentProjectsSection 
+                      onOpenProperty={(address, coordinates, propertyId) => {
+                        console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
+                        
+                        // Open map mode
+                        setIsMapVisible(true);
+                        
+                        // Skip address search when we have a propertyId to avoid geocoding conflicts
+                        // The property will be found by ID instead, which is more reliable
+                        if (!propertyId) {
+                          setMapSearchQuery(address);
+                          setHasPerformedSearch(true);
+                        }
+                        
+                        // Store selection for when map is ready
+                        (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+                        
+                        // Single attempt after map has time to initialize
+                        // Use a single delay to ensure smooth transition
+                        setTimeout(() => {
+                          if (mapRef.current) {
+                            console.log('✅ Selecting property after map initialization');
+                            mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                          }
+                        }, 500);
+                      }}
+                    />
+                  </div>
+                  
+                  {/* Unified Search Bar - adapts based on context */}
+                  <div className="w-full flex justify-center items-center">
+                    <SearchBar 
+                      onSearch={handleSearch} 
+                      onQueryStart={handleQueryStart} 
+                      onMapToggle={handleMapToggle}
+                      resetTrigger={resetTrigger}
+                      isMapVisible={isMapVisible}
+                      isInChatMode={isInChatMode}
+                      currentView={currentView}
+                      hasPerformedSearch={hasPerformedSearch}
+                      isSidebarCollapsed={isSidebarCollapsed}
+                    />
+                  </div>
                 </div>
-                
-                {/* Unified Search Bar - adapts based on context */}
-                <SearchBar 
-                  onSearch={handleSearch} 
-                  onQueryStart={handleQueryStart} 
-                  onMapToggle={handleMapToggle}
-                  resetTrigger={resetTrigger}
-                  isMapVisible={isMapVisible}
-                  isInChatMode={isInChatMode}
-                  currentView={currentView}
-                  hasPerformedSearch={hasPerformedSearch}
-                  isSidebarCollapsed={isSidebarCollapsed}
-                />
                 
                 {/* Full Screen Map */}
                 <SquareMap
@@ -2295,6 +2394,63 @@ export const MainContent = ({
       </div>
       
       {/* Search Bar positioning is now handled internally by the SearchBar component */}
+      
+      {/* Shared Document Preview Modal - used by SearchBar, ChatInterface, and PropertyFilesModal */}
+      <DocumentPreviewModal
+        files={previewFiles}
+        activeTabIndex={activePreviewTabIndex}
+        isOpen={isPreviewOpen}
+        onClose={() => {
+          setIsPreviewOpen(false);
+          setPreviewFiles([]);
+          setActivePreviewTabIndex(0);
+        }}
+        onTabChange={(index) => {
+          setActivePreviewTabIndex(index);
+        }}
+        onTabClose={(index) => {
+          setPreviewFiles(prev => {
+            const newFiles = prev.filter((_, i) => i !== index);
+            if (newFiles.length === 0) {
+              setIsPreviewOpen(false);
+              setActivePreviewTabIndex(0);
+            } else {
+              // Adjust active index if needed
+              if (index < activePreviewTabIndex) {
+                setActivePreviewTabIndex(activePreviewTabIndex - 1);
+              } else if (index === activePreviewTabIndex && activePreviewTabIndex >= newFiles.length) {
+                setActivePreviewTabIndex(newFiles.length - 1);
+              }
+            }
+            return newFiles;
+          });
+        }}
+        onAddAttachment={() => {
+          // Trigger file input click to add new attachment to preview
+          const fileInput = document.createElement('input');
+          fileInput.type = 'file';
+          fileInput.accept = '*/*';
+          fileInput.multiple = false;
+          fileInput.onchange = (e) => {
+            const target = e.target as HTMLInputElement;
+            const file = target.files?.[0];
+            if (file) {
+              // Create FileAttachmentData from the file
+              const fileData: FileAttachmentData = {
+                id: `preview-${Date.now()}-${Math.random()}`,
+                file: file,
+                name: file.name,
+                type: file.type,
+                size: file.size
+              };
+              addPreviewFile(fileData);
+            }
+          };
+          fileInput.click();
+        }}
+        isMapVisible={isMapVisible}
+        isSidebarCollapsed={isSidebarCollapsed}
+      />
       
       {/* Drag and Drop Overlay - Full Screen */}
       <AnimatePresence>

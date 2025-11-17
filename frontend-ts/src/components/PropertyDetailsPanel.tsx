@@ -35,46 +35,103 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
+  
+  // Sync ref with state
+  React.useEffect(() => {
+    isFilesModalOpenRef.current = isFilesModalOpen;
+  }, [isFilesModalOpen]);
   const [modalPosition, setModalPosition] = useState<{ top: number; left: number } | undefined>();
   const [isFilesLoading, setIsFilesLoading] = useState(false);
   const [hasFilesFetched, setHasFilesFetched] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
+  const isClosingRef = useRef(false); // Track if we're in the process of closing
+  const isFilesModalOpenRef = useRef(false); // Track modal state in ref to avoid race conditions
 
   // Load documents when property changes
   useEffect(() => {
     if (property && property.id) {
-      // First, check if documents are already available in propertyHub
+      console.log('📄 PropertyDetailsPanel: Property changed, loading documents for:', property.id);
+      
+      // First, check for preloaded files (Instagram-style preloading)
+      const preloadedFiles = (window as any).__preloadedPropertyFiles?.[property.id];
+      if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+        console.log('✅ Using preloaded files for property:', property.id, 'Count:', preloadedFiles.length);
+        setDocuments(preloadedFiles);
+        setLoading(false);
+        return;
+      }
+      
+      // Second, check if documents are already available in propertyHub
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
+        console.log('✅ Using propertyHub documents:', property.id, 'Count:', property.propertyHub.documents.length);
         setDocuments(property.propertyHub.documents);
         setLoading(false);
+        // Also store in preloaded files for future use
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[property.id] = property.propertyHub.documents;
       } else {
+        // Load documents in background (no loading state)
+        console.log('📄 No preloaded files found, loading documents for property:', property.id);
         loadPropertyDocuments();
       }
+    } else {
+      console.log('⚠️ PropertyDetailsPanel: No property or property.id');
+      setDocuments([]);
     }
   }, [property]);
 
   const loadPropertyDocuments = async () => {
-    if (!property?.id) return;
+    if (!property?.id) {
+      console.log('⚠️ loadPropertyDocuments: No property or property.id');
+      return;
+    }
     
-    setLoading(true);
+    // Don't show loading state - load silently in background
     setError(null);
     
     try {
       console.log('📄 Loading documents for property:', property.id);
       const response = await backendApi.getPropertyHubDocuments(property.id);
+      console.log('📄 API response:', response);
+      console.log('📄 API response type:', typeof response, 'Is array:', Array.isArray(response));
       
-      if (response && response.documents) {
-        setDocuments(response.documents);
-        console.log('📄 Loaded documents:', response.documents);
+      // API returns { success: true, data: { documents: [...] } }
+      // BackendApi.tsx returns response.data, so response is { documents: [...] }
+      let documentsToUse = null;
+      
+      if (response && response.documents && Array.isArray(response.documents)) {
+        documentsToUse = response.documents;
+        console.log('✅ Found documents in response.documents:', documentsToUse.length);
+      } else if (response && Array.isArray(response)) {
+        // Handle case where API returns array directly
+        documentsToUse = response;
+        console.log('✅ Found documents as array:', documentsToUse.length);
+      } else if (response && response.data && response.data.documents && Array.isArray(response.data.documents)) {
+        // Handle case where response still has data wrapper
+        documentsToUse = response.data.documents;
+        console.log('✅ Found documents in response.data.documents:', documentsToUse.length);
+      }
+      
+      if (documentsToUse && documentsToUse.length > 0) {
+        console.log('✅ Loaded documents:', documentsToUse.length, 'documents');
+        setDocuments(documentsToUse);
+        // Store in preloaded files for future use
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[property.id] = documentsToUse;
+        console.log('✅ Stored documents in preloaded cache for property:', property.id);
       } else {
         // Fallback to propertyHub documents if API returns nothing
         if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
+          console.log('📄 Using propertyHub documents as fallback:', property.propertyHub.documents.length);
           setDocuments(property.propertyHub.documents);
-          console.log('📄 Using propertyHub documents as fallback:', property.propertyHub.documents);
         } else {
+          console.log('⚠️ No documents found for property:', property.id);
           setDocuments([]);
-          console.log('📄 No documents found for property');
         }
       }
     } catch (err) {
@@ -82,12 +139,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       setError('Failed to load documents');
       // Fallback to propertyHub documents on error
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
+        console.log('📄 Using propertyHub documents as error fallback');
         setDocuments(property.propertyHub.documents);
       } else {
         setDocuments([]);
       }
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -262,7 +318,23 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     );
   };
 
-  if (!isVisible || !property) return null;
+  if (!isVisible) return null;
+  
+  // Debug logging for blank screen issue
+  if (!property) {
+    console.error('❌ PropertyDetailsPanel: property is null/undefined', {
+      isVisible,
+      property,
+      propertyId: property?.id
+    });
+    return null;
+  }
+  
+  console.log('✅ PropertyDetailsPanel rendering with property:', {
+    id: property.id,
+    address: property.address,
+    hasPropertyHub: !!property.propertyHub
+  });
 
   const yieldPercentage = calculateYield();
   const lettingInfo = getLettingInfo();
@@ -279,11 +351,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 20 }}
           className="fixed bottom-5 right-4 w-[420px] max-h-[calc(100vh-2rem)] z-[100] flex flex-col"
+          style={{ backgroundColor: 'transparent' }}
           data-property-panel
         >
-        {/* Card Container - Modern White Card */}
+        {/* Card Container - Modern White Card - Matching database white */}
         <motion.div 
-          className="bg-white rounded-xl shadow-xl flex flex-col overflow-hidden flex-1 border border-gray-100"
+          className="bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden flex-1 border border-gray-200"
+          style={{ 
+            backgroundColor: '#ffffff',
+            filter: 'none', // Remove any filters that might affect brightness
+            opacity: 1, // Ensure full opacity
+          }}
           layout={false}
         >
           {/* Scrollable Content Container */}
@@ -312,9 +390,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               </div>
 
               {/* Title and Summary Section */}
-              <div className="p-4 pb-6">
+              <div className="px-5 pt-5 pb-4">
                 {/* Title - Moved below image */}
-                <h2 className="text-lg font-semibold text-gray-900 leading-tight mb-2">
+                <h2 className="text-lg font-semibold text-gray-900 leading-tight mb-3">
                   {getPropertyName(property.address || 'Unknown Address')}
                 </h2>
 
@@ -326,47 +404,146 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             </div>
 
             {/* Container 2: Icons, Property Info, Action Buttons (completely independent) */}
-            <div className="px-6 py-5 pt-0" style={{ position: 'relative', transform: 'translateZ(0)', contain: 'layout style paint', isolation: 'isolate', marginTop: '0.5rem' }}>
-                {/* Action Buttons */}
-                <div className="flex gap-2 mb-6">
+            <div className="px-5 pb-5" style={{ position: 'relative', transform: 'translateZ(0)', contain: 'layout style paint', isolation: 'isolate' }}>
+                {/* Action Buttons - Sharp outline on hover */}
+                <div className="flex gap-2.5 mb-5">
                 <button
                   ref={viewFilesButtonRef}
-                  onClick={() => {
-                    if (isFilesModalOpen) {
-                      // Close the modal if it's already open
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Access native event for stopImmediatePropagation
+                    if (e.nativeEvent && 'stopImmediatePropagation' in e.nativeEvent) {
+                      (e.nativeEvent as any).stopImmediatePropagation();
+                    }
+                    
+                    // Prevent reopening if we're in the process of closing
+                    if (isClosingRef.current) {
+                      return;
+                    }
+                    
+                    // Use ref to check state to avoid race conditions
+                    const currentModalState = isFilesModalOpenRef.current;
+                    
+                    if (currentModalState) {
+                      // Close the modal if it's already open - just hide it, don't reset fetch state
+                      console.log('🔴 Closing files modal, isFilesModalOpen:', currentModalState);
+                      isClosingRef.current = true;
                       setIsFilesModalOpen(false);
+                      console.log('🔴 Set isFilesModalOpen to false');
+                      // Reset closing flag after a brief delay
+                      setTimeout(() => {
+                        isClosingRef.current = false;
+                      }, 200);
+                      // Don't reset hasFilesFetched - keep it true so we don't show loading animation again
+                      return; // Early return to prevent any other logic from running
                     } else {
-                      // Calculate position above the panel using viewport coordinates
-                      // Use requestAnimationFrame to ensure DOM is ready
-                      requestAnimationFrame(() => {
-                        if (panelRef.current) {
-                          const panelRect = panelRef.current.getBoundingClientRect();
-                          // Ensure modal doesn't go off-screen
-                          const modalWidth = 420; // Modal width (matches property card width)
-                          const viewportWidth = window.innerWidth;
-                          const leftPosition = Math.max(
-                            modalWidth / 2 + 10, // Minimum left position (10px padding)
-                            Math.min(
-                              panelRect.left + (panelRect.width / 2), // Center of panel
-                              viewportWidth - (modalWidth / 2) - 10 // Maximum right position
-                            )
-                          );
-                          
-                          setModalPosition({
-                            top: panelRect.top, // Top of the panel
-                            left: leftPosition // Center of the panel horizontally (constrained to viewport)
-                          });
-                          setIsFilesModalOpen(true);
-                        }
-                      });
+                      // Check if files are preloaded before opening modal
+                      const propertyId = property?.id;
+                      if (!propertyId) return;
+                      
+                      // First check for preloaded files
+                      const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+                      if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+                        // Files are ready - open modal immediately
+                        requestAnimationFrame(() => {
+                          if (panelRef.current && !isClosingRef.current) {
+                            const panelRect = panelRef.current.getBoundingClientRect();
+                            const modalWidth = 420;
+                            const viewportWidth = window.innerWidth;
+                            const leftPosition = Math.max(
+                              modalWidth / 2 + 10,
+                              Math.min(
+                                panelRect.left + (panelRect.width / 2),
+                                viewportWidth - (modalWidth / 2) - 10
+                              )
+                            );
+                            
+                            setModalPosition({
+                              top: panelRect.top,
+                              left: leftPosition
+                            });
+                            setIsFilesModalOpen(true);
+                          }
+                        });
+                      } else {
+                        // Files not preloaded - load them first, then open modal
+                        console.log('📄 Files not preloaded, loading documents for property:', propertyId);
+                        const loadAndOpen = async () => {
+                          try {
+                            const response = await backendApi.getPropertyHubDocuments(propertyId);
+                            console.log('📄 View Files - API response:', response);
+                            
+                            let documentsToUse = null;
+                            if (response && response.documents && Array.isArray(response.documents)) {
+                              documentsToUse = response.documents;
+                            } else if (Array.isArray(response)) {
+                              documentsToUse = response;
+                            }
+                            
+                            if (documentsToUse && documentsToUse.length > 0) {
+                              // Store in preloaded files
+                              if (!(window as any).__preloadedPropertyFiles) {
+                                (window as any).__preloadedPropertyFiles = {};
+                              }
+                              (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
+                              console.log('✅ Loaded and stored documents:', documentsToUse.length, 'files');
+                              
+                              // Now open modal with files ready
+                              requestAnimationFrame(() => {
+                                if (panelRef.current && !isClosingRef.current) {
+                                  const panelRect = panelRef.current.getBoundingClientRect();
+                                  const modalWidth = 420;
+                                  const viewportWidth = window.innerWidth;
+                                  const leftPosition = Math.max(
+                                    modalWidth / 2 + 10,
+                                    Math.min(
+                                      panelRect.left + (panelRect.width / 2),
+                                      viewportWidth - (modalWidth / 2) - 10
+                                    )
+                                  );
+                                  
+                                  setModalPosition({
+                                    top: panelRect.top,
+                                    left: leftPosition
+                                  });
+                                  setIsFilesModalOpen(true);
+                                  console.log('✅ Modal opened after loading documents');
+                                }
+                              });
+                            } else {
+                              console.log('⚠️ No documents found for property:', propertyId);
+                              // If no documents found, don't open modal at all
+                            }
+                          } catch (error) {
+                            console.error('❌ Error loading files before opening modal:', error);
+                            // Don't open modal if there's an error or no documents
+                          }
+                        };
+                        
+                        loadAndOpen();
+                      }
                     }
                   }}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
+                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-all duration-150 rounded-lg flex-shrink-0 relative flex-1 justify-center border border-transparent hover:border-gray-300 hover:bg-gray-100/50"
+                  style={{
+                    minWidth: 'fit-content',
+                    maxWidth: 'none',
+                    width: 'auto',
+                    flexBasis: 'auto',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                    boxSizing: 'border-box',
+                    display: 'inline-flex',
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
+                    touchAction: 'none',
+                  }}
                 >
-                  <div className="flex items-center justify-center gap-1.5">
-                    <FileText className="w-4 h-4" />
-                    <span>{isFilesModalOpen && hasFilesFetched ? 'Close Database' : 'View Files'}</span>
-                  </div>
+                  <FileText className="w-4 h-4 text-gray-600" />
+                  <span className="text-sm font-medium text-gray-700" style={{ fontSize: '13px', fontWeight: 500, lineHeight: '1.2' }}>
+                    {isFilesModalOpen && hasFilesFetched ? 'Close Files' : 'View Files'}
+                  </span>
                 </button>
                 
                 <button
@@ -374,45 +551,54 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     // TODO: Wire up document upload functionality
                     console.log('Upload clicked');
                   }}
-                  className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
+                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-all duration-150 rounded-lg flex-shrink-0 relative flex-1 justify-center border border-transparent hover:border-gray-300 hover:bg-gray-100/50"
+                  style={{
+                    minWidth: 'fit-content',
+                    maxWidth: 'none',
+                    width: 'auto',
+                    flexBasis: 'auto',
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                    boxSizing: 'border-box',
+                    display: 'inline-flex',
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
+                    touchAction: 'none',
+                  }}
                 >
-                  <div className="flex items-center justify-center gap-1.5">
-                    <Upload className="w-4 h-4" />
-                    <span>Upload</span>
-                  </div>
+                  <Upload className="w-4 h-4 text-gray-600" />
+                  <span className="text-sm font-medium text-gray-700" style={{ fontSize: '13px', fontWeight: 500, lineHeight: '1.2' }}>
+                    Upload
+                  </span>
                 </button>
                 </div>
 
                 {/* Property Details with Icons - Horizontal Rows */}
-                <div className="space-y-3 mb-2">
+                <div className="space-y-3.5">
                 {/* Row 1: Document Count, Square Footage, EPC Rating */}
-                <div className="flex items-center gap-6 flex-wrap">
+                <div className="flex items-center gap-7 flex-wrap">
                   {/* Document Count */}
                   <div className="flex items-center text-xs text-gray-600">
-                    <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <File className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                     <span>
-                      {loading ? (
-                        'Loading...'
-                      ) : (
-                        (() => {
-                          let docCount = 0;
-                          if (documents.length > 0) {
-                            docCount = documents.length;
-                          } else if (property.propertyHub?.documents?.length) {
-                            docCount = property.propertyHub.documents.length;
-                          } else if (property.documentCount) {
-                            docCount = property.documentCount;
-                          }
-                          return `${docCount} Document${docCount !== 1 ? 's' : ''}`;
-                        })()
-                      )}
+                      {(() => {
+                        let docCount = 0;
+                        if (documents.length > 0) {
+                          docCount = documents.length;
+                        } else if (property.propertyHub?.documents?.length) {
+                          docCount = property.propertyHub.documents.length;
+                        } else if (property.documentCount) {
+                          docCount = property.documentCount;
+                        }
+                        return `${docCount} Document${docCount !== 1 ? 's' : ''}`;
+                      })()}
                     </span>
                   </div>
 
                   {/* Square Footage */}
                   {property.square_feet && (
                     <div className="flex items-center text-xs text-gray-600">
-                      <Ruler className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <Ruler className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                       <span>{property.square_feet.toLocaleString()} sqft</span>
                     </div>
                   )}
@@ -420,30 +606,30 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   {/* EPC Rating */}
                   {property.epc_rating && (
                     <div className="flex items-center text-xs text-gray-600">
-                      <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <File className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                       <span>EPC: {property.epc_rating} Rating</span>
                     </div>
                   )}
                 </div>
 
                 {/* Row 2: Price, Property Type, Tenure */}
-                <div className="flex items-center gap-6 flex-wrap">
+                <div className="flex items-center gap-7 flex-wrap">
                   {/* Price */}
                   <div className="flex items-center text-xs text-gray-600">
-                    <DollarSign className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <DollarSign className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                     <span>{getPrimaryPrice()}</span>
                   </div>
 
                   {/* Property Type */}
                   <div className="flex items-center text-xs text-gray-600">
-                    <Home className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                    <Home className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                     <span>{property.property_type || 'Dwellinghouse'}</span>
                   </div>
 
                   {/* Tenure */}
                   {property.tenure && (
                     <div className="flex items-center text-xs text-gray-600">
-                      <File className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                      <File className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                       <span>{property.tenure}</span>
                     </div>
                   )}
@@ -451,16 +637,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                 {/* Row 3: Bedrooms & Bathrooms - Only show if values exist and > 0 */}
                 {(property.bedrooms > 0 || property.bathrooms > 0) && (
-                  <div className="flex items-center gap-6 text-xs text-gray-600">
+                  <div className="flex items-center gap-7 text-xs text-gray-600">
                     {property.bedrooms > 0 && (
                       <div className="flex items-center">
-                        <Bed className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                        <Bed className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                         <span>{property.bedrooms}</span>
                       </div>
                     )}
                     {property.bathrooms > 0 && (
                       <div className="flex items-center">
-                        <Bath className="w-4 h-4 mr-2 text-gray-500 flex-shrink-0" />
+                        <Bath className="w-4 h-4 mr-2.5 text-gray-500 flex-shrink-0" />
                         <span>{property.bathrooms}</span>
                       </div>
                     )}
@@ -470,7 +656,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                 {/* Additional Info (Rent, Yield, Letting) - Full Width if Present */}
                 {(property.rentPcm > 0 || lettingInfo) && (
-                  <div className="pt-4 mt-4 border-t border-gray-100 space-y-2">
+                  <div className="pt-5 mt-5 border-t border-gray-100 space-y-2.5">
                     {property.rentPcm > 0 && (
                       <div className="text-sm text-gray-700">
                         <span className="font-medium">Rent:</span> £{property.rentPcm.toLocaleString()} pcm
@@ -500,8 +686,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             propertyAddress={property?.formatted_address || property?.address}
             isOpen={isFilesModalOpen}
             onClose={() => {
+              console.log('🔴 PropertyFilesModal onClose called');
               setIsFilesModalOpen(false);
-              setHasFilesFetched(false);
+              // Don't reset hasFilesFetched - keep it true so we don't show loading animation again when reopening
             }}
             position={modalPosition}
             onLoadingStateChange={(isLoading, hasFetched) => {

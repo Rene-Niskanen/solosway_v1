@@ -948,6 +948,25 @@ def proxy_upload():
         logger.error(f"❌ Proxy upload failed: {e}")
         return jsonify({'error': str(e)}), 500
 
+@views.route('/api/documents/temp-preview', methods=['POST'])
+@login_required
+def temp_preview():
+    """Simple temp upload for preview - no DB save"""
+    file = request.files.get('file')
+    if not file:
+        return jsonify({'error': 'No file'}), 400
+    
+    s3_key = f"temp-preview/{uuid.uuid4()}/{secure_filename(file.filename)}"
+    s3_client = boto3.client('s3', 
+        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+        region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'))
+    
+    file.seek(0)
+    s3_client.put_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key, Body=file.read(), ContentType=file.content_type)
+    url = s3_client.generate_presigned_url('get_object', Params={'Bucket': os.environ['S3_UPLOAD_BUCKET'], 'Key': s3_key}, ExpiresIn=3600)
+    return jsonify({'presigned_url': url}), 200
+
 @views.route('/api/documents/test-s3', methods=['POST'])
 @login_required
 def test_s3_upload():

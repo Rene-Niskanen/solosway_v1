@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { FileText } from "lucide-react";
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
+import { usePreview } from '../contexts/PreviewContext';
 
 interface PropertyDocument {
   id: string;
@@ -43,116 +44,92 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
   isSidebarCollapsed = false
 }) => {
   const [documents, setDocuments] = React.useState<PropertyDocument[]>([]);
-  const [isLoading, setIsLoading] = React.useState(true); // Start as true to prevent premature "No documents found"
+  const [isLoading, setIsLoading] = React.useState(false); // No loading state - files are preloaded
   const [error, setError] = React.useState<string | null>(null);
   const [hasFetched, setHasFetched] = React.useState(false); // Track if we've attempted to fetch
-  const [loadingProgress, setLoadingProgress] = React.useState(0); // Progress bar state
-  const [previewFile, setPreviewFile] = React.useState<FileAttachmentData | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
+  const [searchQuery, setSearchQuery] = React.useState<string>(''); // Search query for filtering documents
+  
+  // Use shared preview context instead of local state
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
   const modalRef = React.useRef<HTMLDivElement>(null);
-  const progressIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
-  const currentProgressRef = React.useRef<number>(0);
+  const lastFetchedPropertyIdRef = React.useRef<string | null>(null);
 
-  // Fetch documents when modal opens
+  // Clear documents when property changes (but not when just closing/opening)
+  React.useEffect(() => {
+    if (propertyId && lastFetchedPropertyIdRef.current && lastFetchedPropertyIdRef.current !== propertyId) {
+      // Property changed - clear old documents
+      setDocuments([]);
+      setHasFetched(false);
+      lastFetchedPropertyIdRef.current = null;
+    }
+  }, [propertyId]);
+
+  // Fetch documents when modal opens - check for preloaded files first
   React.useEffect(() => {
     if (isOpen && propertyId) {
-      // Reset state when modal opens to prevent showing "No documents found" prematurely
-      setIsLoading(true);
-      setHasFetched(false);
-      setDocuments([]);
-      setError(null);
-      setLoadingProgress(0);
-      currentProgressRef.current = 0;
+      // First, check for preloaded files (Instagram-style preloading)
+      const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+      if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+        console.log('✅ Using preloaded files for property:', propertyId, 'Count:', preloadedFiles.length);
+        setDocuments(preloadedFiles);
+        setIsLoading(false);
+        // Always set hasFetched to true when we have preloaded files
+        setHasFetched(true);
+        lastFetchedPropertyIdRef.current = propertyId;
+        return; // Skip fetching - files already preloaded
+      }
       
-      const fetchStartTime = Date.now();
+      // Check if property changed
+      const propertyChanged = lastFetchedPropertyIdRef.current !== null && lastFetchedPropertyIdRef.current !== propertyId;
       
-      // Start slow progress animation that will be completed when fetch finishes
-      progressIntervalRef.current = setInterval(() => {
-        const elapsed = Date.now() - fetchStartTime;
-        // Gradually increase progress slowly (reaches ~70% over 2 seconds if fetch is slow)
-        // This provides visual feedback, but won't reach 100% until fetch completes
-        const progress = Math.min(70, (elapsed / 2000) * 70);
-        currentProgressRef.current = progress;
-        setLoadingProgress(progress);
-      }, 16); // ~60fps
+      // If we already have documents loaded for this property, don't reset state
+      if (documents.length > 0 && lastFetchedPropertyIdRef.current === propertyId) {
+        console.log('✅ Using existing documents for property:', propertyId, 'Count:', documents.length);
+        setIsLoading(false);
+        setHasFetched(true);
+        return; // Skip fetching if we already have documents for this property
+      }
       
-      const fetchPromise = fetchDocuments();
-      fetchPromise.then(() => {
-        // Fetch completed - clear interval and animate to 100%
-        if (progressIntervalRef.current) {
-          clearInterval(progressIntervalRef.current);
-          progressIntervalRef.current = null;
-        }
-        
-        const fetchDuration = Date.now() - fetchStartTime;
-        // Animate to 100% - duration based on how quick the fetch was
-        // Quick fetches animate quickly, slower fetches animate more smoothly
-        const animationDuration = Math.max(150, Math.min(400, fetchDuration / 4));
-        
-        // Animate to 100% smoothly from current progress
-        const startProgress = currentProgressRef.current;
-        const startTime = Date.now();
-        const animateTo100 = () => {
-          const elapsed = Date.now() - startTime;
-          const progress = Math.min(100, startProgress + ((100 - startProgress) * (elapsed / animationDuration)));
-          currentProgressRef.current = progress;
-          setLoadingProgress(progress);
-          
-          if (progress < 100) {
-            requestAnimationFrame(animateTo100);
-          } else {
-            currentProgressRef.current = 100;
-            setLoadingProgress(100);
-          }
-        };
-        requestAnimationFrame(animateTo100);
-      }).catch(() => {
-        // Fetch failed - still complete the progress bar
-        if (progressIntervalRef.current) {
-          clearInterval(progressIntervalRef.current);
-          progressIntervalRef.current = null;
-        }
-        
-        const fetchDuration = Date.now() - fetchStartTime;
-        const animationDuration = Math.max(150, Math.min(400, fetchDuration / 4));
-        
-        const startProgress = currentProgressRef.current;
-        const startTime = Date.now();
-        const animateTo100 = () => {
-          const elapsed = Date.now() - startTime;
-          const progress = Math.min(100, startProgress + ((100 - startProgress) * (elapsed / animationDuration)));
-          currentProgressRef.current = progress;
-          setLoadingProgress(progress);
-          
-          if (progress < 100) {
-            requestAnimationFrame(animateTo100);
-          } else {
-            currentProgressRef.current = 100;
-            setLoadingProgress(100);
-          }
-        };
-        requestAnimationFrame(animateTo100);
-      });
+      // Track which property we're fetching for
+      const previousPropertyId = lastFetchedPropertyIdRef.current;
+      lastFetchedPropertyIdRef.current = propertyId;
+      
+      // Only reset state if property changed (not when just reopening)
+      if (propertyChanged) {
+        console.log('🔄 Property changed, resetting state');
+        setIsLoading(false);
+        setHasFetched(false);
+        setDocuments([]);
+        setError(null);
+      } else {
+        // Don't reset hasFetched if we're just reopening - keep existing state
+        // This allows the modal to show immediately if documents were already loaded
+        console.log('🔄 Reopening modal for same property, keeping existing state');
+      }
+      
+      // Fetch documents silently in background (only if we don't have them)
+      if (documents.length === 0 || propertyChanged) {
+        fetchDocuments();
+      }
     } else if (!isOpen) {
-      // Reset when modal closes
-      setDocuments([]);
-      setIsLoading(true); // Reset to true so next open doesn't show "No documents found"
-      setHasFetched(false);
+      // Don't reset documents when modal closes - keep them in memory
+      // This prevents showing loading state again when reopening
+      setIsLoading(false);
+      // Keep hasFetched true if we have documents (so we don't show empty state)
+      if (documents.length > 0) {
+        setHasFetched(true);
+      }
       setError(null);
-      setLoadingProgress(0);
-      currentProgressRef.current = 0;
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-        progressIntervalRef.current = null;
-      }
     }
-    
-    return () => {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-        progressIntervalRef.current = null;
-      }
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, propertyId]);
 
@@ -167,22 +144,45 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
                               target.closest('[data-chat-container]') ||
                               target.closest('[data-chat-wrapper]');
         
-        if (!isChatElement) {
+        // Don't close if clicking on the View Files/Close Files button or property panel
+        const isPropertyPanel = target.closest('[data-property-panel]');
+        const isViewFilesButton = target.closest('button') && (
+          target.textContent?.includes('View Files') || 
+          target.textContent?.includes('Close Files') ||
+          target.closest('button')?.textContent?.includes('View Files') ||
+          target.closest('button')?.textContent?.includes('Close Files')
+        );
+        
+        // Don't close if clicking on the DocumentPreviewModal (preview modal) or if preview is open
+        const isPreviewModal = target.closest('[data-document-preview-modal]') ||
+                              target.closest('.document-preview-modal') ||
+                              (target.closest('[role="dialog"]') && target.closest('[class*="preview"]'));
+        
+        // Also check if preview modal is currently open (from shared context)
+        // If preview is open, don't close the files modal when clicking outside
+        if (!isChatElement && !isViewFilesButton && !isPropertyPanel && !isPreviewModal && !isPreviewOpen) {
           onClose();
         }
       }
     };
 
     if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+      // Use capture phase and a small delay to avoid conflicts with button clicks
+      const timeoutId = setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside, true);
+      }, 150);
+      
+      return () => {
+        clearTimeout(timeoutId);
+        document.removeEventListener('mousedown', handleClickOutside, true);
+      };
     }
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, isPreviewOpen]);
 
   const fetchDocuments = async (): Promise<void> => {
-    setIsLoading(true);
+    // Don't show loading state - load silently
     setError(null);
-    setHasFetched(false);
+    // Don't reset hasFetched here - let it be set based on results
     try {
       // Use the backend API endpoint
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
@@ -196,18 +196,28 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
       
       const data = await response.json();
       if (data.success && data.data?.documents) {
-        setDocuments(data.data.documents);
+        const fetchedDocuments = data.data.documents;
+        setDocuments(fetchedDocuments);
+        // Store in preloaded files for future use
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[propertyId] = fetchedDocuments;
+        // Only set hasFetched to true if we have documents (never show empty state)
+        setHasFetched(fetchedDocuments.length > 0);
+        console.log('✅ Fetched documents for property:', propertyId, 'Count:', fetchedDocuments.length);
       } else {
         setDocuments([]);
+        // Don't set hasFetched to true if no documents - keep modal hidden
+        setHasFetched(false);
+        console.log('⚠️ No documents found for property:', propertyId);
       }
-      setHasFetched(true);
     } catch (err) {
-      console.error('Error fetching property documents:', err);
+      console.error('❌ Error fetching property documents:', err);
       setError('Failed to load documents');
       setDocuments([]);
-      setHasFetched(true);
-    } finally {
-      setIsLoading(false);
+      // Don't set hasFetched to true on error - keep modal hidden
+      setHasFetched(false);
     }
   };
 
@@ -349,8 +359,8 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
         size: document.file_size || blob.size
       };
       
-      setPreviewFile(fileData);
-      setIsPreviewOpen(true);
+      // Use shared preview context to add file (will add to existing preview if open)
+      addPreviewFile(fileData);
     } catch (err) {
       console.error('❌ Error opening document:', err);
       // Fallback: try to open in new tab using document URL or S3 path
@@ -388,12 +398,13 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
 
   const modalContent = (
     <AnimatePresence>
-      {isOpen && (
+      {isOpen && hasFetched && documents.length > 0 && (
         <>
           {/* No backdrop - transparent overlay */}
           
           {/* Modal */}
           <motion.div
+            key={`property-files-modal-${propertyId}`}
             ref={modalRef}
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -413,45 +424,61 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
               width: '420px',
               maxHeight: '600px',
               zIndex: 9999, // Very high z-index to appear above everything
+              backgroundColor: '#ffffff', // Explicit white to match property card
+              filter: 'none', // Remove any filters that might affect brightness
+              opacity: 1, // Ensure full opacity
             }}
             onClick={(e) => e.stopPropagation()} // Prevent clicks from closing modal
           >
             {/* Content */}
             <div className="overflow-y-auto rounded-b-lg" style={{ maxHeight: '500px' }}>
-              {isLoading || !hasFetched ? (
-                // Show thin loading progress bar while fetching - no header, minimal padding, no white container
-                <div className="w-full py-1 px-4">
-                  <motion.div
-                    className="h-1 bg-gray-700"
-                    initial={{ width: '0%' }}
-                    animate={{ width: `${loadingProgress}%` }}
-                    transition={{ duration: 0.15, ease: 'linear' }}
-                    style={{ 
-                      borderRadius: 0,
-                      willChange: 'width'
-                    }}
-                  />
-                </div>
-              ) : (
+              {hasFetched && documents.length > 0 ? (
                 <>
                   {/* Header - Only show when documents are loaded */}
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white rounded-t-lg">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-semibold text-gray-900">Document</h3>
+                  <div className="px-4 pt-3 pb-2 border-b border-gray-200 bg-white rounded-t-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-gray-900">Property Files</h3>
+                      <div className="flex items-center gap-2">
+                        {/* Sort icon */}
+                        <button className="p-1.5 hover:bg-gray-100 rounded transition-colors">
+                          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                          </svg>
+                        </button>
+                        {/* Filter icon */}
+                        <button className="p-1.5 hover:bg-gray-100 rounded transition-colors">
+                          <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {/* Sort icon */}
-                      <button className="p-1.5 hover:bg-gray-100 rounded transition-colors">
-                        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                        </svg>
-                      </button>
-                      {/* Filter icon */}
-                      <button className="p-1.5 hover:bg-gray-100 rounded transition-colors">
-                        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                        </svg>
-                      </button>
+                    {/* Search bar */}
+                    <div className="relative">
+                      <input
+                        type="text"
+                        placeholder="Search documents..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full h-7 px-2.5 pr-8 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300 focus:border-gray-300 bg-white placeholder:text-gray-400"
+                      />
+                      {searchQuery && (
+                        <button
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 hover:bg-gray-100 rounded transition-colors"
+                        >
+                          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                      {!searchQuery && (
+                        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
+                          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                        </div>
+                      )}
                     </div>
                   </div>
                   
@@ -461,13 +488,25 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
                       <div className="flex items-center justify-center" style={{ minHeight: '200px' }}>
                         <div className="text-sm text-red-500">{error}</div>
                       </div>
-                    ) : documents.length === 0 ? (
-                      <div className="flex items-center justify-center" style={{ minHeight: '200px' }}>
-                        <div className="text-sm text-gray-500">No documents found</div>
-                      </div>
-                    ) : (
-                <div className="flex flex-col gap-2">
-                  {documents.map((doc) => {
+                    ) : (() => {
+                      // Filter documents based on search query in real-time
+                      const filteredDocuments = documents.filter(doc => {
+                        if (!searchQuery.trim()) return true;
+                        const query = searchQuery.toLowerCase();
+                        return doc.original_filename.toLowerCase().includes(query);
+                      });
+                      
+                      if (filteredDocuments.length === 0) {
+                        return (
+                          <div className="flex items-center justify-center" style={{ minHeight: '200px' }}>
+                            <div className="text-sm text-gray-500">No documents match your search</div>
+                          </div>
+                        );
+                      }
+                      
+                      return (
+                        <div className="flex flex-col gap-2">
+                          {filteredDocuments.map((doc) => {
                     const isPDF = doc.file_type?.includes('pdf') || doc.original_filename.toLowerCase().endsWith('.pdf');
                     const isDOC = doc.file_type?.includes('word') || doc.file_type?.includes('document') || 
                                   doc.original_filename.toLowerCase().endsWith('.doc') || 
@@ -507,10 +546,16 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
                       </div>
                     );
                   })}
-                    </div>
-                  )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </>
+              ) : (
+                // Don't show anything until files are loaded - never show "No documents found"
+                <div className="flex items-center justify-center" style={{ minHeight: '200px' }}>
+                  {/* Empty state - files are loading silently in background or no documents available */}
+                </div>
               )}
             </div>
           </motion.div>
@@ -527,18 +572,7 @@ export const PropertyFilesModal: React.FC<PropertyFilesModalProps> = ({
   return (
     <>
       {portalContent}
-      
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        file={previewFile}
-        isOpen={isPreviewOpen}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFile(null);
-        }}
-        isMapVisible={isMapVisible}
-        isSidebarCollapsed={isSidebarCollapsed}
-      />
+      {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </>
   );
 };

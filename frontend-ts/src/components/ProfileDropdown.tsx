@@ -164,8 +164,14 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                   bottom: `${dropdownPosition.bottom}px`
                 }}
               >
-              {/* User Email - Simple top section */}
-              <div className="px-4 py-3 border-b border-gray-200">
+              {/* User Email - Clickable top section */}
+              <button
+                onClick={() => {
+                  setIsOpen(false);
+                  onNavigate?.('profile');
+                }}
+                className="w-full px-4 py-3 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left"
+              >
                 <div className="flex items-center gap-3">
                   <Avatar className="w-6 h-6 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
@@ -185,27 +191,10 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                     {userData?.email || userHandle}
                   </span>
                 </div>
-              </div>
+              </button>
 
               {/* Menu Items - Simple list */}
               <div className="py-1">
-                {/* Velora Account */}
-                <button
-                  onClick={() => {
-                    setIsOpen(false);
-                    onNavigate?.('profile');
-                  }}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left"
-                >
-                  <div className="w-5 h-5 rounded-full bg-white border border-gray-200 flex items-center justify-center flex-shrink-0 p-0.5">
-                    <img 
-                      src="/velora-dash-logo.png" 
-                      alt="Velora" 
-                      className="w-full h-full object-contain"
-                    />
-                  </div>
-                  <span className="text-sm text-gray-900">Velora Account</span>
-                </button>
 
                 {/* Settings */}
                 <button

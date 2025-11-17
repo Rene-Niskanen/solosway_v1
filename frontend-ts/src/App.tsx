@@ -7,6 +7,7 @@ import { DashboardLayout } from "./components/DashboardLayout";
 import { ChatHistoryProvider } from "./components/ChatHistoryContext";
 import { SystemProvider } from "./contexts/SystemContext";
 import { BackendApiProvider } from "./components/BackendApi";
+import { PreviewProvider } from "./contexts/PreviewContext";
 import { AuthGuard } from "./components/AuthGuard";
 import { Landing } from "./components/Landing";
 import { BookDemo } from "./components/BookDemo";
@@ -20,10 +21,11 @@ const App = () => (
     <TooltipProvider>
       <SystemProvider>
         <BackendApiProvider>
-          <BrowserRouter>
-            <Toaster />
-            <Sonner />
-            <Routes>
+          <PreviewProvider>
+            <BrowserRouter>
+              <Toaster />
+              <Sonner />
+              <Routes>
               {/* Public routes - no authentication required */}
               <Route path="/" element={<Landing />} />
               <Route path="/book-demo" element={<BookDemo />} />
@@ -44,6 +46,7 @@ const App = () => (
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
+          </PreviewProvider>
         </BackendApiProvider>
       </SystemProvider>
     </TooltipProvider>

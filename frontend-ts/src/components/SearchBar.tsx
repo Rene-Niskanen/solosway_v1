@@ -7,8 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { toast } from "@/hooks/use-toast";
+import { usePreview } from '../contexts/PreviewContext';
 
 export interface SearchBarProps {
   className?: string;
@@ -48,8 +48,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  
+  // Use shared preview context
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -160,7 +170,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       // Use a small timeout to allow view transition to start smoothly
       const timeoutId = setTimeout(() => {
         setIsPreviewOpen(false);
-        setPreviewFile(null);
+        setPreviewFiles([]);
+        setActivePreviewTabIndex(0);
       }, 100);
       
       return () => clearTimeout(timeoutId);
@@ -484,6 +495,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       type: file.type,
       size: file.size
     };
+    
+    // Preload blob URL immediately (Instagram-style preloading)
+    // This ensures instant preview when user clicks the attachment
+    const preloadBlobUrl = () => {
+      try {
+        console.log('🚀 Preloading blob URL for attachment:', file.name);
+        const blobUrl = URL.createObjectURL(file);
+        
+        // Store preloaded blob URL in global cache
+        if (!(window as any).__preloadedAttachmentBlobs) {
+          (window as any).__preloadedAttachmentBlobs = {};
+        }
+        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        
+        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+      } catch (error) {
+        console.error('❌ Error preloading blob URL:', error);
+        // Don't throw - preloading failure shouldn't block file attachment
+      }
+    };
+    
+    // Preload immediately (don't await - let it happen in background)
+    preloadBlobUrl();
+    
     setAttachedFiles(prev => [...prev, fileData]);
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
@@ -508,12 +543,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   }, [ref]);
 
   const handleRemoveFile = (id: string) => {
-    setAttachedFiles(prev => prev.filter(file => file.id !== id));
-    // If the removed file is being previewed, close the preview modal
-    if (previewFile?.id === id) {
-      setIsPreviewOpen(false);
-      setPreviewFile(null);
+    // Clean up preloaded blob URL when file is removed
+    const preloadedBlobUrl = (window as any).__preloadedAttachmentBlobs?.[id];
+    if (preloadedBlobUrl) {
+      try {
+        URL.revokeObjectURL(preloadedBlobUrl);
+        delete (window as any).__preloadedAttachmentBlobs[id];
+        console.log('🧹 Cleaned up preloaded blob URL for attachment:', id);
+      } catch (error) {
+        console.error('Error cleaning up blob URL:', error);
+      }
     }
+    
+    setAttachedFiles(prev => prev.filter(file => file.id !== id));
+    // Remove from preview tabs if it was open
+    setPreviewFiles(prev => {
+      const newFiles = prev.filter(f => f.id !== id);
+      if (newFiles.length === 0) {
+        setIsPreviewOpen(false);
+        setActivePreviewTabIndex(0);
+      } else if (activePreviewTabIndex >= newFiles.length) {
+        setActivePreviewTabIndex(newFiles.length - 1);
+      }
+      return newFiles;
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -636,14 +689,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
-                      // Toggle preview: if clicking the same file that's already previewed, close it
-                      if (previewFile?.id === file.id && isPreviewOpen) {
-                        setIsPreviewOpen(false);
-                        setPreviewFile(null);
-                      } else {
-                        setPreviewFile(file);
-                        setIsPreviewOpen(true);
-                      }
+                      // Use shared preview context to add file (will add to existing preview if open)
+                      addPreviewFile(file);
                     }}
                   />
                   ))}
@@ -740,7 +787,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     });
                     onMapToggle?.();
                   }}
-                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 ${
+                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none ${
                     isMapVisible 
                         ? 'text-slate-500 hover:text-blue-500'
                         : 'text-slate-500 hover:text-green-500'
@@ -835,7 +882,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     <motion.button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors"
+                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors focus:outline-none outline-none"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                     >
@@ -846,7 +893,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                 <motion.button 
                   type="submit" 
                   onClick={handleSubmit} 
-                  className={`flex items-center justify-center relative ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                   style={{
                     width: '32px',
                     height: '32px',
@@ -902,18 +949,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
             </motion.div>
           </form>
       </div>
-      
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        file={previewFile}
-        isOpen={isPreviewOpen}
-        isMapVisible={isMapVisible}
-        isSidebarCollapsed={isSidebarCollapsed}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFile(null);
-        }}
-      />
+      {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </motion.div>
   );
 });

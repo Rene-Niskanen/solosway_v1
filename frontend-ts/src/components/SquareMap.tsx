@@ -23,6 +23,7 @@ interface SquareMapProps {
 export interface SquareMapRef {
   updateLocation: (query: string) => Promise<void>;
   flyToLocation: (lat: number, lng: number, zoom?: number) => void;
+  selectPropertyByAddress: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string) => void;
 }
 
 export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({ 
@@ -50,6 +51,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const currentPropertyNameMarkerRef = useRef<mapboxgl.Marker | null>(null);
   // Store map click timeout for deselection
   const mapClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Store current properties array for click handler access
+  const currentPropertiesRef = useRef<any[]>([]);
   
   // Debug: Log Mapbox token status
   React.useEffect(() => {
@@ -83,6 +86,28 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       setSelectedProperty(null);
     }
   }, [isVisible, isInChatMode]);
+
+  // Track last interacted property - save to localStorage when a property is selected
+  React.useEffect(() => {
+    if (selectedProperty && selectedProperty.id && selectedProperty.address) {
+      // Only save real properties (not temp ones created from coordinates)
+      if (!selectedProperty.id.startsWith('temp-')) {
+        const lastProperty = {
+          id: selectedProperty.id,
+          address: selectedProperty.address,
+          latitude: selectedProperty.latitude,
+          longitude: selectedProperty.longitude,
+          primary_image_url: selectedProperty.primary_image_url || selectedProperty.image,
+          documentCount: selectedProperty.documentCount || selectedProperty.document_count || 0,
+          timestamp: new Date().toISOString()
+        };
+        localStorage.setItem('lastInteractedProperty', JSON.stringify(lastProperty));
+        // Dispatch custom event to update RecentProjectsSection in the same tab
+        window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
+        console.log('💾 Saved last interacted property:', lastProperty.address);
+      }
+    }
+  }, [selectedProperty]);
 
   // Helper function to truncate text
   const truncateText = (text: string, maxLength: number = 200) => {
@@ -141,6 +166,68 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
 
     console.log('🗺️ Loading properties from backend...');
+    
+    // Check for preloaded properties first (Instagram-style preloading)
+    const preloadedProperties = (window as any).__preloadedProperties;
+    if (preloadedProperties && Array.isArray(preloadedProperties) && preloadedProperties.length > 0) {
+      console.log(`✅ Using ${preloadedProperties.length} preloaded properties (instant access!)`);
+      
+      // Set the search results and add markers immediately
+      setSearchResults(preloadedProperties);
+      setPropertyMarkers(preloadedProperties);
+      
+      // Prepare marker data immediately (don't wait for map)
+      currentPropertiesRef.current = preloadedProperties;
+      
+      // Add markers with aggressive retry (faster rendering)
+      const addMarkersWithRetry = (attempt = 0) => {
+        if (!map.current) {
+          if (attempt < 10) {
+            // More aggressive retry - check every 50ms instead of 200ms
+            setTimeout(() => addMarkersWithRetry(attempt + 1), 50);
+            return;
+          }
+        }
+        
+        // Check if style is loaded, but don't wait too long
+        if (!map.current.isStyleLoaded()) {
+          if (attempt < 15) {
+            setTimeout(() => addMarkersWithRetry(attempt + 1), 50);
+            return;
+          }
+          // Proceed anyway if style takes too long
+          console.warn('⚠️ Map style not ready, proceeding with marker addition anyway');
+        }
+        
+        try {
+          // Use requestAnimationFrame for smoother rendering
+          requestAnimationFrame(() => {
+            addPropertyMarkers(preloadedProperties, true);
+            console.log(`✅ Successfully loaded and displayed ${preloadedProperties.length} preloaded properties`);
+            
+            // After properties are loaded, check if there's a pending property selection
+            const pendingSelection = (window as any).__pendingPropertySelection;
+            if (pendingSelection && pendingSelection.address) {
+              console.log('📍 Preloaded properties ready, selecting pending property:', pendingSelection);
+              (window as any).__pendingPropertySelection = null;
+              // Pass the loaded properties directly to avoid state timing issues
+              requestAnimationFrame(() => {
+                selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, preloadedProperties);
+              });
+            }
+          });
+        } catch (error) {
+          console.error('❌ Error adding markers:', error);
+          if (attempt < 5) {
+            setTimeout(() => addMarkersWithRetry(attempt + 1), 100);
+          }
+        }
+      };
+      
+      // Start immediately
+      addMarkersWithRetry();
+      return; // Exit early - we used preloaded properties
+    }
     
     try {
       if (backendApi.status.isConnected) {
@@ -211,6 +298,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           try {
             addPropertyMarkers(transformedProperties, true);
             console.log(`✅ Successfully loaded and displayed ${transformedProperties.length} properties from backend`);
+            
+            // After properties are loaded, check if there's a pending property selection
+            // This ensures we select the property as soon as it's available
+            const pendingSelection = (window as any).__pendingPropertySelection;
+            if (pendingSelection && pendingSelection.address) {
+              console.log('📍 Properties loaded, selecting pending property:', pendingSelection);
+              // Clear the pending selection immediately to prevent duplicate attempts
+              (window as any).__pendingPropertySelection = null;
+              // Pass the loaded properties directly to avoid state timing issues
+              requestAnimationFrame(() => {
+                selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, transformedProperties);
+              });
+            }
           } catch (error) {
             console.error('❌ Error adding markers:', error);
             // Retry once more
@@ -551,10 +651,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const addPropertyMarkers = (properties: any[], shouldClearExisting: boolean = true) => {
     if (!map.current) return;
 
+    // Update the ref with current properties so click handler can access them
+    currentPropertiesRef.current = properties;
+
     // Create a signature of the properties to detect if they've actually changed
-    const propertiesSignature = JSON.stringify(
-      properties.map(p => ({ id: p.id, lng: p.longitude, lat: p.latitude }))
-    );
+    // Use faster comparison - only check IDs and count (not full JSON stringify)
+    const propertiesSignature = properties.length + ':' + properties.slice(0, 10).map(p => p.id).join(',');
     
     // If properties haven't changed and source already exists, don't re-add
     if (!shouldClearExisting && propertiesSignature === lastAddedPropertiesRef.current) {
@@ -617,34 +719,24 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
 
     // Add property data as a single unified GeoJSON source (more efficient)
-    // Validate and ensure coordinates are fixed (lng, lat format for GeoJSON)
+    // Pre-validate and prepare features in one pass for faster rendering
+    const validProperties = properties.filter(property => {
+      // Fast validation - only check essential conditions
+      return property.longitude != null && 
+             property.latitude != null &&
+             typeof property.longitude === 'number' &&
+             typeof property.latitude === 'number' &&
+             !isNaN(property.longitude) &&
+             !isNaN(property.latitude);
+    });
+    
+    // Create GeoJSON features in one batch operation
     const geojson: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
-      features: properties
-        .filter(property => {
-          // Validate coordinates exist and are valid numbers
-          const hasValidCoords = 
-            property.longitude != null && 
-            property.latitude != null &&
-            typeof property.longitude === 'number' &&
-            typeof property.latitude === 'number' &&
-            !isNaN(property.longitude) &&
-            !isNaN(property.latitude) &&
-            property.longitude >= -180 && property.longitude <= 180 &&
-            property.latitude >= -90 && property.latitude <= 90;
-          
-          if (!hasValidCoords) {
-            console.warn('⚠️ Invalid coordinates for property:', property.id, property.address, {
-              longitude: property.longitude,
-              latitude: property.latitude
-            });
-          }
-          return hasValidCoords;
-        })
-        .map(property => {
-          // Ensure coordinates are fixed and in correct format [lng, lat]
-          const lng = Number(property.longitude);
-          const lat = Number(property.latitude);
+      features: validProperties.map(property => {
+          // Use coordinates directly (already validated as numbers)
+          const lng = property.longitude;
+          const lat = property.latitude;
           
           // Extract property name for every property automatically
           const propertyName = getPropertyName(property.address);
@@ -674,50 +766,34 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         })
     };
 
-    console.log(`Creating unified source with ${properties.length} properties`);
+    console.log(`Creating unified source with ${validProperties.length} properties`);
 
-    // Remove existing source if it exists (to avoid errors)
-    if (map.current.getSource('properties')) {
-      console.log('📍 Removing existing properties source before re-adding');
+    // Optimized: Check if source exists and update it instead of removing/re-adding
+    // This is much faster - updating data is instant vs removing/re-adding
+    const existingSource = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
+    if (existingSource) {
+      // Fast path: Just update the data (much faster than remove/add)
+      existingSource.setData(geojson);
+      console.log('✅ Updated existing properties source (fast path)');
+    } else {
+      // Only add if source doesn't exist
       try {
-        // Remove layers first
-        const layersToRemove = ['property-click-target', 'property-markers', 'property-outer'];
-        layersToRemove.forEach(layerId => {
-          if (map.current.getLayer(layerId)) {
-            map.current.removeLayer(layerId);
-          }
+        map.current.addSource('properties', {
+          type: 'geojson',
+          data: geojson
         });
-        // Then remove source
-        map.current.removeSource('properties');
+        console.log('✅ Properties source added successfully');
       } catch (error) {
-        console.warn('⚠️ Error removing existing source:', error);
+        console.error('❌ Error adding properties source:', error);
+        return;
       }
     }
 
-    // Add the source
-    try {
-      map.current.addSource('properties', {
-        type: 'geojson',
-        data: geojson
-      });
-      console.log('✅ Properties source added successfully');
-    } catch (error) {
-      console.error('❌ Error adding properties source:', error);
-      // If source already exists, update it instead
-      const existingSource = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
-      if (existingSource) {
-        existingSource.setData(geojson);
-        console.log('✅ Updated existing properties source');
-      }
-      return;
-    }
-
-      // Add large invisible click target for better interaction
-      if (!map.current.getLayer('property-click-target')) {
-        map.current.addLayer({
+      // Add layers only if they don't exist (faster - no re-creation)
+      const layersToAdd = [
+        {
           id: 'property-click-target',
-          type: 'circle',
-          source: 'properties',
+          type: 'circle' as const,
           paint: {
             'circle-radius': [
               'interpolate',
@@ -730,15 +806,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             'circle-color': 'transparent',
             'circle-stroke-width': 0
           }
-        });
-      }
-
-      // Add subtle outer ring with pulse effect
-      if (!map.current.getLayer('property-outer')) {
-        map.current.addLayer({
+        },
+        {
           id: 'property-outer',
-          type: 'circle',
-          source: 'properties',
+          type: 'circle' as const,
           paint: {
             'circle-radius': [
               'interpolate',
@@ -751,15 +822,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             'circle-color': 'rgba(0, 0, 0, 0.08)',
             'circle-stroke-width': 0
           }
-        });
-      }
-
-      // Add main property dot with responsive sizing and better visual feedback
-      if (!map.current.getLayer('property-markers')) {
-        map.current.addLayer({
+        },
+        {
           id: 'property-markers',
-          type: 'circle',
-          source: 'properties',
+          type: 'circle' as const,
           paint: {
             'circle-radius': [
               'interpolate',
@@ -774,15 +840,27 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             'circle-stroke-color': '#ffffff',
             'circle-opacity': 0.9
           }
-        });
-        console.log('✅ Property marker layers added successfully');
-      } else {
-        console.log('📍 Property marker layers already exist');
-      }
+        }
+      ];
+
+      // Batch add layers (faster than individual checks)
+      layersToAdd.forEach(layerConfig => {
+        if (!map.current.getLayer(layerConfig.id)) {
+          map.current.addLayer({
+            id: layerConfig.id,
+            type: layerConfig.type,
+            source: 'properties',
+            paint: layerConfig.paint as any // Type assertion for Mapbox paint properties
+          });
+        }
+      });
+      
+      console.log('✅ Property marker layers ready');
 
     // Don't create HTML markers initially - they'll be shown when a property is clicked and zoomed in
 
     // Add click handler for the markers with individual property animation
+    // Use component-level ref to access current properties (updated on each addPropertyMarkers call)
     map.current.on('click', 'property-click-target', (e) => {
       // Cancel any pending map click timeout
       if (mapClickTimeoutRef.current) {
@@ -792,11 +870,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       const feature = e.features[0];
       
+      // Use properties from component-level ref (updated each time addPropertyMarkers is called)
+      const currentProperties = currentPropertiesRef.current;
+      
       // 🔍 PHASE 1 DEBUG: Debug property selection
       console.log('🔍 PHASE 1 DEBUG - Property Selection:', {
         feature_id: feature.properties.id,
-        properties_array_length: properties.length,
-        properties_sample: properties.slice(0, 2).map(p => ({ 
+        properties_array_length: currentProperties.length,
+        properties_sample: currentProperties.slice(0, 2).map(p => ({ 
           id: p.id, 
           address: p.address, 
           soldPrice: p.soldPrice,
@@ -806,7 +887,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         }))
       });
       
-      const property = properties.find(p => p.id === feature.properties.id);
+      const property = currentProperties.find(p => p.id === feature.properties.id);
       
       if (property) {
         console.log('📍 Marker clicked:', property.address);
@@ -858,10 +939,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         
         // Create property name marker using Mapbox Marker (stays fixed to pin automatically)
         if (propertyName && property.longitude && property.latitude && map.current) {
-            // Get current zoom to calculate appropriate offset
-            const currentZoom = map.current.getZoom();
-            
-            // Create marker element
+            // Create marker element - one unified piece extending from the pin
             const markerElement = document.createElement('div');
             markerElement.className = 'property-name-marker';
             markerElement.style.cssText = `
@@ -872,71 +950,96 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               pointer-events: none;
             `;
             
+            // Use the full address instead of just property name
+            const displayText = property.address || propertyName;
+            
             markerElement.innerHTML = `
               <div style="
                 position: relative;
                 display: flex;
+                flex-direction: column;
                 align-items: center;
-                background: white;
-                border-radius: 8px;
-                padding: 6px 10px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                white-space: nowrap;
               ">
-                <!-- Black circle with orange pin icon -->
+                <!-- Callout box with pointer extending down -->
                 <div style="
-                  width: 20px;
-                  height: 20px;
-                  background: #1a1a1a;
-                  border-radius: 50%;
+                  position: relative;
                   display: flex;
                   align-items: center;
-                  justify-content: center;
-                  margin-right: 8px;
-                  flex-shrink: 0;
-                ">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
-                  </svg>
-                </div>
-                <!-- Property name text -->
-                <span style="
-                  font-size: 13px;
-                  font-weight: 500;
-                  color: #1a1a1a;
-                  line-height: 1.2;
-                ">${propertyName}</span>
-                <!-- White pointer line -->
-                <div style="
-                  position: absolute;
-                  bottom: -6px;
-                  left: 50%;
-                  transform: translateX(-50%);
-                  width: 2px;
-                  height: 6px;
                   background: white;
+                  border-radius: 8px;
+                  padding: 6px 10px;
+                  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                  white-space: nowrap;
+                  margin-bottom: 0;
+                ">
+                  <!-- Black circle with orange pin icon -->
+                  <div style="
+                    width: 20px;
+                    height: 20px;
+                    background: #1a1a1a;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin-right: 8px;
+                    flex-shrink: 0;
+                  ">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
+                    </svg>
+                  </div>
+                  <!-- Address text -->
+                  <span style="
+                    font-size: 13px;
+                    font-weight: 500;
+                    color: #1a1a1a;
+                    line-height: 1.2;
+                  ">${displayText}</span>
+                </div>
+                <!-- Pointer extending down from callout to pin (one continuous piece) -->
+                <div style="
+                  position: relative;
+                  width: 0;
+                  height: 0;
+                  border-left: 8px solid transparent;
+                  border-right: 8px solid transparent;
+                  border-top: 12px solid white;
+                  margin-top: -1px;
+                  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+                "></div>
+                <!-- Green circle pin at the bottom (part of the same piece) -->
+                <div style="
+                  width: 16px;
+                  height: 16px;
+                  background: #10B981;
+                  border-radius: 50%;
+                  border: 2px solid white;
+                  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                  margin-top: -6px;
+                  position: relative;
+                  z-index: 1;
                 "></div>
               </div>
             `;
             
-            // Calculate offset to position label above the pin
-            // The pin is centered at the coordinates and has a visual size of ~10px (radius 8 + stroke 2)
-            // The label has a height of ~32px (6px padding top + 20px content + 6px padding bottom)
-            // We want the label to appear above the pin with ~12px spacing
-            // Using anchor: 'center' anchors the center of the label to the coordinate
-            // To position above: offset upward by half label height + half pin size + spacing
-            const labelHeight = 32; // Total label height in pixels
-            const pinVisualSize = 10; // Pin visual size (radius 8 + stroke 2)
-            const spacing = 12; // Desired spacing between label and pin
-            const totalOffset = (labelHeight / 2) + (pinVisualSize / 2) + spacing; // Upward offset from center
+            // Position the marker so the green circle pin center aligns with the coordinates
+            // This matches the unselected state where circle markers are centered at coordinates
+            const pinSize = 16; // Green circle pin size (including border)
+            const pointerHeight = 12; // Height of the pointer triangle
+            const calloutHeight = 32; // Approximate callout box height
+            const totalElementHeight = calloutHeight + pointerHeight + pinSize;
             
-            // Create Mapbox Marker - anchor at center, offset upward
-            // This centers the label horizontally and positions it above the pin
+            // The green pin is at the bottom of the element
+            // To center the green pin at coordinates, we need to offset upward
+            // by half the element height minus half the pin size
+            const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
+            
+            // Anchor at center and offset upward so green pin center is at coordinates
             const marker = new mapboxgl.Marker({
               element: markerElement,
               anchor: 'center',
-              offset: [0, -totalOffset] // Offset upward to position above the pin
+              offset: [0, -greenPinCenterOffset] // Offset to center green pin at coordinates
             })
               .setLngLat([property.longitude, property.latitude])
               .addTo(map.current);
@@ -980,91 +1083,53 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           ]);
         }
         
-        // Create individual marker layers for this specific property only
-        const propertyId = `property-${property.id}`;
-        const outerId = `property-outer-${property.id}`;
-        
-        // Add individual outer ring for this property
-        map.current.addSource(outerId, {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: [{
-              type: 'Feature',
-              geometry: feature.geometry,
-              properties: feature.properties
-            }]
-          }
-        });
-        
-        map.current.addLayer({
-          id: outerId,
-          type: 'circle',
-          source: outerId,
-          paint: {
-            'circle-radius': 16,
-            'circle-color': 'rgba(16, 185, 129, 0.2)',
-            'circle-stroke-width': 0
-          }
-        });
-        
-        // Add individual marker for this property with click animation
-        map.current.addSource(propertyId, {
-          type: 'geojson',
-          data: {
-            type: 'FeatureCollection',
-            features: [{
-              type: 'Feature',
-              geometry: feature.geometry,
-              properties: feature.properties
-            }]
-          }
-        });
-        
-        map.current.addLayer({
-          id: propertyId,
-          type: 'circle',
-          source: propertyId,
-          paint: {
-            'circle-radius': 8,
-            'circle-color': '#10B981',
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff'
-          }
-        });
-        
-        // Add satisfying click animation for this specific property
-        setTimeout(() => {
-          if (map.current && map.current.getLayer(outerId)) {
-            map.current.setPaintProperty(outerId, 'circle-radius', 20);
-            map.current.setPaintProperty(outerId, 'circle-color', 'rgba(16, 185, 129, 0.4)');
-          }
-          if (map.current && map.current.getLayer(propertyId)) {
-            map.current.setPaintProperty(propertyId, 'circle-radius', 10);
-            map.current.setPaintProperty(propertyId, 'circle-stroke-width', 3);
-          }
-          
-          // Reset after animation
-          setTimeout(() => {
-            if (map.current) {
-              if (map.current.getLayer(outerId)) {
-                map.current.setPaintProperty(outerId, 'circle-radius', 16);
-                map.current.setPaintProperty(outerId, 'circle-color', 'rgba(16, 185, 129, 0.2)');
-              }
-              if (map.current.getLayer(propertyId)) {
-                map.current.setPaintProperty(propertyId, 'circle-radius', 8);
-                map.current.setPaintProperty(propertyId, 'circle-stroke-width', 2);
-              }
-            }
-          }, 200);
-        }, 50);
+        // Don't create individual marker layers - the unified HTML marker handles everything
+        // The HTML marker already includes the green circle pin, so we don't need separate map layers
         
         // Update the selected property state
+        console.log('✅ Setting selected property:', {
+          id: property.id,
+          address: property.address,
+          hasPropertyHub: !!property.propertyHub,
+          propertyKeys: Object.keys(property)
+        });
         setSelectedProperty(property);
         setShowPropertyCard(true);
         setShowPropertyDetailsPanel(true); // Show the new PropertyDetailsPanel
         setIsExpanded(false); // Reset expanded state for new property
         setShowFullDescription(false); // Reset description state for new property
+        
+        // Preload property files immediately (Instagram-style preloading)
+        if (property.id && !property.id.startsWith('temp-')) {
+          const preloadFiles = async () => {
+            try {
+              // Check if files are already preloaded
+              const preloadedFiles = (window as any).__preloadedPropertyFiles?.[property.id];
+              if (preloadedFiles) {
+                console.log('✅ Using preloaded files for property:', property.id);
+                return;
+              }
+              
+              console.log('🚀 Preloading files for property:', property.id);
+              const response = await backendApi.getPropertyHubDocuments(property.id);
+              
+              if (response && response.documents) {
+                // Store preloaded files in global variable
+                if (!(window as any).__preloadedPropertyFiles) {
+                  (window as any).__preloadedPropertyFiles = {};
+                }
+                (window as any).__preloadedPropertyFiles[property.id] = response.documents;
+                console.log(`✅ Preloaded ${response.documents.length} files for property ${property.id}`);
+              }
+            } catch (error) {
+              console.error('❌ Error preloading files:', error);
+              // Don't throw - preloading failure shouldn't block property selection
+            }
+          };
+          
+          // Preload files immediately (don't await - let it happen in background)
+          preloadFiles();
+        }
         
         // Calculate position using map.project
         const geometry = feature.geometry as GeoJSON.Point;
@@ -1138,23 +1203,147 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
   };
 
-  // Clear effects when property card is closed
+  // Clear effects when property card is closed (but not during programmatic selection)
   useEffect(() => {
-    if (!showPropertyCard && selectedProperty) {
+    if (!showPropertyCard && !showPropertyDetailsPanel && selectedProperty) {
       clearSelectedPropertyEffects();
     }
-  }, [showPropertyCard, selectedProperty]);
+  }, [showPropertyCard, showPropertyDetailsPanel, selectedProperty]);
 
-  // Clear effects when properties change
+  // Don't clear effects when searchResults change if we have a selected property
+  // This prevents clearing the marker during transitions
   useEffect(() => {
-    clearSelectedPropertyEffects();
+    // Only clear if we don't have a selected property with an open panel
+    // This prevents clearing during programmatic property selection
+    if (!selectedProperty || (!showPropertyCard && !showPropertyDetailsPanel)) {
+      // Only clear if nothing is selected - don't interfere with active selections
+      if (!selectedProperty) {
+        clearSelectedPropertyEffects();
+      }
+    }
   }, [searchResults]);
+
+  // Ensure property name marker stays visible when property is selected
+  useEffect(() => {
+    if (selectedProperty && (showPropertyCard || showPropertyDetailsPanel) && map.current) {
+      // Check if marker exists, if not recreate it
+      if (!currentPropertyNameMarkerRef.current && selectedProperty.address && selectedProperty.latitude && selectedProperty.longitude) {
+        console.log('🔄 Ensuring property name marker is visible');
+        const getPropertyName = (addr: string) => {
+          if (!addr) return '';
+          const parts = addr.split(',');
+          return parts[0]?.trim() || addr;
+        };
+        
+        const propertyName = getPropertyName(selectedProperty.address);
+        const displayText = selectedProperty.address || propertyName;
+        
+        if (displayText) {
+          const markerElement = document.createElement('div');
+          markerElement.className = 'property-name-marker';
+          markerElement.style.cssText = `
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: none;
+          `;
+          
+          markerElement.innerHTML = `
+            <div style="
+              position: relative;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+            ">
+              <!-- Callout box with pointer extending down -->
+              <div style="
+                position: relative;
+                display: flex;
+                align-items: center;
+                background: white;
+                border-radius: 8px;
+                padding: 6px 10px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                white-space: nowrap;
+                margin-bottom: 0;
+              ">
+                <!-- Black circle with orange pin icon -->
+                <div style="
+                  width: 20px;
+                  height: 20px;
+                  background: #1a1a1a;
+                  border-radius: 50%;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  margin-right: 8px;
+                  flex-shrink: 0;
+                ">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
+                  </svg>
+                </div>
+                <!-- Address text -->
+                <span style="
+                  font-size: 13px;
+                  font-weight: 500;
+                  color: #1a1a1a;
+                  line-height: 1.2;
+                ">${displayText}</span>
+              </div>
+              <!-- Pointer extending down from callout to pin -->
+              <div style="
+                position: relative;
+                width: 0;
+                height: 0;
+                border-left: 8px solid transparent;
+                border-right: 8px solid transparent;
+                border-top: 12px solid white;
+                margin-top: -1px;
+                filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+              "></div>
+              <!-- Green circle pin at the bottom -->
+              <div style="
+                width: 16px;
+                height: 16px;
+                background: #10B981;
+                border-radius: 50%;
+                border: 2px solid white;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                margin-top: -6px;
+                position: relative;
+                z-index: 1;
+              "></div>
+            </div>
+          `;
+          
+          const pinSize = 16;
+          const pointerHeight = 12;
+          const calloutHeight = 32;
+          const totalElementHeight = calloutHeight + pointerHeight + pinSize;
+          const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
+          
+          const marker = new mapboxgl.Marker({
+            element: markerElement,
+            anchor: 'center',
+            offset: [0, -greenPinCenterOffset]
+          })
+            .setLngLat([selectedProperty.longitude, selectedProperty.latitude])
+            .addTo(map.current);
+          
+          currentPropertyNameMarkerRef.current = marker;
+        }
+      }
+    }
+  }, [selectedProperty, showPropertyCard, showPropertyDetailsPanel]);
 
   // Handle click outside to deselect property (same pattern as dropdown menu)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      // Only deselect if a property is currently selected
-      if (!selectedProperty || !showPropertyDetailsPanel) return;
+      // Handle clicks when property is selected (either details panel is open OR just title is showing)
+      if (!selectedProperty) return;
 
       const target = event.target as Node;
       const targetElement = target as Element;
@@ -1209,7 +1398,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       return;
     };
 
-    if (showPropertyDetailsPanel && selectedProperty) {
+    // Listen for clicks when property is selected (either details panel open OR just title showing)
+    if (selectedProperty) {
       document.addEventListener('mousedown', handleClickOutside);
     }
 
@@ -1852,16 +2042,379 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   };
 
   // Expose methods to parent component
+  // Method to select a property by address (same logic as clicking a pin)
+  const selectPropertyByAddress = (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, retryCount = 0, providedProperties?: any[]) => {
+    if (!map.current) {
+      // Retry if map isn't ready yet
+      if (retryCount < 10) {
+        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), 200);
+      }
+      return;
+    }
+    
+    // Normalize the search address (extract key parts like "Highlands", "Berden", "CM23")
+    const normalizeAddress = (addr: string) => {
+      return addr.toLowerCase()
+        .replace(/,/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+    
+    const normalizedSearch = normalizeAddress(address);
+    
+    // Find the property in searchResults OR propertyMarkers (properties loaded on map init)
+    // Use providedProperties if available (for immediate selection after loading)
+    // Remove duplicates by ID
+    const allPropertiesMap = new Map();
+    const propertiesToSearch = providedProperties || [...searchResults, ...propertyMarkers];
+    propertiesToSearch.forEach(p => {
+      if (p && p.id && !allPropertiesMap.has(p.id)) {
+        allPropertiesMap.set(p.id, p);
+      }
+    });
+    const allProperties = Array.from(allPropertiesMap.values());
+    
+    // First try to find by property ID if provided (more reliable)
+    let property = null;
+    if (propertyId) {
+      property = allProperties.find(p => p.id === propertyId || p.id?.toString() === propertyId);
+      if (property) {
+        console.log('📍 Found property by ID:', propertyId);
+      }
+    }
+    
+    // If not found by ID, try by address
+    if (!property) {
+      property = allProperties.find(p => {
+        if (!p.address) return false;
+        const normalizedProperty = normalizeAddress(p.address);
+        
+        // Check if key parts match (Highlands, Berden, CM23)
+        const searchParts = normalizedSearch.split(' ').filter(p => p.length > 2);
+        const propertyParts = normalizedProperty.split(' ').filter(p => p.length > 2);
+        
+        // Check if all key search parts are in property address
+        const allPartsMatch = searchParts.every(part => 
+          propertyParts.some(propPart => propPart.includes(part) || part.includes(propPart))
+        );
+        
+        // Also check simple contains match
+        const containsMatch = normalizedProperty.includes(normalizedSearch) || 
+                             normalizedSearch.includes(normalizedProperty);
+        
+        return allPartsMatch || containsMatch;
+      });
+    }
+    
+    // Determine final destination coordinates - prefer property coordinates, fallback to provided coordinates
+    let finalLat: number | null = null;
+    let finalLng: number | null = null;
+    let finalProperty: any = null;
+    
+    if (property && property.latitude && property.longitude) {
+      finalLat = property.latitude;
+      finalLng = property.longitude;
+      finalProperty = property;
+      console.log('📍 Found property by address:', property.address);
+    } else if (coordinates && coordinates.lat && coordinates.lng) {
+      finalLat = coordinates.lat;
+      finalLng = coordinates.lng;
+      console.log('📍 Using provided coordinates:', coordinates);
+    }
+    
+      // If we have a final destination, proceed with selection and single fly
+      if (finalLat !== null && finalLng !== null) {
+        // If we have coordinates but no property yet, retry to find the property
+        // This handles cases where properties are still loading
+        if (!finalProperty) {
+          // Check if properties have been loaded (propertyMarkers has items)
+          // If properties are loaded but we still can't find it, reduce retries
+          const hasPropertiesLoaded = propertyMarkers.length > 0;
+          const maxRetries = hasPropertiesLoaded ? 3 : 20; // Fewer retries if properties are already loaded
+          
+          if (retryCount < maxRetries) {
+            console.log('⚠️ Property not found yet, retrying...', {
+              retryCount,
+              maxRetries,
+              propertyId,
+              address,
+              totalProperties: allProperties.length,
+              hasPropertiesLoaded,
+              hasCoordinates: !!(coordinates?.lat && coordinates?.lng)
+            });
+            // Use shorter delay if properties are already loaded
+            const retryDelay = hasPropertiesLoaded ? 200 : 400;
+            setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), retryDelay);
+          } else {
+            console.log('❌ Max retries reached, property not found');
+            // Clear pending selection if we've exhausted retries
+            if ((window as any).__pendingPropertySelection) {
+              (window as any).__pendingPropertySelection = null;
+            }
+          }
+          return;
+        }
+      
+      // Hide the base marker for this property by filtering it out (same as clicking a pin)
+      // Do this BEFORE setting the property state to prevent conflicts
+      if (map.current.getLayer('property-markers')) {
+        map.current.setFilter('property-markers', [
+          '!=',
+          ['get', 'id'],
+          finalProperty.id
+        ]);
+      }
+      
+      // Also hide the outer ring for this property (same as clicking a pin)
+      if (map.current.getLayer('property-outer')) {
+        map.current.setFilter('property-outer', [
+          '!=',
+          ['get', 'id'],
+          finalProperty.id
+        ]);
+      }
+      
+      // Set the selected property and open details panel IMMEDIATELY
+      // This ensures the card is visible throughout the transition
+      console.log('✅ Setting selected property:', {
+        id: finalProperty.id,
+        address: finalProperty.address,
+        hasPropertyHub: !!finalProperty.propertyHub
+      });
+      setSelectedProperty(finalProperty);
+      setShowPropertyCard(true);
+      setShowPropertyDetailsPanel(true);
+      setIsExpanded(false);
+      setShowFullDescription(false);
+      
+      // Preload property files immediately (Instagram-style preloading)
+      // This ensures files are ready instantly when user clicks "View Files"
+      if (finalProperty.id && !finalProperty.id.startsWith('temp-')) {
+        const preloadFiles = async () => {
+          try {
+            // Check if files are already preloaded
+            const preloadedFiles = (window as any).__preloadedPropertyFiles?.[finalProperty.id];
+            if (preloadedFiles) {
+              console.log('✅ Using preloaded files for property:', finalProperty.id);
+              return;
+            }
+            
+            console.log('🚀 Preloading files for property:', finalProperty.id);
+            const response = await backendApi.getPropertyHubDocuments(finalProperty.id);
+            
+            if (response && response.documents) {
+              // Store preloaded files in global variable
+              if (!(window as any).__preloadedPropertyFiles) {
+                (window as any).__preloadedPropertyFiles = {};
+              }
+              (window as any).__preloadedPropertyFiles[finalProperty.id] = response.documents;
+              console.log(`✅ Preloaded ${response.documents.length} files for property ${finalProperty.id}`);
+            }
+          } catch (error) {
+            console.error('❌ Error preloading files:', error);
+            // Don't throw - preloading failure shouldn't block property selection
+          }
+        };
+        
+        // Preload files immediately (don't await - let it happen in background)
+        preloadFiles();
+      }
+      
+      // Calculate position for property details panel
+      const point = map.current.project([finalLng, finalLat]);
+      setSelectedPropertyPosition({
+        x: point.x,
+        y: point.y - 20
+      });
+      
+      // Update existing marker if it exists, or create new one
+      // This prevents the flicker of removing and recreating
+      const getPropertyName = (addr: string) => {
+        if (!addr) return '';
+        const parts = addr.split(',');
+        return parts[0]?.trim() || addr;
+      };
+      
+      const propertyName = getPropertyName(finalProperty.address);
+      const displayText = finalProperty.address || propertyName;
+      
+      // If marker already exists, just update its position instead of removing/recreating
+      if (currentPropertyNameMarkerRef.current && displayText && map.current) {
+        // Update existing marker position - no flicker!
+        currentPropertyNameMarkerRef.current.setLngLat([finalLng, finalLat]);
+        console.log('📍 Updated existing property name marker position');
+      } else if (displayText && map.current) {
+        // Only create new marker if one doesn't exist
+        const markerElement = document.createElement('div');
+        markerElement.className = 'property-name-marker';
+        markerElement.style.cssText = `
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          pointer-events: none;
+        `;
+        
+        markerElement.innerHTML = `
+          <div style="
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          ">
+            <!-- Callout box with pointer extending down -->
+            <div style="
+              position: relative;
+              display: flex;
+              align-items: center;
+              background: white;
+              border-radius: 8px;
+              padding: 6px 10px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              white-space: nowrap;
+              margin-bottom: 0;
+            ">
+              <!-- Black circle with orange pin icon -->
+              <div style="
+                width: 20px;
+                height: 20px;
+                background: #1a1a1a;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin-right: 8px;
+                flex-shrink: 0;
+              ">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
+                </svg>
+              </div>
+              <!-- Address text -->
+              <span style="
+                font-size: 13px;
+                font-weight: 500;
+                color: #1a1a1a;
+                line-height: 1.2;
+              ">${displayText}</span>
+            </div>
+            <!-- Pointer extending down from callout to pin -->
+            <div style="
+              position: relative;
+              width: 0;
+              height: 0;
+              border-left: 8px solid transparent;
+              border-right: 8px solid transparent;
+              border-top: 12px solid white;
+              margin-top: -1px;
+              filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+            "></div>
+            <!-- Green circle pin at the bottom -->
+            <div style="
+              width: 16px;
+              height: 16px;
+              background: #10B981;
+              border-radius: 50%;
+              border: 2px solid white;
+              box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+              margin-top: -6px;
+              position: relative;
+              z-index: 1;
+            "></div>
+          </div>
+        `;
+        
+        const pinSize = 16;
+        const pointerHeight = 12;
+        const calloutHeight = 32;
+        const totalElementHeight = calloutHeight + pointerHeight + pinSize;
+        const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
+        
+        const marker = new mapboxgl.Marker({
+          element: markerElement,
+          anchor: 'center',
+          offset: [0, -greenPinCenterOffset]
+        })
+          .setLngLat([finalLng, finalLat])
+          .addTo(map.current);
+        
+        currentPropertyNameMarkerRef.current = marker;
+      }
+      
+      // Use the EXACT same flyTo logic as clicking a property pin directly
+      // This is the same code that runs when clicking a pin (lines 1002-1017)
+      const propertyCoordinates: [number, number] = [finalLng, finalLat];
+      map.current.flyTo({
+        center: propertyCoordinates,
+        zoom: 17.5, // Consistent zoom level matching reference image proximity
+        duration: 2000, // 2 second smooth transition
+        essential: true, // Ensure animation completes
+        offset: [-80, 0], // Shift center slightly to the left (negative x = left)
+        easing: (t) => {
+          // Custom easing function for extremely smooth animation
+          // Ease-in-out-cubic for smooth acceleration and deceleration
+          return t < 0.5
+            ? 4 * t * t * t
+            : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+      });
+      
+      // Update property position after flyTo completes
+      // Marker should already be visible and positioned correctly
+      map.current.once('moveend', () => {
+        if (finalProperty && map.current) {
+          const point = map.current.project([finalLng, finalLat]);
+          setSelectedPropertyPosition({
+            x: point.x,
+            y: point.y - 20
+          });
+          
+          // Ensure marker position is correct after animation
+          if (currentPropertyNameMarkerRef.current) {
+            currentPropertyNameMarkerRef.current.setLngLat([finalLng, finalLat]);
+          }
+        }
+      });
+    } else {
+      // Property not found yet - retry if we haven't exceeded max retries
+      if (retryCount < 30) {
+        console.log(`⏳ Property not found yet, retrying... (${retryCount + 1}/30)`, {
+          searchAddress: address,
+          normalizedSearch,
+          availableProperties: allProperties.length,
+          sampleAddresses: allProperties.slice(0, 3).map(p => p.address)
+        });
+        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), 400);
+      } else {
+        console.log('⚠️ Property not found in search results after retries:', address, {
+          totalProperties: allProperties.length,
+          allAddresses: allProperties.map(p => p.address)
+        });
+      }
+    }
+  };
+
   useImperativeHandle(ref, () => ({
     updateLocation,
-    flyToLocation
+    flyToLocation,
+    selectPropertyByAddress
   }));
 
+  // Initialize map early (even when not visible) to preload markers
+  // This ensures pins appear instantly when map view is opened
   useEffect(() => {
-    if (!isVisible || !mapContainer.current) {
-      if (map.current) {
-        map.current.remove();
-        map.current = null;
+    // Always initialize map if container exists (even when not visible)
+    // We'll just hide it with CSS until it's needed
+    if (!mapContainer.current) {
+      return;
+    }
+    
+    // If map already exists, don't reinitialize
+    if (map.current) {
+      // Just update visibility
+      if (mapContainer.current) {
+        mapContainer.current.style.display = isVisible ? 'block' : 'none';
       }
       return;
     }
@@ -1911,6 +2464,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       };
       
       // Create map with worldwide access (no bounds restriction)
+      // Hide map initially if not visible (we'll show it when needed)
+      if (mapContainer.current) {
+        mapContainer.current.style.display = isVisible ? 'block' : 'none';
+      }
+      
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11', // Light style (no color) - default
@@ -1918,13 +2476,35 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         zoom: defaultLocation.zoom,
         bearing: 15, // Slight rotation for better view
         pitch: 45, // 3D perspective angle
-        interactive: true,
+        interactive: isVisible, // Only interactive when visible
         // Removed maxBounds to allow worldwide navigation
         attributionControl: false // Hide the attribution control
       });
 
       // Wait for map to load
       map.current.on('load', () => {
+        // Check for pending property selection (when map opens from recent project card)
+        const pendingSelection = (window as any).__pendingPropertySelection;
+        if (pendingSelection && pendingSelection.address) {
+          console.log('📍 Processing pending property selection:', pendingSelection);
+          // Make a single attempt after a short delay to let map initialize
+          // The retry logic will handle waiting for properties to load
+          setTimeout(() => {
+            selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0);
+          }, 300);
+        }
+        
+        // Ensure all interaction controls are enabled if map is visible
+        if (isVisible && map.current) {
+          map.current.scrollZoom.enable();
+          map.current.boxZoom.enable();
+          map.current.dragRotate.enable();
+          map.current.dragPan.enable();
+          map.current.keyboard.enable();
+          map.current.doubleClickZoom.enable();
+          map.current.touchZoomRotate.enable();
+        }
+        
         console.log('✅ Mapbox map loaded successfully!');
         // Permanently hide all Mapbox branding elements
         const hideMapboxBranding = () => {
@@ -1981,6 +2561,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         }
 
         // Load and display ALL comparable properties on map initialization
+        // This happens immediately when map is created (even if hidden)
+        // So pins are ready instantly when map becomes visible
         console.log('🗺️ Loading ALL comparable properties on map initialization...');
         // Use loadProperties to get all properties from backend
         loadProperties();
@@ -1989,7 +2571,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         
         // Update property card position when map moves
         map.current?.on('move', () => {
-          if (selectedProperty && showPropertyCard) {
+          if (selectedProperty && (showPropertyCard || showPropertyDetailsPanel)) {
             // Use map.project to get the current screen position of the selected property
             const coordinates: [number, number] = [selectedProperty.longitude, selectedProperty.latitude];
             const point = map.current.project(coordinates);
@@ -1998,6 +2580,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               x: point.x,
               y: point.y - 20
             });
+            
+            // Ensure property name marker stays visible during map movement
+            // Update marker position if it exists
+            if (currentPropertyNameMarkerRef.current && selectedProperty.latitude && selectedProperty.longitude) {
+              currentPropertyNameMarkerRef.current.setLngLat([selectedProperty.longitude, selectedProperty.latitude]);
+            }
           }
         });
         
@@ -2018,7 +2606,55 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       console.error('🗺️ Failed to create square map:', error);
     }
 
-    // Cleanup
+    // Don't cleanup on visibility change - keep map initialized
+    // Cleanup only happens on component unmount (see separate useEffect below)
+  }, []); // Run once on mount, not when isVisible changes
+  
+  // Update map visibility and interactivity when isVisible changes
+  useEffect(() => {
+    if (map.current && mapContainer.current) {
+      // Show/hide map container
+      mapContainer.current.style.display = isVisible ? 'block' : 'none';
+      
+      // Enable/disable map interactions
+      if (isVisible) {
+        // Resize map to ensure it renders correctly when shown
+        setTimeout(() => {
+          if (map.current) {
+            map.current.resize();
+            // Re-enable interactions
+            map.current.getCanvas().style.pointerEvents = 'auto';
+            // Explicitly enable all zoom and interaction controls
+            map.current.scrollZoom.enable();
+            map.current.boxZoom.enable();
+            map.current.dragRotate.enable();
+            map.current.dragPan.enable();
+            map.current.keyboard.enable();
+            map.current.doubleClickZoom.enable();
+            map.current.touchZoomRotate.enable();
+          }
+        }, 100);
+      } else {
+        // Disable interactions when hidden
+        if (map.current.getCanvas()) {
+          map.current.getCanvas().style.pointerEvents = 'none';
+        }
+        // Explicitly disable all zoom and interaction controls
+        if (map.current) {
+          map.current.scrollZoom.disable();
+          map.current.boxZoom.disable();
+          map.current.dragRotate.disable();
+          map.current.dragPan.disable();
+          map.current.keyboard.disable();
+          map.current.doubleClickZoom.disable();
+          map.current.touchZoomRotate.disable();
+        }
+      }
+    }
+  }, [isVisible]);
+  
+  // Cleanup on unmount only
+  useEffect(() => {
     return () => {
       if (map.current) {
         // Disconnect the branding observer if it exists
@@ -2030,7 +2666,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         map.current = null;
       }
     };
-  }, [isVisible]);
+  }, []);
 
   // Update location when searchQuery changes (only on explicit search)
   useEffect(() => {
@@ -2251,13 +2887,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
   return (
     <AnimatePresence>
-      {isVisible && (
-        <motion.div
-          key="square-map-container"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
+      {/* Always render map container (hidden when not visible) for early initialization */}
+      <motion.div
+        key="square-map-container"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: isVisible ? 1 : 0 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.3 }}
+        style={{ 
+          display: isVisible ? 'block' : 'none',
+          pointerEvents: isVisible ? 'auto' : 'none'
+        }}
           className="fixed inset-0 z-10"
         >
           <div 
@@ -2367,7 +3007,6 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           )}
           
         </motion.div>
-      )}
       
       {/* Property Details Panel */}
       {showPropertyDetailsPanel && (
@@ -2388,3 +3027,4 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 });
 
 SquareMap.displayName = 'SquareMap';
+
