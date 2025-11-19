@@ -27,6 +27,8 @@ import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
+import { SideChatPanel } from './SideChatPanel';
+import { MapChatBar } from './MapChatBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1387,6 +1389,7 @@ export interface MainContentProps {
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
   isSidebarCollapsed?: boolean;
+  onSidebarToggle?: () => void;
 }
 export const MainContent = ({
   className,
@@ -1403,7 +1406,8 @@ export const MainContent = ({
   onCloseSidebar,
   onRestoreSidebarState,
   getSidebarState,
-  isSidebarCollapsed = false
+  isSidebarCollapsed = false,
+  onSidebarToggle
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const [chatQuery, setChatQuery] = React.useState<string>("");
@@ -1413,6 +1417,7 @@ export const MainContent = ({
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  const [restoreChatId, setRestoreChatId] = React.useState<string | null>(null);
   const [userData, setUserData] = React.useState<any>(null);
   const [showNewPropertyWorkflow, setShowNewPropertyWorkflow] = React.useState<boolean>(false);
   const mapRef = React.useRef<SquareMapRef>(null);
@@ -1497,6 +1502,25 @@ export const MainContent = ({
   
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
+  
+  // Handle chat selection when in map view - open in SideChatPanel instead of ChatInterface
+  React.useEffect(() => {
+    if (isMapVisible && isInChatMode && currentChatData && currentChatId) {
+      // We're in map view and a chat was selected - open it in SideChatPanel
+      console.log('📋 MainContent: Chat selected in map view, opening in SideChatPanel', {
+        chatId: currentChatId,
+        query: currentChatData.query
+      });
+      
+      // Set the map search query to the chat's preview/query
+      setMapSearchQuery(currentChatData.query || '');
+      setHasPerformedSearch(true);
+      setRestoreChatId(currentChatId);
+      
+      // Prevent ChatInterface from showing by resetting chat mode
+      // We'll handle this by not showing ChatInterface when in map view
+    }
+  }, [isMapVisible, isInChatMode, currentChatData, currentChatId]);
 
   // CRITICAL: Preload property pins IMMEDIATELY on mount (before anything else)
   // This ensures property pins are ready instantly when map loads
@@ -1749,6 +1773,14 @@ export const MainContent = ({
     // If map is visible, only search on the map, don't enter chat
     if (isMapVisible) {
       console.log('Map search only - not entering chat mode');
+      
+      // Collapse sidebar on first query in map view for cleaner UI
+      const isFirstQuery = !hasPerformedSearch;
+      if (isFirstQuery && onCloseSidebar) {
+        console.log('Collapsing sidebar for first map query');
+        onCloseSidebar();
+      }
+      
       // Mark that user has performed a search in map mode
       setHasPerformedSearch(true);
       return;
@@ -1927,12 +1959,22 @@ export const MainContent = ({
       console.log('❌ SearchBar ref is NOT available');
     }
   }, [currentView, isInChatMode]);
+  // Track if we have a previous session to restore
+  const [previousSessionQuery, setPreviousSessionQuery] = React.useState<string | null>(null);
+
+  // Update previous session query when mapSearchQuery changes (and is not empty)
+  React.useEffect(() => {
+    if (mapSearchQuery) {
+      setPreviousSessionQuery(mapSearchQuery);
+    }
+  }, [mapSearchQuery]);
+
   const renderViewContent = () => {
     switch (currentView) {
       case 'home':
       case 'search':
         return <AnimatePresence mode="wait">
-            {isInChatMode ? <motion.div key="chat" initial={{
+            {isInChatMode && !isMapVisible ? <motion.div key="chat" initial={{
             opacity: 0
           }} animate={{
             opacity: 1
@@ -2258,50 +2300,88 @@ export const MainContent = ({
                   );
                 })()}
                 
-                {/* Search Bar for Map View - Always visible when map is visible */}
-                {isMapVisible && (() => {
-                  // Calculate padding dynamically for map view
-                  const MIN_PADDING = 16;
-                  const MAX_PADDING = 32;
-                  const availableWidth = viewportSize.width;
-                  
-                  let finalPadding;
-                  if (availableWidth < 350 + (MIN_PADDING * 2)) {
-                    finalPadding = availableWidth < 350 ? 8 : MIN_PADDING;
-                  } else {
-                    finalPadding = Math.max(
-                      MIN_PADDING,
-                      Math.min(MAX_PADDING, Math.floor(availableWidth * 0.04))
-                    );
-                  }
-                  
-                  return (
-                    <div className="w-full flex justify-center items-center" style={{ 
-                      position: 'fixed',
-                      bottom: '20px',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      zIndex: 50,
-                      width: 'clamp(350px, 90vw, 700px)',
-                      maxWidth: 'clamp(350px, 90vw, 700px)',
-                      paddingLeft: `${finalPadding}px`,
-                      paddingRight: `${finalPadding}px`,
-                      boxSizing: 'border-box'
-                    }}>
-                      <SearchBar 
-                        onSearch={handleSearch} 
-                        onQueryStart={handleQueryStart} 
-                        onMapToggle={handleMapToggle}
-                        resetTrigger={resetTrigger}
-                        isMapVisible={isMapVisible}
-                        isInChatMode={isInChatMode}
-                        currentView={currentView}
-                        hasPerformedSearch={hasPerformedSearch}
-                        isSidebarCollapsed={isSidebarCollapsed}
-                      />
-                    </div>
-                  );
-                })()}
+                {/* Chat Bar for Map View - Default opening bar, hide when SideChatPanel is visible */}
+                {isMapVisible && !hasPerformedSearch && (
+                  <MapChatBar
+                    onQuerySubmit={(query) => {
+                      handleSearch(query);
+                    }}
+                    onMapToggle={handleMapToggle}
+                    placeholder="Ask anything..."
+                    hasPreviousSession={!!previousSessionQuery}
+                    onPanelToggle={() => {
+                      if (previousSessionQuery) {
+                        setMapSearchQuery(previousSessionQuery);
+                        setHasPerformedSearch(true);
+                        // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                        // and hide MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+                      }
+                    }}
+                  />
+                )}
+                
+                {/* Side Chat Panel - Left Side (Fixed positioning to overlay map) */}
+                <SideChatPanel
+                  isVisible={isMapVisible && hasPerformedSearch}
+                  query={mapSearchQuery}
+                  sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+                  restoreChatId={restoreChatId}
+                  onQuerySubmit={(newQuery) => {
+                    // Handle new query from panel
+                    setMapSearchQuery(newQuery);
+                    // Keep hasPerformedSearch true
+                  }}
+                  onMapToggle={() => {
+                    // Close panel and show MapChatBar by resetting hasPerformedSearch
+                    setMapSearchQuery("");
+                    setHasPerformedSearch(false);
+                    setRestoreChatId(null);
+                    // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                    // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+                  }}
+                  onNewChat={() => {
+                    // Clear the query to ensure a fresh start, but keep panel visible
+                    // We'll use an empty string to signal a new chat, but the panel visibility
+                    // is controlled by hasPerformedSearch, so we keep that true
+                    setMapSearchQuery("");
+                    setRestoreChatId(null);
+                    // Note: We keep hasPerformedSearch true so the panel stays visible
+                    // The SideChatPanel will handle showing an empty state
+                  }}
+                  onSidebarToggle={onSidebarToggle}
+                  onOpenProperty={(address, coordinates, propertyId) => {
+                    console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
+                    
+                    // Ensure map is visible
+                    if (!isMapVisible) {
+                      setIsMapVisible(true);
+                    }
+                    
+                    // Convert propertyId to string if needed
+                    const propertyIdStr = propertyId ? String(propertyId) : undefined;
+                    
+                    // Select property on map
+                    if (mapRef.current && coordinates) {
+                      mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+                    } else if (mapRef.current) {
+                      // Try to select even without coordinates
+                      mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+                    } else {
+                      // Map not ready - store for later
+                      (window as any).__pendingPropertySelection = { address, coordinates, propertyId: propertyIdStr };
+                      // Try again soon
+                      setTimeout(() => {
+                        if (mapRef.current) {
+                          if (coordinates) {
+                            mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+                          } else {
+                            mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+                          }
+                        }
+                      }, 100);
+                    }
+                  }}
+                />
                 
                 {/* Full Screen Map */}
                 <SquareMap
@@ -2312,6 +2392,11 @@ export const MainContent = ({
                   isInChatMode={isInChatMode}
                   onLocationUpdate={(location) => {
                     setCurrentLocation(location.address);
+                  }}
+                  // Add left padding to map content when panel is visible
+                  containerStyle={{
+                    paddingLeft: (isMapVisible && hasPerformedSearch && mapSearchQuery) ? '450px' : '0',
+                    transition: 'padding-left 0.3s ease-out'
                   }}
                 />
               </motion.div>}

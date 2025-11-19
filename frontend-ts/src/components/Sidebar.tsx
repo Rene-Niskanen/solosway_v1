@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Database, BarChart3, Home, PanelLeft, LayoutDashboard } from "lucide-react";
+import { Database, BarChart3, Home, MessageSquareDot, LayoutDashboard } from "lucide-react";
 import { ProfileDropdown } from "./ProfileDropdown";
 
 const sidebarItems = [{
@@ -84,11 +84,20 @@ export const Sidebar = ({
         x: -8
       }} 
       transition={{
-        duration: 0.05,
-        ease: [0.4, 0, 0.2, 1]
+        duration: 0.2,
+        ease: [0.4, 0, 0.2, 1],
+        layout: {
+          duration: 0.25,
+          ease: [0.4, 0, 0.2, 1]
+        }
       }}
-      className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} transition-all duration-300 bg-white ${className || ''}`} 
-      style={{ background: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)', backgroundColor: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)' }}
+      layout
+      className={`${isCollapsed ? 'w-2' : 'w-10 lg:w-14'} flex flex-col items-center py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} bg-white ${className || ''}`} 
+      style={{ 
+        background: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)', 
+        backgroundColor: isCollapsed ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 255, 255, 1)',
+        transition: 'width 0.25s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+      }}
     >
       {!isCollapsed && (
         <>
@@ -103,27 +112,29 @@ export const Sidebar = ({
           scale: 1
         }} 
         transition={{
-          duration: 0.12,
+          duration: 0.2,
           ease: [0.4, 0, 0.2, 1],
           delay: 0.02
         }} 
         whileHover={{
           scale: 1.02,
           transition: {
-            duration: 0.08,
+            duration: 0.15,
             ease: [0.4, 0, 0.2, 1]
           }
         }} 
         whileTap={{
           scale: 0.98,
           transition: {
-            duration: 0.05
+            duration: 0.1,
+            ease: [0.4, 0, 0.2, 1]
           }
         }} 
         onMouseEnter={() => setIsTopIconHovered(true)}
         onMouseLeave={() => setIsTopIconHovered(false)}
         onClick={onChatToggle} 
-        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center mb-6 transition-all duration-300 ease-out group cursor-pointer"
+        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center mb-6 group cursor-pointer"
+        style={{ transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}
         aria-label="Toggle Chat History"
       >
         <AnimatePresence mode="wait">
@@ -133,7 +144,7 @@ export const Sidebar = ({
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 0.45, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              transition={{ duration: 0.1, ease: [0.4, 0, 0.2, 1] }}
+              transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
               src="/velora-dash-logo.png"
               alt="VELORA"
               className="w-6 h-6 lg:w-8 lg:h-8 object-contain drop-shadow-sm"
@@ -144,9 +155,9 @@ export const Sidebar = ({
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              transition={{ duration: 0.1, ease: [0.4, 0, 0.2, 1] }}
+              transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
             >
-              <PanelLeft className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm transition-all duration-300 ease-out" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
+              <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm" strokeWidth={1.8} style={{ color: '#8B8B8B', transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -161,26 +172,25 @@ export const Sidebar = ({
         const Icon = item.id === 'home' ? LayoutDashboard : item.icon;
         return <motion.button key={item.id} initial={{
           opacity: 0,
-          y: 8,
           scale: 0.95
         }} animate={{
           opacity: 1,
-          y: 0,
           scale: 1
         }} transition={{
-          duration: 0.12,
+          duration: 0.2,
           ease: [0.4, 0, 0.2, 1],
           delay: index * 0.02 + 0.04
         }} whileHover={{
           scale: 1.02,
           transition: {
-            duration: 0.08,
+            duration: 0.15,
             ease: [0.4, 0, 0.2, 1]
           }
         }} whileTap={{
           scale: 0.98,
           transition: {
-            duration: 0.05
+            duration: 0.1,
+            ease: [0.4, 0, 0.2, 1]
           }
         }} onClick={() => {
           // Home button navigates to search/dashboard view
@@ -189,9 +199,9 @@ export const Sidebar = ({
           } else {
             handleItemClick(item.id);
           }
-        }} className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center transition-all duration-300 ease-out group" aria-label={item.label}>
+        }} className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center group" aria-label={item.label} style={{ transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}>
               {/* Icon */}
-              <Icon className={`w-4 h-4 lg:w-5 lg:h-5 transition-all duration-300 ease-out drop-shadow-sm ${isActive ? 'text-sidebar-active scale-105' : 'hover:scale-102'}`} strokeWidth={1.8} style={{ color: isActive ? undefined : '#8B8B8B' }} />
+              <Icon className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm ${isActive ? 'text-sidebar-active scale-105' : 'hover:scale-102'}`} strokeWidth={1.8} style={{ color: isActive ? undefined : '#8B8B8B', transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }} />
             </motion.button>;
       })}
       
@@ -234,13 +244,14 @@ export const Sidebar = ({
         // Using Tailwind classes: left-10 (2.5rem = 40px) and lg:left-14 (3.5rem = 56px)
         ...(isChatPanelOpen && !isCollapsed ? { left: '376px' } : {}),
         backgroundColor: '#E9E9EB',
-        pointerEvents: 'auto'
+        pointerEvents: 'auto',
+        transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
       }}
       animate={{
         x: 0
       }}
       transition={{
-        duration: 0.3,
+        duration: 0.25,
         ease: [0.4, 0, 0.2, 1]
       }}
     >
@@ -251,7 +262,7 @@ export const Sidebar = ({
           rotate: isCollapsed ? 0 : 180
         }}
         transition={{
-          duration: 0.3,
+          duration: 0.25,
           ease: [0.4, 0, 0.2, 1]
         }}
         style={{ 

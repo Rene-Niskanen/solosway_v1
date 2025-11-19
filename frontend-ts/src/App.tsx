@@ -8,6 +8,7 @@ import { ChatHistoryProvider } from "./components/ChatHistoryContext";
 import { SystemProvider } from "./contexts/SystemContext";
 import { BackendApiProvider } from "./components/BackendApi";
 import { PreviewProvider } from "./contexts/PreviewContext";
+import { PropertySelectionProvider } from "./contexts/PropertySelectionContext";
 import { AuthGuard } from "./components/AuthGuard";
 import { Landing } from "./components/Landing";
 import { BookDemo } from "./components/BookDemo";
@@ -22,7 +23,8 @@ const App = () => (
       <SystemProvider>
         <BackendApiProvider>
           <PreviewProvider>
-            <BrowserRouter>
+            <PropertySelectionProvider>
+              <BrowserRouter>
               <Toaster />
               <Sonner />
               <Routes>
@@ -46,6 +48,7 @@ const App = () => (
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
+            </PropertySelectionProvider>
           </PreviewProvider>
         </BackendApiProvider>
       </SystemProvider>

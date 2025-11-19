@@ -177,10 +177,11 @@ class OptimizedSupabasePropertyHubService:
             logger.info(f"🏠 Getting property hubs (optimized) for business: {business_id}")
             
             # Step 1: Get properties with pagination
+            # Support both business_id and business_uuid (normalize if needed)
             properties_result = self.supabase.table('properties').select(
                 'id, formatted_address, normalized_address, latitude, longitude, '
                 'geocoding_status, geocoding_confidence, created_at, updated_at'
-            ).eq('business_id', business_id).order('created_at', desc=True).range(offset, offset + limit - 1).execute()
+            ).eq('business_uuid', business_id).order('created_at', desc=True).range(offset, offset + limit - 1).execute()
             
             if not properties_result.data:
                 logger.info(f"   ⚠️ No properties found for business: {business_id}")
@@ -219,15 +220,24 @@ class OptimizedSupabasePropertyHubService:
                             doc['confidence_score'] = rel['confidence_score']
                             property_documents.append(doc)
                 
-                # Build property hub
+                # Build property hub (match format expected by frontend)
                 property_hub = {
                     'property': prop,
-                    'property_details': property_details,
+                    'property_details': property_details or {},
                     'documents': property_documents,
+                    'comparable_data': [],  # Empty for now - can be added if needed
+                    'property_history': [],  # Empty for now - can be added if needed
+                    'vectors': {
+                        'document_vectors_count': 0,  # Would need separate query
+                        'property_vectors_count': 0  # Would need separate query
+                    },
                     'summary': {
-                        'total_documents': len(property_documents),
-                        'total_vectors': 0,  # Would need separate query
-                        'completeness_score': self._calculate_completeness_score(prop, property_details)
+                        'document_count': len(property_documents),
+                        'has_details': bool(property_details),
+                        'has_comparable_data': False,
+                        'has_vectors': False,
+                        'completeness_score': self._calculate_completeness_score(prop, property_details),
+                        'total_records': len(property_documents)
                     }
                 }
                 

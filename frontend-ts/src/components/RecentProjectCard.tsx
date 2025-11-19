@@ -17,6 +17,7 @@ export interface RecentProjectCardProps {
   documentCount?: number;
   lastOpened?: string;
   userAvatar?: string;
+  cardWidth?: number; // Responsive card width
 }
 
 export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
@@ -26,14 +27,32 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
   lastFile,
   documentCount,
   lastOpened,
-  userAvatar
+  userAvatar,
+  cardWidth = 200
 }) => {
+  // Calculate proportional dimensions based on card width
+  const cardHeight = cardWidth * 1.28; // Maintain 200/256 aspect ratio
+  // Keep font sizes slightly smaller relative to card size for neat appearance, but readable
+  const fontSize = {
+    small: `${Math.max(8, cardWidth * 0.042)}px`, // ~10px at 240px, increased for better readability
+    medium: `${Math.max(10, cardWidth * 0.048)}px`, // ~11.5px at 240px, increased for better readability
+    large: `${Math.max(12, cardWidth * 0.048)}px` // ~11.5px at 240px, increased for better readability
+  };
+  const iconSize = {
+    small: Math.max(10, cardWidth * 0.1), // 20px at 200px
+    medium: Math.max(12, cardWidth * 0.125), // 25px at 200px
+    large: Math.max(18, cardWidth * 0.15) // 30px at 200px
+  };
+  const padding = Math.max(8, cardWidth * 0.1); // 20px at 200px
+  const gap = Math.max(4, cardWidth * 0.02); // 4px at 200px
   // Render preview image based on last file type
   const renderPreviewImage = () => {
+    const previewFontSize = `${Math.max(8, cardWidth * 0.04)}px`;
+    
     if (!lastFile) {
       return (
         <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-          <div className="text-gray-400 text-xs">No preview</div>
+          <div className="text-gray-400" style={{ fontSize: previewFontSize }}>No preview</div>
         </div>
       );
     }
@@ -59,26 +78,26 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       case 'map':
         return (
           <div className="w-full h-full bg-blue-50 flex items-center justify-center">
-            <div className="text-blue-400 text-xs font-medium">Map View</div>
+            <div className="text-blue-400 font-medium" style={{ fontSize: previewFontSize }}>Map View</div>
           </div>
         );
       case 'floorplan':
         return (
           <div className="w-full h-full bg-gray-50 flex items-center justify-center">
-            <div className="text-gray-500 text-xs font-medium">Floor Plan</div>
+            <div className="text-gray-500 font-medium" style={{ fontSize: previewFontSize }}>Floor Plan</div>
           </div>
         );
       case 'document':
         return (
           <div className="w-full h-full bg-white flex flex-col items-center justify-center relative overflow-hidden">
             {/* Document preview representation */}
-            <div className="w-full h-full bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col items-center justify-center p-2">
+            <div className="w-full h-full bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col items-center justify-center" style={{ padding: `${Math.max(4, cardWidth * 0.06)}px` }}>
               {/* Document icon */}
-              <FileCheckCorner className="w-4 h-4 text-gray-500 mb-0.5" />
+              <FileCheckCorner className="text-gray-500" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px`, marginBottom: `${gap * 0.5}px` }} />
               {/* Document lines representation */}
-              <div className="w-full max-w-[80%] space-y-0.5 mt-1">
-                <div className="h-0.5 bg-gray-300 rounded w-full"></div>
-                <div className="h-0.5 bg-gray-300 rounded w-3/4"></div>
+              <div className="w-full max-w-[80%]" style={{ marginTop: `${gap * 0.5}px`, gap: `${gap * 0.5}px` }}>
+                <div className="h-0.5 bg-gray-300 rounded w-full" style={{ marginBottom: `${gap * 0.5}px` }}></div>
+                <div className="h-0.5 bg-gray-300 rounded w-3/4" style={{ marginBottom: `${gap * 0.5}px` }}></div>
                 <div className="h-0.5 bg-gray-300 rounded w-5/6"></div>
               </div>
             </div>
@@ -87,13 +106,13 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       case 'image':
         return (
           <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-            <div className="text-gray-400 text-xs">Image</div>
+            <div className="text-gray-400" style={{ fontSize: previewFontSize }}>Image</div>
           </div>
         );
       default:
         return (
           <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-            <div className="text-gray-400 text-xs">Preview</div>
+            <div className="text-gray-400" style={{ fontSize: previewFontSize }}>Preview</div>
           </div>
         );
     }
@@ -101,14 +120,22 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'new') {
     return (
-      <div className="bg-gray-100 rounded-lg border border-gray-200 shadow-md overflow-hidden hover:shadow-lg transition-all duration-75 flex flex-col cursor-pointer h-full">
+      <div className="bg-gray-100 rounded-lg border border-gray-200 shadow-md overflow-hidden hover:shadow-lg transition-all duration-75 flex flex-col cursor-pointer w-full" style={{ 
+        width: `${cardWidth}px`, 
+        minWidth: `${cardWidth}px`, 
+        maxWidth: `${cardWidth}px`, 
+        height: `${cardHeight}px`,
+        minHeight: `${cardHeight}px`, 
+        flexShrink: 0, 
+        aspectRatio: `${cardWidth}/${cardHeight}`
+      }}>
         {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
-        <div className="bg-gray-100 flex items-center justify-center flex-[2] border-b border-gray-200">
-          <Plus className="w-8 h-8 text-gray-700" strokeWidth={2.5} />
+        <div className="bg-gray-100 flex items-center justify-center flex-[2] border-b border-gray-200" style={{ minHeight: 0, flexShrink: 0 }}>
+          <Plus className="text-gray-700" style={{ width: `${iconSize.medium}px`, height: `${iconSize.medium}px` }} strokeWidth={2.5} />
         </div>
         {/* Lower Section - White with text (1/3 of card height) */}
-        <div className="bg-white flex items-center justify-center flex-1">
-          <span className="text-xs font-semibold" style={{ color: '#6E778D' }}>New Project</span>
+        <div className="bg-white flex items-center justify-center flex-1" style={{ minHeight: 0, flexShrink: 0 }}>
+          <span className="font-semibold" style={{ color: '#6E778D', fontSize: fontSize.large }}>New Project</span>
         </div>
       </div>
     );
@@ -116,12 +143,20 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'blank') {
     return (
-      <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col h-full opacity-40">
+      <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col opacity-40 w-full" style={{ 
+        width: `${cardWidth}px`, 
+        minWidth: `${cardWidth}px`, 
+        maxWidth: `${cardWidth}px`, 
+        height: `${cardHeight}px`,
+        minHeight: `${cardHeight}px`, 
+        flexShrink: 0, 
+        aspectRatio: `${cardWidth}/${cardHeight}`
+      }}>
         {/* Preview Image - 2/3 of card height */}
-        <div className="flex-[2] bg-gray-50"></div>
+        <div className="flex-[2] bg-gray-50" style={{ minHeight: 0, flexShrink: 0 }}></div>
         
         {/* Content Section - 1/3 of card height */}
-        <div className="flex flex-col flex-1 p-3">
+        <div className="flex flex-col flex-1" style={{ minHeight: 0, flexShrink: 0, padding: `${padding * 0.5}px` }}>
           {/* Empty content */}
         </div>
       </div>
@@ -129,41 +164,56 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md border border-gray-300 overflow-hidden hover:shadow-lg hover:border-gray-400 transition-all duration-75 flex flex-col h-full">
+    <div className="bg-white rounded-lg shadow-md border border-gray-300 overflow-hidden hover:shadow-lg hover:border-gray-400 transition-all duration-75 flex flex-col w-full" style={{ 
+      width: `${cardWidth}px`, 
+      minWidth: `${cardWidth}px`, 
+      maxWidth: `${cardWidth}px`, 
+      height: `${cardHeight}px`,
+      minHeight: `${cardHeight}px`, 
+      flexShrink: 0, 
+      aspectRatio: `${cardWidth}/${cardHeight}`
+    }}>
       {/* Preview Image - 2/3 of card height */}
-      <div className="flex-[2] overflow-hidden">
+      <div className="flex-[2] overflow-hidden" style={{ flexShrink: 0 }}>
         {renderPreviewImage()}
       </div>
       
       {/* Content Section - 1/3 of card height */}
-      <div className="flex flex-col flex-1 p-3">
+      <div className="flex flex-col flex-1" style={{ flexShrink: 0, padding: `${padding * 0.5}px` }}>
         {/* Project Type Label */}
         {projectType && (
-          <p className="text-[10px] font-medium text-gray-500 mb-1 uppercase tracking-wide">{projectType}</p>
+          <p className="font-medium text-gray-500 uppercase tracking-wide" style={{ 
+            fontSize: fontSize.small, 
+            marginBottom: `${gap}px` 
+          }}>{projectType}</p>
         )}
         
         {/* Property Address */}
         {propertyAddress && (
-          <h3 className="text-xs font-semibold mb-2 line-clamp-2" style={{ color: '#6E778D' }}>
+          <h3 className="font-semibold line-clamp-2" style={{ 
+            color: '#6E778D', 
+            fontSize: fontSize.medium,
+            marginBottom: `${gap * 1.5}px`
+          }}>
             {propertyAddress}
           </h3>
         )}
         
         {/* Meta Row */}
-        <div className="flex items-center justify-between mt-auto pt-2 border-t border-gray-200">
-          <div className="flex items-center gap-3 text-[10px] font-medium text-gray-600">
+        <div className="flex items-center justify-between mt-auto border-t border-gray-200" style={{ paddingTop: `${gap * 1.5}px` }}>
+          <div className="flex items-center font-medium text-gray-600" style={{ fontSize: fontSize.small, gap: `${gap * 4}px` }}>
             {/* Document Count */}
             {documentCount !== undefined && (
-              <div className="flex items-center gap-1">
-                <FileCheckCorner className="w-3 h-3 text-gray-600" />
+              <div className="flex items-center" style={{ gap: `${gap * 0.5}px` }}>
+                <FileCheckCorner className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
                 <span>{documentCount}</span>
               </div>
             )}
             
             {/* Last Opened */}
             {lastOpened && (
-              <div className="flex items-center gap-1">
-                <ClockFading className="w-3 h-3 text-gray-600" />
+              <div className="flex items-center" style={{ gap: `${gap * 0.5}px` }}>
+                <ClockFading className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
                 <span>{lastOpened}</span>
               </div>
             )}
@@ -174,11 +224,12 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
             <img 
               src={userAvatar} 
               alt="User"
-              className="w-5 h-5 rounded-full object-cover border border-gray-200"
+              className="rounded-full object-cover border border-gray-200"
+              style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }}
             />
           ) : (
-            <div className="w-5 h-5 rounded-full bg-gray-200 border border-gray-300 flex items-center justify-center">
-              <User className="w-2.5 h-2.5 text-gray-600" />
+            <div className="rounded-full bg-gray-200 border border-gray-300 flex items-center justify-center" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }}>
+              <User className="text-gray-600" style={{ width: `${iconSize.small * 0.5}px`, height: `${iconSize.small * 0.5}px` }} />
             </div>
           )}
         </div>

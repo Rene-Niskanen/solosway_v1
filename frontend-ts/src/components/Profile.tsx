@@ -233,9 +233,9 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
             <div className="flex items-center gap-6">
               {/* Profile Picture */}
               <div className="relative group">
-                <Avatar className="w-24 h-24 ring-2 ring-gray-100">
+                <Avatar className="w-16 h-16 ring-2 ring-gray-100">
                   <AvatarImage src={editData.profileImage} alt={profileData.name} className="object-cover" />
-                  <AvatarFallback className="bg-gradient-to-br from-blue-400 to-purple-500 text-white text-2xl font-semibold">
+                  <AvatarFallback className="bg-gradient-to-br from-blue-400 to-purple-500 text-white text-lg font-semibold">
                     {profileData.name.split(' ').map(n => n[0]).join('')}
                   </AvatarFallback>
                 </Avatar>

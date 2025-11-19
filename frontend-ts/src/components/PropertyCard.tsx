@@ -6,18 +6,28 @@ import { motion } from "framer-motion";
 import { MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Upload, FileText } from "lucide-react";
 import { PropertyData } from './PropertyResultsDisplay';
 import { PropertyFilesModal } from './PropertyFilesModal';
+import { usePropertySelection } from '../contexts/PropertySelectionContext';
 
 interface PropertyCardProps {
   property: PropertyData;
   onUpload?: (property: PropertyData) => void;
   onViewFiles?: (property: PropertyData) => void;
+  onPropertySelect?: (property: PropertyData) => void;
 }
 
 export const PropertyCard: React.FC<PropertyCardProps> = ({
   property,
   onUpload,
-  onViewFiles
+  onViewFiles,
+  onPropertySelect
 }) => {
+  const { isSelectionModeActive, addPropertyAttachment, propertyAttachments } = usePropertySelection();
+  
+  // Check if this property is already selected
+  const currentPropertyId = property?.id?.toString();
+  const isPropertySelected = propertyAttachments.some(
+    p => (p.propertyId?.toString() || p.propertyId) === currentPropertyId?.toString()
+  );
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
   const [modalPosition, setModalPosition] = useState<{ top: number; left: number } | undefined>();
   const [isFilesLoading, setIsFilesLoading] = useState(false);
@@ -164,7 +174,31 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-md transition-shadow duration-200">
+    <div 
+      className={`bg-white rounded-lg shadow-sm border overflow-hidden hover:shadow-md transition-shadow duration-200 ${
+        isPropertySelected 
+          ? 'border-green-500 border-2 cursor-pointer' 
+          : isSelectionModeActive 
+            ? 'border-blue-500 border-2 cursor-pointer' 
+            : 'border-gray-200'
+      }`}
+      onClick={(e) => {
+        if (isSelectionModeActive) {
+          // Check if click is on a button - if so, prevent selection
+          const target = e.target as HTMLElement;
+          if (target.closest('button') || target.closest('a')) {
+            return; // Don't select if clicking a button
+          }
+          
+          e.stopPropagation();
+          if (onPropertySelect) {
+            onPropertySelect(property);
+          } else {
+            addPropertyAttachment(property);
+          }
+        }
+      }}
+    >
       {/* Container 1: Image, Title, Summary, View buttons */}
       <div style={{ contain: 'layout style' }}>
         {/* Property Image - Infinity Pool Style (no border, extends to edges) */}
