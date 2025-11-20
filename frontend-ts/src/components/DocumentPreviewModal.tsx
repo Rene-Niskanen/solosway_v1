@@ -182,13 +182,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       
       return () => {
         // Cleanup: revoke blob URL when component unmounts or file changes
+        // Only revoke if it's not a preloaded blob (check if it's in our cache)
         const urlToRevoke = currentBlobUrlRef.current;
         if (urlToRevoke && urlToRevoke.startsWith('blob:')) {
-          URL.revokeObjectURL(urlToRevoke);
+          const isPreloaded = (window as any).__preloadedAttachmentBlobs && 
+                             Object.values((window as any).__preloadedAttachmentBlobs).includes(urlToRevoke);
+          if (!isPreloaded) {
+            try {
+              URL.revokeObjectURL(urlToRevoke);
+            } catch (e) {
+              // URL might already be revoked, ignore
+            }
+          }
           currentBlobUrlRef.current = null;
         }
       };
     } else {
+      // When modal closes, reset all state but don't revoke preloaded blob URLs
       setBlobUrl(null);
       setImageNaturalHeight(null);
       setImageNaturalWidth(null);
@@ -196,8 +206,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setImageRenderedWidth(null);
       setModalPosition(null); // Reset position when modal closes
       setDocxPublicUrl(null); // Reset DOCX public URL
+      setZoomLevel(100); // Reset zoom
+      setRotation(0); // Reset rotation
+      setCurrentPage(1); // Reset page
+      currentBlobUrlRef.current = null; // Clear ref but don't revoke preloaded URLs
     }
-  }, [file, isOpen, isMapVisible]);
+  }, [file, isOpen, isMapVisible, activeTabIndex]);
 
   // Determine file types
   const isPDF = file?.type === 'application/pdf';

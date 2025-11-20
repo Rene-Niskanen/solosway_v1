@@ -1440,8 +1440,27 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             
             from .services.address_service import AddressNormalizationService
             import asyncio
+            import re
             
             address_service = AddressNormalizationService()
+            
+            # Check if document is manually linked to a property (uploaded via property card)
+            is_manual_upload = False
+            manual_property_id = None
+            skip_property_updates = False
+            
+            if document.property_id:
+                # Document already has a property_id - check if it's a manual upload
+                try:
+                    if document.metadata_json:
+                        metadata = json.loads(document.metadata_json)
+                        if metadata.get('upload_source') == 'property_card' and metadata.get('manually_linked_to_property_id'):
+                            is_manual_upload = True
+                            manual_property_id = str(document.property_id)
+                            print(f"📌 Document is manually linked to property: {manual_property_id}")
+                            print(f"   Upload source: property_card")
+                except Exception as e:
+                    print(f"⚠️  Error checking manual upload metadata: {e}")
             
             # Step 1: Determine which address to use (Priority: Filename > Content)
             property_address = None
@@ -1474,10 +1493,60 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     address_source = 'extraction'
                     print(f"🎯 Using address from CONTENT EXTRACTION: '{property_address}'")
             
-            # Step 2: Process address and link to property node
+            # Step 2: For manual uploads, compare addresses before processing
+            if is_manual_upload and property_address and manual_property_id:
+                print(f"🔍 Manual upload detected - comparing addresses...")
+                print(f"   Document address: '{property_address}'")
+                
+                # Get the property's address from database
+                from .models import Property
+                property_obj = Property.query.filter_by(id=UUID(manual_property_id)).first()
+                
+                if property_obj:
+                    property_obj_address = property_obj.formatted_address or property_obj.normalized_address or ""
+                    print(f"   Property address: '{property_obj_address}'")
+                    
+                    # Helper function to extract postcode from address
+                    def extract_postcode(addr):
+                        if not addr:
+                            return None
+                        postcode_match = re.search(r'([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})', addr, re.IGNORECASE)
+                        return postcode_match.group(1).upper().replace(' ', '') if postcode_match else None
+                    
+                    # Compare postcodes (most reliable identifier)
+                    doc_postcode = extract_postcode(property_address)
+                    prop_postcode = extract_postcode(property_obj_address)
+                    
+                    if doc_postcode and prop_postcode:
+                        if doc_postcode != prop_postcode:
+                            print(f"   ⚠️  Postcodes differ: '{doc_postcode}' vs '{prop_postcode}'")
+                            print(f"   📌 Address mismatch detected - will skip property detail updates")
+                            skip_property_updates = True
+                        else:
+                            print(f"   ✅ Postcodes match: '{doc_postcode}'")
+                            print(f"   📌 Addresses match - will proceed with property updates")
+                    else:
+                        # If we can't extract postcodes, compare normalized addresses
+                        doc_normalized = address_service.normalize_address(property_address)
+                        prop_normalized = address_service.normalize_address(property_obj_address)
+                        
+                        if doc_normalized != prop_normalized:
+                            print(f"   ⚠️  Normalized addresses differ")
+                            print(f"   📌 Address mismatch detected - will skip property detail updates")
+                            skip_property_updates = True
+                        else:
+                            print(f"   ✅ Normalized addresses match")
+                            print(f"   📌 Addresses match - will proceed with property updates")
+                else:
+                    print(f"   ⚠️  Property {manual_property_id} not found in database")
+                    print(f"   📌 Will proceed with normal property creation")
+            
+            # Step 3: Process address and link to property node
             if property_address:
                 print(f"📍 Processing property linking for address: '{property_address}'")
                 print(f"   Address source: {address_source}")
+                if is_manual_upload:
+                    print(f"   Manual upload: {'Yes (skipping property updates)' if skip_property_updates else 'Yes (addresses match)'}")
                 
                 try:
                     # Normalize address and compute hash
@@ -1496,7 +1565,8 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         'formatted_address': geocoding_result.get('formatted_address'),
                         'geocoding_status': geocoding_result.get('status'),
                         'geocoding_confidence': geocoding_result.get('confidence'),
-                        'geocoder_used': geocoding_result.get('geocoder', 'none')
+                        'geocoder_used': geocoding_result.get('geocoder', 'none'),
+                        'address_source': address_source
                     }
                     
                     print(f"✅ Address normalized:")
@@ -1530,13 +1600,19 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         print(f"   🏢 Business: {business_uuid}")
                         print(f"   📄 Document: {document_id}")
                         print(f"   🏠 Extracted data: {len(extracted_data)} fields")
+                        if skip_property_updates:
+                            print(f"   ⚠️  Skipping property detail updates (manual upload with address mismatch)")
                         
                         # Create complete property hub with enhanced error handling
+                        # Pass skip_property_updates flag if address mismatch detected
                         hub_result = property_hub_service.create_property_with_relationships(
                             address_data=address_data,
                             document_id=str(document_id),
                             business_id=business_uuid,
-                            extracted_data=extracted_data
+                            extracted_data=extracted_data,
+                            skip_property_updates=skip_property_updates,
+                            is_manual_upload=is_manual_upload,
+                            manual_property_id=manual_property_id if is_manual_upload else None
                         )
                         
                         if hub_result['success']:

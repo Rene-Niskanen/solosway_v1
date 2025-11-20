@@ -369,23 +369,46 @@ class EnhancedPropertyMatchingService:
                 'confidence': 0.0
             }
     
-    def create_document_relationship(self, document_id: str, property_id: str, business_id: str, address_data: Dict[str, Any], match_type: str, confidence: float) -> Dict[str, Any]:
+    def create_document_relationship(
+        self, 
+        document_id: str, 
+        property_id: str, 
+        business_id: str, 
+        address_data: Dict[str, Any], 
+        match_type: str, 
+        confidence: float,
+        relationship_type: str = 'property_document',
+        is_manual_upload: bool = False,
+        address_mismatch: bool = False
+    ) -> Dict[str, Any]:
         """Create document relationship with match metadata"""
         try:
+            # Build relationship metadata
+            relationship_metadata = {
+                'match_type': match_type,
+                'matching_service': 'enhanced_property_matching',
+                'match_timestamp': datetime.utcnow().isoformat(),
+                'address_hash': address_data.get('address_hash'),
+                'geocoding_confidence': address_data.get('geocoding_confidence')
+            }
+            
+            # Add manual upload metadata if applicable
+            if is_manual_upload:
+                relationship_metadata['upload_source'] = 'property_card'
+                relationship_metadata['manually_linked'] = True
+                if address_mismatch:
+                    relationship_metadata['address_mismatch'] = True
+                    relationship_metadata['document_address'] = address_data.get('original_address')
+                    relationship_metadata['relationship_note'] = 'Document stored in property card but address does not match property address'
+            
             relationship_data = {
                 'id': str(uuid.uuid4()),
                 'document_id': document_id,
                 'property_id': property_id,
-                'relationship_type': 'property_document',
+                'relationship_type': relationship_type,
                 'address_source': address_data.get('address_source', 'extraction'),
                 'confidence_score': confidence,
-                'relationship_metadata': {
-                    'match_type': match_type,
-                    'matching_service': 'enhanced_property_matching',
-                    'match_timestamp': datetime.utcnow().isoformat(),
-                    'address_hash': address_data.get('address_hash'),
-                    'geocoding_confidence': address_data.get('geocoding_confidence')
-                },
+                'relationship_metadata': relationship_metadata,
                 'created_at': datetime.utcnow().isoformat()
             }
             
@@ -393,6 +416,10 @@ class EnhancedPropertyMatchingService:
             
             if result.data:
                 logger.info(f"✅ Document relationship created: {relationship_data['id']}")
+                logger.info(f"   Relationship type: {relationship_type}")
+                logger.info(f"   Confidence: {confidence:.2f}")
+                if is_manual_upload and address_mismatch:
+                    logger.info(f"   ⚠️  Marked as unassociated (address mismatch)")
                 return result.data[0]
             else:
                 raise Exception("Failed to create relationship in Supabase")
