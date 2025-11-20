@@ -2690,10 +2690,7 @@ def get_property_card_summary(property_id):
             'asking_price': asking_price,
             'yield_percentage': yield_percentage,
             'summary_text': property_details.get('notes', ''),
-            'last_transaction_date': property_details.get('last_transaction_date'),
-            'marketing_agent': property_details.get('marketing_agent'),
-            'marketing_start_date': property_details.get('marketing_start_date'),
-            'guide_price': property_details.get('guide_price')
+            'last_transaction_date': property_details.get('last_transaction_date')
         }
         
         # OPTIMIZATION: Lazy cache write - only write if data actually changed
