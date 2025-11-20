@@ -3,7 +3,7 @@ from flask_login import UserMixin
 from sqlalchemy.sql import func
 import enum
 import uuid
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 
 # Enum for user status
@@ -61,7 +61,7 @@ class Document(db.Model):
     # Classification fields
     classification_type = db.Column(db.String(100))  # valuation_report, market_appraisal, other_documents
     classification_confidence = db.Column(db.Float)
-    classification_reasoning = db.Column(db.Text)  # Classification reasoning
+    classification_reasoning = db.Column(db.Text, nullable=True)  # Classification reasoning (may not exist in all DB schemas)
     classification_timestamp = db.Column(db.DateTime(timezone=True))
     parsed_text = db.Column(db.Text)  # Store full LlamaParse output
     extracted_json = db.Column(db.Text)  # Store extracted data as JSON
@@ -261,6 +261,31 @@ class DocumentRelationship(db.Model):
             'relationship_metadata': self.relationship_metadata,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'last_updated': self.last_updated.isoformat() if self.last_updated else None
+        }
+
+
+class PropertyCardCache(db.Model):
+    """Cached property card summary data for instant rendering"""
+    __tablename__ = 'property_card_cache'
+    
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'), primary_key=True)
+    card_data = db.Column(JSONB, nullable=False)  # Stores all card summary data as JSON
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    cache_version = db.Column(db.Integer, default=1, nullable=False)  # Increments on updates
+    
+    # Relationships
+    property = db.relationship('Property', backref='card_cache')
+    
+    def __repr__(self):
+        return f'<PropertyCardCache {self.property_id}>'
+    
+    def serialize(self):
+        """Convert cache to dictionary"""
+        return {
+            'property_id': str(self.property_id),
+            'card_data': self.card_data,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'cache_version': self.cache_version
         }
 
 

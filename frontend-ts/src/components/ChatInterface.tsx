@@ -6,8 +6,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowUp, Copy, ThumbsUp, ThumbsDown, Check, ArrowLeft, X, ChevronRight, Mic } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { toast } from "@/hooks/use-toast";
+import { usePreview } from '../contexts/PreviewContext';
 import PropertyResultsDisplay from './PropertyResultsDisplay';
 import { SquareMap } from './SquareMap';
 // Import the same mock data that the map view uses
@@ -230,8 +230,17 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  // Use shared preview context
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
   
   // Determine if we should use rounded corners (when there's content or attachment)
   const hasContent = inputValue.trim().length > 0 || attachedFiles.length > 0;
@@ -766,6 +775,30 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
       type: file.type,
       size: file.size
     };
+    
+    // Preload blob URL immediately (Instagram-style preloading)
+    // This ensures instant preview when user clicks the attachment
+    const preloadBlobUrl = () => {
+      try {
+        console.log('🚀 Preloading blob URL for attachment:', file.name);
+        const blobUrl = URL.createObjectURL(file);
+        
+        // Store preloaded blob URL in global cache
+        if (!(window as any).__preloadedAttachmentBlobs) {
+          (window as any).__preloadedAttachmentBlobs = {};
+        }
+        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        
+        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+      } catch (error) {
+        console.error('❌ Error preloading blob URL:', error);
+        // Don't throw - preloading failure shouldn't block file attachment
+      }
+    };
+    
+    // Preload immediately (don't await - let it happen in background)
+    preloadBlobUrl();
+    
     setAttachedFiles(prev => [...prev, fileData]);
     console.log('✅ ChatInterface: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
   }, [attachedFiles.length]);
@@ -788,12 +821,31 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
   }, [ref]);
 
   const handleRemoveFile = (id: string) => {
+    // Clean up preloaded blob URL when file is removed
+    const preloadedBlobUrl = (window as any).__preloadedAttachmentBlobs?.[id];
+    if (preloadedBlobUrl) {
+      try {
+        URL.revokeObjectURL(preloadedBlobUrl);
+        delete (window as any).__preloadedAttachmentBlobs[id];
+        console.log('🧹 Cleaned up preloaded blob URL for attachment:', id);
+      } catch (error) {
+        console.error('Error cleaning up blob URL:', error);
+      }
+    }
+    
     setAttachedFiles(prev => prev.filter(file => file.id !== id));
     // If the removed file is being previewed, close the preview modal
-    if (previewFile?.id === id) {
-      setIsPreviewOpen(false);
-      setPreviewFile(null);
-    }
+    // Remove from preview tabs if it was open
+    setPreviewFiles(prev => {
+      const newFiles = prev.filter(f => f.id !== id);
+      if (newFiles.length === 0) {
+        setIsPreviewOpen(false);
+        setActivePreviewTabIndex(0);
+      } else if (activePreviewTabIndex >= newFiles.length) {
+        setActivePreviewTabIndex(newFiles.length - 1);
+      }
+      return newFiles;
+    });
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -1359,14 +1411,8 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
                         attachment={file}
                         onRemove={handleRemoveFile}
                         onPreview={(file) => {
-                          // Toggle preview: if clicking the same file that's already previewed, close it
-                          if (previewFile?.id === file.id && isPreviewOpen) {
-                            setIsPreviewOpen(false);
-                            setPreviewFile(null);
-                          } else {
-                            setPreviewFile(file);
-                            setIsPreviewOpen(true);
-                          }
+                          // Use shared preview context to add file (will add to existing preview if open)
+                          addPreviewFile(file);
                         }}
                       />
                     ))}
@@ -1517,15 +1563,7 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
           </div>
         </div>
       </motion.div>
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        file={previewFile}
-        isOpen={isPreviewOpen}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFile(null);
-        }}
-      />
+      {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </>
   );
 });

@@ -7,8 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
-import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { toast } from "@/hooks/use-toast";
+import { usePreview } from '../contexts/PreviewContext';
 
 export interface SearchBarProps {
   className?: string;
@@ -48,27 +48,68 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
   const MAX_FILES = 4;
   const [isMultiLine, setIsMultiLine] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileAttachmentData | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  
+  // Use shared preview context
+  const {
+    previewFiles,
+    activePreviewTabIndex,
+    isPreviewOpen,
+    setPreviewFiles,
+    setActivePreviewTabIndex,
+    setIsPreviewOpen,
+    addPreviewFile,
+    MAX_PREVIEW_TABS
+  } = usePreview();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialScrollHeightRef = useRef<number | null>(null);
   const isDeletingRef = useRef(false);
   
+  // Track viewport size to adjust font size and padding on very small screens
+  const [viewportWidth, setViewportWidth] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth;
+    }
+    return 1024;
+  });
+  
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportWidth(window.innerWidth);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  
   // Determine if we should use rounded corners (when there's content or attachment)
   const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0;
+  
+  // Adjust font size and padding on very small screens to ensure placeholder text fits
+  // Use a more aggressive threshold to catch smaller screens
+  const isVerySmallScreen = viewportWidth < 600;
+  // Further reduce font size on extremely small screens to ensure placeholder text fits
+  const isExtremelySmall = viewportWidth < 400;
+  const fontSize = isExtremelySmall ? '12px' : (isVerySmallScreen ? '13px' : 'clamp(14px, 2vw, 16px)');
+  const lineHeight = isExtremelySmall ? '16px' : (isVerySmallScreen ? '18px' : 'clamp(20px, 2.75vw, 22px)');
+  const paddingLeft = isExtremelySmall
+    ? (attachedFiles.length > 0 ? '8px' : '12px')
+    : (isVerySmallScreen 
+      ? (attachedFiles.length > 0 ? '10px' : '14px')
+      : (attachedFiles.length > 0 ? 'clamp(12px, 3vw, 24px)' : 'clamp(18px, 4vw, 36px)'));
+  const paddingRight = isExtremelySmall ? '8px' : (isVerySmallScreen ? '10px' : 'clamp(12px, 3vw, 24px)');
 
   // Context-aware configuration
   const getContextConfig = () => {
     if (isMapVisible) {
       return {
-        placeholder: "Search for properties...",
+        placeholder: "Search for properties",
         showMapToggle: true, // Always show map toggle
         showMic: true, // Show paperclip icon in map view too
         position: "bottom", // Always bottom when map is visible
         glassmorphism: true,
-        maxWidth: '100vw', // Full width for map mode
+        maxWidth: 'clamp(450px, 90vw, 700px)', // Same width as dashboard for consistency, min 450px to ensure full placeholder text is always visible
         greenGlow: true, // Add green glow for map mode
         isSquare: true // Square corners for map mode
       };
@@ -79,19 +120,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
         showMic: true,
         position: "center", // Always center
         glassmorphism: false,
-        maxWidth: '600px', // Narrower for chat mode
+        maxWidth: 'clamp(350px, 90vw, 600px)', // Responsive: min 350px to ensure full placeholder text is visible, max 600px
         greenGlow: false,
         isSquare: false // Keep rounded for chat mode
       };
     } else {
       // Dashboard view - square corners
+      // On very small screens, use a more flexible width to ensure placeholder text fits
+      const flexibleMaxWidth = isVerySmallScreen 
+        ? 'min(100%, calc(100vw - 32px))' // On very small screens, use almost full width minus minimal padding
+        : 'clamp(350px, 90vw, 700px)'; // Normal screens: min 350px (reduced since placeholder is shorter), max 700px
+      
       return {
-        placeholder: "What can I help you find today?",
+        placeholder: "Search for anything",
         showMapToggle: true,
         showMic: true,
         position: "center", // Always center
         glassmorphism: false,
-        maxWidth: '700px', // Slightly wider for dashboard view
+        maxWidth: flexibleMaxWidth,
         greenGlow: false,
         isSquare: true // Square corners for dashboard view
       };
@@ -160,7 +206,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       // Use a small timeout to allow view transition to start smoothly
       const timeoutId = setTimeout(() => {
         setIsPreviewOpen(false);
-        setPreviewFile(null);
+        setPreviewFiles([]);
+        setActivePreviewTabIndex(0);
       }, 100);
       
       return () => clearTimeout(timeoutId);
@@ -484,6 +531,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       type: file.type,
       size: file.size
     };
+    
+    // Preload blob URL immediately (Instagram-style preloading)
+    // This ensures instant preview when user clicks the attachment
+    const preloadBlobUrl = () => {
+      try {
+        console.log('🚀 Preloading blob URL for attachment:', file.name);
+        const blobUrl = URL.createObjectURL(file);
+        
+        // Store preloaded blob URL in global cache
+        if (!(window as any).__preloadedAttachmentBlobs) {
+          (window as any).__preloadedAttachmentBlobs = {};
+        }
+        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        
+        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+      } catch (error) {
+        console.error('❌ Error preloading blob URL:', error);
+        // Don't throw - preloading failure shouldn't block file attachment
+      }
+    };
+    
+    // Preload immediately (don't await - let it happen in background)
+    preloadBlobUrl();
+    
     setAttachedFiles(prev => [...prev, fileData]);
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
@@ -508,12 +579,30 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   }, [ref]);
 
   const handleRemoveFile = (id: string) => {
-    setAttachedFiles(prev => prev.filter(file => file.id !== id));
-    // If the removed file is being previewed, close the preview modal
-    if (previewFile?.id === id) {
-      setIsPreviewOpen(false);
-      setPreviewFile(null);
+    // Clean up preloaded blob URL when file is removed
+    const preloadedBlobUrl = (window as any).__preloadedAttachmentBlobs?.[id];
+    if (preloadedBlobUrl) {
+      try {
+        URL.revokeObjectURL(preloadedBlobUrl);
+        delete (window as any).__preloadedAttachmentBlobs[id];
+        console.log('🧹 Cleaned up preloaded blob URL for attachment:', id);
+      } catch (error) {
+        console.error('Error cleaning up blob URL:', error);
+      }
     }
+    
+    setAttachedFiles(prev => prev.filter(file => file.id !== id));
+    // Remove from preview tabs if it was open
+    setPreviewFiles(prev => {
+      const newFiles = prev.filter(f => f.id !== id);
+      if (newFiles.length === 0) {
+        setIsPreviewOpen(false);
+        setActivePreviewTabIndex(0);
+      } else if (activePreviewTabIndex >= newFiles.length) {
+        setActivePreviewTabIndex(newFiles.length - 1);
+      }
+      return newFiles;
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -556,8 +645,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       onMouseLeave={() => setIsHovered(false)}
     >
       <div className="w-full mx-auto" style={{ 
-        maxWidth: contextConfig.maxWidth, 
-        minWidth: isMapVisible ? '700px' : '400px' 
+        maxWidth: isVerySmallScreen && !isMapVisible 
+          ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
+          : contextConfig.maxWidth,
+        minWidth: '0', // Allow flexibility on very small screens - parent container handles spacing
+        width: isMapVisible ? contextConfig.maxWidth : '100%', // Explicit width in map view to match dashboard
+        boxSizing: 'border-box' // Ensure padding is included in width calculation
       }}>
         <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
             <motion.div 
@@ -569,12 +662,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
               boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
               paddingTop: isMultiLine ? '16px' : '14px',
               paddingBottom: isMultiLine ? '12px' : '14px',
-              paddingRight: '24px',
+              paddingRight: paddingRight,
+              paddingLeft: paddingLeft,
               willChange: 'border-radius, padding-left, padding-top, padding-bottom, height',
               overflow: 'visible',
               width: '100%',
+              minWidth: '0', // Prevent width issues in multi-line
               height: 'auto',
               minHeight: 'fit-content',
+              boxSizing: 'border-box', // Ensure padding is included in width
               borderRadius: hasContent
                 ? '12px' // ChatGPT-style rounded corners when there's content or attachment
                 : contextConfig.isSquare 
@@ -582,7 +678,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                   : '9999px' // Fully rounded for map/chat view when no content
             }}
             animate={{
-              paddingLeft: attachedFiles.length > 0 ? '24px' : '36px',
+              paddingLeft: paddingLeft,
               paddingTop: isMultiLine ? '16px' : '14px',
               paddingBottom: isMultiLine ? '12px' : '14px',
               borderRadius: hasContent
@@ -636,14 +732,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
-                      // Toggle preview: if clicking the same file that's already previewed, close it
-                      if (previewFile?.id === file.id && isPreviewOpen) {
-                        setIsPreviewOpen(false);
-                        setPreviewFile(null);
-                      } else {
-                        setPreviewFile(file);
-                        setIsPreviewOpen(true);
-                      }
+                      // Use shared preview context to add file (will add to existing preview if open)
+                      addPreviewFile(file);
                     }}
                   />
                   ))}
@@ -654,24 +744,38 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
             {/* Input row - ONE textarea that changes position based on multi-line state */}
             <motion.div 
               className={`relative flex ${isMultiLine ? 'flex-col' : 'items-end'} w-full`} 
-              style={{ height: 'auto', minHeight: '28.1px' }}
+              style={{ 
+                height: 'auto', 
+                minHeight: '28.1px',
+                width: '100%',
+                minWidth: '0' // Prevent width constraints
+              }}
               layout
               transition={{ 
                 duration: !searchValue.trim() ? 0 : 0.2, 
                 ease: [0.4, 0, 0.2, 1] 
               }}
             >
-              {/* Top row for multi-line: textarea spans full width */}
+              {/* Top row for multi-line: textarea spans full width ABOVE icons */}
               {isMultiLine && (
                 <motion.div 
-                  className="flex items-start w-full mb-2"
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
+                  className="flex items-start w-full"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
                   transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-                  style={{ minHeight: '28.1px' }}
+                  style={{ 
+                    minHeight: '28.1px',
+                    width: '100%',
+                    marginBottom: '12px' // Space between text and icons
+                  }}
                 >
-                  <div className="flex-1 relative flex items-start" style={{ overflow: 'visible', minHeight: '28.1px' }}>
+                  <div className="flex-1 relative flex items-start w-full" style={{ 
+                    overflow: 'visible', 
+                    minHeight: '28.1px',
+                    width: '100%',
+                    minWidth: '0'
+                  }}>
                     {/* ONE textarea - always rendered, never recreated, never unmounted */}
                     <motion.textarea 
                       key="textarea-single-instance"
@@ -699,18 +803,21 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       style={{
                         minHeight: '28.1px',
                         maxHeight: '350px',
-                        fontSize: '16px',
-                        lineHeight: '22px',
+                        fontSize: fontSize,
+                        lineHeight: lineHeight,
                         paddingTop: '0px',
                         paddingBottom: '0px',
-                        paddingRight: '24px',
+                        paddingRight: '0px', // No right padding in multi-line, icons are below
+                        paddingLeft: '0px',
                         scrollbarWidth: 'thin',
                         scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                         overflow: 'hidden',
                         overflowY: 'auto',
                         wordWrap: 'break-word',
                         transition: !searchValue.trim() ? 'none' : 'height 0.2s ease-out, overflow 0.2s ease-out',
-                        resize: 'none'
+                        resize: 'none',
+                        width: '100%',
+                        minWidth: '0'
                       }}
                       autoComplete="off"
                       disabled={isSubmitted}
@@ -722,7 +829,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
               
               {/* Single-line or bottom row: map icon, text, and icons */}
               <motion.div 
-                className={`relative flex ${isMultiLine ? 'items-end justify-end space-x-3 w-full' : 'items-end w-full'}`}
+                className={`relative flex ${isMultiLine ? 'items-center justify-end space-x-3 w-full' : 'items-end w-full'}`}
+                style={{
+                  width: '100%',
+                  minWidth: '0'
+                }}
                 layout
                 transition={{ 
                   duration: !searchValue.trim() ? 0 : 0.2, 
@@ -740,7 +851,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     });
                     onMapToggle?.();
                   }}
-                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 ${
+                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none ${
                     isMapVisible 
                         ? 'text-slate-500 hover:text-blue-500'
                         : 'text-slate-500 hover:text-green-500'
@@ -800,17 +911,17 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     style={{
                       minHeight: '28.1px',
                       maxHeight: '350px',
-                      fontSize: '16px',
-                      lineHeight: '22px',
+                      fontSize: 'clamp(14px, 2vw, 16px)',
+                      lineHeight: 'clamp(20px, 2.75vw, 22px)',
                       paddingTop: '0px',
                       paddingBottom: '0px',
-                      paddingRight: '16px',
+                      paddingRight: isVerySmallScreen ? '8px' : 'clamp(8px, 2vw, 16px)',
                       scrollbarWidth: 'thin',
                       scrollbarColor: '#D1D5DB transparent',
-                      overflow: 'visible',
+                      overflow: 'hidden',
                       overflowY: 'visible',
-                        verticalAlign: 'bottom',
-                        transition: 'height 0.2s ease-out, overflow 0.2s ease-out'
+                      verticalAlign: 'bottom',
+                      transition: 'height 0.2s ease-out, overflow 0.2s ease-out'
                     }}
                   autoComplete="off" 
                   disabled={isSubmitted}
@@ -819,7 +930,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
               </div>
                 )}
               
-                <div className={`flex items-end space-x-3 ${isMultiLine ? '' : 'ml-4'} self-end`}>
+                <div className={`flex items-center space-x-3 ${isMultiLine ? 'w-full justify-end' : 'ml-4 self-end'}`} style={{ 
+                  width: isMultiLine ? '100%' : 'auto',
+                  minWidth: '0'
+                }}>
                 {contextConfig.showMic && (
                   <ImageUploadButton
                     onImageUpload={(query) => {
@@ -835,7 +949,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     <motion.button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors"
+                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors focus:outline-none outline-none"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                     >
@@ -846,7 +960,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                 <motion.button 
                   type="submit" 
                   onClick={handleSubmit} 
-                  className={`flex items-center justify-center relative ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                   style={{
                     width: '32px',
                     height: '32px',
@@ -902,18 +1016,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
             </motion.div>
           </form>
       </div>
-      
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        file={previewFile}
-        isOpen={isPreviewOpen}
-        isMapVisible={isMapVisible}
-        isSidebarCollapsed={isSidebarCollapsed}
-        onClose={() => {
-          setIsPreviewOpen(false);
-          setPreviewFile(null);
-        }}
-      />
+      {/* Document Preview Modal is now rendered at MainContent level using shared context */}
     </motion.div>
   );
 });

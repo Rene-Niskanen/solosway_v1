@@ -311,6 +311,7 @@ const DashboardLayoutContent = ({
         onRestoreSidebarState={(shouldBeCollapsed: boolean) => setIsSidebarCollapsed(shouldBeCollapsed)}
         getSidebarState={() => isSidebarCollapsed}
         isSidebarCollapsed={isSidebarCollapsed}
+        onSidebarToggle={handleSidebarToggle}
       />
     </motion.div>
   );

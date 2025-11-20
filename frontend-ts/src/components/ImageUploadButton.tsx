@@ -71,7 +71,7 @@ export const ImageUploadButton = ({
       <motion.button
         type="button"
         onClick={handleButtonClick}
-        className={`flex items-center justify-center transition-all duration-200 text-black hover:text-gray-700 ${sizeClasses[size]} ${className}`}
+        className={`flex items-center justify-center transition-all duration-200 text-black hover:text-gray-700 focus:outline-none outline-none ${sizeClasses[size]} ${className}`}
         whileHover={{ 
           scale: 1.08,
           x: 1
