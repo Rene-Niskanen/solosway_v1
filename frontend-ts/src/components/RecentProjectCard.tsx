@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, FileCheckCorner, ClockFading, User } from "lucide-react";
+import { Plus, FileCheckCorner, Clock, User } from "lucide-react";
 
 export interface LastFile {
   type: 'document' | 'map' | 'floorplan' | 'image';
@@ -213,7 +213,7 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
             {/* Last Opened */}
             {lastOpened && (
               <div className="flex items-center" style={{ gap: `${gap * 0.5}px` }}>
-                <ClockFading className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
+                <Clock className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
                 <span>{lastOpened}</span>
               </div>
             )}

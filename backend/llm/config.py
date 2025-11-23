@@ -17,6 +17,7 @@ class LLMConfig(BaseSettings):
     # OpenAI 
     openai_api_key: str = os.environ.get('OPENAI_API_KEY')
     openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o')
+    # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
     # Supabase
@@ -30,6 +31,11 @@ class LLMConfig(BaseSettings):
     similarity_threshold: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.35"))
     min_similarity_threshold: float = float(os.getenv("MIN_SIMILARITY_THRESHOLD", "0.15"))
 
+    # Cohere Reranker
+    cohere_api_key: str = os.getenv("COHERE_API_KEY", "")
+    cohere_rerank_model: str = os.getenv("COHERE_RERANKER_MODEL", "rerank-english-v3.0")
+    cohere_rerank_enabled: bool = os.getenv("COHERE_RERANK_ENABLED", "false").lower() == "true"
+    
     # Developer/testing helpers
     simple_mode: bool = os.getenv("LLM_SIMPLE_MODE", "false").lower() == "true"
 

@@ -5,9 +5,12 @@ Summarization code - create final unified answer from all document outputs.
 import logging
 
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
+from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.prompts import get_summary_human_content
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +65,22 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     """
 
     doc_outputs = state['document_outputs']
+    user_query = state.get('user_query', '')
 
     if not doc_outputs:
         logger.warning("[SUMMARIZE_RESULTS] No document outputs to summarize")
-        return {"final_summary": "No relevant documents matched the query."}
+        # Provide a helpful message when no documents are found
+        return {
+            "final_summary": f"I couldn't find any documents that directly match your query: \"{user_query}\".\n\n"
+            "This could be because:\n"
+            "- The information might be described differently in the documents\n"
+            "- The documents may not contain this specific information\n"
+            "- Try rephrasing your query or using more general terms\n\n"
+            "For example, instead of \"5 bedroom and 5 bathroom\", try:\n"
+            "- \"bedrooms and bathrooms\"\n"
+            "- \"property specifications\"\n"
+            "- \"property details\""
+        }
 
     if config.simple_mode:
         logger.info(
@@ -77,9 +92,10 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         ]
         for output in doc_outputs[:5]:
             snippet = output.get('output', '') or ''
+            prop_id_display = (output.get('property_id') or 'none')[:8]
             lines.append(
                 f"- Doc {output.get('doc_id', '')[:8]} "
-                f"(property {output.get('property_id', '')[:8]}): "
+                f"(property {prop_id_display}): "
                 f"{snippet[:120]}{'...' if len(snippet) > 120 else ''}"
             )
         if len(doc_outputs) > 5:
@@ -93,21 +109,65 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     )
 
     # Format outputs with natural names (filename and address)
+    # Also include search source information to help LLM understand how documents were found
     formatted_outputs = []
+    search_source_summary = {
+        'structured_query': 0,
+        'llm_sql_query': 0,
+        'bm25': 0,
+        'vector': 0,
+        'hybrid': 0,
+        'unknown': 0
+    }
+    
     for idx, output in enumerate(doc_outputs):
-        doc_type = output.get('classification_type', 'Property Document').replace('_', ' ').title()
+        doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
         filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
-        address = output.get('property_address', f"Property {output.get('property_id', 'Unknown')[:8]}")
+        prop_id = output.get('property_id') or 'Unknown'
+        address = output.get('property_address', f"Property {prop_id[:8]}")
         page_info = output.get('page_range', 'multiple pages')
+        search_source = output.get('search_source', 'unknown')
+        similarity_score = output.get('similarity_score', 0.0)
+        
+        # Track search sources
+        search_source_summary[search_source] = search_source_summary.get(search_source, 0) + 1
+        
+        # Format search source for display
+        source_display = {
+            'structured_query': 'Exact match (property details)',
+            'llm_sql_query': 'Similar match (SQL query)',
+            'bm25': 'Lexical search (BM25)',
+            'vector': 'Semantic search (vector similarity)',
+            'hybrid': 'Combined search (BM25 + Vector)',
+            'unknown': 'Unknown source'
+        }.get(search_source, search_source)
         
         header = f"\n### {doc_type}: {filename}\n"
         header += f"Property: {address}\n"
         header += f"Pages: {page_info}\n"
-        header += f"---------------------------------------------\n"
+        header += f"Found via: {source_display}"
+        if similarity_score > 0:
+            header += f" (relevance: {similarity_score:.2f})"
+        header += f"\n---------------------------------------------\n"
         
         formatted_outputs.append(header + output.get('output', ''))
     
     formatted_outputs_str = "\n".join(formatted_outputs)
+    
+    # Build search summary for LLM context
+    search_summary_parts = []
+    if search_source_summary['structured_query'] > 0:
+        search_summary_parts.append(f"{search_source_summary['structured_query']} exact match(es) from property database")
+    if search_source_summary['llm_sql_query'] > 0:
+        search_summary_parts.append(f"{search_source_summary['llm_sql_query']} similar match(es) from SQL query")
+    if search_source_summary['bm25'] > 0:
+        search_summary_parts.append(f"{search_source_summary['bm25']} from lexical search (BM25)")
+    if search_source_summary['vector'] > 0:
+        search_summary_parts.append(f"{search_source_summary['vector']} from semantic search (vector similarity)")
+    if search_source_summary['hybrid'] > 0:
+        search_summary_parts.append(f"{search_source_summary['hybrid']} from combined search (BM25 + Vector)")
+    
+    search_summary = "Documents found via: " + ", ".join(search_summary_parts) if search_summary_parts else "Documents found via various search methods"
 
     # Build conversation context if history exists
     history_context = ""
@@ -115,63 +175,40 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         recent_history = state['conversation_history'][-3:]  # Last 3 Q&A pairs
         history_lines = []
         for exchange in recent_history:
-            history_lines.append(f"Previous Q: {exchange['query']}")
-            history_lines.append(f"Previous A: {exchange['summary'][:300]}...\n")
-        history_context = "CONVERSATION HISTORY:\n" + "\n".join(history_lines) + "\n\n"
+            # Handle different conversation history formats:
+            # Format 1: From summary_nodes (has 'query' and 'summary')
+            # Format 2: From frontend/views (has 'role' and 'content')
+            if 'query' in exchange and 'summary' in exchange:
+                # Format from summary_nodes
+                history_lines.append(f"Previous Q: {exchange['query']}")
+                history_lines.append(f"Previous A: {exchange['summary'][:300]}...\n")
+            elif 'role' in exchange and 'content' in exchange:
+                # Format from frontend (role-based messages)
+                role = exchange['role']
+                content = exchange['content']
+                if role == 'user':
+                    history_lines.append(f"Previous Q: {content}")
+                elif role == 'assistant':
+                    history_lines.append(f"Previous A: {content[:300]}...\n")
+            # Skip malformed entries silently
+        if history_lines:
+            history_context = "CONVERSATION HISTORY:\n" + "\n".join(history_lines) + "\n\n"
 
-    # Create the summarization prompt
-    prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
-
-CONTEXT
-
-The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
-They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
-
-The user has asked:
-
-"{state['user_query']}"
-
-{history_context}
-Below is the extracted content from the pages you analyzed:
-
-{formatted_outputs_str}
-
-GUIDELINES FOR YOUR RESPONSE
-
-Speak naturally, like an experienced colleague summarising the key points — not like you're writing an academic paper or following a rigid checklist.
-
-Focus on what matters in real estate:
-- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
-
-When referencing a document, keep it light and natural:
-→ "One of the valuation reports mentions…"
-→ "In the lease document, there's a note that…"
-→ "The Highlands_Berden_Bishops_Stortford report highlights…"
-→ "Page 7 shows that…"
-
-Only cite pages if the information is clearly page-specific. Otherwise keep it general.
-
-Start with a clear, direct answer to the user's question.
-Then add helpful context and details that support the answer.
-
-If useful, point out inconsistencies across documents or missing information.
-
-Feel free to offer insights or next steps the way a real estate professional would:
-- "It might be worth checking…"
-- "You may want to confirm whether…"
-- "Based on the valuation assumptions, the property seems…"
-
-Structure your response with a brief heading that directly addresses the query, followed by the details.
-
-TONE
-
-Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
-
-Now provide your response:"""
-
+    # Get system prompt for summarize task
+    system_msg = get_system_prompt('summarize')
+    
+    # Get human message content
+    human_content = get_summary_human_content(
+        user_query=state['user_query'],
+        conversation_history=history_context,
+        search_summary=search_summary,
+        formatted_outputs=formatted_outputs_str
+    )
+    
     try:
-        # Call the LLM
-        response = llm.invoke(prompt)
+        # Use LangGraph message format
+        messages = [system_msg, HumanMessage(content=human_content)]
+        response = llm.invoke(messages)
         summary = response.content.strip()
         logger.info("[SUMMARIZE_RESULTS] Generated final summary")
         

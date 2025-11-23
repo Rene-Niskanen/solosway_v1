@@ -722,7 +722,8 @@ def process_document_classification(self, document_id, file_content, original_fi
                             document_id=str(document_id),
                             chunks=chunk_texts,
                             metadata=vector_metadata,
-                            chunk_metadata_list=chunk_metadata_list  # NEW: Pass bbox metadata
+                            chunk_metadata_list=chunk_metadata_list,  # NEW: Pass bbox metadata
+                            lazy_embedding=False  # Immediate embedding after parsing (faster queries)
                         )
                         
                         if success:
@@ -1604,15 +1605,12 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             print(f"   ⚠️  Skipping property detail updates (manual upload with address mismatch)")
                         
                         # Create complete property hub with enhanced error handling
-                        # Pass skip_property_updates flag if address mismatch detected
+                        # The matching service only needs: document_id, address_data, business_id, and extracted_data
                         hub_result = property_hub_service.create_property_with_relationships(
                             address_data=address_data,
                             document_id=str(document_id),
                             business_id=business_uuid,
-                            extracted_data=extracted_data,
-                            skip_property_updates=skip_property_updates,
-                            is_manual_upload=is_manual_upload,
-                            manual_property_id=manual_property_id if is_manual_upload else None
+                            extracted_data=extracted_data
                         )
                         
                         if hub_result['success']:
@@ -1813,7 +1811,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             logger.info(f"✅ Using Reducto chunks with bbox metadata: {len(chunks)} chunks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
-                            chunks = vector_service.chunk_text(document_text, chunk_size=512, overlap=50)
+                            chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=180)
                             chunk_metadata_list = None
                             logger.info(f"⚠️ Using manual chunking (no bbox metadata): {len(chunks)} chunks")
                         
@@ -1831,7 +1829,8 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             str(document_id), 
                             chunks, 
                             metadata,
-                            chunk_metadata_list=chunk_metadata_list 
+                            chunk_metadata_list=chunk_metadata_list,
+                            lazy_embedding=False  # Immediate embedding after parsing (faster queries)
                         )
                         
                         if success:
@@ -2005,6 +2004,225 @@ def process_document_task(self, document_id, file_content, original_filename, bu
     return process_document_classification.delay(document_id, file_content, original_filename, business_id)
 
 
+# ============================================================================
+# LAZY EMBEDDING TASKS (RAG Architecture Upgrade)
+# ============================================================================
+
+@shared_task(bind=True, name="embed_chunk_on_demand")
+def embed_chunk_on_demand(self, chunk_id: str, document_id: str):
+    """
+    Embed a single chunk on-demand (triggered by query-time retrieval).
+    
+    This is called when BM25/hybrid search finds an unembedded chunk.
+    High priority task to ensure user queries get embeddings quickly.
+    
+    Args:
+        chunk_id: UUID of the chunk to embed
+        document_id: UUID of the document (for metadata)
+    """
+    try:
+        from .services.supabase_client_factory import get_supabase_client
+        from .services.local_embedding_service import LocalEmbeddingService
+        from datetime import datetime
+        import json
+        
+        supabase = get_supabase_client()
+        embedding_service = LocalEmbeddingService()
+        
+        # Fetch chunk data
+        result = supabase.table('document_vectors').select('*').eq('id', chunk_id).execute()
+        
+        if not result.data:
+            logger.error(f"Chunk {chunk_id} not found")
+            return False
+        
+        chunk_data = result.data[0]
+        
+        # Check if already embedded
+        if chunk_data.get('embedding') is not None:
+            logger.info(f"Chunk {chunk_id} already embedded, skipping")
+            return True
+        
+        # Get chunk text and context
+        chunk_text = chunk_data.get('chunk_text', '')
+        chunk_context = chunk_data.get('chunk_context', '')
+        
+        if not chunk_text:
+            logger.error(f"Chunk {chunk_id} has no text")
+            return False
+        
+        # Combine context + chunk for embedding
+        if chunk_context:
+            text_to_embed = f"{chunk_context}\n\n{chunk_text}"
+        else:
+            text_to_embed = chunk_text
+        
+        # Update status to 'queued'
+        supabase.table('document_vectors').update({
+            'embedding_status': 'queued',
+            'embedding_queued_at': datetime.utcnow().isoformat()
+        }).eq('id', chunk_id).execute()
+        
+        # Generate embedding using local service (or OpenAI fallback)
+        try:
+            embeddings = embedding_service.embed_chunks([text_to_embed])
+            embedding = embeddings[0] if embeddings else None
+            
+            if not embedding:
+                raise ValueError("Embedding generation returned empty result")
+            
+            # Update chunk with embedding
+            update_data = {
+                'embedding': embedding,
+                'embedding_status': 'embedded',
+                'embedding_completed_at': datetime.utcnow().isoformat(),
+                'embedding_model': 'bge-small-en-v1.5' if embedding_service.is_local_available() else 'text-embedding-3-small',
+                'embedding_error': None
+            }
+            
+            supabase.table('document_vectors').update(update_data).eq('id', chunk_id).execute()
+            
+            logger.info(f"✅ Embedded chunk {chunk_id} (dim: {len(embedding)})")
+            return True
+            
+        except Exception as embed_error:
+            # Mark as failed
+            error_msg = str(embed_error)[:500]  # Limit error message length
+            supabase.table('document_vectors').update({
+                'embedding_status': 'failed',
+                'embedding_error': error_msg
+            }).eq('id', chunk_id).execute()
+            
+            logger.error(f"Failed to embed chunk {chunk_id}: {embed_error}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error in embed_chunk_on_demand: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+@shared_task(bind=True, name="embed_document_chunks_lazy")
+def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal'):
+    """
+    Embed all pending chunks for a document (batch processing).
+    
+    This is called:
+    - During low-priority background indexing
+    - When a document is queried and has many unembedded chunks
+    - Scheduled batch jobs for warm/cold documents
+    
+    Args:
+        document_id: UUID of the document
+        priority: 'high' (user query) or 'normal' (background)
+    """
+    try:
+        from .services.supabase_client_factory import get_supabase_client
+        from .services.local_embedding_service import LocalEmbeddingService
+        from datetime import datetime
+        import json
+        
+        supabase = get_supabase_client()
+        embedding_service = LocalEmbeddingService()
+        
+        # Fetch all pending chunks for this document
+        result = supabase.table('document_vectors').select('*').eq(
+            'document_id', document_id
+        ).in_('embedding_status', ['pending', 'queued']).execute()
+        
+        if not result.data:
+            logger.info(f"No pending chunks for document {document_id}")
+            return True
+        
+        chunks = result.data
+        logger.info(f"Embedding {len(chunks)} pending chunks for document {document_id}")
+        
+        # Process in batches (local embedding server handles batching)
+        batch_size = 32  # Good batch size for local CPU models
+        embedded_count = 0
+        failed_count = 0
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            
+            # Prepare texts for embedding
+            texts_to_embed = []
+            chunk_ids = []
+            
+            for chunk_data in batch:
+                chunk_text = chunk_data.get('chunk_text', '')
+                chunk_context = chunk_data.get('chunk_context', '')
+                
+                if not chunk_text:
+                    continue
+                
+                # Combine context + chunk
+                if chunk_context:
+                    text_to_embed = f"{chunk_context}\n\n{chunk_text}"
+                else:
+                    text_to_embed = chunk_text
+                
+                texts_to_embed.append(text_to_embed)
+                chunk_ids.append(chunk_data['id'])
+            
+            if not texts_to_embed:
+                continue
+            
+            # Mark as queued
+            for chunk_id in chunk_ids:
+                supabase.table('document_vectors').update({
+                    'embedding_status': 'queued',
+                    'embedding_queued_at': datetime.utcnow().isoformat()
+                }).eq('id', chunk_id).execute()
+            
+            # Generate embeddings in batch
+            try:
+                embeddings = embedding_service.embed_chunks(texts_to_embed)
+                
+                if len(embeddings) != len(chunk_ids):
+                    raise ValueError(f"Embedding count mismatch: {len(embeddings)} vs {len(chunk_ids)}")
+                
+                # Update chunks with embeddings
+                model_name = 'bge-small-en-v1.5' if embedding_service.is_local_available() else 'text-embedding-3-small'
+                
+                for chunk_id, embedding in zip(chunk_ids, embeddings):
+                    supabase.table('document_vectors').update({
+                        'embedding': embedding,
+                        'embedding_status': 'embedded',
+                        'embedding_completed_at': datetime.utcnow().isoformat(),
+                        'embedding_model': model_name,
+                        'embedding_error': None
+                    }).eq('id', chunk_id).execute()
+                
+                embedded_count += len(chunk_ids)
+                logger.info(f"✅ Embedded batch {i//batch_size + 1} ({len(chunk_ids)} chunks)")
+                
+            except Exception as batch_error:
+                # Mark batch as failed
+                error_msg = str(batch_error)[:500]
+                for chunk_id in chunk_ids:
+                    supabase.table('document_vectors').update({
+                        'embedding_status': 'failed',
+                        'embedding_error': error_msg
+                    }).eq('id', chunk_id).execute()
+                
+                failed_count += len(chunk_ids)
+                logger.error(f"Failed to embed batch {i//batch_size + 1}: {batch_error}")
+        
+        logger.info(
+            f"✅ Completed lazy embedding for document {document_id}: "
+            f"{embedded_count} embedded, {failed_count} failed"
+        )
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in embed_document_chunks_lazy: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def get_s3_client():
     """Get S3 client with AWS credentials"""
     return boto3.client(
@@ -2076,10 +2294,11 @@ def store_extracted_properties_in_supabase(extracted_data, business_id, document
                 from .services.supabase_property_hub_service import SupabasePropertyHubService
                 property_hub_service = SupabasePropertyHubService()
 
+                # Fix: Use .eq() instead of second .select() call
                 existing = property_hub_service.supabase.table('document_relationships')\
                     .select('id')\
-                    .select('document_id', str(document_id))\
-                    .eq('property_id', str(property_uuids[1]) if i < len(property_uuids) else None)\
+                    .eq('document_id', str(document_id))\
+                    .eq('property_id', str(property_uuids[i]) if i < len(property_uuids) else None)\
                     .execute()
                 
                 if existing.data:

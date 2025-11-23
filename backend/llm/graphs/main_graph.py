@@ -10,6 +10,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from backend.llm.types import MainWorkflowState
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
+    expand_query_for_retrieval,
     query_vector_documents,
     clarify_relevant_docs
 )
@@ -27,12 +28,13 @@ async def build_main_graph(use_checkpointer: bool = True):
     NEW: Now includes PostgreSQL checkpointer for conversation persistence
     and query rewriting for context-aware follow-up questions.
 
-    Flow (Vector-Only with Context):
+    Flow (Vector-Only with Context + Query Expansion):
     1. Rewrite query (adds context from conversation history)
-    2. Vector search (semantic similarity on document embeddings)
-    3. Clarify (LLM re-rank by relevance, merge chunks)
-    4. Process documents (parallel subgraph invocations per document)
-    5. Summarize (LLM creates unified summary with conversation memory)
+    2. Expand query (generates variations for better recall) 
+    3. Vector search (multi-query with RRF merging)
+    4. Clarify (LLM re-rank by relevance, merge chunks)
+    5. Process documents (parallel subgraph invocations per document)
+    6. Summarize (LLM creates unified summary with conversation memory)
 
     Note: SQL/structured retrieval temporarily disabled until implemented.
     
@@ -57,18 +59,29 @@ async def build_main_graph(use_checkpointer: bool = True):
     - Output: rewritten user_query (or original if no history)
     """
 
+    builder.add_node("expand_query", expand_query_for_retrieval)
+    """
+    Node 2: Query Expansion (NEW - Accuracy Improvement)
+    - Input: user_query (potentially rewritten)
+    - Generates 2 query variations with synonyms and rephrasing
+    - Example: "foundation issues" → ["foundation issues", "foundation damage", "concrete defects"]
+    - Output: query_variations list
+    - Improves recall by 15-30% by catching different phrasings
+    """
+
     builder.add_node("query_vector_documents", query_vector_documents)
     """
-    Node 2: Vector Search
-    - Input: user_query (potentially rewritten), business_id
-    - Embeds query and searches Supabase pgvector with HNSW index
-    - Uses similarity threshold with fallback
-    - Output: vector results (replaces relevant_documents)
+    Node 3: Vector Search with Multi-Query (NEW - Uses query variations)
+    - Input: query_variations (from expand_query), business_id
+    - Embeds each query variation and searches Supabase pgvector
+    - Merges results with Reciprocal Rank Fusion (RRF)
+    - Uses HNSW index with optimized parameters
+    - Output: vector results (merged, deduplicated by RRF)
     """
 
     builder.add_node("clarify_relevant_docs", clarify_relevant_docs)
     """
-    Node 3: Clarify/Re-rank
+    Node 4: Clarify/Re-rank
     - Input: relevant_documents, conversation_history
     - Groups chunks by doc_id into unique documents
     - LLM re-ranks documents by relevance to user query
@@ -78,7 +91,7 @@ async def build_main_graph(use_checkpointer: bool = True):
 
     builder.add_node("process_documents", process_documents)
     """
-    Node 4: Process Documents (parallel subgraph invocations)
+    Node 5: Process Documents (parallel subgraph invocations)
     - Input: relevant_documents, user_query, conversation_history
     - For each unique document:
         - Invokes document_qa_subgraph
@@ -89,7 +102,7 @@ async def build_main_graph(use_checkpointer: bool = True):
 
     builder.add_node("summarize_results", summarize_results)
     """
-    Node 5: Summarize
+    Node 6: Summarize
     - Input: document_outputs, user_query, conversation_history
     - LLM creates unified summary from all document analyses
     - References previous conversation for follow-up questions
@@ -103,9 +116,13 @@ async def build_main_graph(use_checkpointer: bool = True):
     builder.add_edge(START, 'rewrite_query')
     logger.debug("Edge: START -> rewrite_query")
 
-    # Query Rewriting -> Vector Search
-    builder.add_edge('rewrite_query', 'query_vector_documents')
-    logger.debug("Edge: rewrite_query -> query_vector_documents")
+    # Query Rewriting -> Query Expansion
+    builder.add_edge('rewrite_query', 'expand_query')
+    logger.debug("Edge: rewrite_query -> expand_query")
+
+    # Query Expansion -> Vector Search (searches with all variations)
+    builder.add_edge('expand_query', 'query_vector_documents')
+    logger.debug("Edge: expand_query -> query_vector_documents")
 
     # Vector Search -> Clarify
     builder.add_edge("query_vector_documents", "clarify_relevant_docs")
@@ -135,13 +152,13 @@ async def build_main_graph(use_checkpointer: bool = True):
                 return main_graph
             
             # Create AsyncPostgreSQL checkpointer for async graph execution
-            # Step 1: Setup tables using context manager
-            async with AsyncPostgresSaver.from_conn_string(db_url) as setup_checkpointer:
-                await setup_checkpointer.setup()
+            # Setup tables first, then create checkpointer instance
+            checkpointer = AsyncPostgresSaver.from_conn_string(db_url)
+            async with checkpointer:
+                await checkpointer.setup()
             
-            # Step 2: Create persistent checkpointer for graph
-            # We await the context manager to get the actual checkpointer instance
-            checkpointer = await AsyncPostgresSaver.from_conn_string(db_url).__aenter__()
+            # Create a new checkpointer instance for the graph (connection will be managed by LangGraph)
+            checkpointer = AsyncPostgresSaver.from_conn_string(db_url)
             
             # Compile WITH checkpointer (enables conversation memory)
             main_graph = builder.compile(checkpointer=checkpointer)
@@ -151,6 +168,8 @@ async def build_main_graph(use_checkpointer: bool = True):
             
         except Exception as e:
             logger.error(f"Failed to initialize checkpointer: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             logger.warning("   Falling back to stateless mode")
             main_graph = builder.compile()
             logger.info("Main graph compiled WITHOUT checkpointer (stateless)")

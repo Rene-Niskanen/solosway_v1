@@ -22,7 +22,7 @@ def _build_processing_result(output_state) -> DocumentProcessingResult:
         doc_id=output_state.get("doc_id", ""),
         property_id=output_state.get("property_id", ""),
         output=output_state.get("answer", "Not found in this document."),
-        source_chunks=[output_state.get("doc_content", "")[:500]],
+        source_chunks=[output_state.get("doc_content", "")[:1500]],  # Increased for 1200-char chunks
     )
 
 
@@ -47,9 +47,9 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
                 property_id=doc.get("property_id", ""),
                 output=(
                     f"[Simple mode] Top snippet:\n"
-                    f"{(doc.get('content') or '')[:300] or 'No text captured.'}"
+                    f"{(doc.get('content') or '')[:1500] or 'No text captured.'}"  # Increased for 1200-char chunks
                 ),
-                source_chunks=[(doc.get("content") or "")[:300]],
+                source_chunks=[(doc.get("content") or "")[:1500]],  # Increased for 1200-char chunks
             )
             # Add metadata
             result['classification_type'] = doc.get('classification_type', 'Unknown')
@@ -57,6 +57,9 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             result['page_numbers'] = doc.get('page_numbers', [])
             result['original_filename'] = doc.get('original_filename')
             result['property_address'] = doc.get('property_address')
+            # Preserve search source information
+            result['search_source'] = doc.get('source', 'unknown')
+            result['similarity_score'] = doc.get('similarity_score', 0.0)
             stubbed.append(result)
         return {"document_outputs": stubbed}
 
@@ -67,10 +70,21 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
     qa_subgraph = build_document_qa_subgraph()
 
     async def process_one(doc) -> DocumentProcessingResult:
+        doc_content = doc.get("content", "").strip()
+        
+        # Log content length for debugging
+        if not doc_content or len(doc_content) < 50:
+            logger.warning(
+                "[PROCESS_DOCUMENTS] Document %s has very short or empty content (%d chars). "
+                "This may result in a generic response.",
+                doc.get("doc_id", "")[:8],
+                len(doc_content)
+            )
+        
         subgraph_state = {
             "doc_id": doc.get("doc_id", ""),
             "property_id": doc.get("property_id", ""),
-            "doc_content": doc.get("content", ""),
+            "doc_content": doc_content,
             "user_query": state.get("user_query", ""),
             "answer": "",
         }
@@ -85,6 +99,9 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             result['page_numbers'] = doc.get('page_numbers', [])
             result['original_filename'] = doc.get('original_filename')
             result['property_address'] = doc.get('property_address')
+            # Preserve search source information (BM25, SQL, Vector, Hybrid)
+            result['search_source'] = doc.get('source', 'unknown')
+            result['similarity_score'] = doc.get('similarity_score', 0.0)
             
             logger.info(
                 "[PROCESS_DOCUMENTS] Completed doc %s (%s)", 

@@ -28,9 +28,11 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
     depends_on:
       - redis
       - postgres
+      - embedding-server
 
   worker:
     build: .
@@ -43,9 +45,29 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
     depends_on:
       - redis
       - postgres
+      - embedding-server
+
+  embedding-server:
+    build: .
+    env_file:
+      - .env
+    command: uvicorn backend.services.embedding_server:app --host 0.0.0.0 --port 5003
+    ports:
+      - "5003:5003"
+    volumes:
+      - .:/app
+    environment:
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
+    # No dependencies - can start independently
+  
+  # Note: Other services (web, worker) can access embedding-server at:
+  # http://embedding-server:5003/embed (from inside Docker network)
+  # Or set LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed in .env
   
 volumes:
   postgres_data:

@@ -3,10 +3,13 @@
 import logging
 
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 from langgraph.graph import START, END, StateGraph
 
 from backend.llm.config import config
 from backend.llm.types import DocumentQAState
+from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.prompts import get_document_qa_human_content
 
 logger = logging.getLogger(__name__)
 
@@ -49,32 +52,19 @@ def answer_question(state: DocumentQAState) -> DocumentQAState:
         temperature=0,
     )
 
-    # Create the prompt
-    prompt = f"""You are a property document analyst. Read this document excerpt and extract any information relevant to the user's question.
+    # Get system prompt for analyze task
+    system_msg = get_system_prompt('analyze')
     
-    IMPORTANT RULES:
-1. Extract and summarize ONLY information found in the document
-2. If the document contains relevant information, provide comprehensive details including:
-   - Specific values, prices, measurements, dates
-   - Property features, specifications, condition details
-   - Location information, connectivity, amenities
-   - Professional assessments, ratings, or opinions
-   - Any risks, opportunities, or notable findings
-3. If this specific excerpt doesn't contain relevant information, say "No relevant information in this excerpt"
-4. Be thorough but focused - include all relevant details, not just a brief summary
-5. Do not speculate beyond what's written
+    # Get human message content
+    human_content = get_document_qa_human_content(
+        user_query=state['user_query'],
+        doc_content=state['doc_content']
+    )
     
-DOCUMENT EXCERPT:
-    _____________________________________________________________
-    {state['doc_content']}
-    _____________________________________________________________
-    
-USER QUESTION: {state['user_query']}
-    
-ANSWER (extract all relevant information or state if not found):"""
-
     try:
-        response = llm.invoke(prompt)
+        # Use LangGraph message format
+        messages = [system_msg, HumanMessage(content=human_content)]
+        response = llm.invoke(messages)
         answer = response.content.strip()
         logger.info(
             "[DOCUMENT_QA] Generated answer for doc %s", state.get("doc_id", "")[:8]

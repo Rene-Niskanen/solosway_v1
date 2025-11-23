@@ -9,7 +9,7 @@ class RetrievedDocument(TypedDict):
     """Result from vector or SQL retrieval"""
     vector_id: str
     doc_id: str
-    property_id: str
+    property_id: Optional[str]  # Some documents may not be linked to a property
     content: str
     classification_type: str    
     chunk_index: int
@@ -22,17 +22,26 @@ class RetrievedDocument(TypedDict):
     original_filename: Optional[str]  # NEW: Document filename
     property_address: Optional[str]  # NEW: Property address
 
-class DocumentProcessingResult(TypedDict):
+class DocumentProcessingResult(TypedDict, total=False):
     """Result from processing a single document with LLM"""
     doc_id: str
-    property_id: str
+    property_id: Optional[str]  # Some documents may not be linked to a property
     output: str
     source_chunks: list[str]
+    # Search source information
+    search_source: Optional[str]  # "structured_query", "llm_sql_query", "bm25", "vector", "hybrid"
+    similarity_score: Optional[float]  # Relevance score from search
+    original_filename: Optional[str]
+    property_address: Optional[str]
+    classification_type: Optional[str]
+    page_range: Optional[str]
+    page_numbers: Optional[list[int]]
 
-class MainWorkflowState(TypedDict):
+class MainWorkflowState(TypedDict, total=False):
     """Main orchestration graph state"""
     user_query: str
     query_intent: str
+    query_variations: list[str]  # NEW: Query expansion for better recall
     # FIXED: Remove operator.add so clarify_relevant_docs REPLACES chunks with merged docs
     relevant_documents: list[RetrievedDocument]
     document_outputs: Annotated[list[DocumentProcessingResult], operator.add]
@@ -45,7 +54,7 @@ class MainWorkflowState(TypedDict):
 class DocumentQAState(TypedDict):
     """State for per-document Q&A subgraph"""
     doc_type: str
-    property_id: str
+    property_id: Optional[str]  # Some documents may not be linked to a property
     doc_content: str
     user_query: str
     answer: str

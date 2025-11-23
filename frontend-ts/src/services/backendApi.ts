@@ -135,6 +135,144 @@ class BackendApiService {
   }
 
   /**
+   * Query documents using LangGraph RAG system
+   * This connects the SideChatPanel to the document Q&A system
+   */
+  async queryDocuments(
+    query: string, 
+    propertyId?: string, 
+    messageHistory: any[] = [], 
+    sessionId?: string
+  ): Promise<ApiResponse<any>> {
+    return this.fetchApi('/api/llm/query', {
+      method: 'POST',
+      body: JSON.stringify({ 
+        query, 
+        propertyId,  // From property attachment - used to find linked document
+        messageHistory,
+        sessionId: sessionId || `session_${Date.now()}`
+      }),
+    });
+  }
+
+  /**
+   * Stream query documents using Server-Sent Events (SSE)
+   * Returns an EventSource for real-time token streaming
+   */
+  queryDocumentsStream(
+    query: string,
+    propertyId: string | undefined,
+    messageHistory: any[],
+    sessionId: string,
+    onToken: (token: string) => void,
+    onComplete: (data: any) => void,
+    onError: (error: string) => void,
+    onStatus?: (message: string) => void
+  ): EventSource {
+    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const url = `${baseUrl}/api/llm/query/stream`;
+    
+    // Create a POST request with SSE
+    // Note: EventSource only supports GET, so we'll use fetch with streaming
+    const eventSource = new EventSource(
+      `${url}?query=${encodeURIComponent(query)}&propertyId=${propertyId || ''}&sessionId=${sessionId}`
+    );
+    
+    // Use fetch with streaming instead (EventSource doesn't support POST)
+    // For now, return a mock EventSource - we'll implement proper streaming with fetch
+    return eventSource;
+  }
+
+  /**
+   * Stream query documents using fetch with Server-Sent Events
+   * Properly handles POST requests with streaming
+   */
+  async queryDocumentsStreamFetch(
+    query: string,
+    propertyId: string | undefined,
+    messageHistory: any[],
+    sessionId: string,
+    onToken: (token: string) => void,
+    onComplete: (data: any) => void,
+    onError: (error: string) => void,
+    onStatus?: (message: string) => void
+  ): Promise<void> {
+    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const url = `${baseUrl}/api/llm/query/stream`;
+    
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          query,
+          propertyId,
+          messageHistory,
+          sessionId: sessionId || `session_${Date.now()}`
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      let buffer = '';
+      let accumulatedText = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              switch (data.type) {
+                case 'status':
+                  onStatus?.(data.message);
+                  break;
+                case 'token':
+                  accumulatedText += data.token;
+                  onToken(data.token);
+                  break;
+                case 'documents_found':
+                  onStatus?.(`Found ${data.count} relevant document(s)`);
+                  break;
+                case 'complete':
+                  onComplete(data.data);
+                  return;
+                case 'error':
+                  onError(data.message);
+                  return;
+              }
+            } catch (e) {
+              console.warn('Failed to parse SSE data:', line, e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
+  /**
    * Property Search & Analysis
    */
   async getAllProperties(): Promise<ApiResponse<PropertyData[]>> {
