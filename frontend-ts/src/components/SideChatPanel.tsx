@@ -3,6 +3,7 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
@@ -10,6 +11,7 @@ import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
+import { backendApi } from '../services/backendApi';
 
 // Component for displaying property attachment in query bubble
 const QueryPropertyAttachment: React.FC<{ 
@@ -459,33 +461,6 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
   }, []);
 
   // Generate mock AI response based on query
-  const generateMockResponse = React.useCallback((queryText: string): string => {
-    const lowerQuery = queryText.toLowerCase();
-    
-    // Simple pattern matching for mock responses
-    if (lowerQuery.includes('property') || lowerQuery.includes('house') || lowerQuery.includes('home')) {
-      return "I found several properties matching your criteria. Based on the location data, there are 3 properties in the area with similar characteristics. Would you like me to show you more details about any specific property?";
-    }
-    
-    if (lowerQuery.includes('price') || lowerQuery.includes('cost') || lowerQuery.includes('value')) {
-      return "Based on recent market data and comparable properties in the area, the estimated value ranges from £250,000 to £350,000. This estimate considers factors like location, size, condition, and recent sales in the neighborhood.";
-    }
-    
-    if (lowerQuery.includes('location') || lowerQuery.includes('address') || lowerQuery.includes('where')) {
-      return "The property is located in a residential area with good access to local amenities. The location offers proximity to schools, shopping centers, and public transportation. Would you like more specific details about the neighborhood?";
-    }
-    
-    if (lowerQuery.includes('document') || lowerQuery.includes('file') || lowerQuery.includes('upload')) {
-      return "I've analyzed the documents you've uploaded. I found property details, valuation information, and location data. The documents appear to be related to a residential property transaction. Would you like me to extract specific information from these documents?";
-    }
-    
-    if (lowerQuery.includes('map') || lowerQuery.includes('view') || lowerQuery.includes('show')) {
-      return "I can help you explore properties on the map. You can see property locations, compare different areas, and view detailed information by clicking on property markers. What would you like to explore?";
-    }
-    
-    // Default response
-    return "I understand your query. Based on the information available, I can help you with property searches, valuations, document analysis, and location insights. Could you provide more specific details about what you're looking for?";
-  }, []);
 
   // Restore persisted messages when panel becomes visible
   React.useEffect(() => {
@@ -569,39 +544,164 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
         persistedChatMessagesRef.current = [initialMessage];
         // Track this message so it doesn't animate on restore
         restoredMessageIdsRef.current = new Set([initialMessage.id]);
-      
-      // Clear property attachments after they've been included in the initial message
-      // This ensures they're available when the panel initializes, but cleared after
-      // BUT only clear if this is a new initialization, not if we're restoring or have existing messages
-      if (initialPropertyAttachments && initialPropertyAttachments.length > 0 && chatMessages.length === 0) {
-        setTimeout(() => {
-          clearPropertyAttachments();
-          // Turn off selection mode after clearing attachments
-          setSelectionModeActive(false);
-        }, 200); // Small delay to ensure the message is rendered
-      }
-      
-      // Generate and add response after a delay
-      setTimeout(() => {
-        const responseId = `response-${Date.now()}`;
-        const mockResponse = generateMockResponse(queryText);
         
-        const responseMessage: ChatMessage = {
-          id: responseId,
+        // Clear property attachments after they've been included in the initial message
+        // This ensures they're available when the panel initializes, but cleared after
+        // BUT only clear if this is a new initialization, not if we're restoring or have existing messages
+        if (initialPropertyAttachments && initialPropertyAttachments.length > 0 && chatMessages.length === 0) {
+          setTimeout(() => {
+            clearPropertyAttachments();
+            // Turn off selection mode after clearing attachments
+            setSelectionModeActive(false);
+          }, 200); // Small delay to ensure the message is rendered
+        }
+        
+        // Add loading response message
+        const loadingResponseId = `response-loading-${Date.now()}`;
+        const loadingMessage: ChatMessage = {
+          id: loadingResponseId,
           type: 'response',
-          text: mockResponse,
-          isLoading: false
+          text: '',
+          isLoading: true
         };
-        
         setChatMessages(prev => {
-          const updated = [...prev, responseMessage];
+          const updated = [...prev, loadingMessage];
           persistedChatMessagesRef.current = updated;
           return updated;
         });
-      }, 1000); // 1 second delay to simulate API call
+        
+        // Call LLM API for initial query
+        (async () => {
+          try {
+            // Extract property_id from property attachments (first one if multiple)
+            const propertyId = initialPropertyAttachments && initialPropertyAttachments.length > 0
+              ? String(initialPropertyAttachments[0].propertyId)
+              : undefined;
+            
+            console.log('📤 SideChatPanel: Calling LLM API for initial query:', {
+              query: queryText,
+              propertyId,
+              messageHistoryLength: 0
+            });
+            
+            // Use streaming API for real-time token-by-token updates
+            let accumulatedText = '';
+            
+            await backendApi.queryDocumentsStreamFetch(
+              queryText,
+              propertyId,
+              [], // No message history for initial query
+              `session_${Date.now()}`,
+              // onToken: Stream each token as it arrives
+              (token: string) => {
+                accumulatedText += token;
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: accumulatedText,
+                  isLoading: true  // Still loading while streaming
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? responseMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onComplete: Final response received
+              (data: any) => {
+                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                
+                console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
+                  summary: finalText.substring(0, 100),
+                  documentsFound: data.relevant_documents?.length || 0
+                });
+                
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: finalText,
+                  isLoading: false
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? responseMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onError: Handle errors
+              (error: string) => {
+                console.error('❌ SideChatPanel: Streaming error for initial query:', error);
+                
+                const errorMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                  isLoading: false
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? errorMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+                
+                toast({
+                  description: 'Failed to get AI response. Please try again.',
+                  duration: 5000,
+                  variant: 'destructive',
+                });
+              },
+              // onStatus: Show status messages
+              (message: string) => {
+                console.log('📊 SideChatPanel: Status:', message);
+              }
+            );
+          } catch (error) {
+            console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
+            
+            // Show error message instead of mock response
+            const errorMessage: ChatMessage = {
+              id: `response-${Date.now()}`,
+              type: 'response',
+              text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              isLoading: false
+            };
+            
+            setChatMessages(prev => {
+              const updated = prev.map(msg => 
+                msg.id === loadingResponseId 
+                  ? errorMessage
+                  : msg
+              );
+              persistedChatMessagesRef.current = updated;
+              return updated;
+            });
+            
+            // Show error toast
+            toast({
+              description: 'Failed to get AI response. Please try again.',
+              duration: 5000,
+              variant: 'destructive',
+            });
+          }
+        })();
       }
     }
-  }, [isVisible, query, restoreChatId, getChatById, generateMockResponse]);
+  }, [isVisible, query, restoreChatId, getChatById]);
 
   // Auto-scroll to bottom when new messages are added (ChatGPT-like behavior)
   React.useEffect(() => {
@@ -764,28 +864,144 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
         return updated;
       });
       
-      // Generate and add response after a delay (simulate API call)
-      setTimeout(() => {
-        const responseId = `response-${Date.now()}`;
-        const mockResponse = generateMockResponse(submitted || '');
-        
-        const responseMessage: ChatMessage = {
-          id: responseId,
-          type: 'response',
-          text: mockResponse,
-          isLoading: false
-        };
-        
-        setChatMessages(prev => {
-          const updated = prev.map(msg => 
-            msg.id === loadingResponseId 
-              ? responseMessage
-              : msg
+      // Call LLM API to query documents
+      (async () => {
+        try {
+          // Extract property_id from property attachments (first one if multiple)
+          const propertyId = propertiesToStore.length > 0 
+            ? String(propertiesToStore[0].propertyId) 
+            : undefined;
+          
+          // Build message history from previous messages (excluding the current one)
+          const messageHistory = chatMessages
+            .filter(msg => (msg.type === 'query' || msg.type === 'response') && msg.text)
+            .map(msg => ({
+              role: msg.type === 'query' ? 'user' : 'assistant',
+              content: msg.text || ''
+            }));
+          
+          console.log('📤 SideChatPanel: Calling LLM API with:', {
+            query: submitted,
+            propertyId,
+            messageHistoryLength: messageHistory.length
+          });
+          
+          // Use streaming API for real-time token-by-token updates
+          let accumulatedText = '';
+          
+          await backendApi.queryDocumentsStreamFetch(
+            submitted || '',
+            propertyId,
+            messageHistory,
+            `session_${Date.now()}`,
+            // onToken: Stream each token as it arrives
+            (token: string) => {
+              accumulatedText += token;
+              const responseMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: accumulatedText,
+                isLoading: true  // Still loading while streaming
+              };
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => 
+                  msg.id === loadingResponseId 
+                    ? responseMessage
+                    : msg
+                );
+                persistedChatMessagesRef.current = updated;
+                return updated;
+              });
+            },
+            // onComplete: Final response received
+            (data: any) => {
+              const finalText = data.summary || accumulatedText || "I found some information for you.";
+              
+              console.log('✅ SideChatPanel: LLM streaming complete:', {
+                summary: finalText.substring(0, 100),
+                documentsFound: data.relevant_documents?.length || 0
+              });
+              
+              const responseMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: finalText,
+                isLoading: false
+              };
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => 
+                  msg.id === loadingResponseId 
+                    ? responseMessage
+                    : msg
+                );
+                persistedChatMessagesRef.current = updated;
+                return updated;
+              });
+            },
+            // onError: Handle errors
+            (error: string) => {
+              console.error('❌ SideChatPanel: Streaming error:', error);
+              
+              const errorMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                isLoading: false
+              };
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => 
+                  msg.id === loadingResponseId 
+                    ? errorMessage
+                    : msg
+                );
+                persistedChatMessagesRef.current = updated;
+                return updated;
+              });
+              
+              toast({
+                description: 'Failed to get AI response. Please try again.',
+                duration: 5000,
+                variant: 'destructive',
+              });
+            },
+            // onStatus: Show status messages
+            (message: string) => {
+              console.log('📊 SideChatPanel: Status:', message);
+              // Optionally show status in UI
+            }
           );
-          persistedChatMessagesRef.current = updated;
-          return updated;
-        });
-      }, 1500); // 1.5 second delay to simulate API call
+        } catch (error) {
+          console.error('❌ SideChatPanel: Error calling LLM API:', error);
+          
+          // Show error message instead of mock response
+          const errorMessage: ChatMessage = {
+            id: `response-${Date.now()}`,
+            type: 'response',
+            text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            isLoading: false
+          };
+          
+          setChatMessages(prev => {
+            const updated = prev.map(msg => 
+              msg.id === loadingResponseId 
+                ? errorMessage
+                : msg
+            );
+            persistedChatMessagesRef.current = updated;
+            return updated;
+          });
+          
+          // Show error toast
+          toast({
+            description: 'Failed to get AI response. Please try again.',
+            duration: 5000,
+            variant: 'destructive',
+          });
+        }
+      })();
       
       // Submit the query text (attachments can be handled separately if needed)
       onQuerySubmit(submitted);
@@ -1003,7 +1219,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                         
                         {/* Display query text */}
                         {message.text && (
-                          <p style={{
+                          <div style={{
                             color: '#1F2937',
                             fontSize: '14px',
                             lineHeight: '20px',
@@ -1012,8 +1228,24 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif'
                           }}>
-                            {message.text}
-                          </p>
+                            <ReactMarkdown
+                              components={{
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px' }}>{children}</p>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
+                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
+                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
+                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                              }}
+                            >
+                              {message.text}
+                            </ReactMarkdown>
+                          </div>
                         )}
                       </motion.div>
                     ) : (
@@ -1089,9 +1321,9 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                           </div>
                         )}
                         
-                        {/* Display response text - plain text, no bubble */}
+                        {/* Display response text - rendered markdown */}
                         {message.text && (
-                          <p style={{
+                          <div style={{
                             color: '#374151',
                             fontSize: '14px',
                             lineHeight: '20px',
@@ -1101,8 +1333,24 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                             fontFamily: 'system-ui, -apple-system, sans-serif',
                             fontWeight: 400
                           }}>
-                            {message.text}
-                          </p>
+                            <ReactMarkdown
+                              components={{
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px' }}>{children}</p>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827' }}>{children}</h2>,
+                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0', color: '#111827' }}>{children}</h3>,
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
+                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                              }}
+                            >
+                              {message.text}
+                            </ReactMarkdown>
+                          </div>
                         )}
                       </motion.div>
                     );

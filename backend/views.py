@@ -255,6 +255,414 @@ def chat_completion():
             'error': str(e)
         }), 500
 
+@views.route('/api/llm/query/stream', methods=['POST', 'OPTIONS'])
+def query_documents_stream():
+    """
+    Streaming version of query_documents using Server-Sent Events (SSE).
+    Streams LLM responses token-by-token in real-time.
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Require login
+    if not current_user.is_authenticated:
+        return jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        }), 401
+    
+    from flask import Response, stream_with_context
+    import json
+    import asyncio
+    import time
+    from backend.llm.graphs.main_graph import build_main_graph
+    from langchain_openai import ChatOpenAI
+    from backend.llm.config import config
+    
+    data = request.get_json()
+    query = data.get('query', '')
+    property_id = data.get('propertyId')
+    message_history = data.get('messageHistory', [])
+    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    if not query:
+        return jsonify({
+            'success': False,
+            'error': 'Query is required'
+        }), 400
+    
+    def generate_stream():
+        """Generator function for SSE streaming"""
+        try:
+            # Get business_id
+            business_id = _ensure_business_uuid()
+            if not business_id:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
+                return
+            
+            # Get document_id from property_id if provided
+            document_id = None
+            if property_id:
+                try:
+                    supabase = get_supabase_client()
+                    result = supabase.table('document_relationships')\
+                        .select('document_id')\
+                        .eq('property_id', property_id)\
+                        .limit(1)\
+                        .execute()
+                    if result.data and len(result.data) > 0:
+                        document_id = result.data[0]['document_id']
+                except Exception as e:
+                    logger.warning(f"Could not find document for property {property_id}: {e}")
+            
+            # Convert message history
+            conversation_history = []
+            for msg in message_history:
+                conversation_history.append({
+                    'role': msg.get('role', 'user'),
+                    'content': msg.get('content', '')
+                })
+            
+            # Build initial state
+            initial_state = {
+                "user_query": query,
+                "query_intent": None,
+                "relevant_documents": [],
+                "document_outputs": [],
+                "final_summary": "",
+                "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
+                "business_id": business_id,
+                "session_id": session_id,
+                "conversation_history": conversation_history,
+                "property_id": property_id
+            }
+            
+            # Send initial status
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
+            
+            async def run_and_stream():
+                """Run LangGraph and stream the final summary"""
+                try:
+                    # Build graph (without checkpointer for streaming)
+                    graph = await build_main_graph(use_checkpointer=False)
+                    config_dict = {"configurable": {"thread_id": session_id}}
+                    
+                    # Run graph to get document outputs
+                    result = await graph.ainvoke(initial_state, config_dict)
+                    
+                    doc_outputs = result.get('document_outputs', [])
+                    relevant_docs = result.get('relevant_documents', [])
+                    
+                    # Send document count
+                    yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"
+                    
+                    if not doc_outputs:
+                        yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                        return
+                    
+                    # Stream the summary generation using OpenAI streaming
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
+                    
+                    # Build summary prompt (same as summarize_results node)
+                    from backend.llm.nodes.summary_nodes import summarize_results
+                    # Get the prompt from the summarize function logic
+                    formatted_outputs = []
+                    for idx, output in enumerate(doc_outputs):
+                        doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
+                        filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
+                        prop_id = output.get('property_id') or 'Unknown'
+                        address = output.get('property_address', f"Property {prop_id[:8]}")
+                        page_info = output.get('page_range', 'multiple pages')
+                        
+                        header = f"\n### {doc_type}: {filename}\n"
+                        header += f"Property: {address}\n"
+                        header += f"Pages: {page_info}\n"
+                        header += f"---------------------------------------------\n"
+                        
+                        formatted_outputs.append(header + output.get('output', ''))
+                    
+                    formatted_outputs_str = "\n".join(formatted_outputs)
+                    
+                    prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
+
+CONTEXT
+
+The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
+They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
+
+The user has asked:
+
+"{query}"
+
+Below is the extracted content from the pages you analyzed:
+
+{formatted_outputs_str}
+
+GUIDELINES FOR YOUR RESPONSE
+
+Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
+
+Focus on what matters in real estate:
+- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
+
+When referencing a document, keep it light and natural:
+→ "One of the valuation reports mentions…"
+→ "In the lease document, there's a note that…"
+→ "The report highlights…"
+→ "Page 7 shows that…"
+
+Only cite pages if the information is clearly page-specific. Otherwise keep it general.
+
+CRITICAL RULES:
+1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
+2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
+3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
+4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
+
+Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
+
+TONE
+
+Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
+
+Now provide your response (answer directly, no heading, no additional context):"""
+                    
+                    # Use streaming LLM
+                    llm = ChatOpenAI(
+                        api_key=config.openai_api_key,
+                        model=config.openai_model,
+                        temperature=0,
+                        streaming=True,  # Enable streaming
+                    )
+                    
+                    # Stream tokens
+                    full_summary = ""
+                    for chunk in llm.stream(prompt):
+                        if chunk.content:
+                            token = chunk.content
+                            full_summary += token
+                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                    
+                    # Send complete message with metadata
+                    complete_data = {
+                        'type': 'complete',
+                        'data': {
+                            'summary': full_summary.strip(),
+                            'relevant_documents': relevant_docs,
+                            'document_outputs': doc_outputs,
+                            'session_id': session_id
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_data)}\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"Error in run_and_stream: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            
+            # Run async stream
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async_gen = run_and_stream()
+                while True:
+                    try:
+                        chunk = loop.run_until_complete(async_gen.__anext__())
+                        yield chunk
+                    except StopAsyncIteration:
+                        break
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logger.error(f"Error in generate_stream: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    # Return SSE response
+    response = Response(
+        stream_with_context(generate_stream()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # Disable nginx buffering
+            'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
+            'Access-Control-Allow-Credentials': 'true',
+        }
+    )
+    return response
+
+@views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
+def query_documents():
+    """
+    Query documents using LangGraph main graph with hybrid search (BM25 + Vector)
+    This endpoint connects the SideChatPanel to the RAG system.
+    
+    Accepts:
+    - query: User's question
+    - propertyId: Optional property ID from property attachment (used to find linked document)
+    - messageHistory: Previous conversation messages
+    - sessionId: Optional session ID for conversation persistence
+    
+    Returns:
+    - summary: LLM-generated answer
+    - relevant_documents: List of retrieved documents
+    - document_outputs: Processed document information
+    """
+    # Handle CORS preflight - must be before authentication check
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Require login for actual POST request
+    if not current_user.is_authenticated:
+        return jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        }), 401
+    
+    import asyncio
+    import time
+    from backend.llm.graphs.main_graph import build_main_graph
+    
+    data = request.get_json()
+    query = data.get('query', '')
+    property_id = data.get('propertyId')  # From property attachment
+    message_history = data.get('messageHistory', [])
+    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    if not query:
+        return jsonify({
+            'success': False,
+            'error': 'Query is required'
+        }), 400
+    
+    try:
+        # Get business_id from session
+        business_id = _ensure_business_uuid()
+        if not business_id:
+            return jsonify({
+                'success': False,
+                'error': 'User not associated with a business'
+            }), 400
+        
+        # Get document_id from property_id if provided
+        document_id = None
+        if property_id:
+            try:
+                # Query document_relationships to find document linked to this property
+                supabase = get_supabase_client()
+                
+                result = supabase.table('document_relationships')\
+                    .select('document_id')\
+                    .eq('property_id', property_id)\
+                    .limit(1)\
+                    .execute()
+                
+                if result.data and len(result.data) > 0:
+                    document_id = result.data[0]['document_id']
+                    logger.info(f"Found document {document_id} for property {property_id}")
+            except Exception as e:
+                logger.warning(f"Could not find document for property {property_id}: {e}")
+        
+        # Convert message history to conversation history format
+        conversation_history = []
+        for msg in message_history:
+            conversation_history.append({
+                'role': msg.get('role', 'user'),
+                'content': msg.get('content', '')
+            })
+        
+        # Build initial state for LangGraph
+        initial_state = {
+            "user_query": query,
+            "query_intent": None,
+            "relevant_documents": [],
+            "document_outputs": [],
+            "final_summary": "",
+            "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
+            "business_id": business_id,
+            "session_id": session_id,
+            "conversation_history": conversation_history,
+            "property_id": property_id  # Pass property_id to filter results
+        }
+        
+        # Build and run the graph
+        async def run_query():
+            try:
+                graph = await build_main_graph(use_checkpointer=True)
+                config = {
+                    "configurable": {
+                        "thread_id": session_id  # For conversation persistence
+                    }
+                }
+                result = await graph.ainvoke(initial_state, config)
+                return result
+            except Exception as graph_error:
+                # Handle connection closed errors gracefully
+                error_msg = str(graph_error)
+                if "connection is closed" in error_msg.lower() or "operationalerror" in error_msg.lower():
+                    logger.warning("Checkpointer connection error, retrying without checkpointer")
+                    # Retry without checkpointer
+                    graph = await build_main_graph(use_checkpointer=False)
+                    result = await graph.ainvoke(initial_state, {})
+                    return result
+                else:
+                    raise  # Re-raise if it's a different error
+        
+        # Run async graph
+        logger.info(f"Running LangGraph query: '{query[:50]}...' (property_id: {property_id}, session: {session_id})")
+        result = asyncio.run(run_query())
+        
+        # Format response for frontend
+        final_summary = result.get("final_summary", "")
+        
+        # If summary is empty or generic, provide a better fallback
+        if not final_summary or final_summary == "I found some information for you.":
+            if result.get("relevant_documents"):
+                final_summary = f"I found {len(result.get('relevant_documents', []))} relevant document(s), but couldn't extract a specific answer. Please try rephrasing your query."
+            else:
+                final_summary = f"I couldn't find any documents matching your query: \"{query}\". Try using more general terms or rephrasing your question."
+        
+        response_data = {
+            "query": query,
+            "summary": final_summary,
+            "message": final_summary,  # Alias for compatibility
+            "relevant_documents": result.get("relevant_documents", []),
+            "document_outputs": result.get("document_outputs", []),
+            "session_id": session_id
+        }
+        
+        logger.info(f"LangGraph query completed: {len(result.get('relevant_documents', []))} documents found")
+        
+        return jsonify({
+            'success': True,
+            'data': response_data
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in query_documents: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @views.route('/api/vector/search', methods=['POST'])
 @login_required
 def vector_search():
@@ -1209,11 +1617,15 @@ def proxy_upload():
             if new_document.property_id:
                 try:
                     # Delete existing cache entry - it will be regenerated on next card view
-                    cache_entry = PropertyCardCache.query.filter_by(property_id=new_document.property_id).first()
-                    if cache_entry:
-                        db.session.delete(cache_entry)
-                        db.session.commit()
-                        logger.info(f"Invalidated property card cache for property {new_document.property_id}")
+                    try:
+                        cache_entry = PropertyCardCache.query.filter_by(property_id=new_document.property_id).first()
+                        if cache_entry:
+                            db.session.delete(cache_entry)
+                            db.session.commit()
+                            logger.info(f"Invalidated property card cache for property {new_document.property_id}")
+                    except Exception as cache_error:
+                        # Cache table doesn't exist - skip cache invalidation
+                        logger.debug(f"Cache invalidation skipped (table may not exist): {cache_error}")
                     # Note: Cache will be automatically regenerated when card is next viewed
                 except Exception as cache_error:
                     logger.warning(f"Failed to invalidate property card cache: {cache_error}")
@@ -2596,16 +3008,22 @@ def get_property_card_summary(property_id):
         property_id_str = str(property_id)
         
         # Check cache first if requested (now default behavior)
+        # Gracefully handle missing cache table
         if use_cache:
-            cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
-            if cache_entry:
-                return jsonify({
-                    'success': True,
-                    'data': cache_entry.card_data,
-                    'cached': True,
-                    'cache_version': cache_entry.cache_version,
-                    'updated_at': cache_entry.updated_at.isoformat() if cache_entry.updated_at else None
-                }), 200
+            try:
+                cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
+                if cache_entry:
+                    return jsonify({
+                        'success': True,
+                        'data': cache_entry.card_data,
+                        'cached': True,
+                        'cache_version': cache_entry.cache_version,
+                        'updated_at': cache_entry.updated_at.isoformat() if cache_entry.updated_at else None
+                    }), 200
+            except Exception as cache_error:
+                # Cache table doesn't exist or other cache error - continue without cache
+                logger.debug(f"Cache lookup failed (table may not exist): {cache_error}")
+                pass
         
         supabase = get_supabase_client()
         
@@ -2694,40 +3112,59 @@ def get_property_card_summary(property_id):
         }
         
         # OPTIMIZATION: Lazy cache write - only write if data actually changed
-        cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
-        should_update_cache = False
-        
-        if cache_entry:
-            # Compare existing cache with new data to avoid unnecessary writes
-            existing_data = cache_entry.card_data
-            # Convert both to JSON strings for comparison (handles nested dicts)
-            existing_json = json.dumps(existing_data, sort_keys=True) if existing_data else None
-            new_json = json.dumps(card_data, sort_keys=True)
+        # Gracefully handle missing cache table
+        try:
+            # Use a fresh session to avoid transaction issues
+            cache_entry = None
+            should_update_cache = False
             
-            if existing_json != new_json:
-                # Data changed - update cache
-                cache_entry.card_data = card_data
-                cache_entry.cache_version += 1
-                cache_entry.updated_at = datetime.utcnow()
-                should_update_cache = True
-            # If data unchanged, skip the write operation
-        else:
-            # No cache entry exists - create one
-            cache_entry = PropertyCardCache(
-                property_id=property_id,
-                card_data=card_data,
-                cache_version=1
-            )
-            db.session.add(cache_entry)
-            should_update_cache = True
-        
-        # Only commit if we need to update the cache
-        if should_update_cache:
             try:
-                db.session.commit()
-            except Exception as e:
-                logger.warning(f"Failed to update cache: {e}")
-                db.session.rollback()
+                cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
+            except Exception as query_error:
+                # If query fails, cache_entry remains None
+                logger.debug(f"Cache query failed (table may not exist): {query_error}")
+                cache_entry = None
+            
+            if cache_entry:
+                # Compare existing cache with new data to avoid unnecessary writes
+                existing_data = cache_entry.card_data
+                # Convert both to JSON strings for comparison (handles nested dicts)
+                existing_json = json.dumps(existing_data, sort_keys=True) if existing_data else None
+                new_json = json.dumps(card_data, sort_keys=True)
+                
+                if existing_json != new_json:
+                    # Data changed - update cache
+                    cache_entry.card_data = card_data
+                    cache_entry.cache_version += 1
+                    cache_entry.updated_at = datetime.utcnow()
+                    should_update_cache = True
+                # If data unchanged, skip the write operation
+            else:
+                # No cache entry exists - create one
+                try:
+                    cache_entry = PropertyCardCache(
+                        property_id=property_id,
+                        card_data=card_data,
+                        cache_version=1
+                    )
+                    db.session.add(cache_entry)
+                    should_update_cache = True
+                except Exception as create_error:
+                    logger.debug(f"Cache entry creation failed: {create_error}")
+                    should_update_cache = False
+            
+            # Only commit if we need to update the cache
+            if should_update_cache:
+                try:
+                    db.session.commit()
+                    logger.debug(f"Property card cache updated for property {property_id}")
+                except Exception as commit_error:
+                    db.session.rollback()
+                    logger.warning(f"Failed to update property card cache: {commit_error}")
+        except Exception as cache_error:
+            # Cache table doesn't exist - skip caching but continue with response
+            logger.debug(f"Cache operations skipped (table may not exist): {cache_error}")
+            db.session.rollback()  # Ensure transaction is rolled back
         
         return jsonify({
             'success': True,
