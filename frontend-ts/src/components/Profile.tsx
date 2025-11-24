@@ -2,447 +2,420 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Camera, Bell, Search, ChevronDown, Mail } from "lucide-react";
+import { MapPin, Star, MessageCircle, Check, Flag, Clock, User, Home, Building2, DollarSign, FileText, Edit2, Save, X } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-
-interface ProfileData {
-  // Basic Information
-  name: string;
-  email: string;
-  phone: string;
-  location: string;
-  joinDate: string;
-  profileImage: string;
-  fullName: string;
-  nickName: string;
-  gender: string;
-  language: string;
-  country: string;
-  timeZone: string;
-  
-  // Account Settings
-  notifications: {
-    email: boolean;
-    push: boolean;
-    sms: boolean;
-    propertyAlerts: boolean;
-    priceChanges: boolean;
-    newListings: boolean;
-  };
-  
-  // Privacy Settings
-  privacy: {
-    profileVisibility: 'public' | 'private' | 'contacts';
-    showActivity: boolean;
-    allowDataCollection: boolean;
-    shareSearchHistory: boolean;
-  };
-  
-  // Display Preferences
-  display: {
-    theme: 'light' | 'dark' | 'auto';
-    currency: 'GBP' | 'USD' | 'EUR';
-    distanceUnit: 'miles' | 'km';
-    language: 'en' | 'es' | 'fr' | 'de';
-  };
-  
-  // Search Preferences
-  searchPreferences: {
-    defaultSearchRadius: number;
-    maxPrice: number;
-    minPrice: number;
-    propertyTypes: string[];
-    bedrooms: number;
-    bathrooms: number;
-  };
-}
+import { backendApi } from "@/services/backendApi";
 
 interface ProfileProps {
   onNavigate?: (view: string, options?: { showMap?: boolean }) => void;
 }
 
+interface RecentWork {
+  propertyName: string;
+  address: string;
+  type: 'primary' | 'secondary';
+  date?: string;
+}
+
+interface UserData {
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  profile_image?: string;
+  avatar_url?: string;
+  phone?: string;
+  location?: string;
+  title?: string;
+  propertiesOwned?: number;
+  totalPropertyValue?: string;
+  propertiesListed?: number;
+  lastPropertyAdded?: string;
+  skills?: string[];
+  recentWork?: RecentWork[];
+  rating?: number;
+}
+
 const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
-  // Load profile data from localStorage or use defaults
-  const getInitialProfileData = (): ProfileData => {
-    const saved = localStorage.getItem('velora-profile-data');
-    if (saved) {
+  const [userData, setUserData] = React.useState<UserData | null>(null);
+  const [editingField, setEditingField] = React.useState<string | null>(null);
+  const [editValue, setEditValue] = React.useState<string>('');
+  const [activeTab, setActiveTab] = React.useState<'timeline' | 'about'>('about');
+  const [loading, setLoading] = React.useState(true);
+
+  // Fetch user data on mount
+  React.useEffect(() => {
+    const fetchUserData = async () => {
       try {
-        return JSON.parse(saved);
+        const authResult = await backendApi.checkAuth();
+        if (authResult.success && authResult.data?.user) {
+          const user = authResult.data.user;
+          setUserData({
+            ...user,
+            title: user.title || 'Property Manager',
+            location: user.location || 'New York, NY',
+            phone: user.phone || '+1 123 456 7890',
+            propertiesOwned: user.propertiesOwned || 12,
+            totalPropertyValue: user.totalPropertyValue || '£2,450,000',
+            propertiesListed: user.propertiesListed || 8,
+            lastPropertyAdded: user.lastPropertyAdded || '15 Mar, 2025',
+            skills: user.skills || ['Property Valuation', 'Market Analysis', 'Portfolio Management', 'Real Estate Law', 'Negotiation'],
+            recentWork: user.recentWork || [
+              { propertyName: 'Riverside Apartments', address: '170 William Street, New York, NY 10038-78', type: 'primary', date: 'Jan 2025' },
+              { propertyName: 'Metropolitan Complex', address: '525 E 68th Street, New York, NY 10651-78', type: 'secondary', date: 'Dec 2024' }
+            ],
+            rating: user.rating || 4.6
+          });
+        }
       } catch (error) {
-        console.error('Error parsing saved profile data:', error);
-      }
-    }
-    return {
-      name: "Alexa Rawles",
-      email: "alexarawles@gmail.com",
-      phone: "+44 7700 900123",
-      location: "Bristol, UK",
-      joinDate: "March 2024",
-      profileImage: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&h=400&fit=crop&crop=face",
-      fullName: "Alexa Rawles",
-      nickName: "Alexa",
-      gender: "Female",
-      language: "English",
-      country: "United Kingdom",
-      timeZone: "GMT+0 (London)",
-      notifications: {
-        email: true,
-        push: true,
-        sms: false,
-        propertyAlerts: true,
-        priceChanges: true,
-        newListings: true,
-      },
-      privacy: {
-        profileVisibility: 'private',
-        showActivity: false,
-        allowDataCollection: true,
-        shareSearchHistory: false,
-      },
-      display: {
-        theme: 'light',
-        currency: 'GBP',
-        distanceUnit: 'miles',
-        language: 'en',
-      },
-      searchPreferences: {
-        defaultSearchRadius: 10,
-        maxPrice: 500000,
-        minPrice: 200000,
-        propertyTypes: ['house', 'flat', 'apartment'],
-        bedrooms: 3,
-        bathrooms: 2,
+        console.error('Error fetching user data:', error);
+      } finally {
+        setLoading(false);
       }
     };
-  };
-
-  const [profileData, setProfileData] = React.useState<ProfileData>(getInitialProfileData);
-  const [isEditing, setIsEditing] = React.useState(false);
-  const [editData, setEditData] = React.useState<ProfileData>(getInitialProfileData);
-
-  // Load profile data from localStorage on component mount
-  React.useEffect(() => {
-    const saved = localStorage.getItem('velora-profile-data');
-    if (saved) {
-      try {
-        const parsedData = JSON.parse(saved);
-        setProfileData(parsedData);
-        setEditData(parsedData);
-      } catch (error) {
-        console.error('Error loading saved profile data:', error);
-      }
-    }
+    fetchUserData();
   }, []);
 
-  const handleEdit = () => {
-    setEditData(profileData);
-    setIsEditing(true);
+  const getUserName = () => {
+    if (userData?.first_name && userData?.last_name) {
+      return `${userData.first_name} ${userData.last_name}`;
+    }
+    if (userData?.email) {
+      const emailPrefix = userData.email.split('@')[0];
+      return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+    }
+    return 'Admin';
   };
 
-  const handleSave = () => {
-    setProfileData(editData);
-    localStorage.setItem('velora-profile-data', JSON.stringify(editData));
-    setIsEditing(false);
+  const getUserEmail = () => {
+    return userData?.email || 'admin@solosway.com';
   };
 
-  const handleCancel = () => {
-    setEditData(profileData);
-    setIsEditing(false);
+  const getUserInitials = () => {
+    const name = getUserName();
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
-  const handleFieldChange = (field: keyof ProfileData, value: string) => {
-    if (!isEditing) return;
-    setEditData(prev => ({ ...prev, [field]: value }));
-  };
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        if (isEditing) {
-          setEditData(prev => ({ ...prev, profileImage: e.target?.result as string }));
-        } else {
-          const updatedData = { ...profileData, profileImage: e.target?.result as string };
-          setProfileData(updatedData);
-          setEditData(updatedData);
-          localStorage.setItem('velora-profile-data', JSON.stringify(updatedData));
-        }
-      };
-      reader.readAsDataURL(file);
+  const handleFieldClick = (field: string, currentValue: string) => {
+    setEditingField(field);
+    // Extract just the number for number fields
+    if (field === 'propertiesOwned' || field === 'propertiesListed') {
+      const match = currentValue.match(/\d+/);
+      setEditValue(match ? match[0] : '');
+    } else if (field === 'totalPropertyValue') {
+      // Extract the value part after "Total Value: "
+      const match = currentValue.match(/Total Value: (.+)/);
+      setEditValue(match ? match[1] : currentValue);
+    } else if (field === 'lastPropertyAdded') {
+      // Extract the date part after "Last Added: "
+      const match = currentValue.match(/Last Added: (.+)/);
+      setEditValue(match ? match[1] : currentValue);
+    } else {
+      setEditValue(currentValue);
     }
   };
 
-  // Get current date
-  const getCurrentDate = () => {
-    const date = new Date();
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    return `${days[date.getDay()]}, ${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+  const handleFieldSave = (field: string) => {
+    if (userData) {
+      let newValue: any = editValue;
+      
+      // Convert to number for numeric fields
+      if (field === 'propertiesOwned' || field === 'propertiesListed') {
+        newValue = parseInt(editValue) || 0;
+      }
+      
+      setUserData({
+        ...userData,
+        [field]: newValue
+      });
+    }
+    setEditingField(null);
+    setEditValue('');
   };
 
-  // Get user name for welcome message
-  const getUserName = () => {
-    return profileData.name.split(' ')[0] || 'User';
+  const handleFieldCancel = () => {
+    setEditingField(null);
+    setEditValue('');
   };
 
-  return (
-    <div className="min-h-screen w-full bg-gray-50">
-      {/* Header Section */}
-      <div className="bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            {/* Left: Welcome Message */}
-            <div>
-              <h1 className="text-2xl font-semibold text-gray-900">Welcome, {getUserName()}</h1>
-              <p className="text-sm text-gray-500 mt-1">{getCurrentDate()}</p>
-            </div>
-
-            {/* Right: Search, Bell */}
-            <div className="flex items-center gap-3">
-              {/* Search Bar */}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search"
-                  className="pl-10 pr-4 py-2.5 w-64 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                />
-              </div>
-
-              {/* Bell Icon */}
-              <button className="relative p-2.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors">
-                <Bell className="w-5 h-5" />
-              </button>
-            </div>
+  const EditableField: React.FC<{
+    field: string;
+    value: string;
+    icon?: React.ReactNode;
+    type?: 'text' | 'number' | 'email' | 'url' | 'tel';
+  }> = ({ field, value, icon, type = 'text' }) => {
+    const isEditing = editingField === field;
+    
+    return (
+      <div className="flex items-center gap-3 group">
+        {icon}
+        {isEditing ? (
+          <div className="flex items-center gap-2 flex-1">
+            <input
+              type={type}
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              className="flex-1 px-2 py-1 text-sm border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleFieldSave(field);
+                } else if (e.key === 'Escape') {
+                  handleFieldCancel();
+                }
+              }}
+            />
+            <button
+              onClick={() => handleFieldSave(field)}
+              className="p-1 text-green-600 hover:text-green-700"
+              title="Save"
+            >
+              <Save className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleFieldCancel}
+              className="p-1 text-red-600 hover:text-red-700"
+              title="Cancel"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
+        ) : (
+          <div
+            className="flex items-center gap-2 flex-1 cursor-pointer hover:bg-gray-50 px-2 py-1 rounded -ml-2 group-hover:bg-gray-50"
+            onClick={() => handleFieldClick(field, value)}
+          >
+            <span className="text-sm text-gray-700">{value}</span>
+            <Edit2 className="w-3 h-3 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-slate-600 border-r-transparent mb-4"></div>
+          <p className="text-lg text-slate-600">Loading profile...</p>
         </div>
       </div>
+    );
+  }
 
-      {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-6 py-8">
-        {/* Profile Card */}
-        <motion.div 
+  return (
+    <div className="min-h-screen w-full bg-gray-50 flex items-center justify-center py-8 px-4">
+      <div className="w-full max-w-6xl">
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
-          className="bg-white rounded-xl shadow-md border border-gray-200 p-8"
+          className="bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden"
         >
-          {/* User Identity Section */}
-          <div className="flex items-center justify-between mb-8 pb-8 border-b border-gray-200">
-            <div className="flex items-center gap-6">
+          <div className="flex flex-col lg:flex-row">
+            {/* Left Sidebar */}
+            <div className="w-full lg:w-80 bg-white border-r border-gray-200 p-6">
               {/* Profile Picture */}
-              <div className="relative group">
-                <Avatar className="w-16 h-16 ring-2 ring-gray-100">
-                  <AvatarImage src={editData.profileImage} alt={profileData.name} className="object-cover" />
-                  <AvatarFallback className="bg-gradient-to-br from-blue-400 to-purple-500 text-white text-lg font-semibold">
-                    {profileData.name.split(' ').map(n => n[0]).join('')}
+              <div className="mb-8">
+                <Avatar className="w-32 h-32 mx-auto mb-4 border-2 border-gray-200">
+                  <AvatarImage 
+                    src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+                    alt={getUserName()}
+                    className="object-cover"
+                  />
+                  <AvatarFallback className="bg-slate-100 text-slate-700 text-2xl font-semibold">
+                    {getUserInitials()}
                   </AvatarFallback>
                 </Avatar>
-                {isEditing && (
-                  <label className="absolute bottom-0 right-0 bg-blue-600 hover:bg-blue-700 text-white p-2.5 rounded-full cursor-pointer transition-all shadow-lg hover:shadow-xl hover:scale-105">
-                    <Camera className="w-4 h-4" />
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      className="hidden"
-                    />
-                  </label>
-                )}
               </div>
 
-              {/* Name and Email */}
+              {/* RECENT WORK Section */}
+              <div className="mb-8">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">RECENT WORK</h3>
+                <div className="space-y-4">
+                  {userData?.recentWork?.map((work, index) => (
+                    <div key={index} className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-gray-900">{work.propertyName}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          work.type === 'primary' 
+                            ? 'bg-blue-100 text-blue-700' 
+                            : 'bg-gray-100 text-gray-700'
+                        }`}>
+                          {work.type === 'primary' ? 'Primary' : 'Secondary'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600">{work.address}</p>
+                      {work.date && (
+                        <p className="text-xs text-gray-500">{work.date}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* SKILLS Section */}
               <div>
-                <h2 className="text-2xl font-semibold text-gray-900 mb-1">{editData.name}</h2>
-                <p className="text-sm text-gray-500">{editData.email}</p>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">SKILLS</h3>
+                <ul className="space-y-2">
+                  {userData?.skills?.map((skill, index) => (
+                    <li key={index} className="text-sm text-gray-700 flex items-center">
+                      <span className="w-1.5 h-1.5 bg-gray-400 rounded-full mr-2"></span>
+                      {skill}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
 
-            {/* Edit Button */}
-            {!isEditing ? (
-              <button
-                onClick={handleEdit}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow-md"
-              >
-                Edit
-              </button>
-            ) : (
-              <div className="flex gap-2">
+            {/* Right Main Content */}
+            <div className="flex-1 p-8">
+              {/* Header Section */}
+              <div className="flex items-start justify-between mb-6">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <h1 className="text-3xl font-bold text-gray-900">{getUserName()}</h1>
+                    <Check className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <p className="text-lg text-blue-600 mb-2">{userData?.title || 'Property Manager'}</p>
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <MapPin className="w-4 h-4" />
+                    <span>{userData?.location || 'New York, NY'}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Flag className="w-5 h-5 text-gray-400" />
+                  <span className="text-sm text-gray-600">Bookmark</span>
+                </div>
+              </div>
+
+              {/* Rankings */}
+              <div className="mb-6">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-semibold text-gray-900">{userData?.rating?.toFixed(1) || '4.6'}</span>
+                  <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <Star
+                        key={star}
+                        className={`w-5 h-5 ${
+                          star <= Math.floor(userData?.rating || 4.6)
+                            ? 'fill-blue-600 text-blue-600'
+                            : 'fill-gray-200 text-gray-200'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-3 mb-6">
+                <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+                  <MessageCircle className="w-4 h-4" />
+                  Send message
+                </button>
+                <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+                  <Check className="w-4 h-4" />
+                  Contacts
+                </button>
+                <button className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors">
+                  Report user
+                </button>
+              </div>
+
+              {/* Navigation Tabs */}
+              <div className="flex items-center gap-6 border-b border-gray-200 mb-6">
                 <button
-                  onClick={handleSave}
-                  className="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow-md"
+                  onClick={() => setActiveTab('timeline')}
+                  className={`flex items-center gap-2 pb-3 px-1 text-sm font-medium transition-colors ${
+                    activeTab === 'timeline'
+                      ? 'text-blue-600 border-b-2 border-blue-600'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
                 >
-                  Save
+                  <Clock className="w-4 h-4" />
+                  Timeline
                 </button>
                 <button
-                  onClick={handleCancel}
-                  className="px-5 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm font-medium transition-all"
+                  onClick={() => setActiveTab('about')}
+                  className={`flex items-center gap-2 pb-3 px-1 text-sm font-medium transition-colors ${
+                    activeTab === 'about'
+                      ? 'text-blue-600 border-b-2 border-blue-600'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
                 >
-                  Cancel
+                  <User className="w-4 h-4" />
+                  About
                 </button>
               </div>
-            )}
-          </div>
 
-          {/* Profile Information Fields */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            {/* Left Column */}
-            <div className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Full Name</label>
-                <input
-                  type="text"
-                  value={editData.fullName}
-                  onChange={(e) => handleFieldChange('fullName', e.target.value)}
-                  readOnly={!isEditing}
-                  placeholder="Your First Name"
-                  className={`w-full px-4 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                    isEditing 
-                      ? 'bg-white border-gray-300 text-gray-900 hover:border-gray-400' 
-                      : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                  }`}
-                />
-              </div>
+              {/* Tab Content */}
+              {activeTab === 'about' && (
+                <div className="space-y-8">
+                  {/* Property Information */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">PROPERTY INFORMATION</h3>
+                    <div className="space-y-3">
+                      <EditableField
+                        field="propertiesOwned"
+                        value={`${userData?.propertiesOwned || 12} Properties Owned`}
+                        icon={<Home className="w-4 h-4 text-gray-400" />}
+                        type="number"
+                      />
+                      <EditableField
+                        field="totalPropertyValue"
+                        value={`Total Value: ${userData?.totalPropertyValue || '£2,450,000'}`}
+                        icon={<DollarSign className="w-4 h-4 text-gray-400" />}
+                        type="text"
+                      />
+                      <EditableField
+                        field="propertiesListed"
+                        value={`${userData?.propertiesListed || 8} Properties Listed`}
+                        icon={<Building2 className="w-4 h-4 text-gray-400" />}
+                        type="number"
+                      />
+                      <EditableField
+                        field="lastPropertyAdded"
+                        value={`Last Added: ${userData?.lastPropertyAdded || '15 Mar, 2025'}`}
+                        icon={<FileText className="w-4 h-4 text-gray-400" />}
+                        type="text"
+                      />
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Gender</label>
-                <div className="relative">
-                  <select
-                    value={editData.gender}
-                    onChange={(e) => handleFieldChange('gender', e.target.value)}
-                    disabled={!isEditing}
-                    className={`w-full px-4 py-2.5 border rounded-lg text-sm appearance-none transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                      isEditing 
-                        ? 'bg-white border-gray-300 text-gray-900 cursor-pointer hover:border-gray-400' 
-                        : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Other">Other</option>
-                    <option value="Prefer not to say">Prefer not to say</option>
-                  </select>
-                  <ChevronDown className={`absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none ${!isEditing ? 'opacity-50' : ''}`} />
+                  {/* Contact Information */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">CONTACT INFORMATION</h3>
+                    <div className="space-y-3">
+                      <EditableField
+                        field="phone"
+                        value={userData?.phone || '+1 123 456 7890'}
+                        icon={<span className="w-4 h-4 text-gray-400">📞</span>}
+                        type="tel"
+                      />
+                      <EditableField
+                        field="location"
+                        value={userData?.location || 'New York, NY'}
+                        icon={<MapPin className="w-4 h-4 text-gray-400" />}
+                        type="text"
+                      />
+                      <EditableField
+                        field="email"
+                        value={getUserEmail()}
+                        icon={<span className="w-4 h-4 text-gray-400">✉️</span>}
+                        type="email"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Language</label>
-                <div className="relative">
-                  <select
-                    value={editData.language}
-                    onChange={(e) => handleFieldChange('language', e.target.value)}
-                    disabled={!isEditing}
-                    className={`w-full px-4 py-2.5 border rounded-lg text-sm appearance-none transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                      isEditing 
-                        ? 'bg-white border-gray-300 text-gray-900 cursor-pointer hover:border-gray-400' 
-                        : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <option value="English">English</option>
-                    <option value="Spanish">Spanish</option>
-                    <option value="French">French</option>
-                    <option value="German">German</option>
-                  </select>
-                  <ChevronDown className={`absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none ${!isEditing ? 'opacity-50' : ''}`} />
+              {activeTab === 'timeline' && (
+                <div className="text-center py-12 text-gray-500">
+                  <p>Timeline content coming soon...</p>
                 </div>
-              </div>
+              )}
             </div>
-
-            {/* Right Column */}
-            <div className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Nick Name</label>
-                <input
-                  type="text"
-                  value={editData.nickName}
-                  onChange={(e) => handleFieldChange('nickName', e.target.value)}
-                  readOnly={!isEditing}
-                  placeholder="Your First Name"
-                  className={`w-full px-4 py-2.5 border rounded-lg text-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                    isEditing 
-                      ? 'bg-white border-gray-300 text-gray-900 hover:border-gray-400' 
-                      : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                  }`}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Country</label>
-                <div className="relative">
-                  <select
-                    value={editData.country}
-                    onChange={(e) => handleFieldChange('country', e.target.value)}
-                    disabled={!isEditing}
-                    className={`w-full px-4 py-2.5 border rounded-lg text-sm appearance-none transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                      isEditing 
-                        ? 'bg-white border-gray-300 text-gray-900 cursor-pointer hover:border-gray-400' 
-                        : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <option value="United Kingdom">United Kingdom</option>
-                    <option value="United States">United States</option>
-                    <option value="Canada">Canada</option>
-                    <option value="Australia">Australia</option>
-                    <option value="Germany">Germany</option>
-                    <option value="France">France</option>
-                  </select>
-                  <ChevronDown className={`absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none ${!isEditing ? 'opacity-50' : ''}`} />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2.5">Time Zone</label>
-                <div className="relative">
-                  <select
-                    value={editData.timeZone}
-                    onChange={(e) => handleFieldChange('timeZone', e.target.value)}
-                    disabled={!isEditing}
-                    className={`w-full px-4 py-2.5 border rounded-lg text-sm appearance-none transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                      isEditing 
-                        ? 'bg-white border-gray-300 text-gray-900 cursor-pointer hover:border-gray-400' 
-                        : 'bg-gray-50 border-gray-200 text-gray-500 cursor-not-allowed'
-                    }`}
-                  >
-                    <option value="GMT+0 (London)">GMT+0 (London)</option>
-                    <option value="GMT-5 (New York)">GMT-5 (New York)</option>
-                    <option value="GMT+1 (Paris)">GMT+1 (Paris)</option>
-                    <option value="GMT+10 (Sydney)">GMT+10 (Sydney)</option>
-                  </select>
-                  <ChevronDown className={`absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none ${!isEditing ? 'opacity-50' : ''}`} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Email Address Management */}
-          <div className="border-t border-gray-200 pt-8">
-            <h3 className="text-lg font-semibold text-gray-900 mb-5">My email Address</h3>
-            
-            {/* Email Entry */}
-            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg mb-4 border border-gray-200">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                  <Mail className="w-5 h-5 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{editData.email}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">1 month ago</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Add Email Button */}
-            <button
-              onClick={() => {
-                // Handle add email action
-                console.log('Add email clicked');
-              }}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-all shadow-sm hover:shadow-md"
-            >
-              +Add Email Address
-            </button>
           </div>
         </motion.div>
       </div>
