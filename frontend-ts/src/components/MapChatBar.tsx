@@ -13,6 +13,7 @@ interface MapChatBarProps {
   placeholder?: string;
   width?: string; // Custom width for the container
   hasPreviousSession?: boolean; // If true, show the panel open button
+  initialValue?: string; // Initial query value when switching from SearchBar
 }
 
 export const MapChatBar: React.FC<MapChatBarProps> = ({
@@ -20,10 +21,11 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
   onMapToggle,
   onPanelToggle,
   placeholder = "Ask anything...",
-  width = 'clamp(480px, 90vw, 750px)', // Slightly narrower than before
-  hasPreviousSession = false
+  width = 'clamp(450px, 90vw, 700px)', // Match SearchBar width for consistency
+  hasPreviousSession = false,
+  initialValue = ""
 }) => {
-  const [inputValue, setInputValue] = React.useState<string>("");
+  const [inputValue, setInputValue] = React.useState<string>(initialValue);
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
@@ -49,6 +51,31 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
       inputRef.current.style.height = `${initialHeight}px`;
     }
   }, []);
+  
+  // Update input value when initialValue prop changes (e.g., when switching from SearchBar)
+  React.useEffect(() => {
+    // Only update if initialValue is provided and different from current value
+    // This handles both initial mount and prop updates
+    if (initialValue !== undefined && initialValue !== inputValue) {
+      console.log('📝 MapChatBar: Setting initial value from prop:', initialValue);
+      setInputValue(initialValue);
+      // Resize textarea after setting value
+      if (inputRef.current) {
+        // Use requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+          if (inputRef.current) {
+            inputRef.current.style.height = 'auto';
+            const scrollHeight = inputRef.current.scrollHeight;
+            const maxHeight = 150;
+            const newHeight = Math.min(scrollHeight, maxHeight);
+            inputRef.current.style.height = `${newHeight}px`;
+            inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+            inputRef.current.style.minHeight = '28px';
+          }
+        });
+      }
+    }
+  }, [initialValue]); // Only depend on initialValue, not inputValue to avoid loops
 
   // Handle textarea change with auto-resize logic
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -142,8 +169,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
           </motion.div>
         )}
 
-        <motion.div 
-          layout
+        <div 
           className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
           style={{
             background: '#ffffff',
@@ -153,7 +179,6 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             paddingBottom: '16px',
             paddingRight: '16px',
             paddingLeft: '16px',
-            willChange: 'border-radius, padding-left, padding-top, padding-bottom, height',
             overflow: 'visible',
             width: '100%',
             minWidth: '0',
@@ -162,32 +187,15 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             boxSizing: 'border-box',
             borderRadius: '12px'
           }}
-          animate={{
-            paddingTop: '16px',
-            paddingBottom: '16px',
-            borderRadius: '12px',
-            height: 'auto'
-          }}
-          transition={{ 
-            paddingTop: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
-            paddingBottom: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
-            borderRadius: { duration: 0.25, ease: [0.4, 0, 0.2, 1] },
-            layout: { duration: 0.3, ease: [0.4, 0, 0.2, 1] }
-          }}
         >
           {/* Input row */}
-          <motion.div 
+          <div 
             className="relative flex flex-col w-full" 
             style={{ 
               height: 'auto', 
               minHeight: '28px',
               width: '100%',
               minWidth: '0'
-            }}
-            layout
-            transition={{ 
-              duration: !inputValue.trim() ? 0 : 0.2, 
-              ease: [0.4, 0, 0.2, 1] 
             }}
           >
             {/* Property Attachments Display - Above textarea */}
@@ -213,9 +221,8 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
             )}
 
             {/* Textarea area - always above */}
-            <motion.div 
+            <div 
               className="flex items-start w-full"
-              layout
               style={{ 
                 minHeight: '28px',
                 width: '100%',
@@ -272,16 +279,15 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   rows={1}
                 />
               </div>
-            </motion.div>
+            </div>
             
             {/* Bottom row: Icons (Left) and Send Button (Right) */}
-            <motion.div 
+            <div 
               className="relative flex items-center justify-between w-full"
               style={{
                 width: '100%',
                 minWidth: '0'
               }}
-              layout
             >
               {/* Left Icons: Dashboard */}
               <div className="flex items-center space-x-4">
@@ -378,9 +384,9 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   </motion.div>
                 </motion.button>
               </div>
-            </motion.div>
-          </motion.div>
-        </motion.div>
+            </div>
+          </div>
+        </div>
       </form>
     </div>
   );

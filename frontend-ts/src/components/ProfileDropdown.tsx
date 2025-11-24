@@ -41,12 +41,11 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
   const updateDropdownPosition = React.useCallback(() => {
     if (buttonRef.current) {
       const buttonRect = buttonRef.current.getBoundingClientRect();
-      // Position dropdown to the right of the button (left-16 = 4rem = 64px from sidebar edge)
-      // Bottom position: distance from bottom of viewport (bottom-6 = 1.5rem = 24px)
-      // Move left by 2px to hide the sidebar border line
-      const bottom = window.innerHeight - buttonRect.bottom + 24; // 24px = bottom-6
+      // Position dropdown to the right of the button
+      // Bottom position: distance from bottom of viewport (slightly lower)
+      const bottom = window.innerHeight - buttonRect.bottom + 8; // 8px = lower position
       setDropdownPosition({
-        left: buttonRect.left + buttonRect.width + 14, // 14px offset (16px - 2px to hide border)
+        left: buttonRect.left + buttonRect.width + 32, // 32px offset to avoid sidebar overlap
         bottom: bottom
       });
     }

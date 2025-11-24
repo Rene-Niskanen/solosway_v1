@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Moon } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
@@ -8,6 +9,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
 import { useBackendApi } from './BackendApi';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { PropertyTitleCard } from './PropertyTitleCard';
 import { DEFAULT_MAP_LOCATION_KEY } from './MainContent';
 // import { openaiService, QueryAnalysis } from '../services/openai';
 
@@ -19,6 +21,7 @@ interface SquareMapProps {
   hasPerformedSearch?: boolean;
   isInChatMode?: boolean;
   containerStyle?: React.CSSProperties;
+  isInteractive?: boolean; // Controls whether map responds to user interactions
 }
 
 export interface SquareMapRef {
@@ -34,7 +37,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   onSearch,
   hasPerformedSearch = false,
   isInChatMode = false,
-  containerStyle
+  containerStyle,
+  isInteractive = true
 }, ref) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -51,12 +55,141 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const propertyMarkersRef = useRef<mapboxgl.Marker[]>([]);
   // Store the currently displayed property name marker
   const currentPropertyNameMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  // Store React root for PropertyTitleCard cleanup
+  const currentPropertyTitleCardRootRef = useRef<any>(null);
+  // Store zoom listener cleanup function for PropertyTitleCard scaling
+  const propertyTitleCardZoomListenerRef = useRef<(() => void) | null>(null);
+  // Store map click handler reference for deselection
+  const mapClickHandlerRef = useRef<((e: any) => void) | null>(null);
+  // Store the pin coordinates (user-set location) for the selected property
+  // Property pin location = Final User-Selected Coordinates from Create Property Card
+  // This is where the user placed/confirmed the pin, not document-extracted coordinates
+  const selectedPropertyPinCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  // Track if we've already centered the map for this selection to prevent multiple flyTo calls
+  const hasCenteredMapRef = useRef<{ lat: number; lng: number } | null>(null);
+  // Track if we've just jumped to a property pin to prevent default location from overriding it
+  const hasJumpedToPropertyPinRef = useRef<boolean>(false);
+  
+  // Helper function to get marker coordinates and store them
+  // This stores the ACTUAL location of the green pin on the map (property pin location)
+  // Cached property location is ALWAYS the property pin location, NEVER document-extracted coordinates
+  const storeMarkerCoordinates = (marker: mapboxgl.Marker | null, propertyId?: string) => {
+    if (marker) {
+      try {
+        const lngLat = marker.getLngLat();
+        if (lngLat) {
+          const coords = { lat: lngLat.lat, lng: lngLat.lng };
+          selectedPropertyPinCoordsRef.current = coords;
+          console.log('📍 Stored marker pin coordinates (green pin location):', coords);
+          
+          // Also store in localStorage so PropertyDetailsPanel can access them
+          if (propertyId) {
+            const markerCoordsKey = `markerPinCoords_${propertyId}`;
+            localStorage.setItem(markerCoordsKey, JSON.stringify(coords));
+            console.log('📍 Stored marker coordinates in localStorage for property:', propertyId, coords);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to get marker coordinates:', e);
+      }
+    }
+  };
+  // Helper function to update PropertyTitleCard marker scale based on zoom
+  // Always scales with map zoom to maintain geographic size - smaller when zoomed out, larger when zoomed in
+  const updateMarkerScale = (marker: mapboxgl.Marker | null, referenceZoom: number) => {
+    if (!marker || !map.current) return;
+    
+    const currentZoom = map.current.getZoom();
+    const markerElement = marker.getElement();
+    if (!markerElement) {
+      console.warn('PropertyTitleCard: Marker element not found for scaling');
+      return;
+    }
+    
+    // Get the scalable container (the inner div we created)
+    const scalableContainer = (markerElement as any).scalableContainer;
+    if (!scalableContainer) {
+      console.warn('PropertyTitleCard: Scalable container not found');
+      return;
+    }
+    
+    // Always scale with zoom to maintain geographic size relative to map
+    // At referenceZoom, scale is 1.0 (normal size)
+    // When zoomed OUT (currentZoom < referenceZoom): scale < 1.0 (card gets smaller)
+    // When zoomed IN (currentZoom > referenceZoom): scale > 1.0 (card gets larger)
+    let scale = Math.pow(2, currentZoom - referenceZoom);
+    
+    // Clamp scale to reasonable bounds
+    // Min: 0.05 (5% of original size) - allows card to become very small when zoomed out far
+    // Max: 2.0 (200% of original size) - prevents card from becoming too large when zoomed in
+    scale = Math.max(0.05, Math.min(2.0, scale));
+    
+    // Apply transform to the scalable container (inner div)
+    scalableContainer.style.transform = `scale(${scale})`;
+    
+    // Debug logging (can be removed later)
+    console.log(`PropertyTitleCard scale update: zoom=${currentZoom.toFixed(2)}, scale=${scale.toFixed(3)}`);
+  };
+  
+  // Set up zoom listener for PropertyTitleCard scaling
+  // Always scales with map zoom to maintain geographic size
+  const setupMarkerZoomListener = (marker: mapboxgl.Marker) => {
+    if (!map.current) {
+      console.warn('PropertyTitleCard: Map not available for zoom listener setup');
+      return;
+    }
+    
+    // Clean up existing listener if any
+    if (propertyTitleCardZoomListenerRef.current) {
+      propertyTitleCardZoomListenerRef.current();
+      propertyTitleCardZoomListenerRef.current = null;
+    }
+    
+    // Use a moderate reference zoom (17.5) so card appears at a reasonable size at typical viewing zoom levels
+    // This prevents the card from covering the property location while still being visible
+    // At zoom 15: scale = 0.177 (17.7% - small but visible)
+    // At zoom 17: scale = 0.707 (70.7% - good size)
+    // At zoom 17.5: scale = 1.0 (100% - normal size)
+    // At zoom 19: scale = 2.83 (283% - large when zoomed in close)
+    const referenceZoom = 17.5;
+    
+    // Update scale immediately
+    updateMarkerScale(marker, referenceZoom);
+    
+    // Set up zoom change listener - use 'zoom' event for smooth updates during zoom animations
+    const zoomHandler = () => {
+      updateMarkerScale(marker, referenceZoom);
+    };
+    
+    // Also listen to 'zoomend' as a fallback to ensure scale is updated
+    const zoomEndHandler = () => {
+      updateMarkerScale(marker, referenceZoom);
+    };
+    
+    // Listen to both 'zoom' (during animation) and 'zoomend' (after animation) events
+    map.current.on('zoom', zoomHandler);
+    map.current.on('zoomend', zoomEndHandler);
+    
+    // Store cleanup function
+    propertyTitleCardZoomListenerRef.current = () => {
+      if (map.current) {
+        map.current.off('zoom', zoomHandler);
+        map.current.off('zoomend', zoomEndHandler);
+      }
+    };
+    
+    console.log('PropertyTitleCard: Zoom listener set up');
+  };
+  
   // Store map click timeout for deselection
   const mapClickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track if a property marker was just clicked (to prevent deselection)
+  const propertyMarkerClickedRef = useRef<boolean>(false);
   // Store current properties array for click handler access
   const currentPropertiesRef = useRef<any[]>([]);
   // Store addPropertyMarkers function reference for use in useEffect
   const addPropertyMarkersRef = useRef<((properties: any[], shouldClearExisting?: boolean) => void) | null>(null);
+  const propertyClickHandlerRef = useRef<((e: any) => void) | null>(null);
   
   // Debug: Log Mapbox token status
   React.useEffect(() => {
@@ -80,6 +213,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const [isColorfulMap, setIsColorfulMap] = useState(false);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
+  const [showPropertyTitleCard, setShowPropertyTitleCard] = useState(false);
+  const [titleCardPropertyId, setTitleCardPropertyId] = useState<string | null>(null);
 
   // Close property card when navigating away from map view
   // BUT: Don't close if chat mode is active (user might be viewing property while in chat)
@@ -252,12 +387,23 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     if (preloadedProperties && Array.isArray(preloadedProperties) && preloadedProperties.length > 0) {
       console.log(`✅ Using ${preloadedProperties.length} preloaded properties (instant access! - NO backend call)`);
       
+      // Validate that preloaded properties have coordinates
+      const validPreloadedProperties = preloadedProperties.filter(p => 
+        p.latitude != null && p.longitude != null && 
+        typeof p.latitude === 'number' && typeof p.longitude === 'number' &&
+        !isNaN(p.latitude) && !isNaN(p.longitude)
+      );
+      
+      if (validPreloadedProperties.length === 0) {
+        console.warn('⚠️ Preloaded properties exist but none have valid coordinates, falling back to getAllPropertyHubs');
+        // Fall through to getAllPropertyHubs call below
+      } else {
       // Set the search results and add markers immediately
-      setSearchResults(preloadedProperties);
-      setPropertyMarkers(preloadedProperties);
+        setSearchResults(validPreloadedProperties);
+        setPropertyMarkers(validPreloadedProperties);
       
       // Prepare marker data immediately (don't wait for map)
-      currentPropertiesRef.current = preloadedProperties;
+        currentPropertiesRef.current = validPreloadedProperties;
       
       // Add markers with aggressive retry (faster rendering)
       const addMarkersWithRetry = (attempt = 0) => {
@@ -282,17 +428,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         try {
           // Use requestAnimationFrame for smoother rendering
           requestAnimationFrame(() => {
-            addPropertyMarkers(preloadedProperties, true);
-            console.log(`✅ Successfully loaded and displayed ${preloadedProperties.length} preloaded properties`);
+              addPropertyMarkers(validPreloadedProperties, true);
+              console.log(`✅ Successfully loaded and displayed ${validPreloadedProperties.length} preloaded properties`);
             
             // After properties are loaded, check if there's a pending property selection
             const pendingSelection = (window as any).__pendingPropertySelection;
             if (pendingSelection && pendingSelection.address) {
-              console.log('📍 Preloaded properties ready, selecting pending property:', pendingSelection);
+              console.log('📍 Preloaded properties ready, selecting pending property with pin location coordinates:', pendingSelection);
               (window as any).__pendingPropertySelection = null;
               // Pass the loaded properties directly to avoid state timing issues
+              // Use property pin location coordinates (user-set) to center map on pin location
               requestAnimationFrame(() => {
-                selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, preloadedProperties);
+                  selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, validPreloadedProperties);
               });
             }
           });
@@ -307,11 +454,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       // Start immediately
       addMarkersWithRetry();
       return; // Exit early - we used preloaded properties (NO SLOW getAllPropertyHubs call)
+      }
     }
     
-    // Only fetch from backend if NO preloaded properties exist
+    // Only fetch from backend if NO preloaded properties exist OR they don't have coordinates
     // This should rarely happen if MainContent preloads pins correctly
-    console.log('⚠️ No preloaded properties found, fetching from backend (this should be rare)...');
+    console.log('⚠️ No valid preloaded properties found, fetching from backend...');
     try {
       if (backendApi.status.isConnected) {
         console.log('🔗 Backend is connected, fetching property hubs...');
@@ -333,7 +481,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           const propertyDetails = hub.property_details || {};
           const documents = hub.documents || [];
           
-          return {
+          const transformed = {
             id: property.id,
             address: property.formatted_address || property.normalized_address || '',
             postcode: '',
@@ -364,7 +512,27 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             documentCount: documents.length,
             completenessScore: hub.summary?.completeness_score || 0
           };
+          
+          // Debug: Log properties without coordinates
+          if (!transformed.latitude || !transformed.longitude) {
+            console.warn('⚠️ Property missing coordinates:', {
+              id: transformed.id,
+              address: transformed.address,
+              latitude: transformed.latitude,
+              longitude: transformed.longitude
+            });
+          }
+          
+          return transformed;
         });
+        
+        // Log how many properties have coordinates
+        const propertiesWithCoords = transformedProperties.filter(p => 
+          p.latitude != null && p.longitude != null && 
+          typeof p.latitude === 'number' && typeof p.longitude === 'number' &&
+          !isNaN(p.latitude) && !isNaN(p.longitude)
+        );
+        console.log(`📍 Properties with coordinates: ${propertiesWithCoords.length} / ${transformedProperties.length}`);
         
         // Set the search results and add markers
         setSearchResults(transformedProperties);
@@ -386,11 +554,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             // This ensures we select the property as soon as it's available
             const pendingSelection = (window as any).__pendingPropertySelection;
             if (pendingSelection && pendingSelection.address) {
-              console.log('📍 Properties loaded, selecting pending property:', pendingSelection.address);
+              console.log('📍 Properties loaded, selecting pending property with pin location coordinates:', pendingSelection.address, pendingSelection.coordinates);
               // Clear the pending selection immediately to prevent duplicate attempts
               (window as any).__pendingPropertySelection = null;
               // Pass the loaded properties directly to avoid state timing issues
               // Use a small delay to ensure state has updated
+              // Use property pin location coordinates (user-set) to center map on pin location
               setTimeout(() => {
                 selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, transformedProperties);
               }, 50);
@@ -761,6 +930,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       // Clear current property name marker
       if (currentPropertyNameMarkerRef.current) {
+        // Clean up zoom listener
+        if (propertyTitleCardZoomListenerRef.current) {
+          propertyTitleCardZoomListenerRef.current();
+          propertyTitleCardZoomListenerRef.current = null;
+        }
         currentPropertyNameMarkerRef.current.remove();
         currentPropertyNameMarkerRef.current = null;
       }
@@ -817,8 +991,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
              !isNaN(property.latitude);
     });
     
+    console.log(`Creating unified source with ${validProperties.length} properties`);
+    
     // Create GeoJSON features in one batch operation
-    const geojson: GeoJSON.FeatureCollection = {
+    // Create empty GeoJSON if no valid properties (so we can add properties later)
+    const geojson: GeoJSON.FeatureCollection = validProperties.length > 0 ? {
       type: 'FeatureCollection',
       features: validProperties.map(property => {
           // Use coordinates directly (already validated as numbers)
@@ -851,9 +1028,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             }
           };
         })
+    } : {
+      type: 'FeatureCollection',
+      features: []
     };
-
-    console.log(`Creating unified source with ${validProperties.length} properties`);
 
     // Optimized: Check if source exists and update it instead of removing/re-adding
     // This is much faster - updating data is instant vs removing/re-adding
@@ -877,6 +1055,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
 
       // Add layers only if they don't exist (faster - no re-creation)
+      // IMPORTANT: Layers must be added AFTER source is created/updated
       const layersToAdd = [
         {
           id: 'property-click-target',
@@ -886,9 +1065,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               'interpolate',
               ['linear'],
               ['zoom'],
-              10, 20,
-              15, 25,
-              20, 30
+              10, 40,  // Much larger click area at low zoom
+              15, 50,  // Larger click area at mid zoom
+              20, 60   // Large click area at high zoom
             ],
             'circle-color': 'transparent',
             'circle-stroke-width': 0
@@ -918,14 +1097,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               'interpolate',
               ['linear'],
               ['zoom'],
-              10, 4,
-              15, 5,
-              20, 6
+              10, 6,
+              15, 8,
+              20, 10
             ],
-            'circle-color': '#374151',
+            'circle-color': '#ffffff', // White default
             'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff',
-            'circle-opacity': 0.9
+            'circle-stroke-color': '#000000', // Black border
+            'circle-opacity': 1.0
           }
         }
       ];
@@ -933,22 +1112,59 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       // Batch add layers (faster than individual checks)
       layersToAdd.forEach(layerConfig => {
         if (!map.current.getLayer(layerConfig.id)) {
+          try {
           map.current.addLayer({
             id: layerConfig.id,
             type: layerConfig.type,
             source: 'properties',
             paint: layerConfig.paint as any // Type assertion for Mapbox paint properties
           });
+            console.log(`✅ Added layer: ${layerConfig.id}`);
+          } catch (error) {
+            console.error(`❌ Error adding layer ${layerConfig.id}:`, error);
+          }
+        } else {
+          console.log(`⚠️ Layer ${layerConfig.id} already exists, skipping`);
         }
       });
       
-      console.log('✅ Property marker layers ready');
+      // Verify source has data
+      const source = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
+      if (source) {
+        const sourceData = source._data as GeoJSON.FeatureCollection;
+        const featureCount = sourceData?.features?.length || 0;
+        console.log(`✅ Property marker layers ready. Source has ${featureCount} features.`);
+      } else {
+        console.error('❌ Properties source not found after layer creation!');
+      }
 
     // Don't create HTML markers initially - they'll be shown when a property is clicked and zoomed in
 
     // Add click handler for the markers with individual property animation
     // Use component-level ref to access current properties (updated on each addPropertyMarkers call)
-    map.current.on('click', 'property-click-target', (e) => {
+    // IMPORTANT: This handler must fire BEFORE the general map click handler
+    // Remove existing handler first to prevent duplicate handlers
+    if (propertyClickHandlerRef.current && map.current) {
+      map.current.off('click', 'property-click-target', propertyClickHandlerRef.current);
+    }
+    
+    // Create the click handler function
+    const propertyClickHandler = (e: any) => {
+      console.log('🎯 Property-click-target handler fired!', {
+        features: e.features?.length,
+        feature_properties: e.features[0]?.properties
+      });
+      
+      // Stop event propagation to prevent general map click handler from firing
+      e.originalEvent.stopPropagation();
+      
+      // Mark that a property marker was clicked to prevent deselection (safety measure)
+      propertyMarkerClickedRef.current = true;
+      // Reset flag after a short delay
+      setTimeout(() => {
+        propertyMarkerClickedRef.current = false;
+      }, 100);
+      
       // Cancel any pending map click timeout
       if (mapClickTimeoutRef.current) {
         clearTimeout(mapClickTimeoutRef.current);
@@ -956,6 +1172,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
       
       const feature = e.features[0];
+      
+      if (!feature) {
+        console.warn('⚠️ No feature found in property-click-target click event');
+        return;
+      }
       
       // Use properties from component-level ref (updated each time addPropertyMarkers is called)
       const currentProperties = currentPropertiesRef.current;
@@ -976,14 +1197,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       const property = currentProperties.find(p => p.id === feature.properties.id);
       
-      if (property) {
+      if (!property) {
+        console.warn('⚠️ Property not found in currentProperties:', {
+          feature_id: feature.properties.id,
+          currentProperties_count: currentProperties.length,
+          currentProperties_ids: currentProperties.map(p => p.id).slice(0, 5)
+        });
+        return;
+      }
+      
         console.log('📍 Marker clicked:', property.address);
         
         // 🔍 PHASE 1 DEBUG: Show which array the property was found in
-        const foundInProperties = properties.some(p => p.id === feature.properties.id);
+        const foundInProperties = currentProperties.some(p => p.id === feature.properties.id);
         console.log('🔍 PHASE 1 DEBUG - Property Source:', {
           found_in_properties: foundInProperties,
-          property_source: 'properties'
+          property_source: 'currentProperties'
         });
         
         // 🔍 PHASE 1 DEBUG: Comprehensive selected property data analysis
@@ -1011,138 +1240,196 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           askingPrice_value: property.askingPrice,
           askingPrice_gt_zero: property.askingPrice > 0
         });
+      
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
         
         // Remove any existing property name marker
         if (currentPropertyNameMarkerRef.current) {
+        // Clean up React root if it exists
+        if (currentPropertyTitleCardRootRef.current) {
+          try {
+            currentPropertyTitleCardRootRef.current.unmount();
+          } catch (e) {
+            console.warn('Error unmounting PropertyTitleCard root:', e);
+          }
+          currentPropertyTitleCardRootRef.current = null;
+        }
+        // Clean up zoom listener
+        if (propertyTitleCardZoomListenerRef.current) {
+          propertyTitleCardZoomListenerRef.current();
+          propertyTitleCardZoomListenerRef.current = null;
+        }
           currentPropertyNameMarkerRef.current.remove();
           currentPropertyNameMarkerRef.current = null;
         }
         
-        // Show property name marker immediately when clicked
-        // Use property name from feature properties if available, otherwise extract it
-        const propertyName = feature.properties.propertyName || getPropertyName(property.address);
+      // Check if title card is already visible for this property
+      const propertyIdStr = property.id?.toString() || null;
+      if (showPropertyTitleCard && titleCardPropertyId === propertyIdStr) {
+        // Title card already visible for this property - clicking pin again deselects it
+        console.log('📍 Pin clicked again - deselecting property');
+        clearSelectedPropertyEffects();
+        setShowPropertyTitleCard(false);
+        setTitleCardPropertyId(null);
+        setSelectedProperty(null);
+        setShowPropertyCard(false);
+        setShowPropertyDetailsPanel(false);
         
-        // Create property name marker using Mapbox Marker (stays fixed to pin automatically)
-        if (propertyName && property.longitude && property.latitude && map.current) {
-            // Create marker element - one unified piece extending from the pin
+        // Remove property name marker
+        if (currentPropertyNameMarkerRef.current) {
+          // Clean up React root if it exists
+          if (currentPropertyTitleCardRootRef.current) {
+            try {
+              currentPropertyTitleCardRootRef.current.unmount();
+            } catch (e) {
+              console.warn('Error unmounting PropertyTitleCard root:', e);
+            }
+            currentPropertyTitleCardRootRef.current = null;
+          }
+          // Clean up zoom listener
+          if (propertyTitleCardZoomListenerRef.current) {
+            propertyTitleCardZoomListenerRef.current();
+            propertyTitleCardZoomListenerRef.current = null;
+          }
+          currentPropertyNameMarkerRef.current.remove();
+          currentPropertyNameMarkerRef.current = null;
+        }
+        return;
+      }
+      
+      // Hide previous title card if different property
+      if (titleCardPropertyId && titleCardPropertyId !== propertyIdStr) {
+        setShowPropertyTitleCard(false);
+        setTitleCardPropertyId(null);
+      }
+      
+      // Show property title card (NEW: two-step click logic)
+      // First click on pin shows title card, second click on card opens PropertyDetailsPanel
+      if (property.longitude && property.latitude && map.current) {
+        // Create outer container div (Mapbox marker wrapper)
             const markerElement = document.createElement('div');
-            markerElement.className = 'property-name-marker';
+        markerElement.className = 'property-title-card-marker';
             markerElement.style.cssText = `
               position: relative;
               display: flex;
               flex-direction: column;
               align-items: center;
-              pointer-events: none;
-            `;
-            
-            // Use the full address instead of just property name
-            const displayText = property.address || propertyName;
-            
-            markerElement.innerHTML = `
-              <div style="
+          pointer-events: auto;
+        `;
+        
+        // Create inner scalable container for the React component
+        // This is what we'll scale with zoom
+        const scalableContainer = document.createElement('div');
+        scalableContainer.className = 'property-title-card-scalable';
+        scalableContainer.style.cssText = `
                 position: relative;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-              ">
-                <!-- Callout box with pointer extending down -->
-                <div style="
-                  position: relative;
-                  display: flex;
-                  align-items: center;
-                  background: white;
-                  border-radius: 8px;
-                  padding: 6px 10px;
-                  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                  white-space: nowrap;
-                  margin-bottom: 0;
-                ">
-                  <!-- Black circle with orange pin icon -->
-                  <div style="
-                    width: 20px;
-                    height: 20px;
-                    background: #1a1a1a;
-                    border-radius: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    margin-right: 8px;
-                    flex-shrink: 0;
-                  ">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
-                    </svg>
-                  </div>
-                  <!-- Address text -->
-                  <span style="
-                    font-size: 13px;
-                    font-weight: 500;
-                    color: #1a1a1a;
-                    line-height: 1.2;
-                  ">${displayText}</span>
-                </div>
-                <!-- Pointer extending down from callout to pin (one continuous piece) -->
-                <div style="
-                  position: relative;
-                  width: 0;
-                  height: 0;
-                  border-left: 8px solid transparent;
-                  border-right: 8px solid transparent;
-                  border-top: 12px solid white;
-                  margin-top: -1px;
-                  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
-                "></div>
-                <!-- Green circle pin at the bottom (part of the same piece) -->
-                <div style="
-                  width: 16px;
-                  height: 16px;
-                  background: #10B981;
-                  border-radius: 50%;
-                  border: 2px solid white;
-                  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                  margin-top: -6px;
-                  position: relative;
-                  z-index: 1;
-                "></div>
-              </div>
-            `;
+          transform-origin: bottom center;
+          transition: none;
+          pointer-events: auto; /* Only the card content captures clicks */
+          user-select: text; /* Allow text selection */
+          -webkit-user-select: text; /* Safari */
+        `;
+        markerElement.appendChild(scalableContainer);
+        
+        // Store reference to scalable container for zoom updates
+        (markerElement as any).scalableContainer = scalableContainer;
+        
+        // Disable map dragging when hovering over the card to allow text selection
+        // Attach to scalableContainer since it has pointer-events: auto
+        scalableContainer.addEventListener('mouseenter', () => {
+          if (map.current) {
+            map.current.dragPan.disable();
+          }
+        });
+        
+        scalableContainer.addEventListener('mouseleave', () => {
+          if (map.current) {
+            map.current.dragPan.enable();
+          }
+        });
+        
+        // Also prevent map drag on mousedown when selecting text
+        scalableContainer.addEventListener('mousedown', (e) => {
+          // Allow text selection - don't stop propagation
+          // The dragPan.disable() from mouseenter should handle preventing map drag
+        });
+        
+        // Handle card click - opens PropertyDetailsPanel
+        const handleCardClick = () => {
+          console.log('📍 Property title card clicked - opening PropertyDetailsPanel');
+          // Store pin coordinates
+          if (property.latitude && property.longitude) {
+            selectedPropertyPinCoordsRef.current = { lat: property.latitude, lng: property.longitude };
+          }
+          setSelectedProperty(property);
+          setShowPropertyCard(true);
+          setShowPropertyDetailsPanel(true);
+          setIsExpanded(false);
+          setShowFullDescription(false);
+          // Keep title card visible (per user requirement)
+        };
+        
+        // Render PropertyTitleCard component into scalable container
+        try {
+          const root = createRoot(scalableContainer);
+          root.render(
+            <PropertyTitleCard
+              property={property}
+              onCardClick={handleCardClick}
+            />
+          );
+          
+          // Store root reference for cleanup
+          currentPropertyTitleCardRootRef.current = root;
+        } catch (error) {
+          console.error('Error rendering PropertyTitleCard:', error);
+        }
+        
+        // No need for click listener - pointer-events handles it:
+        // markerElement has pointer-events: none (doesn't block map clicks)
+        // scalableContainer has pointer-events: auto (only card content captures clicks)
+        // Map click handler will detect clicks outside the card and deselect
+        
+        // Calculate offset for positioning (PropertyTitleCard without green pin)
+        // Position the card raised above the pin so it doesn't overlap
+        const cardHeight = 360; // Approximate card height (image + details, no pin/pointer)
+        const pinRadius = 10; // Approximate pin radius
+        const gapAbovePin = 20; // Gap between pin and card bottom
+        const verticalOffset = -(pinRadius + gapAbovePin); // Negative Y moves upward
             
-            // Position the marker so the green circle pin center aligns with the coordinates
-            // This matches the unselected state where circle markers are centered at coordinates
-            const pinSize = 16; // Green circle pin size (including border)
-            const pointerHeight = 12; // Height of the pointer triangle
-            const calloutHeight = 32; // Approximate callout box height
-            const totalElementHeight = calloutHeight + pointerHeight + pinSize;
-            
-            // The green pin is at the bottom of the element
-            // To center the green pin at coordinates, we need to offset upward
-            // by half the element height minus half the pin size
-            const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
-            
-            // Anchor at center and offset upward so green pin center is at coordinates
+        // Anchor at bottom center and raise card above the pin
             const marker = new mapboxgl.Marker({
               element: markerElement,
-              anchor: 'center',
-              offset: [0, -greenPinCenterOffset] // Offset to center green pin at coordinates
+          anchor: 'bottom',
+          offset: [0, verticalOffset] // Raise card above pin
             })
               .setLngLat([property.longitude, property.latitude])
               .addTo(map.current);
             
             // Store marker reference for cleanup
             currentPropertyNameMarkerRef.current = marker;
+        
+        // Set up zoom listener - card stays fixed size when zoomed in, scales down when zoomed out
+        setupMarkerZoomListener(marker);
+        
+        // Update state to show title card
+        setShowPropertyTitleCard(true);
+        setTitleCardPropertyId(propertyIdStr);
         }
         
-        // Smoothly fly to the property location, centering it on screen with consistent zoom
+        // Smoothly fly to the property location, centering card and pin in the center of the screen
         const propertyCoordinates: [number, number] = [property.longitude, property.latitude];
+        // Calculate offset to center the card and pin
+        // Card is positioned above the pin, so offset down slightly to center both
+        const cardHeight = 360; // Approximate card height
+        const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
         map.current.flyTo({
           center: propertyCoordinates,
           zoom: 17.5, // Consistent zoom level matching reference image proximity
           duration: 2000, // 2 second smooth transition
           essential: true, // Ensure animation completes
-          offset: [-80, 0], // Shift center slightly to the left (negative x = left)
+          offset: [0, verticalOffset], // Center horizontally, offset down to center card and pin together
           easing: (t) => {
             // Custom easing function for extremely smooth animation
             // Ease-in-out-cubic for smooth acceleration and deceleration
@@ -1152,17 +1439,26 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           }
         });
         
-        // Hide the base marker for this property by filtering it out
-        if (map.current.getLayer('property-markers')) {
-          map.current.setFilter('property-markers', [
-            '!=',
-            ['get', 'id'],
-            property.id
+        // Make the base marker transparent (instead of hiding) so click target remains active
+        // IMPORTANT: property-click-target layer is separate from property-markers and remains fully functional
+        // The property-click-target layer is a map layer (not HTML), so it works even with HTML markers
+        // Since PropertyTitleCard's green pin has pointer-events: none, clicks on it pass through to the map layer
+        // This ensures clicks still work while only showing the PropertyTitleCard's green pin
+        if (map.current && map.current.getLayer('property-markers')) {
+          // Set selected property pin to green, others to white
+          map.current.setPaintProperty('property-markers', 'circle-color', [
+            'case',
+            ['==', ['get', 'id'], property.id],
+            '#FFE2B1', // Peach/beige for selected property
+            '#ffffff' // White for others
           ]);
+          // Keep selected property visible (green pin) and others visible too
+          map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
         }
+        // Note: property-click-target layer remains active and clickable - it's not affected by marker opacity
         
-        // Also hide the outer ring for this property
-        if (map.current.getLayer('property-outer')) {
+        // Hide the outer ring for selected property
+        if (map.current && map.current.getLayer('property-outer')) {
           map.current.setFilter('property-outer', [
             '!=',
             ['get', 'id'],
@@ -1173,18 +1469,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Don't create individual marker layers - the unified HTML marker handles everything
         // The HTML marker already includes the green circle pin, so we don't need separate map layers
         
-        // Update the selected property state
-        console.log('✅ Setting selected property:', {
-          id: property.id,
-          address: property.address,
-          hasPropertyHub: !!property.propertyHub,
-          propertyKeys: Object.keys(property)
-        });
-        setSelectedProperty(property);
-        setShowPropertyCard(true);
-        setShowPropertyDetailsPanel(true); // Show the new PropertyDetailsPanel
-        setIsExpanded(false); // Reset expanded state for new property
-        setShowFullDescription(false); // Reset description state for new property
+      // NEW: Two-step click logic - pin click only shows title card
+      // PropertyDetailsPanel will open when title card is clicked (handled in handleCardClick)
+      // Don't open PropertyDetailsPanel immediately here
         
         // Don't preload files when clicking a pin - let PropertyDetailsPanel load them lazily
         // This prevents blocking the property card from rendering quickly
@@ -1198,10 +1485,104 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           x: point.x,
           y: point.y - 20
         });
-      }
-    });
+    };
+    
+    // Store the handler reference and register it
+    propertyClickHandlerRef.current = propertyClickHandler;
+    map.current.on('click', 'property-click-target', propertyClickHandler);
 
-    // Note: Click-off handling is done via document-level event listener (see useEffect below)
+    // Add map click handler to deselect property when clicking outside the PropertyTitleCard
+    // IMPORTANT: This handler fires AFTER layer-specific handlers
+    // Remove existing handler first to prevent duplicate handlers
+    if (mapClickHandlerRef.current && map.current) {
+      map.current.off('click', mapClickHandlerRef.current);
+    }
+    
+    const mapClickHandler = (e: any) => {
+      console.log('🗺️ General map click handler fired', {
+        point: e.point,
+        hasFeatures: e.features?.length > 0,
+        showPropertyTitleCard,
+        titleCardPropertyId,
+        selectedProperty: !!selectedProperty
+      });
+      
+      // First check if click is on a property marker - if so, don't deselect (property-click-target handler handles it)
+      const features = map.current.queryRenderedFeatures(e.point, {
+        layers: ['property-click-target', 'property-outer', 'property-markers']
+      });
+      
+      // If click is on a property marker, don't deselect (the property-click-target handler will handle it)
+      if (features.length > 0) {
+        console.log('🗺️ Map click detected on property marker - skipping deselection', {
+          featureCount: features.length,
+          featureIds: features.map(f => f.properties?.id)
+        });
+        return;
+      }
+      
+      // Also check if a property marker was just clicked (safety measure via ref)
+      // But only skip if the flag was set very recently (within 50ms)
+      if (propertyMarkerClickedRef.current) {
+        console.log('🗺️ Property marker click flag set - skipping deselection');
+        return;
+      }
+      
+      // Check if click is on the PropertyTitleCard element
+      // Since markerElement has pointer-events: none, only clicks on the card content will reach here
+      const clickedElement = e.originalEvent.target as HTMLElement;
+      if (clickedElement) {
+        // Check if click is on PropertyTitleCard card content (scalable container)
+        const cardContent = clickedElement.closest('.property-title-card-scalable');
+        if (cardContent) {
+          // Click is on card content - don't deselect (card click handler will handle it)
+          console.log('🗺️ Map click detected on PropertyTitleCard content - skipping deselection');
+          return;
+        }
+      }
+      
+      // Click is on the map but not on a property marker or PropertyTitleCard - deselect PropertyTitleCard
+      // Check if PropertyTitleCard marker exists (more reliable than checking state)
+      if (currentPropertyNameMarkerRef.current) {
+        // Don't deselect if PropertyDetailsPanel is open - user might be interacting with it
+        if (showPropertyDetailsPanel) {
+          console.log('🗺️ PropertyDetailsPanel is open - skipping deselection');
+          return;
+        }
+        
+        console.log('🗺️ Map clicked outside property title card - deselecting');
+        
+        // Clear the PropertyTitleCard and selected property
+        clearSelectedPropertyEffects();
+        setShowPropertyTitleCard(false);
+        setTitleCardPropertyId(null);
+        setSelectedProperty(null);
+        setShowPropertyCard(false);
+        setShowPropertyDetailsPanel(false);
+        
+        // Remove property name marker
+        // Clean up React root if it exists
+        if (currentPropertyTitleCardRootRef.current) {
+          try {
+            currentPropertyTitleCardRootRef.current.unmount();
+          } catch (e) {
+            console.warn('Error unmounting PropertyTitleCard root:', e);
+          }
+          currentPropertyTitleCardRootRef.current = null;
+        }
+        // Clean up zoom listener
+        if (propertyTitleCardZoomListenerRef.current) {
+          propertyTitleCardZoomListenerRef.current();
+          propertyTitleCardZoomListenerRef.current = null;
+        }
+        currentPropertyNameMarkerRef.current.remove();
+        currentPropertyNameMarkerRef.current = null;
+      }
+    };
+    
+    // Store handler reference and register it
+    mapClickHandlerRef.current = mapClickHandler;
+    map.current.on('click', mapClickHandler);
 
     // Add simple hover effects for property layers
     const propertyLayers = ['property-click-target', 'property-outer', 'property-markers'];
@@ -1227,12 +1608,31 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const clearSelectedPropertyEffects = () => {
     // Remove property name marker if it exists
     if (currentPropertyNameMarkerRef.current) {
+      // Clean up React root if it exists
+      if (currentPropertyTitleCardRootRef.current) {
+        try {
+          currentPropertyTitleCardRootRef.current.unmount();
+        } catch (e) {
+          console.warn('Error unmounting PropertyTitleCard root:', e);
+        }
+        currentPropertyTitleCardRootRef.current = null;
+      }
+      // Clean up zoom listener
+      if (propertyTitleCardZoomListenerRef.current) {
+        propertyTitleCardZoomListenerRef.current();
+        propertyTitleCardZoomListenerRef.current = null;
+      }
       currentPropertyNameMarkerRef.current.remove();
       currentPropertyNameMarkerRef.current = null;
     }
+    // Clear pin coordinates
+    selectedPropertyPinCoordsRef.current = null;
     if (map.current) {
-      // Restore base marker layers to show all properties (remove filters)
+      // Restore base marker layers to show all properties (reset to white and fully visible)
       if (map.current.getLayer('property-markers')) {
+        // Reset all pins to white (default color) and fully visible
+        map.current.setPaintProperty('property-markers', 'circle-color', '#ffffff');
+        map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
         map.current.setFilter('property-markers', null);
       }
       if (map.current.getLayer('property-outer')) {
@@ -1285,7 +1685,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   useEffect(() => {
     if (selectedProperty && (showPropertyCard || showPropertyDetailsPanel) && map.current) {
       // Check if marker exists, if not recreate it
-      if (!currentPropertyNameMarkerRef.current && selectedProperty.address && selectedProperty.latitude && selectedProperty.longitude) {
+      // Use pin coordinates if available, otherwise fall back to property coordinates
+      const pinCoords = selectedPropertyPinCoordsRef.current;
+      const useLat = pinCoords ? pinCoords.lat : selectedProperty.latitude;
+      const useLng = pinCoords ? pinCoords.lng : selectedProperty.longitude;
+      
+      if (!currentPropertyNameMarkerRef.current && selectedProperty.address && useLat && useLng) {
         console.log('🔄 Ensuring property name marker is visible');
         const getPropertyName = (addr: string) => {
           if (!addr) return '';
@@ -1388,10 +1793,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             anchor: 'center',
             offset: [0, -greenPinCenterOffset]
           })
-            .setLngLat([selectedProperty.longitude, selectedProperty.latitude])
+            .setLngLat([useLng, useLat])
             .addTo(map.current);
           
           currentPropertyNameMarkerRef.current = marker;
+          // Store marker coordinates - this is where the pin is located
+          storeMarkerCoordinates(marker, selectedProperty?.id);
+          console.log('📍 Created property name marker with coordinates:', { lat: useLat, lng: useLng, isPinCoords: !!pinCoords });
         }
       }
     }
@@ -1443,6 +1851,20 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             
             // Remove property name marker
             if (currentPropertyNameMarkerRef.current) {
+              // Clean up React root if it exists
+              if (currentPropertyTitleCardRootRef.current) {
+                try {
+                  currentPropertyTitleCardRootRef.current.unmount();
+                } catch (e) {
+                  console.warn('Error unmounting PropertyTitleCard root:', e);
+                }
+                currentPropertyTitleCardRootRef.current = null;
+              }
+              // Clean up zoom listener
+              if (propertyTitleCardZoomListenerRef.current) {
+                propertyTitleCardZoomListenerRef.current();
+                propertyTitleCardZoomListenerRef.current = null;
+              }
               currentPropertyNameMarkerRef.current.remove();
               currentPropertyNameMarkerRef.current = null;
             }
@@ -2017,12 +2439,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
   // Expose methods to parent component
   // Method to select a property by address (same logic as clicking a pin)
-  const selectPropertyByAddress = (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, retryCount = 0, providedProperties?: any[]) => {
+  const selectPropertyByAddress = async (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, retryCount = 0, providedProperties?: any[]) => {
     // Clear any stale property selection on first attempt to prevent showing wrong card
+    // Also reset map centering flag for new selection
     if (retryCount === 0) {
       setSelectedProperty(null);
       setShowPropertyCard(false);
       setShowPropertyDetailsPanel(false);
+      hasCenteredMapRef.current = null; // Reset so map can center for this new selection
     }
     
     // OPTIMIZATION: If we have cached data and propertyId, show card immediately even if map isn't ready
@@ -2047,14 +2471,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             setIsExpanded(false);
             setShowFullDescription(false);
             
-            // Store for when map is ready
-            (window as any).__pendingMapUpdate = {
-              property: cachedProperty,
-              lat: cachedProperty.latitude || coordinates?.lat,
-              lng: cachedProperty.longitude || coordinates?.lng
-            };
+            // REMOVED: __pendingMapUpdate - no map centering
             
             // Retry map update with very short delays (10ms) for fastest response
+            // Map centering will happen when map is ready, property card is already showing
             if (retryCount < 20) {
               setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), 10);
             }
@@ -2068,10 +2488,16 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     if (!map.current) {
       // Retry if map isn't ready yet - but with shorter delays
+      // CRITICAL: Preserve coordinates through retries so map can center when ready
       if (retryCount < 10) {
         // Use shorter delay for faster response (50ms instead of 200ms)
         const retryDelay = Math.min(50 * (retryCount + 1), 200);
+        console.log('⏳ Map not ready yet, retrying with coordinates preserved:', { coordinates, retryCount });
         setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), retryDelay);
+      } else {
+        // Map still not ready after retries - store for when map loads
+        console.log('⏳ Map not ready after retries, storing pending selection with coordinates');
+        (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
       }
       return;
     }
@@ -2122,16 +2548,31 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             // Use cached property data immediately - no need to wait for properties to load!
             console.log('✅ Using cached property data for INSTANT card display (from recent project)');
             finalProperty = cacheData.data;
-            finalLat = finalProperty.latitude || coordinates?.lat || null;
-            finalLng = finalProperty.longitude || coordinates?.lng || null;
+            // ONLY use provided coordinates - never use property coordinates
+            if (coordinates && coordinates.lat && coordinates.lng) {
+              finalLat = coordinates.lat;
+              finalLng = coordinates.lng;
+            } else {
+              // No coordinates provided - don't center map
+              finalLat = null;
+              finalLng = null;
+            }
             
-            // If we have cached data, skip property search entirely and show card immediately
+            // If we have cached data AND valid coordinates, skip property search entirely and show card immediately
             if (finalProperty && finalLat !== null && finalLng !== null) {
               // Proceed directly to showing the card - skip all retry logic
               console.log('🚀 Showing property card immediately from cache - no backend wait!');
               
               // Show card IMMEDIATELY - don't wait for map to be ready
               // This ensures <1s response time when clicking recent project
+              // Store pin coordinates for marker positioning
+              if (finalLat !== null && finalLng !== null) {
+                selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+              }
+              // Store pin coordinates for marker positioning
+              if (finalLat !== null && finalLng !== null) {
+                selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+              }
               setSelectedProperty(finalProperty);
               setShowPropertyCard(true);
               setShowPropertyDetailsPanel(true);
@@ -2175,123 +2616,87 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 const propertyName = getPropertyName(finalProperty.address);
                 const displayText = finalProperty.address || propertyName;
                 
+                // Always remove existing marker and create new PropertyTitleCard to avoid duplicates
                 if (currentPropertyNameMarkerRef.current) {
-                  // Update existing marker position and text
-                  currentPropertyNameMarkerRef.current.setLngLat([finalLng, finalLat]);
-                  const markerElement = currentPropertyNameMarkerRef.current.getElement();
-                  const textElement = markerElement.querySelector('span');
-                  if (textElement) {
-                    textElement.textContent = displayText;
+                  // Clean up React root if it exists
+                  if (currentPropertyTitleCardRootRef.current) {
+                    try {
+                      currentPropertyTitleCardRootRef.current.unmount();
+                    } catch (e) {
+                      console.warn('Error unmounting PropertyTitleCard root:', e);
+                    }
+                    currentPropertyTitleCardRootRef.current = null;
                   }
-                } else {
-                  // Create new styled marker (same as property pin click)
+                  // Clean up zoom listener
+                  if (propertyTitleCardZoomListenerRef.current) {
+                    propertyTitleCardZoomListenerRef.current();
+                    propertyTitleCardZoomListenerRef.current = null;
+                  }
+                  currentPropertyNameMarkerRef.current.remove();
+                  currentPropertyNameMarkerRef.current = null;
+                }
+                
+                {
+                  // Create new PropertyTitleCard marker (same as property pin click)
       const markerElement = document.createElement('div');
-                  markerElement.className = 'property-name-marker';
+                  markerElement.className = 'property-title-card-marker';
                   markerElement.style.cssText = `
                     position: relative;
                     display: flex;
                     flex-direction: column;
                     align-items: center;
-                    pointer-events: none;
+                    pointer-events: auto;
                   `;
                   
-      markerElement.innerHTML = `
-        <div style="
-          position: relative;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-        ">
-                      <!-- Callout box with pointer extending down -->
-          <div style="
-                        position: relative;
-            display: flex;
-            align-items: center;
-                        background: white;
-                        border-radius: 8px;
-                        padding: 6px 10px;
-                        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                        white-space: nowrap;
-                        margin-bottom: 0;
-          ">
-                        <!-- Black circle with orange pin icon -->
-            <div style="
-              width: 20px;
-              height: 20px;
-                          background: #1a1a1a;
-              border-radius: 50%;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-                          margin-right: 8px;
-                          flex-shrink: 0;
-                        ">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
-                          </svg>
-            </div>
-                        <!-- Address text -->
-                        <span style="
-                          font-size: 13px;
-                          font-weight: 500;
-                          color: #1a1a1a;
-                          line-height: 1.2;
-                        ">${displayText}</span>
-                      </div>
-                      <!-- Pointer extending down from callout to pin (one continuous piece) -->
-            <div style="
-                        position: relative;
-              width: 0;
-              height: 0;
-                        border-left: 8px solid transparent;
-                        border-right: 8px solid transparent;
-                        border-top: 12px solid white;
-                        margin-top: -1px;
-                        filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
-            "></div>
-                      <!-- Green circle pin at the bottom (part of the same piece) -->
-          <div style="
-                        width: 16px;
-                        height: 16px;
-                        background: #10B981;
-            border-radius: 50%;
-                        border: 2px solid white;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                        margin-top: -6px;
-            position: relative;
-                        z-index: 1;
-            "></div>
-        </div>
-      `;
-      
-                  // Position the marker so the green circle pin center aligns with the coordinates
-                  const pinSize = 16; // Green circle pin size (including border)
-                  const pointerHeight = 12; // Height of the pointer triangle
-                  const calloutHeight = 32; // Approximate callout box height
-                  const totalElementHeight = calloutHeight + pointerHeight + pinSize;
-                  const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
+                  // Handle card click - opens PropertyDetailsPanel
+                  const handleCardClick = () => {
+                    console.log('📍 Property title card clicked (from selectPropertyByAddress) - opening PropertyDetailsPanel');
+                    if (finalProperty) {
+                      if (finalLat !== null && finalLng !== null) {
+                        selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+                      }
+                      setSelectedProperty(finalProperty);
+                      setShowPropertyCard(true);
+                      setShowPropertyDetailsPanel(true);
+                      setIsExpanded(false);
+                      setShowFullDescription(false);
+                    }
+                  };
                   
-                  currentPropertyNameMarkerRef.current = new mapboxgl.Marker({
+                  // Render PropertyTitleCard component into marker element
+                  const root = createRoot(markerElement);
+                  root.render(
+                    <PropertyTitleCard
+                      property={finalProperty}
+                      onCardClick={handleCardClick}
+                    />
+                  );
+                  
+                  // Calculate offset for positioning (PropertyTitleCard without green pin)
+                  // Position the card so its bottom edge aligns with the property coordinates
+                  const cardHeight = 360; // Approximate card height (240px image + 120px details)
+                  
+                  // Anchor at bottom center so the bottom of the card aligns with coordinates
+                  const marker = new mapboxgl.Marker({
                     element: markerElement,
-                    anchor: 'center',
-                    offset: [0, -greenPinCenterOffset] // Offset to center green pin at coordinates
+                    anchor: 'bottom',
+                    offset: [0, 0]
                   })
                     .setLngLat([finalLng, finalLat])
-        .addTo(map.current);
+                    .addTo(map.current);
+                  
+                  currentPropertyNameMarkerRef.current = marker;
+                  storeMarkerCoordinates(marker, finalProperty?.id);
+                  
+                  // Zoom scaling disabled - card stays fixed size
+                  // setupMarkerZoomListener(marker);
+                  
+                  // Update state to show title card
+                  setShowPropertyTitleCard(true);
+                  setTitleCardPropertyId(finalProperty?.id?.toString() || null);
     }
     
-                // Jump to the selected property's location instantly (no animation)
-                if (map.current) {
-                  // Set zoom first, then calculate offset center (shift 80px to the left)
-                  map.current.setZoom(17.5);
-                  const offsetPixels = -80;
-                  const propertyPoint = map.current.project([finalLng, finalLat]);
-                  const offsetPoint: [number, number] = [propertyPoint.x + offsetPixels, propertyPoint.y];
-                  const offsetCenter = map.current.unproject(offsetPoint);
-                  
-                  map.current.setCenter([offsetCenter.lng, offsetCenter.lat]);
-                }
+                // REMOVED: Map centering logic - no longer centering on recent project click
               } else {
                 // Map not ready - set position from coordinates (will update when map loads)
                 setSelectedPropertyPosition({
@@ -2299,12 +2704,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   y: window.innerHeight / 2
                 });
                 
-                // Store for when map is ready
-                (window as any).__pendingMapUpdate = {
-                  property: finalProperty,
-                  lat: finalLat,
-                  lng: finalLng
-                };
+                // Store for when map is ready - ensure we use provided coordinates if available
+                // REMOVED: __pendingMapUpdate - no map centering
               }
               
               return; // Exit early - card is already displayed
@@ -2360,24 +2761,117 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       });
     }
     
-    // Determine final destination coordinates - prefer property coordinates, fallback to provided coordinates
-    if (property && property.latitude && property.longitude) {
-      finalLat = property.latitude;
-      finalLng = property.longitude;
-      finalProperty = property;
-      console.log('📍 Found property by address:', property.address);
-    } else if (coordinates && coordinates.lat && coordinates.lng) {
-      finalLat = coordinates.lat;
-      finalLng = coordinates.lng;
-      console.log('📍 Using provided coordinates:', coordinates);
+      // CRITICAL: Recent project coordinates = property pin location (user-set final selection from Create Property Card)
+      // NEVER use property.latitude/longitude from backend as these may be document-extracted coordinates
+      // The property pin location is where the user placed/confirmed the pin, not where documents say the property is
+      // Property pin location is the user-set location (geocoding_status: 'manual') - the final coordinates selected when user clicked Create Property Card
+      // ONLY use provided coordinates (property pin location) - never use property coordinates from backend
+      if (coordinates && coordinates.lat && coordinates.lng) {
+        finalLat = coordinates.lat;
+        finalLng = coordinates.lng;
+        console.log('✅ Using property pin location coordinates:', { lat: finalLat, lng: finalLng });
+      } else {
+        // No coordinates provided - don't center map
+        console.log('⚠️ No property pin location coordinates provided');
+        finalLat = null;
+        finalLng = null;
+      }
+      
+      if (property) {
+        finalProperty = property;
       }
     }
     
-      // If we have a final destination, proceed with selection and single fly
-      if (finalLat !== null && finalLng !== null) {
+    // CRITICAL: Jump directly to property pin location (just above the pin) - no animation, no default location logic
+    // Only center once per selection to prevent multiple jumps
+    if (finalLat !== null && finalLng !== null && map.current) {
+      const currentCoords = { lat: finalLat, lng: finalLng };
+      const hasCentered = hasCenteredMapRef.current && 
+        hasCenteredMapRef.current.lat === currentCoords.lat && 
+        hasCenteredMapRef.current.lng === currentCoords.lng;
+      
+      if (!hasCentered) {
+        console.log('📍 Jumping directly to property pin location (just above pin):', { lat: finalLat, lng: finalLng });
+        hasCenteredMapRef.current = currentCoords;
+        const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
         
-        // OPTIMIZATION: Only proceed if we have the actual full property data
-        // User explicitly doesn't want minimal objects - only show card when full data is available
+        // Jump directly to just above the pin - no animation, no transition (duration: 0 = instant)
+        hasJumpedToPropertyPinRef.current = true; // Flag to prevent default location from overriding
+        // Calculate offset to center the card and pin
+        const cardHeight = 360; // Approximate card height
+        const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
+        map.current.flyTo({
+          center: propertyPinCoordinates,
+          zoom: 17.5, // Consistent zoom level matching reference image proximity
+          duration: 0, // Instant jump - no animation
+          offset: [0, verticalOffset] // Center horizontally, offset down to center card and pin together
+        });
+        
+        // Reset flag after a short delay to allow default location logic to work normally later
+        setTimeout(() => {
+          hasJumpedToPropertyPinRef.current = false;
+        }, 1000);
+      }
+    }
+    
+    // If we have a final destination, proceed with selection and single fly
+    if (finalLat !== null && finalLng !== null) {
+        
+        // If property not found in loaded list, try to fetch it by ID
+        if (!finalProperty && propertyId && coordinates) {
+          // Try to fetch property by ID from backend
+          try {
+            console.log('🔍 Property not in loaded list, fetching by ID:', propertyId);
+            const propertyHubResponse = await backendApi.getPropertyHub(propertyId);
+            if (propertyHubResponse && propertyHubResponse.success && propertyHubResponse.data) {
+              const hub = propertyHubResponse.data;
+              const property = hub.property || {};
+              const propertyDetails = hub.property_details || {};
+              
+              // Transform to match expected format
+              finalProperty = {
+                id: property.id,
+                address: property.formatted_address || property.normalized_address || address,
+                postcode: '',
+                property_type: propertyDetails.property_type || '',
+                bedrooms: propertyDetails.number_bedrooms || 0,
+                bathrooms: propertyDetails.number_bathrooms || 0,
+                soldPrice: propertyDetails.sold_price || 0,
+                rentPcm: propertyDetails.rent_pcm || 0,
+                askingPrice: propertyDetails.asking_price || 0,
+                price: propertyDetails.sold_price || propertyDetails.rent_pcm || propertyDetails.asking_price || 0,
+                square_feet: propertyDetails.size_sqft || 0,
+                latitude: coordinates.lat,
+                longitude: coordinates.lng,
+                image: propertyDetails.primary_image_url || "/property-1.png",
+                propertyHub: hub
+              };
+              
+              console.log('✅ Fetched property by ID successfully');
+            }
+          } catch (error) {
+            console.warn('⚠️ Failed to fetch property by ID:', error);
+            // Continue to create minimal property if fetch fails
+          }
+        }
+        
+        // If still no property but we have coordinates, create minimal property object to show pin
+        if (!finalProperty && coordinates && coordinates.lat && coordinates.lng) {
+          console.log('📍 Creating minimal property object to show pin at coordinates');
+          finalProperty = {
+            id: propertyId || `temp-${Date.now()}`,
+            address: address || 'Property',
+            latitude: coordinates.lat,
+            longitude: coordinates.lng,
+            price: 0,
+            bedrooms: 0,
+            bathrooms: 0,
+            square_feet: 0,
+            image: "/property-1.png"
+          };
+        }
+        
+        // If we still don't have a property, retry or give up
         if (!finalProperty) {
           // Property not found yet - retry to find it before showing card
           const hasPreloadedProperties = preloadedProperties && preloadedProperties.length > 0;
@@ -2385,22 +2879,23 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           
           // OPTIMIZATION: If we have propertyId, only retry a few times (properties should load quickly)
           // If no propertyId, retry more times to wait for async loading
-          const maxRetries = propertyId ? 3 : 20; // Fewer retries if we have ID (should find it quickly)
+          const maxRetries = propertyId ? 5 : 20; // Slightly more retries for reliability
           if (retryCount < maxRetries) {
-            console.log('⚠️ Property not found yet, retrying...', {
-              retryCount,
-              maxRetries,
-              propertyId,
-              address,
-              totalProperties: allProperties.length,
-              hasPreloadedProperties,
-              hasPropertiesLoaded
-            });
+            // Only log if it's taking a while to avoid console spam
+            if (retryCount === 0 || retryCount % 2 === 0) {
+              console.log('⏳ Property not found yet, retrying...', {
+                retryCount,
+                maxRetries,
+                propertyId,
+                address,
+                totalProperties: allProperties.length
+              });
+            }
             
-            // Use exponential backoff - start fast, then slow down to wait for async loading
+            // Faster retries for snappier feel - start fast, stay fast
             const retryDelay = hasPropertiesLoaded 
-              ? 100  // Fast retry if properties are loaded
-              : Math.min(50 * (retryCount + 1), 300); // Exponential backoff, max 300ms
+              ? 50  // Very fast retry if properties are loaded
+              : Math.min(30 * (retryCount + 1), 150); // Faster exponential backoff, max 150ms
             
             setTimeout(() => {
               selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties);
@@ -2409,14 +2904,141 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           } else {
             // After retries, don't show card - user wants full data only
             console.log('❌ Property not found after retries - not showing card (full data required):', address);
-            // Keep pending selection for when properties finish loading
+            // Keep pending selection for when properties finish loading - CRITICAL: Preserve coordinates!
             (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
             return; // Don't show card without full property data
           }
         }
       
+      // Store pin coordinates for marker positioning
+      if (finalLat !== null && finalLng !== null) {
+        selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+      }
+      
+      // IMPORTANT: If property wasn't in loaded list, add it to the map source so the pin shows
+      // This MUST happen BEFORE we try to hide the base marker
+      // This ensures the base green pin is visible even if property wasn't in initial load
+      if (map.current && finalProperty && finalLat !== null && finalLng !== null) {
+        let source = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
+        
+        // Create source if it doesn't exist
+        if (!source) {
+          try {
+            map.current.addSource('properties', {
+              type: 'geojson',
+              data: { type: 'FeatureCollection', features: [] }
+            });
+            source = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
+            console.log('✅ Created properties source for property pin');
+            
+            // Also ensure layers exist
+            const layersToAdd = [
+              {
+                id: 'property-click-target',
+                type: 'circle' as const,
+                paint: {
+                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 20, 15, 25, 20, 30],
+                  'circle-color': 'transparent',
+                  'circle-stroke-width': 0
+                }
+              },
+              {
+                id: 'property-outer',
+                type: 'circle' as const,
+                paint: {
+                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 8, 15, 12, 20, 16],
+                  'circle-color': 'rgba(0, 0, 0, 0.08)',
+                  'circle-stroke-width': 0
+                }
+              },
+              {
+                id: 'property-markers',
+                type: 'circle' as const,
+                paint: {
+                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 6, 15, 8, 20, 10],
+                  'circle-color': '#10B981',
+                  'circle-stroke-width': 2,
+                  'circle-stroke-color': '#ffffff',
+                  'circle-opacity': 1.0
+                }
+              }
+            ];
+            
+            layersToAdd.forEach(layerConfig => {
+              if (!map.current.getLayer(layerConfig.id)) {
+                try {
+                  map.current.addLayer({
+                    id: layerConfig.id,
+                    type: layerConfig.type,
+                    source: 'properties',
+                    paint: layerConfig.paint as any
+                  });
+                } catch (error) {
+                  console.warn(`⚠️ Error adding layer ${layerConfig.id}:`, error);
+                }
+              }
+            });
+          } catch (error) {
+            console.warn('⚠️ Error creating properties source:', error);
+          }
+        }
+        
+        // Add property to source if it's not already there
+        if (source) {
+          try {
+            const currentData = source._data as GeoJSON.FeatureCollection;
+            const existingFeature = currentData.features.find(
+              (f: any) => f.properties.id === finalProperty.id || f.properties.id?.toString() === finalProperty.id?.toString()
+            );
+            
+            if (!existingFeature) {
+              // Property not in source - add it
+              const getPropertyName = (addr: string) => {
+                if (!addr) return '';
+                const parts = addr.split(',');
+                return parts[0]?.trim() || addr;
+              };
+              
+              const propertyName = getPropertyName(finalProperty.address);
+              const newFeature: GeoJSON.Feature = {
+                type: 'Feature',
+                geometry: {
+                  type: 'Point',
+                  coordinates: [finalLng, finalLat]
+                },
+                properties: {
+                  id: finalProperty.id,
+                  address: finalProperty.address,
+                  propertyName: propertyName || finalProperty.address,
+                  price: finalProperty.price || 0,
+                  bedrooms: finalProperty.bedrooms || 0,
+                  bathrooms: finalProperty.bathrooms || 0,
+                  squareFeet: finalProperty.square_feet || 0,
+                  type: finalProperty.type,
+                  condition: finalProperty.condition,
+                  features: finalProperty.features,
+                  summary: finalProperty.summary,
+                  image: finalProperty.image,
+                  agent: finalProperty.agent
+                }
+              };
+              
+              const updatedFeatures = [...currentData.features, newFeature];
+              source.setData({
+                type: 'FeatureCollection',
+                features: updatedFeatures
+              });
+              
+              console.log('✅ Added property to map source so pin will show');
+            }
+          } catch (error) {
+            console.warn('⚠️ Error adding property to map source:', error);
+          }
+          }
+        }
+      
       // Hide the base marker for this property by filtering it out (same as clicking a pin)
-      // Do this BEFORE setting the property state to prevent conflicts
+      // Do this AFTER adding to source so the filter works
       if (map.current.getLayer('property-markers')) {
         map.current.setFilter('property-markers', [
           '!=',
@@ -2434,18 +3056,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         ]);
       }
       
-      // Set the selected property and open details panel IMMEDIATELY
-      // This ensures the card is visible throughout the transition
-      console.log('✅ Setting selected property:', {
-        id: finalProperty.id,
-        address: finalProperty.address,
-        hasPropertyHub: !!finalProperty.propertyHub
-      });
+      // NEW: Two-step click logic - show title card instead of immediately opening PropertyDetailsPanel
+      // PropertyDetailsPanel will open when title card is clicked
+      // Only log on first attempt to reduce console noise
+      if (retryCount === 0) {
+        console.log('✅ Showing property title card:', {
+          id: finalProperty.id,
+          address: finalProperty.address
+        });
+      }
+      
+      // Don't open PropertyDetailsPanel immediately - title card will handle it
       setSelectedProperty(finalProperty);
-      setShowPropertyCard(true);
-      setShowPropertyDetailsPanel(true);
-      setIsExpanded(false);
-      setShowFullDescription(false);
       
       // Don't preload files here - let PropertyDetailsPanel load them lazily when needed
       // This prevents blocking the property card from rendering quickly
@@ -2469,121 +3091,148 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       const displayText = finalProperty.address || propertyName;
       
       // If marker already exists, just update its position instead of removing/recreating
-      if (currentPropertyNameMarkerRef.current && displayText && map.current) {
+      if (currentPropertyNameMarkerRef.current && map.current) {
         // Update existing marker position - no flicker!
         currentPropertyNameMarkerRef.current.setLngLat([finalLng, finalLat]);
-        console.log('📍 Updated existing property name marker position');
-      } else if (displayText && map.current) {
+        // Store marker coordinates - this is where the pin is located
+        storeMarkerCoordinates(currentPropertyNameMarkerRef.current, finalProperty?.id);
+        console.log('📍 Updated existing property title card marker position');
+      } else if (map.current) {
         // Only create new marker if one doesn't exist
+        // Create outer container div (Mapbox marker wrapper)
         const markerElement = document.createElement('div');
-        markerElement.className = 'property-name-marker';
+        markerElement.className = 'property-title-card-marker';
         markerElement.style.cssText = `
           position: relative;
           display: flex;
           flex-direction: column;
           align-items: center;
-          pointer-events: none;
+          pointer-events: none; /* Don't block map clicks - only card content will capture clicks */
         `;
         
-        markerElement.innerHTML = `
-          <div style="
+        // Create inner scalable container for the React component
+        // This is what we'll scale with zoom
+        const scalableContainer = document.createElement('div');
+        scalableContainer.className = 'property-title-card-scalable';
+        scalableContainer.style.cssText = `
             position: relative;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-          ">
-            <!-- Callout box with pointer extending down -->
-            <div style="
-              position: relative;
-              display: flex;
-              align-items: center;
-              background: white;
-              border-radius: 8px;
-              padding: 6px 10px;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              white-space: nowrap;
-              margin-bottom: 0;
-            ">
-              <!-- Black circle with orange pin icon -->
-              <div style="
-                width: 20px;
-                height: 20px;
-                background: #1a1a1a;
-                border-radius: 50%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                margin-right: 8px;
-                flex-shrink: 0;
-              ">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
-                </svg>
-              </div>
-              <!-- Address text -->
-              <span style="
-                font-size: 13px;
-                font-weight: 500;
-                color: #1a1a1a;
-                line-height: 1.2;
-              ">${displayText}</span>
-            </div>
-            <!-- Pointer extending down from callout to pin -->
-            <div style="
-              position: relative;
-              width: 0;
-              height: 0;
-              border-left: 8px solid transparent;
-              border-right: 8px solid transparent;
-              border-top: 12px solid white;
-              margin-top: -1px;
-              filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
-            "></div>
-            <!-- Green circle pin at the bottom -->
-            <div style="
-              width: 16px;
-              height: 16px;
-              background: #10B981;
-              border-radius: 50%;
-              border: 2px solid white;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-              margin-top: -6px;
-              position: relative;
-              z-index: 1;
-            "></div>
-          </div>
+          transform-origin: bottom center;
+          transition: none;
+          pointer-events: auto; /* Only the card content captures clicks */
+          user-select: text; /* Allow text selection */
+          -webkit-user-select: text; /* Safari */
         `;
+        markerElement.appendChild(scalableContainer);
         
-        const pinSize = 16;
-        const pointerHeight = 12;
-        const calloutHeight = 32;
-        const totalElementHeight = calloutHeight + pointerHeight + pinSize;
-        const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
+        // Store reference to scalable container for zoom updates
+        (markerElement as any).scalableContainer = scalableContainer;
         
+        // Disable map dragging when hovering over the card to allow text selection
+        // Attach to scalableContainer since it has pointer-events: auto
+        scalableContainer.addEventListener('mouseenter', () => {
+          if (map.current) {
+            map.current.dragPan.disable();
+          }
+        });
+        
+        scalableContainer.addEventListener('mouseleave', () => {
+          if (map.current) {
+            map.current.dragPan.enable();
+          }
+        });
+        
+        // Also prevent map drag on mousedown when selecting text
+        scalableContainer.addEventListener('mousedown', (e) => {
+          // Allow text selection - don't stop propagation
+          // The dragPan.disable() from mouseenter should handle preventing map drag
+        });
+        
+        // Handle card click - opens PropertyDetailsPanel
+        const handleCardClick = () => {
+          console.log('📍 Property title card clicked (from selectPropertyByAddress end) - opening PropertyDetailsPanel');
+          if (finalProperty) {
+            if (finalLat !== null && finalLng !== null) {
+              selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+            }
+            setSelectedProperty(finalProperty);
+            setShowPropertyCard(true);
+            setShowPropertyDetailsPanel(true);
+            setIsExpanded(false);
+            setShowFullDescription(false);
+          }
+        };
+        
+        // Render PropertyTitleCard component into scalable container
+        const root = createRoot(scalableContainer);
+        root.render(
+          <PropertyTitleCard
+            property={finalProperty}
+            onCardClick={handleCardClick}
+          />
+        );
+        
+        // No need for click listener - pointer-events handles it:
+        // markerElement has pointer-events: none (doesn't block map clicks)
+        // scalableContainer has pointer-events: auto (only card content captures clicks)
+        // Map click handler will detect clicks outside the card and deselect
+        
+        // Calculate offset for positioning (PropertyTitleCard without green pin)
+        // Position the card raised above the pin so it doesn't overlap
+        const cardHeight = 360; // Approximate card height (image + details, no pin/pointer)
+        const pinRadius = 10; // Approximate pin radius
+        const gapAbovePin = 20; // Gap between pin and card bottom
+        const verticalOffset = -(pinRadius + gapAbovePin); // Negative Y moves upward
+        
+        // Anchor at bottom center and raise card above the pin
         const marker = new mapboxgl.Marker({
           element: markerElement,
-          anchor: 'center',
-          offset: [0, -greenPinCenterOffset]
+          anchor: 'bottom',
+          offset: [0, verticalOffset] // Raise card above pin
         })
           .setLngLat([finalLng, finalLat])
           .addTo(map.current);
         
         currentPropertyNameMarkerRef.current = marker;
+        storeMarkerCoordinates(marker, finalProperty?.id);
+        
+        // Set up zoom listener - card stays fixed size when zoomed in, scales down when zoomed out
+        setupMarkerZoomListener(marker);
+        
+        // Make the base marker transparent (instead of hiding) so click target remains active
+        // IMPORTANT: property-click-target layer is separate from property-markers and remains fully functional
+        // The property-click-target layer is a map layer (not HTML), so it works even with HTML markers
+        // Since PropertyTitleCard's green pin has pointer-events: none, clicks on it pass through to the map layer
+        // This ensures clicks still work while only showing the PropertyTitleCard's green pin
+        if (map.current.getLayer('property-markers')) {
+          // Set selected property pin to green, others to white
+          map.current.setPaintProperty('property-markers', 'circle-color', [
+            'case',
+            ['==', ['get', 'id'], finalProperty.id],
+            '#FFE2B1', // Peach/beige for selected property
+            '#ffffff' // White for others
+          ]);
+          // Keep selected property visible (green pin) and others visible too
+          map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
+        }
+        // Note: property-click-target layer remains active and clickable - it's not affected by marker opacity
+        
+        // Hide the outer ring for selected property
+        if (map.current.getLayer('property-outer')) {
+          map.current.setFilter('property-outer', [
+            '!=',
+            ['get', 'id'],
+            finalProperty.id
+          ]);
+        }
+        
+        // Update state to show title card
+        setShowPropertyTitleCard(true);
+        setTitleCardPropertyId(finalProperty?.id?.toString() || null);
       }
       
-      // Jump to property location instantly (no animation) when selecting from recent projects
-      // This provides immediate, static view like the reference image
-      // Set zoom first, then calculate offset center (shift 80px to the left)
-      map.current.setZoom(17.5);
-      const offsetPixels = -80;
-      const propertyPoint = map.current.project([finalLng, finalLat]);
-      const offsetPoint: [number, number] = [propertyPoint.x + offsetPixels, propertyPoint.y];
-      const offsetCenter = map.current.unproject(offsetPoint);
-      
-      map.current.setCenter([offsetCenter.lng, offsetCenter.lat]);
       
       // Update property position immediately (no need to wait for animation)
+      // Note: Map centering already happened above when coordinates were first available
       if (finalProperty && map.current) {
         const positionPoint = map.current.project([finalLng, finalLat]);
         setSelectedPropertyPosition({
@@ -2594,6 +3243,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Ensure marker position is correct
         if (currentPropertyNameMarkerRef.current) {
           currentPropertyNameMarkerRef.current.setLngLat([finalLng, finalLat]);
+          // Store marker coordinates - this is where the pin is located
+          storeMarkerCoordinates(currentPropertyNameMarkerRef.current, finalProperty?.id);
         }
       }
     } else {
@@ -2632,9 +3283,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     // If map already exists, don't reinitialize
     if (map.current) {
-      // Just update visibility
+      // Always show map container when rendered (for background mode)
       if (mapContainer.current) {
-        mapContainer.current.style.display = isVisible ? 'block' : 'none';
+        mapContainer.current.style.display = 'block';
       }
       return;
     }
@@ -2683,212 +3334,117 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         zoom: defaultLocation.zoom
       };
       
-      // Create map with worldwide access (no bounds restriction)
-      // Hide map initially if not visible (we'll show it when needed)
+      // CRITICAL: Hide map container until map is initialized at default location
+      // This prevents any flash of Mapbox's default location (usually [0, 0] or somewhere else)
       if (mapContainer.current) {
-        mapContainer.current.style.display = isVisible ? 'block' : 'none';
+        mapContainer.current.style.display = 'none'; // Hide until properly initialized at default location
       }
       
+      // CRITICAL: Initialize map with default location immediately to prevent any default Mapbox location from showing
+      // This ensures the map always starts at the user's default location (or London fallback)
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: 'mapbox://styles/mapbox/light-v11', // Light style (no color) - default
-        center: defaultLocation.center,
-        zoom: defaultLocation.zoom,
+        center: defaultLocation.center, // Start at default location immediately - no Mapbox default
+        zoom: defaultLocation.zoom, // Start at default zoom immediately - no Mapbox default
         bearing: 15, // Slight rotation for better view
         pitch: 45, // 3D perspective angle
-        interactive: isVisible, // Only interactive when visible
+        interactive: isVisible && isInteractive, // Only interactive when visible and isInteractive is true
         // Removed maxBounds to allow worldwide navigation
         attributionControl: false // Hide the attribution control
+      });
+      
+      // Ensure map is at default location immediately (in case Mapbox applies its own default first)
+      // This prevents any flash of a different location
+      map.current.once('style.load', () => {
+        if (map.current) {
+          // Force map to default location to override any Mapbox default
+          map.current.jumpTo({
+            center: defaultLocation.center,
+            zoom: defaultLocation.zoom
+          });
+          
+          // Now show the map container (it's properly initialized at default location)
+          if (mapContainer.current) {
+            mapContainer.current.style.display = isVisible ? 'block' : 'none';
+          }
+        }
+      });
+      
+      // Also ensure map is shown when it loads (in case style.load fires before load event)
+      map.current.once('load', () => {
+        if (map.current && mapContainer.current) {
+          // Double-check map is at default location
+          const currentCenter = map.current.getCenter();
+          const currentZoom = map.current.getZoom();
+          const isAtDefault = 
+            Math.abs(currentCenter.lng - defaultLocation.center[0]) < 0.001 &&
+            Math.abs(currentCenter.lat - defaultLocation.center[1]) < 0.001 &&
+            Math.abs(currentZoom - defaultLocation.zoom) < 0.1;
+          
+          if (!isAtDefault) {
+            // Force to default location if not already there
+            map.current.jumpTo({
+              center: defaultLocation.center,
+              zoom: defaultLocation.zoom
+            });
+          }
+          
+          // Show map container now that it's properly initialized at default location
+          mapContainer.current.style.display = 'block';
+        }
       });
 
       // Wait for map to load
       map.current.on('load', () => {
         console.log('✅ Map loaded successfully');
-        loadProperties();
         
-        // OPTIMIZATION: If we have a pending map update (from instant cache display), apply it now
-        const pendingUpdate = (window as any).__pendingMapUpdate;
-        if (pendingUpdate && pendingUpdate.property) {
-          console.log('🔄 Applying pending map update for instant cache display');
-          const { property, lat, lng } = pendingUpdate;
-          
-          // Hide markers
-          if (map.current.getLayer('property-markers')) {
-            map.current.setFilter('property-markers', [
-              '!=',
-              ['get', 'id'],
-              property.id
-            ]);
-          }
-          if (map.current.getLayer('property-outer')) {
-            map.current.setFilter('property-outer', [
-              '!=',
-              ['get', 'id'],
-              property.id
-            ]);
-          }
-          
-          // Update position
-          if (lat && lng && map.current) {
-            const point = map.current.project([lng, lat]);
-            setSelectedPropertyPosition({
-              x: point.x,
-              y: point.y - 20
-            });
-            
-            // Create/update marker with styled callout (same as property pin click)
-            const getPropertyName = (addr: string) => {
-              if (!addr) return '';
-              const parts = addr.split(',');
-              return parts[0]?.trim() || addr;
-            };
-            
-            const propertyName = getPropertyName(property.address);
-            const displayText = property.address || propertyName;
-            
-            if (currentPropertyNameMarkerRef.current) {
-              // Update existing marker position and text
-              currentPropertyNameMarkerRef.current.setLngLat([lng, lat]);
-              const markerElement = currentPropertyNameMarkerRef.current.getElement();
-              const textElement = markerElement.querySelector('span');
-              if (textElement) {
-                textElement.textContent = displayText;
-              }
-            } else {
-              // Create new styled marker (same as property pin click)
-              const markerElement = document.createElement('div');
-              markerElement.className = 'property-name-marker';
-              markerElement.style.cssText = `
-                position: relative;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                pointer-events: none;
-              `;
-              
-              markerElement.innerHTML = `
-                <div style="
-                  position: relative;
-                  display: flex;
-                  flex-direction: column;
-                  align-items: center;
-                ">
-                  <!-- Callout box with pointer extending down -->
-                  <div style="
-                    position: relative;
-                    display: flex;
-                    align-items: center;
-                    background: white;
-                    border-radius: 8px;
-                    padding: 6px 10px;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    white-space: nowrap;
-                    margin-bottom: 0;
-                  ">
-                    <!-- Black circle with orange pin icon -->
-                    <div style="
-                      width: 20px;
-                      height: 20px;
-                      background: #1a1a1a;
-                      border-radius: 50%;
-                      display: flex;
-                      align-items: center;
-                      justify-content: center;
-                      margin-right: 8px;
-                      flex-shrink: 0;
-                    ">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
-                      </svg>
-                    </div>
-                    <!-- Address text -->
-                    <span style="
-                      font-size: 13px;
-                      font-weight: 500;
-                      color: #1a1a1a;
-                      line-height: 1.2;
-                    ">${displayText}</span>
-                  </div>
-                  <!-- Pointer extending down from callout to pin (one continuous piece) -->
-                  <div style="
-                    position: relative;
-                    width: 0;
-                    height: 0;
-                    border-left: 8px solid transparent;
-                    border-right: 8px solid transparent;
-                    border-top: 12px solid white;
-                    margin-top: -1px;
-                    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
-                  "></div>
-                  <!-- Green circle pin at the bottom (part of the same piece) -->
-                  <div style="
-                    width: 16px;
-                    height: 16px;
-                    background: #10B981;
-                    border-radius: 50%;
-                    border: 2px solid white;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                    margin-top: -6px;
-                    position: relative;
-                    z-index: 1;
-                  "></div>
-                </div>
-              `;
-              
-              // Position the marker so the green circle pin center aligns with the coordinates
-              const pinSize = 16; // Green circle pin size (including border)
-              const pointerHeight = 12; // Height of the pointer triangle
-              const calloutHeight = 32; // Approximate callout box height
-              const totalElementHeight = calloutHeight + pointerHeight + pinSize;
-              const greenPinCenterOffset = (totalElementHeight / 2) - (pinSize / 2);
-              
-              currentPropertyNameMarkerRef.current = new mapboxgl.Marker({
-                element: markerElement,
-                anchor: 'center',
-                offset: [0, -greenPinCenterOffset] // Offset to center green pin at coordinates
-              })
-                .setLngLat([lng, lat])
-                .addTo(map.current);
-            }
-            
-            // Jump to location instantly (no animation) when from recent project
+        // CRITICAL: Resize map on load to ensure proper sizing, especially for background mode
+        // This fixes the issue where map doesn't display correctly on first dashboard load
+        if (map.current) {
+          requestAnimationFrame(() => {
             if (map.current) {
-              // Set zoom first, then calculate offset center (shift 80px to the left)
-              map.current.setZoom(17.5);
-              const offsetPixels = -80;
-              const propertyPoint = map.current.project([lng, lat]);
-              const offsetPoint: [number, number] = [propertyPoint.x + offsetPixels, propertyPoint.y];
-              const offsetCenter = map.current.unproject(offsetPoint);
-              
-              map.current.setCenter([offsetCenter.lng, offsetCenter.lat]);
+              map.current.resize();
             }
-          }
-          
-          // Clear pending update
-          (window as any).__pendingMapUpdate = null;
+          });
         }
         
+        loadProperties();
+        
+        // REMOVED: __pendingMapUpdate logic - no map centering on recent project click
+        
         // Check for pending property selection (when map opens from recent project card)
+        // CRITICAL: Use property pin location coordinates (user-set) if available
         const pendingSelection = (window as any).__pendingPropertySelection;
         if (pendingSelection && pendingSelection.address) {
-          console.log('📍 Processing pending property selection:', pendingSelection);
+          console.log('📍 Processing pending property selection with pin location coordinates:', pendingSelection);
           // OPTIMIZATION: Reduced delay from 300ms to 10ms for faster response
           // The retry logic will handle waiting for properties to load
+          // Use property pin location coordinates (user-set) to center map on pin location
           setTimeout(() => {
             selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0);
           }, 10);
         }
         
-        // Ensure all interaction controls are enabled if map is visible
-        if (isVisible && map.current) {
-          map.current.scrollZoom.enable();
-          map.current.boxZoom.enable();
-          map.current.dragRotate.enable();
-          map.current.dragPan.enable();
-          map.current.keyboard.enable();
-          map.current.doubleClickZoom.enable();
-          map.current.touchZoomRotate.enable();
+        // Enable or disable interaction controls based on isInteractive prop
+        if (map.current) {
+          if (isVisible && isInteractive) {
+            map.current.scrollZoom.enable();
+            map.current.boxZoom.enable();
+            map.current.dragRotate.enable();
+            map.current.dragPan.enable();
+            map.current.keyboard.enable();
+            map.current.doubleClickZoom.enable();
+            map.current.touchZoomRotate.enable();
+          } else {
+            map.current.scrollZoom.disable();
+            map.current.boxZoom.disable();
+            map.current.dragRotate.disable();
+            map.current.dragPan.disable();
+            map.current.keyboard.disable();
+            map.current.doubleClickZoom.disable();
+            map.current.touchZoomRotate.disable();
+          }
         }
         
         console.log('✅ Mapbox map loaded successfully!');
@@ -2968,9 +3524,21 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             });
             
             // Ensure property name marker stays visible during map movement
-            // Update marker position if it exists
-            if (currentPropertyNameMarkerRef.current && selectedProperty.latitude && selectedProperty.longitude) {
-              currentPropertyNameMarkerRef.current.setLngLat([selectedProperty.longitude, selectedProperty.latitude]);
+            // Get coordinates directly from the marker - this is where the pin is located
+            if (currentPropertyNameMarkerRef.current) {
+              try {
+                const lngLat = currentPropertyNameMarkerRef.current.getLngLat();
+                if (lngLat) {
+                  // Update stored coordinates from marker
+                  selectedPropertyPinCoordsRef.current = { lat: lngLat.lat, lng: lngLat.lng };
+                }
+              } catch (e) {
+                // If we can't get marker coordinates, use stored pin coordinates
+                if (selectedPropertyPinCoordsRef.current) {
+                  const pinCoords = selectedPropertyPinCoordsRef.current;
+                  currentPropertyNameMarkerRef.current.setLngLat([pinCoords.lng, pinCoords.lat]);
+                }
+              }
             }
           }
         });
@@ -2996,33 +3564,63 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     // Cleanup only happens on component unmount (see separate useEffect below)
   }, []); // Run once on mount, not when isVisible changes
   
-  // Update map visibility and interactivity when isVisible changes
+  // Update map visibility and interactivity when isVisible or isInteractive changes
   useEffect(() => {
     if (map.current && mapContainer.current) {
-      // Show/hide map container
-      mapContainer.current.style.display = isVisible ? 'block' : 'none';
+      // Always show map container when rendered (for background mode)
+      mapContainer.current.style.display = 'block';
       
-      // Enable/disable map interactions
+      // Always resize map when it's visible (even if not interactive) to ensure proper sizing
+      // This fixes the issue where map doesn't display correctly on first dashboard load
       if (isVisible) {
         // OPTIMIZATION: Use requestAnimationFrame instead of setTimeout for immediate execution
         // This reduces delay from 100ms to <16ms (one frame)
         requestAnimationFrame(() => {
           if (map.current) {
             map.current.resize();
-            // Re-enable interactions
-            map.current.getCanvas().style.pointerEvents = 'auto';
-            // Explicitly enable all zoom and interaction controls
-            map.current.scrollZoom.enable();
-            map.current.boxZoom.enable();
-            map.current.dragRotate.enable();
-            map.current.dragPan.enable();
-            map.current.keyboard.enable();
-            map.current.doubleClickZoom.enable();
-            map.current.touchZoomRotate.enable();
+            
+            // Enable/disable interactions based on isInteractive
+            if (isInteractive) {
+              // Re-enable interactions - ensure map is fully interactive
+              if (map.current.getCanvas()) {
+                map.current.getCanvas().style.pointerEvents = 'auto';
+                map.current.getCanvas().style.cursor = 'grab';
+              }
+              // Explicitly enable all zoom and interaction controls
+              map.current.scrollZoom.enable();
+              map.current.boxZoom.enable();
+              map.current.dragRotate.enable();
+              map.current.dragPan.enable();
+              map.current.keyboard.enable();
+              map.current.doubleClickZoom.enable();
+              map.current.touchZoomRotate.enable();
+              // Force map to be interactive
+              if ((map.current as any).interactive !== undefined) {
+                (map.current as any).interactive = true;
+              }
+            } else {
+              // Disable interactions when not interactive (background mode)
+              if (map.current.getCanvas()) {
+                map.current.getCanvas().style.pointerEvents = 'none';
+                map.current.getCanvas().style.cursor = 'default';
+              }
+              // Explicitly disable all zoom and interaction controls
+              map.current.scrollZoom.disable();
+              map.current.boxZoom.disable();
+              map.current.dragRotate.disable();
+              map.current.dragPan.disable();
+              map.current.keyboard.disable();
+              map.current.doubleClickZoom.disable();
+              map.current.touchZoomRotate.disable();
+              // Force map to be non-interactive
+              if ((map.current as any).interactive !== undefined) {
+                (map.current as any).interactive = false;
+              }
+            }
           }
         });
       } else {
-        // Disable interactions when hidden
+        // Map is not visible - disable interactions
         if (map.current.getCanvas()) {
           map.current.getCanvas().style.pointerEvents = 'none';
         }
@@ -3038,7 +3636,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         }
       }
     }
-  }, [isVisible]);
+  }, [isVisible, isInteractive]);
   
   // Cleanup on unmount only
   useEffect(() => {
@@ -3105,7 +3703,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
 
       // If map is ready and visible, apply immediately
-      if (map.current && currentIsVisible) {
+      // BUT: Skip if we've just jumped to a property pin location (don't override property selection)
+      if (map.current && currentIsVisible && !hasJumpedToPropertyPinRef.current) {
         console.log('🗺️ SquareMap: Default location changed, updating map view immediately', newLocation);
         lastAppliedLocation.current = newLocation;
         map.current.flyTo({
@@ -3114,6 +3713,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           duration: 1000, // Smooth transition
           essential: true
         });
+      } else if (hasJumpedToPropertyPinRef.current) {
+        console.log('🗺️ SquareMap: Skipping default location change - just jumped to property pin');
       } else {
         // Store for later when map becomes visible
         console.log('🗺️ SquareMap: Map not ready or not visible, storing location change for later', {
@@ -3137,9 +3738,16 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   }, []); // Empty deps - listener stays attached, uses refs to access current values
 
   // Check localStorage and apply pending location when map becomes visible
+  // BUT: Skip if we've just jumped to a property pin location (don't override property selection)
   useEffect(() => {
     if (!isVisible || !map.current) {
       console.log('🗺️ SquareMap: Visibility check skipped', { isVisible, mapReady: !!map.current });
+      return;
+    }
+    
+    // Skip applying default location if we've just jumped to a property pin
+    if (hasJumpedToPropertyPinRef.current) {
+      console.log('🗺️ SquareMap: Skipping default location - just jumped to property pin');
       return;
     }
 
@@ -3279,15 +3887,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       <motion.div
         key="square-map-container"
         initial={{ opacity: 0 }}
-        animate={{ opacity: isVisible ? 1 : 0 }}
+        animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.3 }}
         style={{ 
-          display: isVisible ? 'block' : 'none',
-          pointerEvents: isVisible ? 'auto' : 'none',
+          display: 'block',
+          pointerEvents: isInteractive ? 'auto' : 'none',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: isInteractive ? 5 : 0, // Lower z-index than chat panels (30, 50)
           ...containerStyle
         }}
-          className="fixed inset-0 z-10"
+          className="fixed"
         >
           <div 
             ref={mapContainer} 
@@ -3297,7 +3912,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               height: '100vh',
               position: 'fixed',
               top: 0,
-              left: 0
+              left: 0,
+              right: 0,
+              bottom: 0
             }}
           />
           

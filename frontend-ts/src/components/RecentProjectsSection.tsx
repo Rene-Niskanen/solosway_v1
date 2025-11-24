@@ -8,7 +8,7 @@ interface ProjectData {
   projectType?: string;
   propertyAddress?: string;
   propertyId?: string; // Property ID for opening the property
-  propertyCoordinates?: { lat: number; lng: number }; // Property coordinates for map navigation
+  propertyCoordinates?: { lat: number; lng: number }; // Property pin location coordinates (user-set) for map navigation
   lastFile?: LastFile;
   documentCount?: number;
   lastOpened?: string;
@@ -88,7 +88,11 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
         const saved = localStorage.getItem('lastInteractedProperty');
         if (saved) {
           const property = JSON.parse(saved);
-          setLastProperty(property);
+          // Use the documentCount from localStorage (already calculated using correct logic in saveToRecentProjects)
+          setLastProperty({
+            ...property,
+            documentCount: property.documentCount || 0
+          });
           
           // OPTIMIZATION: Preload card summary for recent project
           // This ensures card data is ready before user clicks
@@ -114,40 +118,85 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
             if (shouldPreload) {
               // Preload in background - don't block UI
               import('../services/backendApi').then(({ backendApi }) => {
-                backendApi.getPropertyCardSummary(property.id, true)
-                  .then((response) => {
-                    if (response.success && response.data) {
-                      // Transform and cache the data
-                      const transformedData = {
-                        id: property.id,
-                        address: response.data.address || property.address,
-                        latitude: response.data.latitude || property.latitude,
-                        longitude: response.data.longitude || property.longitude,
-                        primary_image_url: response.data.primary_image_url,
-                        image: response.data.primary_image_url || property.primary_image_url,
-                        property_type: response.data.property_type,
-                        tenure: response.data.tenure,
-                        bedrooms: response.data.number_bedrooms || 0,
-                        bathrooms: response.data.number_bathrooms || 0,
-                        epc_rating: response.data.epc_rating,
-                        documentCount: response.data.document_count || property.documentCount || 0,
-                        rentPcm: response.data.rent_pcm || 0,
-                        soldPrice: response.data.sold_price || 0,
-                        askingPrice: response.data.asking_price || 0,
-                        summary: response.data.summary_text,
-                        notes: response.data.summary_text,
-                        transaction_date: response.data.last_transaction_date,
-                        yield_percentage: response.data.yield_percentage
-                      };
+                // Fetch both card summary and documents to get accurate count
+                Promise.all([
+                  backendApi.getPropertyCardSummary(property.id, true),
+                  backendApi.getPropertyHubDocuments(property.id).catch(() => ({ success: false, data: null }))
+                ]).then(([summaryResponse, documentsResponse]) => {
+                  if (summaryResponse.success && summaryResponse.data) {
+                    // Calculate document count using same logic as PropertyDetailsPanel
+                    // Priority: 1. documents.length, 2. propertyHub?.documents?.length, 3. document_count
+                    let docCount = 0;
+                    if (documentsResponse.success && documentsResponse.data) {
+                      // Parse documents response - same logic as PropertyDetailsPanel
+                      // Backend returns: { success: true, data: { documents: [...] } }
+                      // backendApi.fetchApi wraps it: { success: true, data: { success: true, data: { documents: [...] } } }
+                      let documentsToUse = null;
+                      if ((documentsResponse.data as any)?.data?.documents && Array.isArray((documentsResponse.data as any).data.documents)) {
+                        documentsToUse = (documentsResponse.data as any).data.documents;
+                      } else if ((documentsResponse.data as any)?.documents && Array.isArray((documentsResponse.data as any).documents)) {
+                        documentsToUse = (documentsResponse.data as any).documents;
+                      } else if (Array.isArray(documentsResponse.data)) {
+                        documentsToUse = documentsResponse.data;
+                      }
                       
-                      localStorage.setItem(cacheKey, JSON.stringify({
-                        data: transformedData,
-                        timestamp: Date.now(),
-                        cacheVersion: (response as any).cache_version || 1
-                      }));
-                      console.log('✅ Preloaded card summary for recent project:', property.address);
+                      if (documentsToUse && documentsToUse.length > 0) {
+                        docCount = documentsToUse.length;
+                      }
                     }
-                  })
+                    
+                    // Fall back to document_count from summary if no documents fetched
+                    if (docCount === 0) {
+                      docCount = summaryResponse.data.document_count || property.documentCount || 0;
+                    }
+                    
+                    // Transform and cache the data
+                    // CRITICAL: Recent projects use property pin location (final user-selected coordinates from Create Property Card), NOT backend document-extracted coordinates
+                    // The property pin location is where the user placed/confirmed the pin, not where documents say the property is
+                    // Only use coordinates if they represent user-set pin location (geocoding_status: 'manual')
+                    const geocodingStatus = summaryResponse.data.geocoding_status;
+                    const isPinLocation = geocodingStatus === 'manual';
+                    
+                    const transformedData = {
+                      id: property.id,
+                      address: summaryResponse.data.address || property.address,
+                      // Use pin coordinates from localStorage (property.latitude/longitude) - these are the user-set pin location
+                      // Only use backend coordinates if geocoding_status is 'manual' (pin location), never document-extracted coordinates
+                      latitude: property.latitude || (isPinLocation ? summaryResponse.data.latitude : null),
+                      longitude: property.longitude || (isPinLocation ? summaryResponse.data.longitude : null),
+                      geocoding_status: geocodingStatus, // Store geocoding_status to identify pin locations
+                      primary_image_url: summaryResponse.data.primary_image_url,
+                      image: summaryResponse.data.primary_image_url || property.primary_image_url,
+                      property_type: summaryResponse.data.property_type,
+                      tenure: summaryResponse.data.tenure,
+                      bedrooms: summaryResponse.data.number_bedrooms || 0,
+                      bathrooms: summaryResponse.data.number_bathrooms || 0,
+                      epc_rating: summaryResponse.data.epc_rating,
+                      documentCount: docCount,
+                      rentPcm: summaryResponse.data.rent_pcm || 0,
+                      soldPrice: summaryResponse.data.sold_price || 0,
+                      askingPrice: summaryResponse.data.asking_price || 0,
+                      summary: summaryResponse.data.summary_text,
+                      notes: summaryResponse.data.summary_text,
+                      transaction_date: summaryResponse.data.last_transaction_date,
+                      yield_percentage: summaryResponse.data.yield_percentage
+                    };
+                    
+                    localStorage.setItem(cacheKey, JSON.stringify({
+                      data: transformedData,
+                      timestamp: Date.now(),
+                      cacheVersion: (summaryResponse as any).cache_version || 1
+                    }));
+                    
+                    // Update lastProperty state with accurate count
+                    setLastProperty({
+                      ...property,
+                      documentCount: docCount
+                    });
+                    
+                    console.log('✅ Preloaded card summary for recent project:', property.address, `(${docCount} docs)`);
+                  }
+                })
                   .catch((error) => {
                     console.warn('Failed to preload card summary:', error);
                   });
@@ -192,15 +241,19 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     ];
 
     // Add last property if it exists
+    // CRITICAL: Include property pin location coordinates (user-set) from lastProperty
+    // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
     if (lastProperty && lastProperty.address) {
       allProjects.push({
         type: 'existing',
         projectType: 'Property', // Simple default
         propertyAddress: lastProperty.address,
         propertyId: lastProperty.id,
-        propertyCoordinates: lastProperty.latitude && lastProperty.longitude 
-          ? { lat: lastProperty.latitude, lng: lastProperty.longitude }
-          : undefined,
+        // Property pin location coordinates (user-set) - where the user placed/confirmed the pin
+        propertyCoordinates: (lastProperty.latitude && lastProperty.longitude) ? {
+          lat: lastProperty.latitude,
+          lng: lastProperty.longitude
+        } : undefined,
         documentCount: lastProperty.documentCount || 0,
         lastOpened: lastProperty.timestamp ? getTimeAgo(lastProperty.timestamp) : 'Recently',
         lastFile: lastProperty.primary_image_url ? {
@@ -307,6 +360,10 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
 
   const handleProjectClick = (propertyAddress?: string, coordinates?: { lat: number; lng: number }, propertyId?: string) => {
     if (!propertyAddress || !onOpenProperty) return;
+    // CRITICAL: Pass property pin location coordinates (user-set) to center map on pin location
+    // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
+    // Recent projects use property pin location (final user selection), NOT backend document-extracted coordinates
+    console.log('🖱️ Recent project clicked:', { propertyAddress, coordinates, propertyId });
     onOpenProperty(propertyAddress, coordinates, propertyId);
   };
 
@@ -314,10 +371,12 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     <div className="w-full flex justify-center" style={{ 
       paddingLeft: 'clamp(0.5rem, 2vw, 1rem)', 
       paddingRight: 'clamp(0.5rem, 2vw, 1rem)',
-      marginBottom: 'clamp(1rem, 6vh, 3rem)'
+      marginBottom: 'clamp(1rem, 6vh, 3rem)',
+      position: 'relative',
+      zIndex: 10 // Above background image
     }}>
       <div className="w-full" style={{ maxWidth: 'clamp(320px, 90vw, 1024px)' }}>
-        <div className="flex flex-nowrap justify-center overflow-hidden" style={{ gap: `${CARD_GAP}px` }}>
+        <div className="flex flex-nowrap justify-center overflow-visible" style={{ gap: `${CARD_GAP}px`, paddingBottom: '12px', paddingTop: '4px' }}>
           {visibleProjects.map((project, index) => {
             // Check if this is a blank placeholder card
             const isBlank = project.type === 'existing' && !project.propertyAddress;

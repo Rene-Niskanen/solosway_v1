@@ -31,8 +31,15 @@ def create_app():
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     # Session cookie configuration for cross-origin requests
-    app.config['SESSION_COOKIE_SAMESITE'] = 'None'
-    app.config['SESSION_COOKIE_SECURE'] = False  # Set to True if using HTTPS
+    # For localhost (HTTP), use Lax instead of None to avoid Secure requirement
+    # In production (HTTPS), use None with Secure=True
+    is_production = os.environ.get('FLASK_ENV') == 'production' or os.environ.get('ENVIRONMENT') == 'production'
+    if is_production:
+        app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+        app.config['SESSION_COOKIE_SECURE'] = True  # Required for SameSite=None
+    else:
+        app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Works for localhost without Secure
+        app.config['SESSION_COOKIE_SECURE'] = False
     app.config['SESSION_COOKIE_HTTPONLY'] = True
     app.config['PERMANENT_SESSION_LIFETIME'] = Config.PERMANENT_SESSION_LIFETIME
     
@@ -99,6 +106,32 @@ def create_app():
 
     from .admin import admin
     app.register_blueprint(admin, url_prefix='/')
+    
+    # Add error handler to ensure CORS headers on all error responses
+    # This catches exceptions that escape route-level error handling
+    @app.errorhandler(500)
+    def handle_500_error(e):
+        """Ensure CORS headers on 500 errors"""
+        from flask import request, jsonify
+        logger.error(f"500 error: {e}", exc_info=True)
+        
+        # Create error response
+        response = jsonify({
+            'success': False,
+            'error': str(e) if e else 'Internal server error'
+        })
+        
+        # Add CORS headers
+        try:
+            origin = request.headers.get('Origin', '*') if request else '*'
+        except:
+            origin = '*'
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        
+        return response, 500
 
 
     from .models import User, Document

@@ -17,38 +17,54 @@ export interface DashboardLayoutProps {
 const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
-  // Override body background when Dashboard component mounts
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+
+  // Load saved background on mount - check for custom uploaded background first
   React.useEffect(() => {
-    const originalBodyStyle = document.body.style.background;
-    const originalBodyBackgroundImage = document.body.style.backgroundImage;
-    const originalBodyBackgroundColor = document.body.style.backgroundColor;
-    const originalBodyAttachment = document.body.style.backgroundAttachment;
-    const originalBodyClass = document.body.className;
-    
-    // Set body to white background and remove gradient
-    document.body.style.background = '#ffffff';
-    document.body.style.backgroundImage = 'none';
-    document.body.style.backgroundColor = '#ffffff';
-    document.body.style.backgroundAttachment = 'scroll'; // Override fixed attachment
-    
-    // Also override html element
-    const htmlElement = document.documentElement;
-    const originalHtmlBackground = htmlElement.style.background;
-    const originalHtmlBackgroundColor = htmlElement.style.backgroundColor;
-    htmlElement.style.background = '#ffffff';
-    htmlElement.style.backgroundColor = '#ffffff';
-    
+    if (typeof window !== 'undefined') {
+      // Check for custom uploaded background (stored as data URL) - this is the default
+      const customBg = localStorage.getItem('customUploadedBackground');
+      if (customBg && customBg.startsWith('data:image')) {
+        setSelectedBackground(customBg);
+      } else {
+        const saved = localStorage.getItem('dashboardBackground');
+        if (saved) {
+          setSelectedBackground(saved);
+        }
+      }
+    }
+  }, []);
+
+  // Listen for background changes
+  React.useEffect(() => {
+    const handleBackgroundChange = (event: CustomEvent) => {
+      setSelectedBackground(event.detail.backgroundId);
+    };
+
+    window.addEventListener('backgroundChanged', handleBackgroundChange as EventListener);
     return () => {
-      // Restore original body background when component unmounts
-      document.body.style.background = originalBodyStyle;
-      document.body.style.backgroundImage = originalBodyBackgroundImage;
-      document.body.style.backgroundColor = originalBodyBackgroundColor;
-      document.body.style.backgroundAttachment = originalBodyAttachment;
-      document.body.className = originalBodyClass;
-      htmlElement.style.background = originalHtmlBackground;
-      htmlElement.style.backgroundColor = originalHtmlBackgroundColor;
+      window.removeEventListener('backgroundChanged', handleBackgroundChange as EventListener);
     };
   }, []);
+
+  // Get background image URL based on selected background
+  const getBackgroundImage = () => {
+    // Check if it's a custom uploaded background (data URL)
+    if (selectedBackground.startsWith('data:image')) {
+      return selectedBackground;
+    }
+
+    const backgroundMap: { [key: string]: string } = {
+      'background1': '/background1.png',
+      'background2': '/background2.png',
+      'background3': '/Background3.png',
+      'background4': '/Background4.png',
+      'background5': '/Background5.png',
+      'background6': '/Background6.png',
+      'velora-grass': '/VeloraGrassBackground.png',
+    };
+    return backgroundMap[selectedBackground] || '/Background5.png';
+  };
 
   const [currentView, setCurrentView] = React.useState<string>('search');
   const [isChatPanelOpen, setIsChatPanelOpen] = React.useState<boolean>(false);
@@ -61,8 +77,10 @@ const DashboardLayoutContent = ({
   const [previousChatData, setPreviousChatData] = React.useState<any>(null);
   const [resetTrigger, setResetTrigger] = React.useState<number>(0);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState<boolean>(false);
+  const [isSidebarExpanded, setIsSidebarExpanded] = React.useState<boolean>(false);
   const [wasChatPanelOpenBeforeCollapse, setWasChatPanelOpenBeforeCollapse] = React.useState<boolean>(false);
   const [homeClicked, setHomeClicked] = React.useState<boolean>(false);
+  const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   const { addChatToHistory, updateChatInHistory, getChatById } = useChatHistory();
 
   const handleViewChange = (viewId: string) => {
@@ -203,8 +221,9 @@ const DashboardLayoutContent = ({
       const newCollapsed = !prev;
       
       if (newCollapsed) {
-        // Collapsing sidebar - remember chat panel state
+        // Collapsing sidebar - remember chat panel state and reset expanded state
         setWasChatPanelOpenBeforeCollapse(isChatPanelOpen);
+        setIsSidebarExpanded(false); // Reset expanded state when collapsing
         // Close chat panel when collapsing
         setIsChatPanelOpen(false);
       } else {
@@ -221,6 +240,13 @@ const DashboardLayoutContent = ({
     // - setHomeClicked
     // - Any navigation logic
   }, [isChatPanelOpen, wasChatPanelOpenBeforeCollapse]);
+
+  const handleSidebarExpand = React.useCallback(() => {
+    // Toggle expanded state (only works when sidebar is not collapsed)
+    if (!isSidebarCollapsed) {
+      setIsSidebarExpanded(prev => !prev);
+    }
+  }, [isSidebarCollapsed]);
 
   const handleNewChat = React.useCallback(() => {
     setCurrentChatId(null);
@@ -260,9 +286,33 @@ const DashboardLayoutContent = ({
       initial={{ opacity: 0, scale: 0.98 }} 
       animate={{ opacity: 1, scale: 1 }} 
       transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }} 
-      className={`flex h-screen w-full overflow-hidden relative bg-white border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
-      style={{ backgroundColor: '#ffffff' }}
+      className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
+      style={{ backgroundColor: 'transparent' }}
     >
+      {/* Dashboard Background Image - Behind everything except search bar, logo, and recent projects */}
+      {/* Hide when map view is active */}
+      {!isMapVisible && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100vw',
+            height: '100vh',
+            backgroundImage: `url(${getBackgroundImage()})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+            backgroundAttachment: 'fixed',
+            filter: 'blur(8px)', // Sharper, more pronounced blur effect
+            WebkitFilter: 'blur(8px)', // Safari support
+            zIndex: 0, // Base layer - everything else should be above
+            pointerEvents: 'none' // Don't block interactions
+          }}
+        />
+      )}
       {/* Chat Return Notification */}
       <ChatReturnNotification
         isVisible={showChatNotification}
@@ -271,14 +321,42 @@ const DashboardLayoutContent = ({
         onDismiss={handleDismissNotification}
       />
       
-      {/* Chat Panel */}
-      <ChatPanel 
-        isOpen={isChatPanelOpen} 
-        onToggle={handleChatPanelToggle} 
-        onChatSelect={handleChatSelect} 
-        onNewChat={handleNewChat}
-        showChatHistory={true}
-      />
+      {/* Chat Panel - Only show when sidebar is NOT expanded (chat history shown in sidebar when expanded) */}
+      {!isSidebarExpanded && (
+        <ChatPanel 
+          isOpen={isChatPanelOpen} 
+          onToggle={handleChatPanelToggle} 
+          onChatSelect={handleChatSelect} 
+          onNewChat={handleNewChat}
+          showChatHistory={true}
+          isSmallSidebarMode={!isSidebarCollapsed && !isSidebarExpanded}
+          sidebarWidth={(() => {
+            // Calculate sidebar width based on state
+            // In small sidebar mode, position chat panel directly against sidebar (no toggle rail gap) to remove grey line
+            const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+            let sidebarWidth = 0;
+            
+            if (isSidebarCollapsed) {
+              sidebarWidth = 8; // w-2 = 8px
+            } else if (isSidebarExpanded) {
+              sidebarWidth = 320; // w-80 = 320px
+            } else {
+              // Normal state (small sidebar): position directly against sidebar to eliminate grey line
+              if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
+                sidebarWidth = 56; // lg:w-14 - no toggle rail gap
+              } else {
+                sidebarWidth = 40; // w-10 - no toggle rail gap
+              }
+            }
+            
+            // Only add toggle rail width when NOT in small sidebar mode
+            if (isSidebarCollapsed || isSidebarExpanded) {
+              return sidebarWidth + TOGGLE_RAIL_WIDTH;
+            }
+            return sidebarWidth;
+          })()}
+        />
+      )}
       
       {/* Sidebar - with higher z-index when map is visible */}
       <Sidebar 
@@ -287,8 +365,13 @@ const DashboardLayoutContent = ({
         isChatPanelOpen={isChatPanelOpen} 
         activeItem={currentView}
         isCollapsed={isSidebarCollapsed}
+        isExpanded={isSidebarExpanded}
         onToggle={handleSidebarToggle}
+        onExpand={handleSidebarExpand}
         onNavigate={handleViewChange}
+        onChatSelect={handleChatSelect}
+        onNewChat={handleNewChat}
+        isMapVisible={isMapVisible}
         onSignOut={() => {
           // Handle sign out
           console.log('Sign out clicked');
@@ -312,6 +395,7 @@ const DashboardLayoutContent = ({
         getSidebarState={() => isSidebarCollapsed}
         isSidebarCollapsed={isSidebarCollapsed}
         onSidebarToggle={handleSidebarToggle}
+        onMapVisibilityChange={setIsMapVisible}
       />
     </motion.div>
   );

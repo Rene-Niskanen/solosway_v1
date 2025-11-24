@@ -17,6 +17,7 @@ import time
 from .tasks import process_document_task
 from .services.deletion_service import DeletionService
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
 from uuid import UUID
 def _ensure_business_uuid():
@@ -255,142 +256,234 @@ def chat_completion():
             'error': str(e)
         }), 500
 
+# Add after_request handler for this blueprint to ensure CORS headers on all responses
+@views.after_request
+def add_cors_headers(response):
+    """Ensure CORS headers are added to all responses from this blueprint"""
+    # Only add if not already present (to avoid duplicates)
+    if 'Access-Control-Allow-Origin' not in response.headers:
+        origin = request.headers.get('Origin', '*')
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    return response
+
 @views.route('/api/llm/query/stream', methods=['POST', 'OPTIONS'])
 def query_documents_stream():
     """
     Streaming version of query_documents using Server-Sent Events (SSE).
     Streams LLM responses token-by-token in real-time.
     """
-    # Handle CORS preflight
+    logger.info("🔵 [STREAM] Received request to /api/llm/query/stream")
+    # Handle CORS preflight - MUST be first, before any other code
     if request.method == 'OPTIONS':
-        response = jsonify({})
+        try:
+            response = jsonify({})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            response.headers.add('Access-Control-Max-Age', '3600')
+            return response, 200
+        except Exception as e:
+            # Even if there's an error, return a valid OPTIONS response
+            logger.error(f"Error in OPTIONS handler: {e}")
+            response = jsonify({})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            return response, 200
+    
+    # Require login - only check after OPTIONS is handled
+    try:
+        if not current_user.is_authenticated:
+            response = jsonify({
+                'success': False,
+                'error': 'Authentication required'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            return response, 401
+    except (AttributeError, RuntimeError):
+        # current_user not available or not in request context
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
         response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
+        return response, 401
     
-    # Require login
-    if not current_user.is_authenticated:
-        return jsonify({
-            'success': False,
-            'error': 'Authentication required'
-        }), 401
-    
-    from flask import Response, stream_with_context
-    import json
-    import asyncio
-    import time
-    from backend.llm.graphs.main_graph import build_main_graph
-    from langchain_openai import ChatOpenAI
-    from backend.llm.config import config
-    
-    data = request.get_json()
-    query = data.get('query', '')
-    property_id = data.get('propertyId')
-    message_history = data.get('messageHistory', [])
-    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
-    
-    if not query:
-        return jsonify({
-            'success': False,
-            'error': 'Query is required'
-        }), 400
-    
-    def generate_stream():
-        """Generator function for SSE streaming"""
-        try:
-            # Get business_id
-            business_id = _ensure_business_uuid()
-            if not business_id:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
+    # Wrap everything in try-except to ensure CORS headers are always set
+    try:
+        logger.info("🔵 [STREAM] Starting request processing")
+        from flask import Response, stream_with_context
+        import json
+        import asyncio
+        import time
+        from backend.llm.graphs.main_graph import build_main_graph
+        from langchain_openai import ChatOpenAI
+        from backend.llm.config import config
+        
+        # Check API key configuration
+        logger.info(f"🔑 [STREAM] OpenAI API Key check: {'✅ Set' if config.openai_api_key else '❌ Missing'}")
+        logger.info(f"🔑 [STREAM] OpenAI Model: {config.openai_model}")
+        if not config.openai_api_key:
+            logger.error("❌ [STREAM] OpenAI API key is not configured!")
+        
+        data = request.get_json()
+        if data is None:
+            response = jsonify({
+                'success': False,
+                'error': 'Invalid or missing JSON in request body'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            return response, 400
+        
+        query = data.get('query', '')
+        property_id = data.get('propertyId')
+        message_history = data.get('messageHistory', [])
+        session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        
+        logger.info(f"🔵 [STREAM] Query: '{query[:50]}...', Property ID: {property_id}, Session: {session_id}")
+        
+        if not query:
+            response = jsonify({
+                'success': False,
+                'error': 'Query is required'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            return response, 400
+        
+        def generate_stream():
+            """Generator function for SSE streaming"""
+            logger.info("🟢 [STREAM] generate_stream() called")
+            # Always yield at least one chunk to ensure Response object is created
+            # This prevents Flask from returning an error response without CORS headers
+            try:
+                logger.info("🟢 [STREAM] Getting business_id...")
+                # Get business_id
+                business_id = _ensure_business_uuid()
+                logger.info(f"🟢 [STREAM] Business ID: {business_id}")
+                if not business_id:
+                    logger.error("❌ [STREAM] No business_id found")
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'User not associated with a business'})}\n\n"
+                    return
+            except Exception as early_error:
+                # If error occurs before first yield, yield error immediately
+                logger.error(f"❌ [STREAM] Early error in generate_stream: {early_error}")
+                import traceback
+                logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
+                traceback.print_exc()
+                yield f"data: {json.dumps({'type': 'error', 'message': str(early_error)})}\n\n"
                 return
             
-            # Get document_id from property_id if provided
-            document_id = None
-            if property_id:
-                try:
-                    supabase = get_supabase_client()
-                    result = supabase.table('document_relationships')\
-                        .select('document_id')\
-                        .eq('property_id', property_id)\
-                        .limit(1)\
-                        .execute()
-                    if result.data and len(result.data) > 0:
-                        document_id = result.data[0]['document_id']
-                except Exception as e:
-                    logger.warning(f"Could not find document for property {property_id}: {e}")
-            
-            # Convert message history
-            conversation_history = []
-            for msg in message_history:
-                conversation_history.append({
-                    'role': msg.get('role', 'user'),
-                    'content': msg.get('content', '')
-                })
-            
-            # Build initial state
-            initial_state = {
-                "user_query": query,
-                "query_intent": None,
-                "relevant_documents": [],
-                "document_outputs": [],
-                "final_summary": "",
-                "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
-                "business_id": business_id,
-                "session_id": session_id,
-                "conversation_history": conversation_history,
-                "property_id": property_id
-            }
-            
-            # Send initial status
-            yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
-            
-            async def run_and_stream():
-                """Run LangGraph and stream the final summary"""
-                try:
-                    # Build graph (without checkpointer for streaming)
-                    graph = await build_main_graph(use_checkpointer=False)
-                    config_dict = {"configurable": {"thread_id": session_id}}
-                    
-                    # Run graph to get document outputs
-                    result = await graph.ainvoke(initial_state, config_dict)
-                    
-                    doc_outputs = result.get('document_outputs', [])
-                    relevant_docs = result.get('relevant_documents', [])
-                    
-                    # Send document count
-                    yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"
-                    
-                    if not doc_outputs:
-                        yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
-                        return
-                    
-                    # Stream the summary generation using OpenAI streaming
-                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
-                    
-                    # Build summary prompt (same as summarize_results node)
-                    from backend.llm.nodes.summary_nodes import summarize_results
-                    # Get the prompt from the summarize function logic
-                    formatted_outputs = []
-                    for idx, output in enumerate(doc_outputs):
-                        doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
-                        filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
-                        prop_id = output.get('property_id') or 'Unknown'
-                        address = output.get('property_address', f"Property {prop_id[:8]}")
-                        page_info = output.get('page_range', 'multiple pages')
+            try:
+                logger.info("🟢 [STREAM] Building initial state...")
+                # Get document_id from property_id if provided
+                document_id = None
+                if property_id:
+                    try:
+                        logger.info(f"🟢 [STREAM] Looking for document for property {property_id}")
+                        supabase = get_supabase_client()
+                        result = supabase.table('document_relationships')\
+                            .select('document_id')\
+                            .eq('property_id', property_id)\
+                            .limit(1)\
+                            .execute()
+                        if result.data and len(result.data) > 0:
+                            document_id = result.data[0]['document_id']
+                            logger.info(f"🟢 [STREAM] Found document_id: {document_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
+                
+                # Convert message history
+                conversation_history = []
+                for msg in message_history:
+                    conversation_history.append({
+                        'role': msg.get('role', 'user'),
+                        'content': msg.get('content', '')
+                    })
+                logger.info(f"🟢 [STREAM] Conversation history length: {len(conversation_history)}")
+                
+                # Build initial state
+                initial_state = {
+                    "user_query": query,
+                    "query_intent": None,
+                    "relevant_documents": [],
+                    "document_outputs": [],
+                    "final_summary": "",
+                    "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
+                    "business_id": business_id,
+                    "session_id": session_id,
+                    "conversation_history": conversation_history,
+                    "property_id": property_id
+                }
+                logger.info(f"🟢 [STREAM] Initial state built: query='{query[:30]}...', business_id={business_id}")
+                
+                # Send initial status
+                logger.info("🟢 [STREAM] Yielding initial status message")
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
+                
+                async def run_and_stream():
+                    """Run LangGraph and stream the final summary"""
+                    try:
+                        logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        # Build graph (without checkpointer for streaming)
+                        logger.info("🟡 [STREAM] Building main graph...")
+                        graph = await build_main_graph(use_checkpointer=False)
+                        logger.info("🟡 [STREAM] Graph built successfully")
+                        config_dict = {"configurable": {"thread_id": session_id}}
                         
-                        header = f"\n### {doc_type}: {filename}\n"
-                        header += f"Property: {address}\n"
-                        header += f"Pages: {page_info}\n"
-                        header += f"---------------------------------------------\n"
+                        # Run graph to get document outputs
+                        logger.info("🟡 [STREAM] Invoking graph with initial state...")
+                        result = await graph.ainvoke(initial_state, config_dict)
+                        logger.info("🟡 [STREAM] Graph invocation completed")
                         
-                        formatted_outputs.append(header + output.get('output', ''))
-                    
-                    formatted_outputs_str = "\n".join(formatted_outputs)
-                    
-                    prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
+                        doc_outputs = result.get('document_outputs', [])
+                        relevant_docs = result.get('relevant_documents', [])
+                        
+                        # Send document count
+                        yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"
+                        
+                        if not doc_outputs:
+                            yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                            return
+                        
+                        # Stream the summary generation using OpenAI streaming
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
+                        
+                        # Build summary prompt (same as summarize_results node)
+                        from backend.llm.nodes.summary_nodes import summarize_results
+                        # Get the prompt from the summarize function logic
+                        formatted_outputs = []
+                        for idx, output in enumerate(doc_outputs):
+                            doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
+                            filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
+                            prop_id = output.get('property_id') or 'Unknown'
+                            address = output.get('property_address', f"Property {prop_id[:8]}")
+                            page_info = output.get('page_range', 'multiple pages')
+                            
+                            header = f"\n### {doc_type}: {filename}\n"
+                            header += f"Property: {address}\n"
+                            header += f"Pages: {page_info}\n"
+                            header += f"---------------------------------------------\n"
+                            
+                            formatted_outputs.append(header + output.get('output', ''))
+                        
+                        formatted_outputs_str = "\n".join(formatted_outputs)
+                        
+                        prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
 
 CONTEXT
 
@@ -433,73 +526,192 @@ TONE
 Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
 
 Now provide your response (answer directly, no heading, no additional context):"""
-                    
-                    # Use streaming LLM
-                    llm = ChatOpenAI(
-                        api_key=config.openai_api_key,
-                        model=config.openai_model,
-                        temperature=0,
-                        streaming=True,  # Enable streaming
-                    )
-                    
-                    # Stream tokens
-                    full_summary = ""
-                    for chunk in llm.stream(prompt):
-                        if chunk.content:
-                            token = chunk.content
-                            full_summary += token
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-                    
-                    # Send complete message with metadata
-                    complete_data = {
-                        'type': 'complete',
-                        'data': {
-                            'summary': full_summary.strip(),
-                            'relevant_documents': relevant_docs,
-                            'document_outputs': doc_outputs,
-                            'session_id': session_id
+                        
+                        # Use streaming LLM
+                        logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
+                        logger.info(f"🟡 [STREAM] API Key present: {bool(config.openai_api_key)}")
+                        logger.info(f"🟡 [STREAM] Model: {config.openai_model}")
+                        llm = ChatOpenAI(
+                            api_key=config.openai_api_key,
+                            model=config.openai_model,
+                            temperature=0,
+                            streaming=True,  # Enable streaming
+                        )
+                        logger.info("🟡 [STREAM] ChatOpenAI instance created, starting to stream...")
+                        
+                        # Stream tokens
+                        full_summary = ""
+                        chunk_count = 0
+                        for chunk in llm.stream(prompt):
+                            chunk_count += 1
+                            if chunk_count == 1:
+                                logger.info("🟡 [STREAM] First chunk received from LLM")
+                            if chunk.content:
+                                token = chunk.content
+                                full_summary += token
+                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                        
+                        # Send complete message with metadata
+                        complete_data = {
+                            'type': 'complete',
+                            'data': {
+                                'summary': full_summary.strip(),
+                                'relevant_documents': relevant_docs,
+                                'document_outputs': doc_outputs,
+                                'session_id': session_id
+                            }
                         }
-                    }
-                    yield f"data: {json.dumps(complete_data)}\n\n"
+                        yield f"data: {json.dumps(complete_data)}\n\n"
                     
-                except Exception as e:
-                    logger.error(f"Error in run_and_stream: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error in run_and_stream: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             
-            # Run async stream
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                async_gen = run_and_stream()
+                # Run async stream
+                # Note: run_and_stream() is an async generator, so we need to consume it properly
+                # Use a thread-safe approach to run async code from sync generator
+                import concurrent.futures
+                import threading
+                
+                # Create a queue to pass chunks from async to sync
+                from queue import Queue
+                chunk_queue = Queue()
+                error_occurred = threading.Event()
+                error_message = [None]
+                
+                def run_async_gen():
+                    """Run the async generator in a separate thread with its own event loop"""
+                    try:
+                        logger.info("🟠 [STREAM] run_async_gen() thread started")
+                        # Create new event loop for this thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        logger.info("🟠 [STREAM] New event loop created")
+                        
+                        async def consume_async_gen():
+                            try:
+                                logger.info("🟠 [STREAM] consume_async_gen() started")
+                                async_gen = run_and_stream()
+                                logger.info("🟠 [STREAM] Async generator created, starting to consume...")
+                                chunk_count = 0
+                                async for chunk in async_gen:
+                                    chunk_count += 1
+                                    if chunk_count == 1:
+                                        logger.info("🟠 [STREAM] First chunk received from async generator")
+                                    chunk_queue.put(('chunk', chunk))
+                                logger.info(f"🟠 [STREAM] Async generator completed, received {chunk_count} chunks")
+                                chunk_queue.put(('done', None))
+                            except Exception as e:
+                                logger.error(f"❌ [STREAM] Error in async generator: {e}")
+                                import traceback
+                                logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
+                                traceback.print_exc()
+                                error_message[0] = str(e)
+                                error_occurred.set()
+                                chunk_queue.put(('error', str(e)))
+                        
+                        logger.info("🟠 [STREAM] Running async generator in event loop...")
+                        new_loop.run_until_complete(consume_async_gen())
+                        logger.info("🟠 [STREAM] Event loop completed")
+                        new_loop.close()
+                    except Exception as e:
+                        logger.error(f"❌ [STREAM] Error in async thread: {e}")
+                        import traceback
+                        logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
+                        traceback.print_exc()
+                        error_message[0] = str(e)
+                        error_occurred.set()
+                        chunk_queue.put(('error', str(e)))
+                
+                # Start async generator in background thread
+                thread = threading.Thread(target=run_async_gen, daemon=True)
+                thread.start()
+                
+                # Yield chunks as they arrive from the async generator
                 while True:
                     try:
-                        chunk = loop.run_until_complete(async_gen.__anext__())
-                        yield chunk
-                    except StopAsyncIteration:
+                        # Wait for chunk with timeout to allow checking thread status
+                        try:
+                            item_type, item_data = chunk_queue.get(timeout=0.1)
+                        except:
+                            # Check if thread is still alive
+                            if not thread.is_alive() and chunk_queue.empty():
+                                if error_occurred.is_set():
+                                    yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                                break
+                            continue
+                        
+                        if item_type == 'chunk':
+                            yield item_data
+                        elif item_type == 'done':
+                            break
+                        elif item_type == 'error':
+                            yield f"data: {json.dumps({'type': 'error', 'message': item_data})}\n\n"
+                            break
+                    except Exception as e:
+                        logger.error(f"Error consuming stream chunks: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
                         break
-            finally:
-                loop.close()
-                
-        except Exception as e:
-            logger.error(f"Error in generate_stream: {e}")
+            except Exception as e:
+                logger.error(f"❌ [STREAM] Error in generate_stream: {e}")
+                import traceback
+                logger.error(f"❌ [STREAM] Full traceback: {traceback.format_exc()}")
+                traceback.print_exc()
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        # Return SSE response with proper CORS headers
+        # Note: generate_stream() already has internal error handling that yields error messages
+        try:
+            logger.info("🔵 [STREAM] Creating Response object with stream...")
+            response = Response(
+                stream_with_context(generate_stream()),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'X-Accel-Buffering': 'no',  # Disable nginx buffering
+                    'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
+                    'Access-Control-Allow-Credentials': 'true',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                }
+            )
+            logger.info("🔵 [STREAM] Response object created successfully, returning...")
+            return response
+        except Exception as response_error:
+            # If Response creation fails, return error with CORS headers
+            logger.error(f"❌ [STREAM] Error creating streaming response: {response_error}")
             import traceback
+            logger.error(f"❌ [STREAM] Response creation traceback: {traceback.format_exc()}")
             traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-    
-    # Return SSE response
-    response = Response(
-        stream_with_context(generate_stream()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no',  # Disable nginx buffering
-            'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
-            'Access-Control-Allow-Credentials': 'true',
-        }
-    )
-    return response
+            error_response = jsonify({
+                'success': False,
+                'error': f'Failed to create streaming response: {str(response_error)}'
+            })
+            error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            error_response.headers.add('Access-Control-Allow-Credentials', 'true')
+            error_response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            error_response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            return error_response, 500
+    except Exception as e:
+        # Catch any errors and return with CORS headers
+        logger.error(f"❌ [STREAM] Outer exception in query_documents_stream: {e}")
+        import traceback
+        logger.error(f"❌ [STREAM] Full traceback: {traceback.format_exc()}")
+        traceback.print_exc()
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        # Ensure all CORS headers are present for error responses
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 500
 
 @views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
 def query_documents():
@@ -540,6 +752,17 @@ def query_documents():
     from backend.llm.graphs.main_graph import build_main_graph
     
     data = request.get_json()
+    if data is None:
+        response = jsonify({
+            'success': False,
+            'error': 'Invalid or missing JSON in request body'
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 400
+    
     query = data.get('query', '')
     property_id = data.get('propertyId')  # From property attachment
     message_history = data.get('messageHistory', [])
@@ -1618,14 +1841,23 @@ def proxy_upload():
                 try:
                     # Delete existing cache entry - it will be regenerated on next card view
                     try:
-                        cache_entry = PropertyCardCache.query.filter_by(property_id=new_document.property_id).first()
+                        cache_entry = db.session.query(PropertyCardCache).filter_by(property_id=new_document.property_id).first()
                         if cache_entry:
                             db.session.delete(cache_entry)
                             db.session.commit()
                             logger.info(f"Invalidated property card cache for property {new_document.property_id}")
-                    except Exception as cache_error:
+                    except (OperationalError, ProgrammingError, DatabaseError) as cache_error:
                         # Cache table doesn't exist - skip cache invalidation
-                        logger.debug(f"Cache invalidation skipped (table may not exist): {cache_error}")
+                        error_str = str(cache_error)
+                        if 'property_card_cache' in error_str.lower() or 'does not exist' in error_str.lower() or 'undefinedtable' in error_str.lower():
+                            logger.debug(f"Cache table not available, skipping cache invalidation: {cache_error}")
+                        else:
+                            logger.debug(f"Cache query failed during document processing: {cache_error}")
+                        db.session.rollback()
+                    except Exception as cache_error:
+                        # Catch any other unexpected errors
+                        logger.debug(f"Cache invalidation skipped (unexpected error): {cache_error}")
+                        db.session.rollback()
                     # Note: Cache will be automatically regenerated when card is next viewed
                 except Exception as cache_error:
                     logger.warning(f"Failed to invalidate property card cache: {cache_error}")
@@ -2788,8 +3020,11 @@ def get_all_property_hubs():
         # Get query parameters
         limit = request.args.get('limit', 100, type=int)
         offset = request.args.get('offset', 0, type=int)
-        sort_by = request.args.get('sort_by', 'created_at')  # created_at, completeness_score, address
+        sort_by = request.args.get('sort_by', 'created_at')  # created_at, completeness_score, formatted_address
         sort_order = request.args.get('sort_order', 'desc')  # asc, desc
+        
+        # Log sorting parameters for debugging
+        logger.info(f"📊 Property hubs request - sort_by: {sort_by}, sort_order: {sort_order}, limit: {limit}, offset: {offset}")
         
         # Track performance
         start_time = time.time()
@@ -2802,7 +3037,9 @@ def get_all_property_hubs():
         property_hubs = optimized_service.get_all_property_hubs_optimized(
             business_uuid_str,
             limit=limit,
-            offset=offset
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order
         )
         
         # Calculate pagination info
@@ -2992,6 +3229,7 @@ def get_property_card_summary(property_id):
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
     
     """Get property card summary data (everything needed for card display, no documents)"""
+    # Wrap entire function in try-except to catch any database errors
     try:
         from .services.supabase_client_factory import get_supabase_client
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3008,10 +3246,13 @@ def get_property_card_summary(property_id):
         property_id_str = str(property_id)
         
         # Check cache first if requested (now default behavior)
-        # Gracefully handle missing cache table
+        # Gracefully handle missing cache table - use db.session.execute with error handling
+        cache_entry = None
         if use_cache:
             try:
-                cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
+                # Use db.session.query() for better error handling
+                # Wrap in try-except to catch any database errors
+                cache_entry = db.session.query(PropertyCardCache).filter_by(property_id=property_id).first()
                 if cache_entry:
                     return jsonify({
                         'success': True,
@@ -3021,9 +3262,41 @@ def get_property_card_summary(property_id):
                         'updated_at': cache_entry.updated_at.isoformat() if cache_entry.updated_at else None
                     }), 200
             except Exception as cache_error:
-                # Cache table doesn't exist or other cache error - continue without cache
-                logger.debug(f"Cache lookup failed (table may not exist): {cache_error}")
-                pass
+                # Catch ALL exceptions - psycopg2 errors, SQLAlchemy errors, etc.
+                # This ensures we never fail the request due to missing cache table
+                error_str = str(cache_error).lower()
+                error_type = type(cache_error).__name__.lower()
+                
+                # Check if it's a table-not-exist error (multiple patterns)
+                is_table_missing = (
+                    'property_card_cache' in error_str or 
+                    'does not exist' in error_str or 
+                    'undefinedtable' in error_str or
+                    ('relation' in error_str and 'does not exist' in error_str) or
+                    'programmingerror' in error_type or
+                    'operationalerror' in error_type or
+                    'databaseerror' in error_type or
+                    'psycopg2' in error_type
+                )
+                
+                if is_table_missing:
+                    # Table doesn't exist - this is expected in some environments
+                    # Log at debug level and disable cache for this request
+                    logger.debug(f"Cache table not available (expected): {type(cache_error).__name__}")
+                    use_cache = False  # Disable cache for rest of this request
+                else:
+                    # Other cache error - log but continue
+                    logger.debug(f"Cache lookup failed: {type(cache_error).__name__}: {str(cache_error)[:200]}")
+                
+                # Rollback any partial transaction
+                try:
+                    db.session.rollback()
+                except:
+                    pass
+                
+                cache_entry = None  # Ensure it's None if query failed
+                # Continue to fetch data without cache - don't raise the exception
+                pass  # Explicitly do nothing - just continue
         
         supabase = get_supabase_client()
         
@@ -3032,7 +3305,7 @@ def get_property_card_summary(property_id):
         def fetch_property():
             return (
                 supabase.table('properties')
-                .select('id, formatted_address, latitude, longitude')
+                .select('id, formatted_address, latitude, longitude, geocoding_status')
                 .eq('id', property_id_str)
                 .eq('business_uuid', business_uuid_str)
                 .execute()
@@ -3091,11 +3364,13 @@ def get_property_card_summary(property_id):
             yield_percentage = round((annual_rent / price) * 100, 1)
         
         # Build card summary data
+        # geocoding_status: 'manual' indicates user-set pin location (final coordinates from Create Property Card confirmation)
         card_data = {
             'id': property_data.get('id'),
             'address': property_data.get('formatted_address', ''),
             'latitude': property_data.get('latitude'),
             'longitude': property_data.get('longitude'),
+            'geocoding_status': property_data.get('geocoding_status'),  # Include geocoding_status to identify user-set pin locations
             'primary_image_url': primary_image_url,
             'property_type': property_details.get('property_type'),
             'tenure': property_details.get('tenure'),
@@ -3119,12 +3394,19 @@ def get_property_card_summary(property_id):
             should_update_cache = False
             
             try:
-                cache_entry = PropertyCardCache.query.filter_by(property_id=property_id).first()
-            except Exception as query_error:
-                # If query fails, cache_entry remains None
-                logger.debug(f"Cache query failed (table may not exist): {query_error}")
+                cache_entry = db.session.query(PropertyCardCache).filter_by(property_id=property_id).first()
+            except (OperationalError, ProgrammingError, DatabaseError) as query_error:
+                # If query fails due to missing table or database error, cache_entry remains None
+                error_str = str(query_error)
+                if 'property_card_cache' in error_str.lower() or 'does not exist' in error_str.lower() or 'undefinedtable' in error_str.lower():
+                    logger.debug(f"Cache table not available (expected in some environments): {query_error}")
+                else:
+                    logger.debug(f"Cache query failed (database error): {query_error}")
                 cache_entry = None
-            
+            except Exception as query_error:
+                # Catch any other unexpected errors
+                logger.debug(f"Cache query failed (unexpected error): {query_error}")
+                cache_entry = None
             if cache_entry:
                 # Compare existing cache with new data to avoid unnecessary writes
                 existing_data = cache_entry.card_data
@@ -3174,7 +3456,131 @@ def get_property_card_summary(property_id):
         }), 200
         
     except Exception as e:
-        logger.error(f"Error getting property card summary {property_id}: {e}")
+        # Check if this is a cache-related error that we should handle gracefully
+        error_str = str(e).lower()
+        error_type = type(e).__name__.lower()
+        is_cache_error = (
+            'property_card_cache' in error_str or 
+            'does not exist' in error_str or 
+            'undefinedtable' in error_str or
+            ('relation' in error_str and 'does not exist' in error_str) or
+            'programmingerror' in error_type or
+            'operationalerror' in error_type
+        )
+        
+        if is_cache_error:
+            # Cache error - log at debug level and continue without cache
+            logger.debug(f"Cache error in property card summary (non-fatal): {type(e).__name__}")
+            # Try to return data without cache - but we need to fetch it first
+            # For now, return a generic error but don't log as critical
+            return jsonify({
+                'success': False,
+                'error': 'Cache unavailable, please try again',
+                'cache_error': True
+            }), 503  # Service Unavailable, not 500 Internal Server Error
+        else:
+            # Real error - log and return 500
+            logger.error(f"Error getting property card summary {property_id}: {e}")
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+
+@views.route('/api/properties/<uuid:property_id>/update-name', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_property_name(property_id):
+    """Update the custom display name for a property"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    try:
+        data = request.get_json()
+        custom_name = data.get('custom_name', '').strip()
+        
+        if not custom_name:
+            return jsonify({
+                'success': False,
+                'error': 'custom_name is required'
+            }), 400
+        
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({
+                'success': False,
+                'error': 'User not associated with a business'
+            }), 400
+        
+        # Get property and verify business access
+        from .models.property_models import Property, PropertyDetails
+        property = Property.query.get_or_404(property_id)
+        
+        if str(property.business_id) != business_uuid_str:
+            return jsonify({
+                'success': False,
+                'error': 'Unauthorized'
+            }), 403
+        
+        # Update property details with custom name in metadata
+        # Store in PropertyDetails metadata or other_amenities as JSON
+        property_details = PropertyDetails.query.filter_by(property_id=property_id).first()
+        
+        if property_details:
+            # Store custom name in other_amenities as JSON if it's not already JSON
+            # Or we could add a metadata field, but for now use other_amenities
+            try:
+                # Try to parse existing other_amenities as JSON
+                if property_details.other_amenities:
+                    try:
+                        amenities_data = json.loads(property_details.other_amenities) if isinstance(property_details.other_amenities, str) else property_details.other_amenities
+                        if not isinstance(amenities_data, dict):
+                            amenities_data = {}
+                    except:
+                        amenities_data = {}
+                else:
+                    amenities_data = {}
+                
+                amenities_data['custom_name'] = custom_name
+                property_details.other_amenities = json.dumps(amenities_data)
+                property_details.updated_at = datetime.utcnow()
+            except Exception as e:
+                logger.warning(f"Error updating property name in metadata: {e}")
+                # Fallback: store as simple string in other_amenities
+                property_details.other_amenities = json.dumps({'custom_name': custom_name})
+        else:
+            # Create PropertyDetails if it doesn't exist
+            property_details = PropertyDetails(
+                property_id=property_id,
+                other_amenities=json.dumps({'custom_name': custom_name})
+            )
+            db.session.add(property_details)
+        
+        # Also update formatted_address to include custom name for backward compatibility
+        # Keep the original address but prepend custom name if different
+        if property.formatted_address and custom_name.lower() not in property.formatted_address.lower():
+            # Don't overwrite, just store custom name separately
+            pass
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Property name updated successfully',
+            'data': {
+                'property_id': str(property_id),
+                'custom_name': custom_name
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error updating property name: {e}")
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': str(e)
@@ -3222,13 +3628,16 @@ def create_property():
         formatted_address = data.get('formatted_address', address)
         address_hash = hashlib.sha256(normalized_address.encode()).hexdigest()
         
+        # User-set pin location from property creation workflow - this is the authoritative property location
+        # (final coordinates selected when user clicked Create Property Card)
+        # Property pin location is set once during property creation and remains fixed
         address_data = {
             'address_hash': address_hash,
             'normalized_address': normalized_address,
             'formatted_address': formatted_address,
             'latitude': float(data['latitude']),
             'longitude': float(data['longitude']),
-            'geocoding_status': 'manual',
+            'geocoding_status': 'manual',  # User-set pin location (authoritative - final selection from Create Property Card)
             'geocoding_confidence': 1.0
         }
         

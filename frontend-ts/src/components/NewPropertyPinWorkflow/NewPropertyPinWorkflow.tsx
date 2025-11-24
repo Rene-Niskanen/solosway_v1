@@ -28,6 +28,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   onClose,
   onPropertyCreated
 }) => {
+  const [propertyTitle, setPropertyTitle] = useState<string>('');
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploading, setUploading] = useState(false);
@@ -185,6 +186,9 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   }, []);
 
   // Handle location select
+  // CRITICAL: selectedLocation represents the user-set pin location - this is the ONLY source of truth for property location
+  // It is the final coordinates selected when user clicks Create Property Card, NOT the extracted address from documents
+  // Property pin location = Final User-Selected Coordinates from Create Property Card
   const handleLocationSelect = useCallback((location: { lat: number; lng: number; address: string }) => {
     setSelectedLocation(location);
     // Dismiss address confirmation if user manually selects
@@ -196,6 +200,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   // Handle property creation
   const handleCreateProperty = useCallback(async () => {
     // Validate
+    if (!propertyTitle.trim()) {
+      setError('Please enter a property title');
+      return;
+    }
+
     if (uploadedFiles.length === 0) {
       setError('Please upload at least one file');
       return;
@@ -232,9 +241,13 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
       await Promise.all(linkPromises);
 
-      // Call success callback
+      // Call success callback with title
       if (onPropertyCreated) {
-        onPropertyCreated(newPropertyId, createResponse.data);
+        onPropertyCreated(newPropertyId, { 
+          ...createResponse.data, 
+          title: propertyTitle,
+          property_title: propertyTitle
+        });
       }
 
       // Close workflow
@@ -245,7 +258,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     } finally {
       setIsCreating(false);
     }
-  }, [uploadedFiles, selectedLocation, onPropertyCreated, onClose]);
+  }, [propertyTitle, uploadedFiles, selectedLocation, onPropertyCreated, onClose]);
 
   // Handle cancel/close
   const handleCancel = useCallback(async () => {
@@ -267,6 +280,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     }
 
     // Clear state and close
+    setPropertyTitle('');
     setUploadedFiles([]);
     setSelectedLocation(null);
     setExtractedAddresses([]);
@@ -276,7 +290,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     onClose();
   }, [uploadedFiles, propertyId, onClose]);
 
-  const canCreate = uploadedFiles.length > 0 && selectedLocation !== null && !isCreating;
+  const canCreate = uploadedFiles.length > 0 && selectedLocation !== null && propertyTitle.trim().length > 0 && !isCreating;
 
   // Prevent default drag and drop behavior when modal is visible
   React.useEffect(() => {
@@ -343,11 +357,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                     className="bg-white flex flex-col overflow-hidden pointer-events-auto relative"
                     onClick={(e) => e.stopPropagation()}
                     style={{
-                      width: '50%',
-                      maxWidth: '800px',
-                      height: '50vh',
-                      maxHeight: '550px',
-                      borderRadius: '16px',
+                      width: '75%',
+                      maxWidth: '1100px',
+                      height: '75vh',
+                      maxHeight: '700px',
+                      borderRadius: '0',
                       boxShadow: '0 4px 20px rgba(0,0,0,0.08)'
                     }}
                   >
@@ -364,27 +378,103 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                     <div className="flex flex-1 h-full overflow-hidden">
                       {/* Left Panel - File Upload (35% width) */}
                       <div 
-                        className="bg-white flex flex-col items-center justify-center relative"
+                        className="flex flex-col items-center justify-center relative"
                         style={{
                           width: '35%',
                           flexShrink: 0,
                           borderRight: 'none',
-                          height: '100%'
+                          height: '100%',
+                          backgroundColor: '#212121'
                         }}
                       >
                         {/* Title Overlay */}
                         <div className="absolute top-6 left-0 right-0 text-center z-10 pointer-events-none px-4">
-                           <h1 className="text-base text-gray-800 truncate" style={{ fontWeight: 600 }}>Create New Property Card</h1>
+                           <h1 className="text-base truncate" style={{ fontWeight: 600, color: '#FFFFFF' }}>Create New Property Card</h1>
                         </div>
 
-                        <FileUploadCard
-                          files={uploadedFiles}
-                          onFilesChange={setUploadedFiles}
-                          uploading={uploading}
-                          uploadProgress={uploadProgress}
-                          onFileUpload={handleFileUpload}
-                          onFileRemove={handleFileRemove}
-                        />
+                        {/* Property Title Input */}
+                        <div className="absolute top-16 left-0 right-0 z-10 px-6 pointer-events-auto">
+                          <div className="mb-4">
+                            <label 
+                              className="block mb-2 text-sm"
+                              style={{ color: '#9CA3AF', fontWeight: 500 }}
+                            >
+                              Property Title
+                            </label>
+                            <input
+                              type="text"
+                              value={propertyTitle}
+                              onChange={(e) => setPropertyTitle(e.target.value)}
+                              placeholder="e.g., Main Street Property, Investment Property A"
+                              className="w-full px-4 py-2.5 text-sm"
+                              style={{
+                                backgroundColor: '#2A2A2A',
+                                border: '1px solid #404040',
+                                color: '#FFFFFF',
+                                borderRadius: '0',
+                                outline: 'none'
+                              }}
+                              onFocus={(e) => {
+                                e.target.style.borderColor = '#3B82F6';
+                              }}
+                              onBlur={(e) => {
+                                e.target.style.borderColor = '#404040';
+                              }}
+                            />
+                            <p 
+                              className="mt-1.5 text-xs"
+                              style={{ color: '#6B7280' }}
+                            >
+                              Give your property a name to easily identify it later
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Instructions - Positioned to avoid overlap with file upload area */}
+                        <div className="absolute top-44 left-0 right-0 z-10 px-6 pointer-events-none" style={{ maxWidth: '100%' }}>
+                          <div className="mb-4">
+                            <p 
+                              className="text-sm mb-2"
+                              style={{ color: '#9CA3AF', fontWeight: 500 }}
+                            >
+                              Step 1: Upload Files
+                            </p>
+                            <p 
+                              className="text-xs leading-relaxed"
+                              style={{ color: '#6B7280', marginBottom: '20px' }}
+                            >
+                              Drag and drop property documents, photos, or reports here. 
+                              You can upload PDFs, images, and other property-related files.
+                            </p>
+                          </div>
+                          <div style={{ marginTop: '24px' }}>
+                            <p 
+                              className="text-sm mb-2"
+                              style={{ color: '#9CA3AF', fontWeight: 500 }}
+                            >
+                              Step 2: Select Location
+                            </p>
+                            <p 
+                              className="text-xs leading-relaxed"
+                              style={{ color: '#6B7280' }}
+                            >
+                              Click on the map to the right to set the property location, 
+                              or search for an address using the search bar.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* FileUploadCard - Positioned well below instructions with ample spacing */}
+                        <div className="absolute inset-0 flex items-center justify-center" style={{ paddingTop: '420px', zIndex: 1, pointerEvents: 'auto' }}>
+                          <FileUploadCard
+                            files={uploadedFiles}
+                            onFilesChange={setUploadedFiles}
+                            uploading={uploading}
+                            uploadProgress={uploadProgress}
+                            onFileUpload={handleFileUpload}
+                            onFileRemove={handleFileRemove}
+                          />
+                        </div>
                       </div>
 
                       {/* Right Panel - Map (65% width) - Infinity Pool */}

@@ -896,6 +896,16 @@ class BackendApiService {
   }
 
   /**
+   * Update property custom name
+   */
+  async updatePropertyName(propertyId: string, customName: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/update-name`, {
+      method: 'PUT',
+      body: JSON.stringify({ custom_name: customName })
+    });
+  }
+
+  /**
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {

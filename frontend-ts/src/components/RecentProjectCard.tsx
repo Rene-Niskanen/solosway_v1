@@ -120,21 +120,37 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'new') {
     return (
-      <div className="bg-gray-100 rounded-lg border border-gray-200 shadow-md overflow-hidden hover:shadow-lg transition-all duration-75 flex flex-col cursor-pointer w-full" style={{ 
+      <div className="border transition-all duration-75 flex flex-col cursor-pointer w-full" style={{ 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`, 
         maxWidth: `${cardWidth}px`, 
         height: `${cardHeight}px`,
         minHeight: `${cardHeight}px`, 
         flexShrink: 0, 
-        aspectRatio: `${cardWidth}/${cardHeight}`
+        aspectRatio: `${cardWidth}/${cardHeight}`,
+        background: 'rgba(255, 255, 255, 0.9)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        border: '1px solid rgba(255, 255, 255, 0.4)',
+        borderRadius: '6px',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
+        overflow: 'hidden'
       }}>
         {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
-        <div className="bg-gray-100 flex items-center justify-center flex-[2] border-b border-gray-200" style={{ minHeight: 0, flexShrink: 0 }}>
+        <div className="flex items-center justify-center flex-[2] border-b" style={{ 
+          minHeight: 0, 
+          flexShrink: 0,
+          background: 'rgba(248, 250, 252, 0.6)',
+          borderColor: 'rgba(255, 255, 255, 0.3)'
+        }}>
           <Plus className="text-gray-700" style={{ width: `${iconSize.medium}px`, height: `${iconSize.medium}px` }} strokeWidth={2.5} />
         </div>
         {/* Lower Section - White with text (1/3 of card height) */}
-        <div className="bg-white flex items-center justify-center flex-1" style={{ minHeight: 0, flexShrink: 0 }}>
+        <div className="flex items-center justify-center flex-1" style={{ 
+          minHeight: 0, 
+          flexShrink: 0,
+          background: 'rgba(255, 255, 255, 0.7)'
+        }}>
           <span className="font-semibold" style={{ color: '#6E778D', fontSize: fontSize.large }}>New Project</span>
         </div>
       </div>
@@ -143,14 +159,17 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'blank') {
     return (
-      <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col opacity-40 w-full" style={{ 
+      <div className="bg-white border border-gray-200 overflow-hidden flex flex-col opacity-40 w-full" style={{ 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`, 
         maxWidth: `${cardWidth}px`, 
         height: `${cardHeight}px`,
         minHeight: `${cardHeight}px`, 
         flexShrink: 0, 
-        aspectRatio: `${cardWidth}/${cardHeight}`
+        aspectRatio: `${cardWidth}/${cardHeight}`,
+        borderRadius: '6px',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05)',
+        overflow: 'hidden'
       }}>
         {/* Preview Image - 2/3 of card height */}
         <div className="flex-[2] bg-gray-50" style={{ minHeight: 0, flexShrink: 0 }}></div>
@@ -164,14 +183,21 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md border border-gray-300 overflow-hidden hover:shadow-lg hover:border-gray-400 transition-all duration-75 flex flex-col w-full" style={{ 
+    <div className="border transition-all duration-75 flex flex-col w-full" style={{ 
       width: `${cardWidth}px`, 
       minWidth: `${cardWidth}px`, 
       maxWidth: `${cardWidth}px`, 
       height: `${cardHeight}px`,
       minHeight: `${cardHeight}px`, 
       flexShrink: 0, 
-      aspectRatio: `${cardWidth}/${cardHeight}`
+      aspectRatio: `${cardWidth}/${cardHeight}`,
+      background: 'rgba(255, 255, 255, 0.9)',
+      backdropFilter: 'blur(20px)',
+      WebkitBackdropFilter: 'blur(20px)',
+      border: '1px solid rgba(255, 255, 255, 0.4)',
+      borderRadius: '4px',
+      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
+      overflow: 'hidden'
     }}>
       {/* Preview Image - 2/3 of card height */}
       <div className="flex-[2] overflow-hidden" style={{ flexShrink: 0 }}>
@@ -179,7 +205,11 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       </div>
       
       {/* Content Section - 1/3 of card height */}
-      <div className="flex flex-col flex-1" style={{ flexShrink: 0, padding: `${padding * 0.5}px` }}>
+      <div className="flex flex-col flex-1" style={{ 
+        flexShrink: 0, 
+        padding: `${padding * 0.5}px`,
+        background: 'rgba(255, 255, 255, 0.85)'
+      }}>
         {/* Project Type Label */}
         {projectType && (
           <p className="font-medium text-gray-500 uppercase tracking-wide" style={{ 

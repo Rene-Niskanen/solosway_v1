@@ -6,7 +6,20 @@ NOW WITH STATE PERSISTENCE via PostgreSQL checkpointer for conversation memory.
 """
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+# Conditional import for checkpointer (only needed if use_checkpointer=True)
+try:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    CHECKPOINTER_AVAILABLE = True
+except ImportError:
+    CHECKPOINTER_AVAILABLE = False
+    AsyncPostgresSaver = None  # Placeholder to avoid NameError
+    logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
+
 from backend.llm.types import MainWorkflowState
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
@@ -16,10 +29,6 @@ from backend.llm.nodes.retrieval_nodes import (
 )
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
-import logging
-import os
-
-logger = logging.getLogger(__name__)
 
 async def build_main_graph(use_checkpointer: bool = True):
     """
@@ -142,6 +151,12 @@ async def build_main_graph(use_checkpointer: bool = True):
 
     # NEW: Add PostgreSQL checkpointer for state persistence
     if use_checkpointer:
+        if not CHECKPOINTER_AVAILABLE:
+            logger.warning("Checkpointer requested but langgraph.checkpoint.postgres not available, falling back to stateless mode")
+            main_graph = builder.compile()
+            logger.info("Main graph compiled WITHOUT checkpointer (stateless)")
+            return main_graph
+        
         try:
             # Use DATABASE_URL from environment (Supabase PostgreSQL connection)
             db_url = os.getenv("DATABASE_URL")

@@ -454,8 +454,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             wrapper.scrollLeft += deltaX * scrollMultiplier;
           }
           
-          // Scroll vertically when zoomed
-          if (deltaY !== 0 && zoomLevel > 100) {
+          // Scroll vertically when content is taller than container (regardless of zoom level)
+          if (deltaY !== 0 && wrapper.scrollHeight > wrapper.clientHeight) {
             wrapper.scrollTop += deltaY * scrollMultiplier;
           }
           

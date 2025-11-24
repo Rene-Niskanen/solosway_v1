@@ -66,7 +66,10 @@ class SupabasePropertyHubService:
         address_data: Dict[str, Any], 
         document_id: str, 
         business_id: str,
-        extracted_data: Dict[str, Any] = None
+        extracted_data: Dict[str, Any] = None,
+        skip_property_updates: bool = False,
+        is_manual_upload: bool = False,
+        manual_property_id: str = None
     ) -> Dict[str, Any]:
         """
         Create property in Supabase with all relationships using enhanced matching
@@ -76,9 +79,21 @@ class SupabasePropertyHubService:
             document_id: Document being linked
             business_id: Business identifier
             extracted_data: Extracted property details (optional)
+            skip_property_updates: If True, skip updating property details (for manual uploads with address mismatch)
+            is_manual_upload: If True, indicates this is a manual upload from property card
+            manual_property_id: Property ID to use for manual uploads (if provided, uses this property instead of matching)
             
         Returns:
             Property creation results with success status
+            
+        Business Context:
+            Users need to be able to add documents to property cards that may not be related to the property
+            (e.g., general reference documents, unrelated contracts). These documents should be stored in the
+            property card for organizational purposes but should NOT update the property details, as they
+            don't contain relevant property information. This is why we support:
+            - Manual uploads: If a property ID is provided, it uses that property directly (no matching needed)
+            - Address mismatches: It links the document but skips updating property details
+            - Metadata tracking: It records that the upload was manual and whether there was an address mismatch
         """
         try:
             logger.info(f"🏠 Creating property hub for document {document_id}")
@@ -93,13 +108,31 @@ class SupabasePropertyHubService:
             from .enhanced_property_matching_service import EnhancedPropertyMatchingService
             matching_service = EnhancedPropertyMatchingService()
             
-            # Find or create property using enhanced matching
-            match_result = matching_service.find_or_create_property(
-                address_data=address_data,
-                document_id=document_id,
-                business_id=business_uuid,
-                extracted_data=extracted_data
-            )
+            # If manual_property_id is provided, use it directly (manual upload)
+            if manual_property_id:
+                logger.info(f"   📌 Using manual property ID: {manual_property_id}")
+                # Fetch the property from Supabase
+                property_result = self.supabase.table('properties').select('*').eq('id', manual_property_id).execute()
+                if not property_result.data:
+                    raise ValueError(f"Manual property {manual_property_id} not found in Supabase")
+                
+                property_data = property_result.data[0]
+                match_result = {
+                    'success': True,
+                    'property_id': manual_property_id,
+                    'property': property_data,
+                    'match_type': 'manual_upload',
+                    'confidence': 1.0,
+                    'action': 'linked_to_existing'
+                }
+            else:
+                # Find or create property using enhanced matching
+                match_result = matching_service.find_or_create_property(
+                    address_data=address_data,
+                    document_id=document_id,
+                    business_id=business_uuid,
+                    extracted_data=extracted_data
+                )
             
             if not match_result['success']:
                 logger.error(f"❌ Enhanced matching failed: {match_result.get('error', 'Unknown error')}")
@@ -111,6 +144,9 @@ class SupabasePropertyHubService:
             
             logger.info(f"   ✅ Property match result: {match_type} (confidence: {confidence:.2f})")
             
+            # Determine address mismatch for relationship metadata
+            address_mismatch = skip_property_updates and is_manual_upload
+            
             # Create document relationship with enhanced metadata
             relationship_result = matching_service.create_document_relationship(
                 document_id=document_id,
@@ -118,20 +154,25 @@ class SupabasePropertyHubService:
                 business_id=business_uuid,
                 address_data=address_data,
                 match_type=match_type,
-                confidence=confidence
+                confidence=confidence,
+                is_manual_upload=is_manual_upload,
+                address_mismatch=address_mismatch
             )
             
-            # Store extracted data in property_details (if available and new property)
+            # Store extracted data in property_details (if available and not skipping updates)
             details_result = None
-            if extracted_data and match_result['action'] == 'created_new':
-                details_result = self._create_property_details(
-                    property_id, extracted_data, business_uuid, address_data
-                )
-            elif extracted_data and match_result['action'] == 'linked_to_existing':
-                # Update existing property details with new data
-                details_result = self._update_property_details(
-                    property_id, extracted_data, business_uuid, address_data
-                )
+            if not skip_property_updates:
+                if extracted_data and match_result['action'] == 'created_new':
+                    details_result = self._create_property_details(
+                        property_id, extracted_data, business_uuid, address_data
+                    )
+                elif extracted_data and match_result['action'] == 'linked_to_existing':
+                    # Update existing property details with new data
+                    details_result = self._update_property_details(
+                        property_id, extracted_data, business_uuid, address_data
+                    )
+            else:
+                logger.info(f"   ⚠️  Skipping property detail updates (skip_property_updates=True)")
             
             logger.info(f"✅ Property hub processed successfully: {property_id}")
             logger.info(f"   Match Type: {match_type}")
@@ -211,6 +252,8 @@ class SupabasePropertyHubService:
     def _create_supabase_property(self, property_id: str, address_data: Dict, business_id: str) -> Dict[str, Any]:
         """Create property in Supabase properties table"""
         try:
+            # geocoding_status: 'manual' means user-set pin location (final selection from Create Property Card)
+            # This is the authoritative property location and should be preserved
             property_data = {
                 'id': property_id,
                 'business_uuid': business_id,
@@ -219,7 +262,7 @@ class SupabasePropertyHubService:
                 'formatted_address': address_data.get('formatted_address'),
                 'latitude': address_data.get('latitude'),
                 'longitude': address_data.get('longitude'),
-                'geocoding_status': address_data.get('geocoding_status'),
+                'geocoding_status': address_data.get('geocoding_status'),  # Preserve geocoding_status: 'manual' for user-set pin locations
                 'geocoding_confidence': address_data.get('geocoding_confidence'),
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
