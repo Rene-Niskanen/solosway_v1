@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -316,9 +316,14 @@ interface SideChatPanelProps {
   onNewChat?: () => void; // Callback when new chat is clicked (to clear query in parent)
   onSidebarToggle?: () => void; // Callback for toggling sidebar
   onOpenProperty?: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string | number) => void; // Callback for opening property card
+  initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
 }
 
-export const SideChatPanel: React.FC<SideChatPanelProps> = ({
+export interface SideChatPanelRef {
+  getAttachments: () => FileAttachmentData[];
+}
+
+export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelProps>(({
   isVisible,
   query,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
@@ -327,14 +332,64 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
   restoreChatId,
   onNewChat,
   onSidebarToggle,
-  onOpenProperty
-}) => {
+  onOpenProperty,
+  initialAttachedFiles
+}, ref) => {
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   // Always start in multi-line mode for the requested layout (textarea above icons)
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
-  const [attachedFiles, setAttachedFiles] = React.useState<FileAttachmentData[]>([]);
+  const hasInitializedAttachmentsRef = React.useRef(false);
+  const attachedFilesRef = React.useRef<FileAttachmentData[]>([]);
+  const [attachedFiles, setAttachedFiles] = React.useState<FileAttachmentData[]>(() => {
+    const initial = initialAttachedFiles || [];
+    if (initialAttachedFiles !== undefined && initialAttachedFiles.length > 0) {
+      hasInitializedAttachmentsRef.current = true;
+    }
+    attachedFilesRef.current = initial;
+    return initial;
+  });
+  
+  // Update attachedFilesRef whenever attachedFiles state changes
+  React.useEffect(() => {
+    attachedFilesRef.current = attachedFiles;
+  }, [attachedFiles]);
+  
+  // Expose getAttachments method via ref
+  React.useImperativeHandle(ref, () => ({
+    getAttachments: () => {
+      return attachedFilesRef.current;
+    }
+  }), []);
+  
+  // Restore attachments when initialAttachedFiles prop changes
+  const prevInitialAttachedFilesRef = React.useRef<FileAttachmentData[] | undefined>(initialAttachedFiles);
+  React.useLayoutEffect(() => {
+    const prevInitial = prevInitialAttachedFilesRef.current;
+    prevInitialAttachedFilesRef.current = initialAttachedFiles;
+    
+    if (initialAttachedFiles !== undefined) {
+      const currentIds = attachedFiles.map(f => f.id).sort().join(',');
+      const newIds = initialAttachedFiles.map(f => f.id).sort().join(',');
+      const isDifferent = currentIds !== newIds || attachedFiles.length !== initialAttachedFiles.length;
+      const propChanged = prevInitial !== initialAttachedFiles;
+      
+      const shouldRestore = !hasInitializedAttachmentsRef.current || 
+                           isDifferent || 
+                           (attachedFiles.length === 0 && initialAttachedFiles.length > 0) ||
+                           (propChanged && initialAttachedFiles.length > 0);
+      
+      if (shouldRestore) {
+        setAttachedFiles(initialAttachedFiles);
+        attachedFilesRef.current = initialAttachedFiles;
+        hasInitializedAttachmentsRef.current = true;
+      }
+    }
+  }, [initialAttachedFiles, attachedFiles]);
+  const [isDraggingFile, setIsDraggingFile] = React.useState(false);
+  const [isOverBin, setIsOverBin] = React.useState(false);
+  const [draggedFileId, setDraggedFileId] = React.useState<string | null>(null);
   
   // Store queries with their attachments
   interface SubmittedQuery {
@@ -781,12 +836,20 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
     // Preload immediately
     preloadBlobUrl();
     
-    setAttachedFiles(prev => [...prev, fileData]);
+    setAttachedFiles(prev => {
+      const updated = [...prev, fileData];
+      attachedFilesRef.current = updated; // Update ref immediately
+      return updated;
+    });
     console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
   }, [attachedFiles.length]);
 
   const handleRemoveFile = React.useCallback((fileId: string) => {
-    setAttachedFiles(prev => prev.filter(f => f.id !== fileId));
+    setAttachedFiles(prev => {
+      const updated = prev.filter(f => f.id !== fileId);
+      attachedFilesRef.current = updated; // Update ref immediately
+      return updated;
+    });
     
     // Clean up blob URL if it exists
     if ((window as any).__preloadedAttachmentBlobs?.[fileId]) {
@@ -1034,6 +1097,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
     <AnimatePresence>
       {isVisible && (
         <motion.div
+          key="side-chat-panel"
           ref={panelRef}
           initial={{ x: -400, opacity: 0 }}
           animate={{ 
@@ -1144,7 +1208,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
               }}
             >
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
-                <AnimatePresence mode="popLayout">
+                <AnimatePresence>
                   {chatMessages.map((message) => {
                     // Check if this is a restored message (existed when panel was opened)
                     // For restored messages, don't animate - they should appear instantly
@@ -1153,12 +1217,8 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                     
                     return message.type === 'query' ? (
                       // Query message - with bubble styling
-                      <motion.div
+                      <div
                         key={message.id}
-                        initial={shouldAnimate ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        transition={shouldAnimate ? { duration: 0.2, ease: "easeOut" } : { duration: 0 }}
                         style={{
                           backgroundColor: '#ffffff',
                           borderRadius: '12px',
@@ -1166,9 +1226,11 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                           boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                           alignSelf: 'flex-start',
                           maxWidth: '85%',
+                          width: 'fit-content', // Fit container tightly around content
                           wordWrap: 'break-word',
                           marginTop: '8px',
-                          marginLeft: '12px' // Move query bubble more to the right
+                          marginLeft: '12px', // Move query bubble more to the right
+                          display: 'inline-block' // Ensure container fits content
                         }}
                       >
                         {/* Display file attachments if any */}
@@ -1226,11 +1288,13 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                             margin: 0,
                             padding: 0,
                             textAlign: 'left',
-                            fontFamily: 'system-ui, -apple-system, sans-serif'
+                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                            width: '100%',
+                            boxSizing: 'border-box'
                           }}>
                             <ReactMarkdown
                               components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px' }}>{children}</p>,
+                                p: ({ children }) => <p style={{ margin: 0, padding: 0 }}>{children}</p>,
                                 h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
                                 h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
                                 h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
@@ -1247,15 +1311,11 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                             </ReactMarkdown>
                           </div>
                         )}
-                      </motion.div>
+                      </div>
                     ) : (
                       // Response message - full width, no bubble (Cursor AI style)
-                      <motion.div
+                      <div
                         key={message.id}
-                        initial={shouldAnimate ? { opacity: 0, y: 10 } : { opacity: 1, y: 0 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        transition={shouldAnimate ? { duration: 0.2, ease: "easeOut" } : { duration: 0 }}
                         style={{
                           width: '100%',
                           padding: '0',
@@ -1352,7 +1412,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                             </ReactMarkdown>
                           </div>
                         )}
-                      </motion.div>
+                      </div>
                     );
                   })}
                 </AnimatePresence>
@@ -1362,8 +1422,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
             {/* Chat Input at Bottom - Condensed SearchBar design */}
             <div style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px' }}>
               <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
-                <motion.div 
-                  layout
+                <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                   style={{
                     background: '#ffffff',
@@ -1373,7 +1432,6 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                     paddingBottom: '12px', // More padding bottom
                     paddingRight: '12px',
                     paddingLeft: '12px',
-                    willChange: 'border-radius, padding-left, padding-top, padding-bottom, height',
                     overflow: 'visible',
                     width: '100%',
                     minWidth: '0',
@@ -1382,32 +1440,15 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                     boxSizing: 'border-box',
                     borderRadius: '12px' // Always use rounded square corners
                   }}
-                  animate={{
-                    paddingTop: '12px',
-                    paddingBottom: '12px',
-                    borderRadius: '12px',
-                    height: 'auto'
-                  }}
-                  transition={{ 
-                    paddingTop: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
-                    paddingBottom: { duration: 0.2, ease: [0.4, 0, 0.2, 1] },
-                    borderRadius: { duration: 0.25, ease: [0.4, 0, 0.2, 1] },
-                    layout: { duration: 0.3, ease: [0.4, 0, 0.2, 1] }
-                  }}
                 >
                   {/* Input row */}
-                  <motion.div 
+                  <div 
                     className="relative flex flex-col w-full" 
                     style={{ 
                       height: 'auto', 
                       minHeight: '24px',
                       width: '100%',
                       minWidth: '0'
-                    }}
-                    layout
-                    transition={{ 
-                      duration: !inputValue.trim() ? 0 : 0.2, 
-                      ease: [0.4, 0, 0.2, 1] 
                     }}
                   >
                     {/* File Attachments Display - Above textarea */}
@@ -1434,6 +1475,15 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                                 // Use shared preview context to add file
                                 addPreviewFile(file);
                               }}
+                              onDragStart={(fileId) => {
+                                setIsDraggingFile(true);
+                                setDraggedFileId(fileId);
+                              }}
+                              onDragEnd={() => {
+                                setIsDraggingFile(false);
+                                setDraggedFileId(null);
+                                setIsOverBin(false);
+                              }}
                             />
                           ))}
                         </motion.div>
@@ -1441,17 +1491,9 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                       
                       {/* Property Attachments Display */}
                       {propertyAttachments.length > 0 && (
-                        <motion.div 
-                          initial={false}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ 
-                            duration: 0.1,
-                            ease: "easeOut"
-                          }}
+                        <div 
                           style={{ height: 'auto', marginBottom: '12px' }}
                           className="flex flex-wrap gap-2 justify-start"
-                          layout={false}
                         >
                           {propertyAttachments.map((property) => (
                             <PropertyAttachment
@@ -1460,14 +1502,13 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                               onRemove={removePropertyAttachment}
                             />
                           ))}
-                        </motion.div>
+                        </div>
                       )}
                     </AnimatePresence>
                     
                     {/* Textarea area - always above */}
-                    <motion.div 
+                    <div 
                       className="flex items-start w-full"
-                      layout
                       style={{ 
                         minHeight: '24px',
                         width: '100%',
@@ -1525,26 +1566,25 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                           rows={1}
                         />
                       </div>
-                    </motion.div>
+                    </div>
                     
                     {/* Bottom row: Icons (Left) and Send Button (Right) */}
-                    <motion.div 
+                    <div 
                       className="relative flex items-center justify-between w-full"
                       style={{
                         width: '100%',
                         minWidth: '0'
                       }}
-                      layout
                     >
                       {/* Left Icons: Dashboard */}
                       <div className="flex items-center space-x-3">
                         <button
                           type="button"
                           onClick={onMapToggle}
-                          className="p-1 text-gray-400 hover:text-gray-600 transition-colors ml-1"
+                          className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-1"
                           title="Back to search mode"
                         >
-                          <Map className="w-5 h-5" strokeWidth={1.5} />
+                          <CreditCard className="w-5 h-5" strokeWidth={1.5} style={{ transform: 'rotate(180deg)' }} />
                         </button>
                       </div>
 
@@ -1566,7 +1606,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                               ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
                               : isSelectionModeActive 
                                 ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                                : 'text-gray-900 hover:text-gray-700'
+                                : 'text-slate-600 hover:text-green-500'
                           }`}
                           title={
                             propertyAttachments.length > 0
@@ -1587,14 +1627,14 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
-                          className="p-1 text-gray-900 hover:text-gray-700 transition-colors"
+                          className="p-1 text-slate-600 hover:text-green-500 transition-colors"
                           title="Attach file"
                         >
                           <Paperclip className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                         <button
                           type="button"
-                          className="p-1 text-gray-900 hover:text-gray-700 transition-colors"
+                          className="p-1 text-slate-600 hover:text-green-500 transition-colors"
                         >
                           <Mic className="w-5 h-5" strokeWidth={1.5} />
                         </button>
@@ -1641,15 +1681,116 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({
                           </motion.div>
                         </motion.button>
                       </div>
-                    </motion.div>
-                  </motion.div>
-                </motion.div>
+                    </div>
+                  </div>
+                </div>
               </form>
             </div>
           </div>
         </motion.div>
       )}
+      
+      {/* Delete Bin Icon - Bottom Right Corner */}
+      <AnimatePresence>
+        {isDraggingFile && (
+          <motion.div
+            key="delete-bin"
+            initial={{ opacity: 0, scale: 0.8, y: 20 }}
+            animate={{ 
+              opacity: 1, 
+              scale: isOverBin ? 1.15 : 1, 
+              y: 0,
+              backgroundColor: isOverBin ? 'rgba(239, 68, 68, 0.3)' : 'rgba(239, 68, 68, 0.1)',
+              borderColor: isOverBin ? 'rgba(239, 68, 68, 0.8)' : 'rgba(239, 68, 68, 0.3)',
+            }}
+            exit={{ opacity: 0, scale: 0.8, y: 20 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            onDragOver={(e) => {
+              // Only handle file drags - check if we have a dragged file ID
+              if (!draggedFileId || !isDraggingFile) {
+                return;
+              }
+              
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'move';
+              setIsOverBin(true);
+            }}
+            onDragEnter={(e) => {
+              // Only handle file drags - check if we have a dragged file ID
+              if (!draggedFileId || !isDraggingFile) {
+                return;
+              }
+              
+              e.preventDefault();
+              e.stopPropagation();
+              setIsOverBin(true);
+            }}
+            onDragLeave={(e) => {
+              // Check if we're actually leaving the bin (not just entering a child element)
+              const rect = e.currentTarget.getBoundingClientRect();
+              const x = e.clientX;
+              const y = e.clientY;
+              
+              if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsOverBin(false);
+              }
+            }}
+            onDrop={(e) => {
+              // Only handle file drags - use the stored file ID
+              if (!draggedFileId || !isDraggingFile) {
+                setIsDraggingFile(false);
+                setIsOverBin(false);
+                setDraggedFileId(null);
+                return;
+              }
+              
+              e.preventDefault();
+              e.stopPropagation();
+              handleRemoveFile(draggedFileId);
+              setIsDraggingFile(false);
+              setIsOverBin(false);
+              setDraggedFileId(null);
+            }}
+            style={{
+              position: 'fixed',
+              bottom: '24px',
+              right: '24px',
+              width: '56px',
+              height: '56px',
+              borderRadius: '12px',
+              border: '2px solid',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: isOverBin ? 'grabbing' : 'grab',
+              zIndex: 1000,
+              boxShadow: isOverBin ? '0 8px 24px rgba(239, 68, 68, 0.4)' : '0 4px 12px rgba(0, 0, 0, 0.15)'
+            }}
+            title={isOverBin ? "Release to delete file" : "Drop file here to delete"}
+          >
+            <motion.div
+              animate={{
+                scale: isOverBin ? 1.2 : 1,
+                rotate: isOverBin ? 10 : 0,
+              }}
+              transition={{ duration: 0.2 }}
+            >
+              <Trash2 
+                className="w-6 h-6" 
+                style={{ 
+                  color: isOverBin ? '#dc2626' : '#ef4444',
+                  transition: 'color 0.2s ease'
+                }} 
+                strokeWidth={isOverBin ? 2.5 : 2} 
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </AnimatePresence>
   );
-};
+});
 

@@ -4,11 +4,13 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
+import { PropertyAttachment } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
+import { usePropertySelection } from '../contexts/PropertySelectionContext';
 
 export interface SearchBarProps {
   className?: string;
@@ -24,9 +26,15 @@ export interface SearchBarProps {
   isSidebarCollapsed?: boolean;
   // File drop prop
   onFileDrop?: (file: File) => void;
+  // MapChatBar functionality
+  onPanelToggle?: () => void;
+  hasPreviousSession?: boolean;
+  initialValue?: string; // undefined means no initial value, empty string means clear
+  initialAttachedFiles?: FileAttachmentData[]; // Preserve file attachments when switching views
+  onAttachmentsChange?: (attachments: FileAttachmentData[]) => void; // Callback when attachments change
 }
 
-export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, SearchBarProps>(({
+export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] }, SearchBarProps>(({
   className,
   onSearch,
   onQueryStart,
@@ -37,17 +45,183 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   currentView = 'search',
   hasPerformedSearch = false,
   isSidebarCollapsed = false,
-  onFileDrop
+  onFileDrop,
+  onPanelToggle,
+  hasPreviousSession = false,
+  initialValue,
+  initialAttachedFiles,
+  onAttachmentsChange
 }, ref) => {
-  console.log('🎯 SearchBar component rendering/mounting');
-  const [searchValue, setSearchValue] = useState('');
+  console.log('🎯 SearchBar component rendering/mounting', {
+    initialValue,
+    isMapVisible,
+    currentView
+  });
+  // Track if we're restoring a value (to set cursor position)
+  const isRestoringValueRef = useRef(false);
+  // Track if we've initialized attachments from prop to avoid resetting on remounts
+  // Reset this on unmount to allow re-initialization on remount
+  const hasInitializedAttachmentsRef = useRef(false);
+  
+  // Reset initialization flag when component unmounts or when initialAttachedFiles becomes undefined
+  useEffect(() => {
+    return () => {
+      // Reset on unmount to allow fresh initialization on next mount
+      hasInitializedAttachmentsRef.current = false;
+    };
+  }, []);
+  // Initialize searchValue from initialValue prop if provided
+  // Use a ref to track the last initialValue to prevent unnecessary resets
+  const lastInitialValueRef = useRef<string | undefined>(initialValue);
+  const [searchValue, setSearchValue] = useState(() => {
+    const initial = initialValue !== undefined ? initialValue : '';
+    lastInitialValueRef.current = initialValue;
+    // If we have an initial value, mark that we're restoring
+    if (initialValue !== undefined && initialValue !== '') {
+      isRestoringValueRef.current = true;
+    }
+    return initial;
+  });
+  
+  // Update lastInitialValueRef when initialValue changes
+  useEffect(() => {
+    if (initialValue !== lastInitialValueRef.current) {
+      lastInitialValueRef.current = initialValue;
+    }
+  }, [initialValue]);
   const [isFocused, setIsFocused] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>([]);
+  // Initialize attachedFiles from initialAttachedFiles prop if provided
+  const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
+    const initial = initialAttachedFiles || [];
+    if (initialAttachedFiles !== undefined && initialAttachedFiles.length > 0) {
+      hasInitializedAttachmentsRef.current = true;
+    }
+    return initial;
+  });
+  
+  // Ref to store attachments for synchronous access (always up-to-date)
+  const attachedFilesRef = useRef<FileAttachmentData[]>(attachedFiles);
+  
+  // Keep ref in sync with state and notify parent of changes
+  useEffect(() => {
+    attachedFilesRef.current = attachedFiles;
+    // Notify parent component when attachments change (for proactive storage)
+    if (onAttachmentsChange) {
+      onAttachmentsChange(attachedFiles);
+    }
+  }, [attachedFiles, onAttachmentsChange]);
   const MAX_FILES = 4;
-  const [isMultiLine, setIsMultiLine] = useState(false);
+  // Default to multi-line mode in dashboard view (like MapChatBar), always multi-line in map view
+  const [isMultiLine, setIsMultiLine] = useState(() => !isMapVisible && !isInChatMode);
+  
+  // Update multi-line mode when context changes
+  useEffect(() => {
+    if (!isMapVisible && !isInChatMode) {
+      // Dashboard view: always multi-line
+      setIsMultiLine(true);
+    } else if (isMapVisible) {
+      // Map view: always multi-line (like MapChatBar)
+      setIsMultiLine(true);
+    } else {
+      // Chat view: start in single-line, switch to multi-line based on content
+      setIsMultiLine(false);
+    }
+  }, [isMapVisible, isInChatMode]);
+  
+  // Set cursor to end when searchValue is set from initialValue on mount or when restored
+  useEffect(() => {
+    if (isRestoringValueRef.current && searchValue && inputRef.current) {
+      const textLength = searchValue.length;
+      // Use setTimeout to ensure React has finished rendering
+      const timeoutId = setTimeout(() => {
+        if (inputRef.current && inputRef.current.value === searchValue) {
+          // Set cursor to end
+          inputRef.current.setSelectionRange(textLength, textLength);
+          // Don't auto-focus, let user click if they want
+          isRestoringValueRef.current = false;
+        }
+      }, 0);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [searchValue]);
+
+  // Track previous initialAttachedFiles to detect prop changes
+  const prevInitialAttachedFilesRef = useRef<FileAttachmentData[] | undefined>(initialAttachedFiles);
+  
+  // Update attachedFiles when initialAttachedFiles prop changes (e.g., when switching views)
+  // Use useLayoutEffect for immediate restoration before render
+  useLayoutEffect(() => {
+    const prevInitial = prevInitialAttachedFilesRef.current;
+    prevInitialAttachedFilesRef.current = initialAttachedFiles;
+    
+    if (initialAttachedFiles !== undefined) {
+      // Compare by IDs instead of JSON.stringify (File objects can't be stringified)
+      const currentIds = attachedFiles.map(f => f.id).sort().join(',');
+      const newIds = initialAttachedFiles.map(f => f.id).sort().join(',');
+      const isDifferent = currentIds !== newIds || attachedFiles.length !== initialAttachedFiles.length;
+      const propChanged = prevInitial !== initialAttachedFiles;
+      
+      // Always restore if:
+      // 1. We haven't initialized yet, OR
+      // 2. The attachments are different, OR
+      // 3. Current attachments are empty but we have initialAttachedFiles (CRITICAL: always restore if empty), OR
+      // 4. The prop changed (component remounted with new prop), OR
+      // 5. We have initialAttachedFiles but current is empty (CRITICAL for restoration)
+      const shouldRestore = !hasInitializedAttachmentsRef.current || 
+                           isDifferent || 
+                           (attachedFiles.length === 0 && initialAttachedFiles.length > 0) ||
+                           (propChanged && initialAttachedFiles.length > 0) ||
+                           (initialAttachedFiles.length > 0 && attachedFiles.length === 0);
+      
+      if (shouldRestore) {
+        setAttachedFiles(initialAttachedFiles);
+        attachedFilesRef.current = initialAttachedFiles; // Update ref immediately
+        hasInitializedAttachmentsRef.current = true;
+      }
+    } else if (initialAttachedFiles === undefined) {
+      // If initialAttachedFiles is explicitly undefined, preserve existing attachments
+      // This prevents clearing on remounts when switching views
+    }
+  }, [initialAttachedFiles]);
+
+  // Update searchValue when initialValue prop changes (e.g., when switching from dashboard to map view)
+  const prevInitialValueRef = useRef<string | undefined>(initialValue);
+  useEffect(() => {
+    const prevInitialValue = prevInitialValueRef.current;
+    prevInitialValueRef.current = initialValue;
+    
+    // Handle both undefined (no initial value) and empty string (clear value)
+    // If we have an initialValue and it's different from current, update
+    // This is important for remounts - useState only initializes on first mount
+    if (initialValue !== undefined) {
+      const shouldUpdate = initialValue !== searchValue;
+      if (shouldUpdate) {
+        // Mark that we're restoring a value
+        isRestoringValueRef.current = true;
+        setSearchValue(initialValue);
+        lastInitialValueRef.current = initialValue;
+        // Resize textarea after setting value
+        if (inputRef.current) {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (inputRef.current) {
+                inputRef.current.style.height = 'auto';
+                const scrollHeight = inputRef.current.scrollHeight;
+                const maxHeight = 350;
+                const newHeight = Math.min(scrollHeight, maxHeight);
+                inputRef.current.style.height = `${newHeight}px`;
+                inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+                inputRef.current.style.minHeight = '28.1px';
+              }
+            });
+          });
+        }
+      }
+    }
+  }, [initialValue, isMapVisible, currentView]);
   
   // Use shared preview context
   const {
@@ -60,6 +234,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
     addPreviewFile,
     MAX_PREVIEW_TABS
   } = usePreview();
+  
+  // Use property selection context
+  const { 
+    isSelectionModeActive, 
+    toggleSelectionMode, 
+    setSelectionModeActive,
+    propertyAttachments, 
+    removePropertyAttachment,
+    clearPropertyAttachments 
+  } = usePropertySelection();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -84,7 +268,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   }, []);
   
   // Determine if we should use rounded corners (when there's content or attachment)
-  const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0;
+  const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0 || propertyAttachments.length > 0;
   
   // Adjust font size and padding on very small screens to ensure placeholder text fits
   // Use a more aggressive threshold to catch smaller screens
@@ -171,14 +355,42 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   }, [isHovered]);
 
   // Reset when resetTrigger changes
+  // But preserve value if we have an initialValue that should be preserved
+  const prevResetTriggerRef = useRef<number | undefined>(resetTrigger);
   useEffect(() => {
-    if (resetTrigger !== undefined) {
-      setSearchValue('');
-      setIsSubmitted(false);
-      setHasStartedTyping(false);
-      setIsFocused(false);
-      setAttachedFiles([]);
-      setIsMultiLine(false);
+    if (resetTrigger !== undefined && resetTrigger !== prevResetTriggerRef.current) {
+      prevResetTriggerRef.current = resetTrigger;
+      
+      // Only clear if we don't have an initialValue to preserve
+      // This prevents clearing when switching views
+      if (initialValue === undefined || initialValue === '') {
+        setSearchValue('');
+        setIsSubmitted(false);
+        setHasStartedTyping(false);
+        setIsFocused(false);
+        // Only clear attachments if we don't have initialAttachedFiles to preserve
+        if (initialAttachedFiles === undefined || initialAttachedFiles.length === 0) {
+          setAttachedFiles([]);
+          attachedFilesRef.current = []; // Update ref immediately
+        } else {
+          setAttachedFiles(initialAttachedFiles);
+          attachedFilesRef.current = initialAttachedFiles; // Update ref immediately
+        }
+      } else {
+        setSearchValue(initialValue);
+        // Also preserve attachments if initialAttachedFiles is provided
+        if (initialAttachedFiles !== undefined && initialAttachedFiles.length > 0) {
+          setAttachedFiles(initialAttachedFiles);
+          attachedFilesRef.current = initialAttachedFiles; // Update ref immediately
+        }
+      }
+      
+      // Preserve multi-line mode in dashboard view
+      if (!isMapVisible && !isInChatMode) {
+        setIsMultiLine(true);
+      } else {
+        setIsMultiLine(false);
+      }
       // Clear any pending query start calls
       if (queryStartTimeoutRef.current) {
         clearTimeout(queryStartTimeoutRef.current);
@@ -190,7 +402,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
         multiLineTimeoutRef.current = null;
       }
     }
-  }, [resetTrigger]);
+  }, [resetTrigger, initialValue, isMapVisible, isInChatMode]);
   
   // Close preview modal when leaving map view
   // This ensures preview doesn't persist when switching to dashboard/home
@@ -241,10 +453,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   // Only resets state - DOM reset is handled by useEffect after React updates
   const resetToInitialState = useCallback(() => {
     // Reset all state immediately and synchronously
-    setIsMultiLine(false);
+    // Preserve multi-line mode in dashboard view
+    if (!isMapVisible && !isInChatMode) {
+      setIsMultiLine(true);
+    } else {
+      setIsMultiLine(false);
+    }
     setIsSubmitted(false);
     setHasStartedTyping(false);
-      setAttachedFiles([]);
+    setAttachedFiles([]);
+    attachedFilesRef.current = []; // Update ref immediately
     
     // Clear any pending timeouts
     if (queryStartTimeoutRef.current) {
@@ -256,7 +474,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       multiLineTimeoutRef.current = null;
     }
     // Note: DOM reset is handled by useEffect that watches isMultiLine and searchValue
-  }, []);
+  }, [isMapVisible, isInChatMode]);
 
   // Helper function to reset textarea to initial state
   const resetTextareaToInitial = useCallback(() => {
@@ -312,6 +530,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   // Shared onChange handler for text organization logic
   // This ensures both textareas (single-line and multi-line) use the same logic
   const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Clear restore flag when user types
+    isRestoringValueRef.current = false;
     const value = e.target.value;
     // Preserve cursor position before state update
     const cursorPos = e.target.selectionStart;
@@ -322,7 +542,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
     // BUT keep the attachment - only clear it if user explicitly removes it
     if (!value.trim()) {
       // Reverse state changes
-      setIsMultiLine(false);
+      // Preserve multi-line mode in dashboard view
+      if (!isMapVisible && !isInChatMode) {
+        setIsMultiLine(true);
+      } else {
+        setIsMultiLine(false);
+      }
       setIsSubmitted(false);
       setHasStartedTyping(false);
       // Don't clear attachment here - let user remove it explicitly
@@ -354,19 +579,25 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       return;
     }
     
-    // Simple character-count based logic
-    const charCount = value.trim().length;
-    const multiLineCharThreshold = 40; // Switch to multi-line at 40 characters
-    const singleLineCharThreshold = 35; // Switch back to single-line at 35 characters (hysteresis)
-    
-    // Determine if we should be in multi-line mode
+    // Dashboard view: always multi-line (like MapChatBar)
+    // Map/Chat view: use character-count based logic
     let shouldBeMultiLine = false;
-    if (isMultiLine) {
-      // Already in multi-line: only exit if character count is below single-line threshold
-      shouldBeMultiLine = charCount >= singleLineCharThreshold;
+    if (!isMapVisible && !isInChatMode) {
+      // Dashboard view: always multi-line
+      shouldBeMultiLine = true;
     } else {
-      // Not in multi-line: only enter if character count reaches multi-line threshold
-      shouldBeMultiLine = charCount >= multiLineCharThreshold;
+      // Map/Chat view: character-count based logic
+      const charCount = value.trim().length;
+      const multiLineCharThreshold = 40; // Switch to multi-line at 40 characters
+      const singleLineCharThreshold = 35; // Switch back to single-line at 35 characters (hysteresis)
+      
+      if (isMultiLine) {
+        // Already in multi-line: only exit if character count is below single-line threshold
+        shouldBeMultiLine = charCount >= singleLineCharThreshold;
+      } else {
+        // Not in multi-line: only enter if character count reaches multi-line threshold
+        shouldBeMultiLine = charCount >= multiLineCharThreshold;
+      }
     }
     
     // Text organization logic
@@ -407,8 +638,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
         isDeletingRef.current = true;
         
         // Use flushSync to make state update synchronous and prevent keydown interruption
+        // Preserve multi-line mode in dashboard view
         flushSync(() => {
-          setIsMultiLine(false);
+          if (!isMapVisible && !isInChatMode) {
+            setIsMultiLine(true);
+          } else {
+            setIsMultiLine(false);
+          }
         });
         
         // Immediately restore focus and cursor synchronously after state update
@@ -555,7 +791,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
     // Preload immediately (don't await - let it happen in background)
     preloadBlobUrl();
     
-    setAttachedFiles(prev => [...prev, fileData]);
+    setAttachedFiles(prev => {
+      const updated = [...prev, fileData];
+      attachedFilesRef.current = updated; // Update ref immediately
+      // CRITICAL: Notify parent immediately when file is added (before state update completes)
+      if (onAttachmentsChange) {
+        onAttachmentsChange(updated);
+      }
+      return updated;
+    });
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
     onFileDrop?.(file);
@@ -563,20 +807,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
 
   // Expose handleFileDrop via ref for drag-and-drop
   useImperativeHandle(ref, () => {
-    console.log('🔗 SearchBar: useImperativeHandle called, exposing handleFileDrop');
-    const exposed = {
-    handleFileDrop: handleFileUpload
+    return {
+      handleFileDrop: handleFileUpload,
+      getValue: () => {
+        // Try to get value from input element first (most up-to-date), fallback to state
+        const inputValue = inputRef.current?.value || '';
+        const stateValue = searchValue || '';
+        return inputValue || stateValue;
+      },
+      getAttachments: () => {
+        // Read from ref for synchronous access to current attachments
+        return attachedFilesRef.current;
+      }
     };
-    console.log('🔗 SearchBar: Exposed object:', exposed);
-    return exposed;
-  }, [handleFileUpload]);
-
-  // Verify ref is set after mount
-  useEffect(() => {
-    if (ref && typeof ref !== 'function') {
-      console.log('✅ SearchBar: Ref is available after mount:', !!ref.current);
-    }
-  }, [ref]);
+  }, [handleFileUpload, searchValue, attachedFiles]);
 
   const handleRemoveFile = (id: string) => {
     // Clean up preloaded blob URL when file is removed
@@ -591,7 +835,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
       }
     }
     
-    setAttachedFiles(prev => prev.filter(file => file.id !== id));
+    setAttachedFiles(prev => {
+      const updated = prev.filter(file => file.id !== id);
+      attachedFilesRef.current = updated; // Update ref immediately
+      // CRITICAL: Notify parent immediately when file is removed (before state update completes)
+      if (onAttachmentsChange) {
+        onAttachmentsChange(updated);
+      }
+      return updated;
+    });
     // Remove from preview tabs if it was open
     setPreviewFiles(prev => {
       const newFiles = prev.filter(f => f.id !== id);
@@ -608,123 +860,124 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const submitted = searchValue.trim();
-    if ((submitted || attachedFiles.length > 0) && !isSubmitted) {
+    if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0) && !isSubmitted) {
       setIsSubmitted(true);
       
       // TODO: Include file in search when backend is ready
       onSearch?.(submitted);
       
-      // Reset the search bar state after submission
+      // Don't clear property attachments here - let SideChatPanel read them first
+      // SideChatPanel will clear them after initializing with them
+      // Turn off selection mode after submission if property attachments exist
+      if (propertyAttachments.length > 0) {
+        setSelectionModeActive(false);
+      }
+      
+      // Reset the search bar state after submission (but preserve property attachments)
       setTimeout(() => {
         setSearchValue('');
         setIsSubmitted(false);
         setHasStartedTyping(false);
         setAttachedFiles([]);
+        attachedFilesRef.current = []; // Update ref immediately
+        // Reset textarea
+        if (inputRef.current) {
+          const initialHeight = initialScrollHeightRef.current ?? 28.1;
+          inputRef.current.style.height = `${initialHeight}px`;
+          inputRef.current.style.overflowY = '';
+          inputRef.current.style.overflow = '';
+        }
       }, 100);
     }
   };
   
   return (
-    <motion.div 
+    <div 
       className={`${className || ''} ${
-        contextConfig.position === "bottom" 
+        contextConfig.position === "bottom" && !isMapVisible
           ? "fixed bottom-5 left-1/2 transform -translate-x-1/2 z-40" 
-          : "w-full flex justify-center px-6"
+          : isMapVisible 
+            ? "w-full" // No padding in map view - parent container handles positioning
+            : "w-full flex justify-center px-6"
       }`}
       style={{
-        ...(contextConfig.position !== "bottom" && { 
+        ...(contextConfig.position !== "bottom" && !isMapVisible && { 
           height: 'auto', 
           minHeight: 'fit-content',
           alignItems: 'center',
           paddingTop: '0',
           paddingBottom: '0'
         }),
+        // When in map view, don't add fixed positioning - let parent container handle it
+        ...(isMapVisible && {
+          position: 'relative',
+          zIndex: 'auto',
+          width: '100%',
+          display: 'block',
+          padding: '0' // Remove any padding in map view
+        }),
         overflow: 'visible'
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className="w-full mx-auto" style={{ 
-        maxWidth: isVerySmallScreen && !isMapVisible 
-          ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
-          : contextConfig.maxWidth,
+      <div className={isMapVisible ? "w-full" : "w-full mx-auto"} style={{ 
+        maxWidth: isMapVisible 
+          ? '100%' // In map view, use 100% width - parent container handles max width
+          : (isVerySmallScreen && !isMapVisible 
+            ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
+            : contextConfig.maxWidth),
         minWidth: '0', // Allow flexibility on very small screens - parent container handles spacing
-        width: isMapVisible ? contextConfig.maxWidth : '100%', // Explicit width in map view to match dashboard
+        width: '100%', // Always 100% width - let parent container handle constraints
         boxSizing: 'border-box' // Ensure padding is included in width calculation
       }}>
         <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
-            <motion.div 
-            layout
+            <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
               style={{
                 background: '#ffffff',
                 border: '1px solid #E5E7EB',
-              boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
-              paddingTop: isMultiLine ? '16px' : '14px',
-              paddingBottom: isMultiLine ? '12px' : '14px',
-              paddingRight: paddingRight,
-              paddingLeft: paddingLeft,
-              willChange: 'border-radius, padding-left, padding-top, padding-bottom, height',
-              overflow: 'visible',
-              width: '100%',
-              minWidth: '0', // Prevent width issues in multi-line
-              height: 'auto',
-              minHeight: 'fit-content',
-              boxSizing: 'border-box', // Ensure padding is included in width
-              borderRadius: hasContent
-                ? '12px' // ChatGPT-style rounded corners when there's content or attachment
-                : contextConfig.isSquare 
-                  ? '8px' // Square corners for dashboard view
-                  : '9999px' // Fully rounded for map/chat view when no content
-            }}
-            animate={{
-              paddingLeft: paddingLeft,
-              paddingTop: isMultiLine ? '16px' : '14px',
-              paddingBottom: isMultiLine ? '12px' : '14px',
-              borderRadius: hasContent
-                ? '12px' // ChatGPT-style rounded corners when there's content or attachment
-                : contextConfig.isSquare 
-                  ? '8px' // Square corners for dashboard view
-                  : '9999px', // Fully rounded for map/chat view when no content
-              height: 'auto'
-            }}
-            transition={{ 
-              paddingLeft: {
-                duration: (!searchValue.trim() && attachedFiles.length > 0) ? 0 : 0.3, // Instant when text deleted with attachment
-                ease: [0.4, 0, 0.2, 1]
-              },
-              paddingTop: {
-                duration: (!searchValue.trim() && !isMultiLine) || (!searchValue.trim() && attachedFiles.length > 0) ? 0 : 0.2, // Instant when resetting or when text deleted with attachment
-                ease: [0.4, 0, 0.2, 1]
-              },
-              paddingBottom: {
-                duration: (!searchValue.trim() && !isMultiLine) || (!searchValue.trim() && attachedFiles.length > 0) ? 0 : 0.2, // Instant when resetting or when text deleted with attachment
-                ease: [0.4, 0, 0.2, 1]
-              },
-              borderRadius: {
-                duration: (!searchValue.trim() && attachedFiles.length > 0) ? 0 : 0.25, // Instant when text deleted with attachment
-                ease: [0.4, 0, 0.2, 1]
-              },
-              layout: {
-                duration: (!searchValue.trim() && attachedFiles.length > 0) ? 0 : 0.3, // Instant when text deleted with attachment
-                ease: [0.4, 0, 0.2, 1]
-              }
-            }}
-          >
+                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                paddingTop: '16px',
+                paddingBottom: '16px',
+                paddingRight: '16px',
+                paddingLeft: '16px',
+                overflow: 'visible',
+                width: '100%',
+                minWidth: '0',
+                height: 'auto',
+                minHeight: 'fit-content',
+                boxSizing: 'border-box',
+                borderRadius: '12px' // Always 12px rounded corners
+              }}
+            >
+            {/* Property Attachments Display - Above textarea (like MapChatBar) */}
+            {propertyAttachments.length > 0 && (
+              <div 
+                style={{ 
+                  height: 'auto', 
+                  marginBottom: '12px',
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                  width: '100%'
+                }}
+              >
+                {propertyAttachments.map((property) => (
+                  <PropertyAttachment
+                    key={property.id}
+                    attachment={property}
+                    onRemove={removePropertyAttachment}
+                  />
+                ))}
+              </div>
+            )}
+            
             {/* File Attachments Display - Inside search bar container, top-left */}
-            <AnimatePresence mode="wait">
-              {attachedFiles.length > 0 && (
-                <motion.div 
-                  initial={false}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ 
-                    duration: 0.1,
-                    ease: "easeOut"
-                  }}
+            {attachedFiles.length > 0 && (
+                <div 
                   style={{ height: 'auto' }}
                   className="mb-4 flex flex-wrap gap-2 justify-start"
-                  layout={false}
                 >
                   {attachedFiles.map((file) => (
                   <FileAttachment
@@ -737,53 +990,49 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     }}
                   />
                   ))}
-                </motion.div>
+                </div>
               )}
-            </AnimatePresence>
             
-            {/* Input row - ONE textarea that changes position based on multi-line state */}
-            <motion.div 
-              className={`relative flex ${isMultiLine ? 'flex-col' : 'items-end'} w-full`} 
+            {/* Input row - Always show icons at bottom */}
+            <div 
+              className="relative flex flex-col w-full" 
               style={{ 
                 height: 'auto', 
                 minHeight: '28.1px',
                 width: '100%',
                 minWidth: '0' // Prevent width constraints
               }}
-              layout
-              transition={{ 
-                duration: !searchValue.trim() ? 0 : 0.2, 
-                ease: [0.4, 0, 0.2, 1] 
-              }}
             >
-              {/* Top row for multi-line: textarea spans full width ABOVE icons */}
-              {isMultiLine && (
-                <motion.div 
-                  className="flex items-start w-full"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-                  style={{ 
-                    minHeight: '28.1px',
-                    width: '100%',
-                    marginBottom: '12px' // Space between text and icons
-                  }}
-                >
+              {/* Textarea always above icons */}
+              <div 
+                className="flex items-start w-full"
+                style={{ 
+                  minHeight: '28.1px',
+                  width: '100%',
+                  marginBottom: '12px' // Space between text and icons
+                }}
+              >
                   <div className="flex-1 relative flex items-start w-full" style={{ 
                     overflow: 'visible', 
                     minHeight: '28.1px',
                     width: '100%',
                     minWidth: '0'
                   }}>
-                    {/* ONE textarea - always rendered, never recreated, never unmounted */}
-                    <motion.textarea 
+                    {/* Textarea - always rendered */}
+                    <textarea 
                       key="textarea-single-instance"
-                      layout={false}
                       ref={inputRef}
                       value={searchValue}
                       onChange={handleTextareaChange}
-                      onFocus={() => setIsFocused(true)} 
+                      onFocus={(e) => {
+                        setIsFocused(true);
+                        // If we have a restored value and cursor is at start, move it to end
+                        if (isRestoringValueRef.current && searchValue && e.target.selectionStart === 0 && e.target.value.length > 0) {
+                          const textLength = e.target.value.length;
+                          e.target.setSelectionRange(textLength, textLength);
+                          isRestoringValueRef.current = false;
+                        }
+                      }} 
                       onBlur={() => setIsFocused(false)} 
                       onKeyDown={e => { 
                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -799,7 +1048,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                         }
                       }} 
                       placeholder={contextConfig.placeholder}
-                      className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 transition-all duration-200 ease-out"
+                      className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
                         minHeight: '28.1px',
                         maxHeight: '350px',
@@ -808,13 +1057,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                         paddingTop: '0px',
                         paddingBottom: '0px',
                         paddingRight: '0px', // No right padding in multi-line, icons are below
-                        paddingLeft: '0px',
+                        paddingLeft: '8px', // Match MapChatBar padding
                         scrollbarWidth: 'thin',
                         scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                         overflow: 'hidden',
                         overflowY: 'auto',
                         wordWrap: 'break-word',
-                        transition: !searchValue.trim() ? 'none' : 'height 0.2s ease-out, overflow 0.2s ease-out',
+                        transition: 'none',
                         resize: 'none',
                         width: '100%',
                         minWidth: '0'
@@ -824,116 +1073,107 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                       rows={1}
                     />
                   </div>
-                </motion.div>
-              )}
+                </div>
               
-              {/* Single-line or bottom row: map icon, text, and icons */}
-              <motion.div 
-                className={`relative flex ${isMultiLine ? 'items-center justify-end space-x-3 w-full' : 'items-end w-full'}`}
+              {/* Icons row - Panel toggle, Map toggle on left, other icons on right */}
+              <div 
+                className="relative flex items-center justify-between w-full"
                 style={{
                   width: '100%',
-                  minWidth: '0'
-                }}
-                layout
-                transition={{ 
-                  duration: !searchValue.trim() ? 0 : 0.2, 
-                  ease: [0.4, 0, 0.2, 1] 
+                  minWidth: '0',
+                  flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Map Toggle Button */}
-              {contextConfig.showMapToggle && (
-                <motion.button 
-                  type="button" 
-                  onClick={(e) => {
-                    console.log('🗺️ Map button clicked!', { 
-                      hasOnMapToggle: !!onMapToggle,
-                      currentVisibility: isMapVisible 
-                    });
-                    onMapToggle?.();
-                  }}
-                    className={`flex-shrink-0 ${isMultiLine ? '' : 'mr-6'} flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none ${
-                    isMapVisible 
-                        ? 'text-slate-500 hover:text-blue-500'
-                        : 'text-slate-500 hover:text-green-500'
-                    } self-end`}
-                    initial={{ y: -2.3 }}
-                    animate={{ y: -2.3 }}
-                  title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                  whileHover={{ 
-                    scale: 1.05,
-                      rotate: 2,
-                      y: -2.3
-                  }}
-                  whileTap={{ 
-                    scale: 0.95,
-                      rotate: -2,
-                      y: -2.3
-                  }}
-                  transition={{
-                    duration: !searchValue.trim() ? 0 : 0.15,
-                    ease: "easeOut"
-                  }}
-                >
-                    {isMapVisible ? (
-                      <LayoutDashboard className="w-[21px] h-[21px]" strokeWidth={1.5} />
-                    ) : (
-                      <Map className="w-[21px] h-[21px]" strokeWidth={1.5} />
-                    )}
-                </motion.button>
-              )}
+                {/* Left group: Panel toggle and Map toggle */}
+                <div className="flex items-center flex-shrink-0">
+                  {/* Panel Toggle Button (only in map view with previous session) */}
+                  {isMapVisible && hasPreviousSession && onPanelToggle && (
+                    <button
+                      type="button"
+                      onClick={onPanelToggle}
+                      className="flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none text-slate-600 hover:text-green-500"
+                      style={{
+                        position: 'relative',
+                        flexShrink: 0,
+                        width: '28px',
+                        height: '28px',
+                        minWidth: '28px',
+                        minHeight: '28px',
+                        marginLeft: '4px' // Align with textarea text start
+                      }}
+                      title="Open chat history"
+                    >
+                      <PanelRightOpen className="w-5 h-5" strokeWidth={1.5} />
+                    </button>
+                  )}
+                  
+                  {/* Map Toggle Button - Aligned with text start */}
+                  {contextConfig.showMapToggle && (
+                    <button 
+                      type="button" 
+                      onClick={(e) => {
+                        console.log('🗺️ Map button clicked!', { 
+                          hasOnMapToggle: !!onMapToggle,
+                          currentVisibility: isMapVisible 
+                        });
+                        onMapToggle?.();
+                      }}
+                        className="flex-shrink-0 flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none text-slate-600 hover:text-green-500"
+                      style={{
+                        position: 'relative',
+                        flexShrink: 0,
+                        width: '28px',
+                        height: '28px',
+                        minWidth: '28px',
+                        minHeight: '28px',
+                        marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px' // Add spacing if panel toggle is present
+                      }}
+                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
+                    >
+                        {isMapVisible ? (
+                          <LayoutDashboard className="w-[21px] h-[21px]" strokeWidth={1.5} />
+                        ) : (
+                          <Map className="w-[21px] h-[21px]" strokeWidth={1.5} />
+                        )}
+                    </button>
+                  )}
+                </div>
               
-                {/* ONE textarea for single-line layout - SAME INSTANCE as above, React reuses it via key */}
-                {!isMultiLine && (
-                  <div className="flex-1 relative flex items-end" style={{ overflow: 'visible' }}>
-                    <motion.textarea 
-                      key="textarea-single-instance"
-                      layout={false}
-                  ref={inputRef}
-                  value={searchValue} 
-                      onChange={handleTextareaChange}
-                  onFocus={() => setIsFocused(true)} 
-                  onBlur={() => setIsFocused(false)} 
-                    onKeyDown={e => { 
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSubmit(e);
-                      }
-                        // Track if delete/backspace is being held
-                        if (e.key === 'Backspace' || e.key === 'Delete') {
-                          isDeletingRef.current = true;
-                          setTimeout(() => {
-                            isDeletingRef.current = false;
-                          }, 200);
-                      }
-                    }} 
-                  placeholder={contextConfig.placeholder}
-                      className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 transition-all duration-200 ease-out"
-                    style={{
-                      minHeight: '28.1px',
-                      maxHeight: '350px',
-                      fontSize: 'clamp(14px, 2vw, 16px)',
-                      lineHeight: 'clamp(20px, 2.75vw, 22px)',
-                      paddingTop: '0px',
-                      paddingBottom: '0px',
-                      paddingRight: isVerySmallScreen ? '8px' : 'clamp(8px, 2vw, 16px)',
-                      scrollbarWidth: 'thin',
-                      scrollbarColor: '#D1D5DB transparent',
-                      overflow: 'hidden',
-                      overflowY: 'visible',
-                      verticalAlign: 'bottom',
-                      transition: 'height 0.2s ease-out, overflow 0.2s ease-out'
-                    }}
-                  autoComplete="off" 
-                  disabled={isSubmitted}
-                    rows={1}
-                />
-              </div>
-                )}
-              
-                <div className={`flex items-center space-x-3 ${isMultiLine ? 'w-full justify-end' : 'ml-4 self-end'}`} style={{ 
-                  width: isMultiLine ? '100%' : 'auto',
-                  minWidth: '0'
+                {/* Other icons - on the right */}
+                <div className="flex items-center space-x-3 flex-shrink-0" style={{ 
+                  minWidth: '0',
+                  flexShrink: 0
                 }}>
+                {/* Property Selection Toggle Button (only in map view) */}
+                {isMapVisible && (
+                  <button
+                    type="button"
+                    onClick={toggleSelectionMode}
+                    className={`p-1 transition-colors ${
+                      propertyAttachments.length > 0
+                        ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                        : isSelectionModeActive 
+                          ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
+                          : 'text-slate-600 hover:text-green-500'
+                    }`}
+                    title={
+                      propertyAttachments.length > 0
+                        ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
+                        : isSelectionModeActive 
+                          ? "Property selection mode active - Click property cards to add them" 
+                          : "Select property cards"
+                    }
+                  >
+                    {propertyAttachments.length > 0 ? (
+                      <Fullscreen className="w-5 h-5" strokeWidth={1.5} />
+                    ) : isSelectionModeActive ? (
+                      <Scan className="w-5 h-5" strokeWidth={1.5} />
+                    ) : (
+                      <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                    )}
+                  </button>
+                )}
+                
                 {contextConfig.showMic && (
                   <ImageUploadButton
                     onImageUpload={(query) => {
@@ -946,18 +1186,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                 )}
                   
                   {contextConfig.showMic && (
-                    <motion.button
+                    <button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center justify-center w-7 h-7 text-black hover:text-gray-700 transition-colors focus:outline-none outline-none"
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
+                      className="flex items-center justify-center w-7 h-7 text-slate-600 hover:text-green-500 transition-colors focus:outline-none outline-none"
                     >
                       <Mic className="w-5 h-5" strokeWidth={1.5} />
-                    </motion.button>
+                    </button>
                   )}
                 
-                <motion.button 
+                <button 
                   type="submit" 
                   onClick={handleSubmit} 
                   className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
@@ -966,57 +1204,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void }, Se
                     height: '32px',
                     minWidth: '32px',
                     minHeight: '32px',
-                    borderRadius: '50%'
+                    borderRadius: '50%',
+                    backgroundColor: (searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : (isMapVisible ? '#F3F4F6' : 'transparent')
                   }}
-                  animate={{
-                      backgroundColor: (searchValue.trim() || attachedFiles.length > 0) ? '#415C85' : 'transparent'
-                  }}
-                    disabled={isSubmitted || (!searchValue.trim() && attachedFiles.length === 0)}
-                    whileHover={(!isSubmitted && (searchValue.trim() || attachedFiles.length > 0)) ? { 
-                    scale: 1.05
-                  } : {}}
-                    whileTap={(!isSubmitted && (searchValue.trim() || attachedFiles.length > 0)) ? { 
-                    scale: 0.95
-                  } : {}}
-                  transition={{
-                    duration: !searchValue.trim() ? 0 : 0.2,
-                    ease: [0.16, 1, 0.3, 1]
-                  }}
+                    disabled={isSubmitted || (!searchValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
                 >
-                  <motion.div
-                    key="chevron-right"
-                    initial={{ opacity: 1 }}
-                      animate={{ opacity: (searchValue.trim() || attachedFiles.length > 0) ? 0 : 1 }}
-                    transition={{
-                      duration: !searchValue.trim() ? 0 : 0.2,
-                      ease: [0.16, 1, 0.3, 1]
-                    }}
-                    className="absolute inset-0 flex items-center justify-center"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
-                  </motion.div>
-                  <motion.div
-                    key="arrow-up"
-                    initial={{ opacity: 0 }}
-                      animate={{ opacity: (searchValue.trim() || attachedFiles.length > 0) ? 1 : 0 }}
-                    transition={{
-                      duration: !searchValue.trim() ? 0 : 0.2,
-                      ease: [0.16, 1, 0.3, 1]
-                    }}
-                    className="absolute inset-0 flex items-center justify-center"
-                    style={{ pointerEvents: 'none' }}
-                  >
+                  {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? (
                     <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
-                  </motion.div>
-                </motion.button>
+                  ) : (
+                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                  )}
+                </button>
                 </div>
-              </motion.div>
-            </motion.div>
-            </motion.div>
+              </div>
+            </div>
+            </div>
           </form>
       </div>
       {/* Document Preview Modal is now rendered at MainContent level using shared context */}
-    </motion.div>
+    </div>
   );
 });

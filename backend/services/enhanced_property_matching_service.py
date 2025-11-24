@@ -296,6 +296,13 @@ class EnhancedPropertyMatchingService:
         property_id = property_data.get('id') or property_data.get('property_id')
         if not property_id:
             raise ValueError("Property data missing 'id' or 'property_id' field")
+        
+        # CRITICAL: If property has geocoding_status: 'manual', it has a user-set pin location
+        # Documents added after property creation must NEVER alter the property pin location
+        # The pin location is set once during property creation and remains fixed
+        geocoding_status = property_data.get('geocoding_status')
+        if geocoding_status == 'manual':
+            logger.info(f"⚠️ Property {property_id} has user-set pin location (geocoding_status: 'manual'). Property pin location is immutable after creation.")
             
         return {
             'success': True,

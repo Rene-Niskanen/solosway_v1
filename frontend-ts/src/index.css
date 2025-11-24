@@ -229,6 +229,15 @@
     border: 1px solid rgba(255, 255, 255, 0.1);
   }
 
+  /* Dashboard Glassmorphism - Enhanced for map backdrop */
+  .glass-dashboard {
+    background: transparent;
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  }
+
   /* Gradient Text */
   .gradient-text {
     background: var(--gradient-primary);
@@ -394,4 +403,13 @@ button:focus-visible:not(:focus-within) {
 
 .docx-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
+}
+
+/* Material Symbols Outlined */
+.material-symbols-outlined {
+  font-variation-settings:
+    'FILL' 0,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24;
 }

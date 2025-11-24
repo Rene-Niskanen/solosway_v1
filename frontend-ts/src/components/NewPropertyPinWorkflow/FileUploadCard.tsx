@@ -111,9 +111,10 @@ export const FileUploadCard: React.FC<FileUploadCardProps> = ({
 
   return (
     <div 
-      className="bg-white flex flex-col h-full w-full"
+      className="flex flex-col h-full w-full"
       style={{
-        padding: 0
+        padding: 0,
+        backgroundColor: 'transparent'
       }}
     >
       {/* Demo Documents Upload Area */}
@@ -125,11 +126,11 @@ export const FileUploadCard: React.FC<FileUploadCardProps> = ({
         className="flex flex-col items-center justify-center cursor-pointer w-full h-full relative overflow-hidden group"
         style={{
           minHeight: '100%',
-          backgroundColor: isDragOver ? '#F9FAFB' : 'white'
+          backgroundColor: isDragOver ? '#2A2A2A' : 'transparent'
         }}
       >
         {/* Foreground Docs */}
-        <div className="flex items-end justify-center z-10 mt-12 group-hover:-translate-y-2 transition-transform duration-300 w-full px-3 relative">
+        <div className="flex items-end justify-center z-10 mt-0 group-hover:-translate-y-2 transition-transform duration-300 w-full px-3 relative">
           
           {/* Left Doc (Background) */}
           <div 
@@ -194,10 +195,11 @@ export const FileUploadCard: React.FC<FileUploadCardProps> = ({
             {files.map((uploadedFile) => (
               <div
                 key={uploadedFile.id}
-                className="bg-gray-50 rounded-lg"
+                className="bg-gray-50"
                 style={{
                   padding: '16px',
-                  border: '1px solid #E5E7EB'
+                  border: '1px solid #E5E7EB',
+                  borderRadius: '0'
                 }}
               >
                 <div className="flex items-start justify-between">

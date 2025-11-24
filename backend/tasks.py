@@ -1570,6 +1570,12 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         'address_source': address_source
                     }
                     
+                    # CRITICAL: Check if property already exists with user-set pin location (geocoding_status: 'manual')
+                    # If property has geocoding_status: 'manual', DO NOT update coordinates from document geocoding
+                    # Property pin location is immutable after creation - documents added after property creation must NEVER alter it
+                    # Note: The enhanced_property_matching_service will find existing properties and link documents to them
+                    # but will not update property coordinates. This ensures user-set pin locations remain fixed.
+                    
                     print(f"✅ Address normalized:")
                     print(f"   Original: {address_data['original_address']}")
                     print(f"   Normalized: {address_data['normalized_address']}")
@@ -2289,6 +2295,12 @@ def store_extracted_properties_in_supabase(extracted_data, business_id, document
                     'geocoding_confidence': geocoding_result.get('confidence', 0.0),
                     'address_source': 'extraction'
                 }
+                
+                # CRITICAL: Check if property already exists with user-set pin location (geocoding_status: 'manual')
+                # If property has geocoding_status: 'manual', DO NOT update coordinates from document geocoding
+                # Property pin location is immutable after creation - documents added after property creation must NEVER alter it
+                # Note: The enhanced_property_matching_service will find existing properties and link documents to them
+                # but will not update property coordinates. This ensures user-set pin locations remain fixed.
 
                 # before calling the create document relationship function - check if relationship already exists
                 from .services.supabase_property_hub_service import SupabasePropertyHubService

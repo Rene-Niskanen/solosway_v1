@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, CloudUpload, X, Upload, FileText, MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Star, Image as ImageIcon, Globe, Trash2 } from 'lucide-react';
+import { File, X, Upload, FileText, MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Star, Image as ImageIcon, Globe, Trash2 } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -58,8 +58,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const uploadProgressRef = useRef<number>(0); // Track progress to prevent backward jumps
-  const [isPropertyCardDragging, setIsPropertyCardDragging] = useState(false);
-  const [propertyCardDragCounter, setPropertyCardDragCounter] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showContributorsPopup, setShowContributorsPopup] = useState(false);
   const contributorsPopupRef = useRef<HTMLDivElement>(null);
@@ -68,6 +66,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isDraggingToDelete, setIsDraggingToDelete] = useState(false);
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  // Store original pin coordinates (user-set location) - don't let backend data override them
+  const originalPinCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   
   // Helper function to save property to recent projects (only when user actually interacts)
   const saveToRecentProjects = React.useCallback((propertyToSave: any) => {
@@ -80,20 +80,40 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
     
+    // Calculate document count using the same logic as PropertyDetailsPanel display
+    // Priority: 1. documents.length, 2. propertyHub?.documents?.length, 3. documentCount/document_count
+    let docCount = 0;
+    if (documents.length > 0) {
+      docCount = documents.length;
+    } else if (propertyToSave.propertyHub?.documents?.length) {
+      docCount = propertyToSave.propertyHub.documents.length;
+    } else if (propertyToSave.documentCount) {
+      docCount = propertyToSave.documentCount;
+    } else if (propertyToSave.document_count) {
+      docCount = propertyToSave.document_count;
+    }
+    
+    // CRITICAL: Save property pin location (user-set final coordinates from Create Property Card), not document-extracted coordinates
+    // This is where the user placed/confirmed the pin. Only use coordinates if geocoding_status === 'manual'
+    const geocodingStatus = propertyToSave.geocoding_status;
+    const isPinLocation = geocodingStatus === 'manual';
+    const pinLatitude = isPinLocation ? (propertyToSave.latitude || originalPinCoordsRef.current?.lat) : originalPinCoordsRef.current?.lat;
+    const pinLongitude = isPinLocation ? (propertyToSave.longitude || originalPinCoordsRef.current?.lng) : originalPinCoordsRef.current?.lng;
+    
     const lastProperty = {
       id: propertyToSave.id,
       address: propertyToSave.address,
-      latitude: propertyToSave.latitude,
-      longitude: propertyToSave.longitude,
+      latitude: pinLatitude, // Property pin location (user-set), not document-extracted coordinates
+      longitude: pinLongitude, // Property pin location (user-set), not document-extracted coordinates
       primary_image_url: propertyToSave.primary_image_url || propertyToSave.image,
-      documentCount: propertyToSave.documentCount || propertyToSave.document_count || documents.length,
+      documentCount: docCount,
       timestamp: new Date().toISOString()
     };
     
     localStorage.setItem('lastInteractedProperty', JSON.stringify(lastProperty));
     // Dispatch custom event to update RecentProjectsSection in the same tab
     window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
-    console.log('💾 Saved property to recent projects after interaction:', lastProperty.address);
+    console.log('💾 Saved property to recent projects after interaction:', lastProperty.address, `(${docCount} docs)`);
   }, [documents.length]);
   
   // State for cached property card data
@@ -253,6 +273,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       const propertyId = property.id;
       const cacheKey = `propertyCardCache_${propertyId}`;
       
+      // IMPORTANT: Store original pin coordinates BEFORE backend fetch might override them
+      // These are the user-set pin location, not property data coordinates
+      // Reset and store new coordinates when property changes
+      if (property.latitude && property.longitude) {
+        originalPinCoordsRef.current = { lat: property.latitude, lng: property.longitude };
+        console.log('📍 Stored original pin coordinates for property:', propertyId, originalPinCoordsRef.current);
+      } else {
+        // Clear if no coordinates available
+        originalPinCoordsRef.current = null;
+      }
+      
       // OPTIMIZATION: If we already have cached data from synchronous init, skip cache check
       // Only check cache if we don't have it yet (property changed)
       let hasValidCache = !!cachedPropertyData;
@@ -295,11 +326,23 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         .then((response) => {
           if (response.success && response.data) {
             // Transform card summary data to match property object format
+            // CRITICAL: Cached property location is ALWAYS the property pin location (user-set), NEVER document-extracted coordinates
+            // Only use coordinates if they represent user-set pin location (geocoding_status: 'manual')
+            // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
+            const geocodingStatus = response.data.geocoding_status || property.geocoding_status;
+            const isPinLocation = geocodingStatus === 'manual';
+            
+            // Use pin coordinates (user-set) if available, otherwise fall back only if geocoding_status is 'manual'
+            const pinCoords = originalPinCoordsRef.current || 
+              (isPinLocation && property.latitude && property.longitude ? { lat: property.latitude, lng: property.longitude } : null);
+            
             const transformedData = {
               ...property, // Keep existing property data
               address: response.data.address || property.address,
-              latitude: response.data.latitude || property.latitude,
-              longitude: response.data.longitude || property.longitude,
+              // Use pin location coordinates (user-set) only, never document-extracted coordinates
+              latitude: pinCoords ? pinCoords.lat : (isPinLocation ? (response.data.latitude || property.latitude) : null),
+              longitude: pinCoords ? pinCoords.lng : (isPinLocation ? (response.data.longitude || property.longitude) : null),
+              geocoding_status: geocodingStatus, // Store geocoding_status to identify pin locations
               primary_image_url: response.data.primary_image_url,
               image: response.data.primary_image_url || property.image,
               property_type: response.data.property_type || property.property_type,
@@ -425,16 +468,49 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         }
         (window as any).__preloadedPropertyFiles[property.id] = documentsToUse;
         console.log('✅ Stored documents in preloaded cache for property:', property.id);
+        
+        // Update recent projects with accurate document count (documents.length takes priority)
+        if (property) {
+          saveToRecentProjects({
+            ...property,
+            propertyHub: {
+              ...property.propertyHub,
+              documents: documentsToUse
+            }
+          });
+        }
       } else {
         // Fallback to propertyHub documents if API returns nothing
         if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
           console.log('📄 Using propertyHub documents as fallback:', property.propertyHub.documents.length);
           setDocuments(property.propertyHub.documents);
           setHasFilesFetched(true);
+          
+          // Update recent projects (propertyHub.documents takes priority when documents.length is 0)
+          if (property) {
+            saveToRecentProjects({
+              ...property,
+              propertyHub: {
+                ...property.propertyHub,
+                documents: property.propertyHub.documents
+              }
+            });
+          }
         } else {
           console.log('⚠️ No documents found for property:', property.id);
           setDocuments([]);
           setHasFilesFetched(false);
+          
+          // Update recent projects with 0 documents
+          if (property) {
+            saveToRecentProjects({
+              ...property,
+              propertyHub: {
+                ...property.propertyHub,
+                documents: []
+              }
+            });
+          }
         }
       }
     } catch (err) {
@@ -444,8 +520,30 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
         console.log('📄 Using propertyHub documents as error fallback');
         setDocuments(property.propertyHub.documents);
+        
+        // Update recent projects (propertyHub.documents takes priority when documents.length is 0)
+        if (property) {
+          saveToRecentProjects({
+            ...property,
+            propertyHub: {
+              ...property.propertyHub,
+              documents: property.propertyHub.documents
+            }
+          });
+        }
       } else {
         setDocuments([]);
+        
+        // Update recent projects with 0 documents
+        if (property) {
+          saveToRecentProjects({
+            ...property,
+            propertyHub: {
+              ...property.propertyHub,
+              documents: []
+            }
+          });
+        }
       }
     }
   };
@@ -1129,45 +1227,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   };
 
-  // Property card drag and drop handlers
-  const handlePropertyCardDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setPropertyCardDragCounter(prev => prev + 1);
-    setIsPropertyCardDragging(true);
-  };
-
-  const handlePropertyCardDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handlePropertyCardDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setPropertyCardDragCounter(prev => {
-      const newCount = prev - 1;
-      if (newCount === 0) {
-        setIsPropertyCardDragging(false);
-      }
-      return newCount;
-    });
-  };
-
-  const handlePropertyCardDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    setIsPropertyCardDragging(false);
-    setPropertyCardDragCounter(0);
-
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      files.forEach(file => {
-        handleFileUpload(file);
-      });
-    }
-  };
 
   // Expanded Card View Component - shows document preview within container
   const ExpandedCardView: React.FC<{
@@ -1469,40 +1528,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             opacity: 1, // Ensure full opacity
             height: `${panelHeight}px`, // Fixed height - default collapsed size, don't grow with content
             maxHeight: `${panelMaxHeight}px`, // Ensure it never exceeds max height
-            borderColor: isPropertyCardDragging 
-              ? '#60a5fa' 
-              : isPropertySelected
-                ? '#22c55e'
-                : isSelectionModeActive 
-                  ? '#3b82f6' 
-                  : '#e5e7eb',
-            borderWidth: (isPropertyCardDragging || isSelectionModeActive || isPropertySelected) ? '2px' : '1px',
-            borderStyle: isPropertyCardDragging ? 'dashed' : 'solid',
+            borderColor: isPropertySelected
+              ? '#22c55e'
+              : isSelectionModeActive 
+                ? '#3b82f6' 
+                : '#e5e7eb',
+            borderWidth: (isSelectionModeActive || isPropertySelected) ? '2px' : '1px',
+            borderStyle: 'solid',
             pointerEvents: isSelectionModeActive ? 'auto' : 'auto',
           }}
           layout={false}
-          onDragEnter={handlePropertyCardDragEnter}
-          onDragOver={handlePropertyCardDragOver}
-          onDragLeave={handlePropertyCardDragLeave}
-          onDrop={handlePropertyCardDrop}
         >
-          {/* Drag and Drop Overlay */}
-          <AnimatePresence>
-            {isPropertyCardDragging && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-blue-50/50 z-[60] flex items-center justify-center rounded-lg"
-                style={{ pointerEvents: 'none' }}
-              >
-                <div className="flex flex-col items-center gap-3">
-                  <CloudUpload className="w-12 h-12 text-blue-500" />
-                  <p className="text-sm font-medium text-blue-700">Drop files here to add to property</p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
           
           {/* Hidden file input */}
           <input

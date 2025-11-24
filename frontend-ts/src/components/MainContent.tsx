@@ -28,7 +28,6 @@ import { usePreview } from '../contexts/PreviewContext';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
-import { MapChatBar } from './MapChatBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1390,6 +1389,7 @@ export interface MainContentProps {
   getSidebarState?: () => boolean;
   isSidebarCollapsed?: boolean;
   onSidebarToggle?: () => void;
+  onMapVisibilityChange?: (isVisible: boolean) => void; // Callback to notify parent of map visibility changes
 }
 export const MainContent = ({
   className,
@@ -1407,7 +1407,8 @@ export const MainContent = ({
   onRestoreSidebarState,
   getSidebarState,
   isSidebarCollapsed = false,
-  onSidebarToggle
+  onSidebarToggle,
+  onMapVisibilityChange
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const [chatQuery, setChatQuery] = React.useState<string>("");
@@ -1417,6 +1418,24 @@ export const MainContent = ({
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  
+  // Notify parent of map visibility changes
+  React.useEffect(() => {
+    onMapVisibilityChange?.(isMapVisible);
+  }, [isMapVisible, onMapVisibilityChange]);
+  const [pendingMapQuery, setPendingMapQuery] = React.useState<string>(""); // Store query when switching to map view
+  const pendingMapQueryRef = React.useRef<string>(""); // Ref to store query synchronously for immediate access
+  const [pendingDashboardQuery, setPendingDashboardQuery] = React.useState<string>(""); // Store query when switching from map to dashboard
+  const pendingDashboardQueryRef = React.useRef<string>(""); // Ref to store query synchronously for immediate access
+  // Store file attachments when switching views
+  const [pendingMapAttachments, setPendingMapAttachments] = React.useState<FileAttachmentData[]>([]);
+  const pendingMapAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
+  const [pendingDashboardAttachments, setPendingDashboardAttachments] = React.useState<FileAttachmentData[]>([]);
+  const pendingDashboardAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
+  // Store SideChatPanel attachments separately
+  const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
+  const pendingSideChatAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
+  const sideChatPanelRef = React.useRef<{ getAttachments: () => FileAttachmentData[] } | null>(null);
   const [restoreChatId, setRestoreChatId] = React.useState<string | null>(null);
   const [userData, setUserData] = React.useState<any>(null);
   const [showNewPropertyWorkflow, setShowNewPropertyWorkflow] = React.useState<boolean>(false);
@@ -1717,11 +1736,238 @@ export const MainContent = ({
   }, []);
 
   const handleMapToggle = () => {
-    console.log('🗺️ MainContent handleMapToggle called!', { 
-      currentState: isMapVisible,
-      willChangeTo: !isMapVisible 
-    });
-    setIsMapVisible(prev => !prev);
+    // If switching to map view, capture the current SearchBar value BEFORE state change
+    if (!isMapVisible) {
+      // Capture value synchronously before any state updates
+      let currentQuery = '';
+      
+      if (searchBarRef.current?.getValue) {
+        try {
+          currentQuery = searchBarRef.current.getValue();
+        } catch (error) {
+          console.error('Error calling getValue on dashboard SearchBar ref:', error);
+          // Fallback: try to get value from DOM
+          try {
+            const searchBarInput = document.querySelector('textarea[placeholder*="Search"], textarea[placeholder*="search"]') as HTMLTextAreaElement;
+            if (searchBarInput) {
+              currentQuery = searchBarInput.value || '';
+            }
+          } catch (domError) {
+            console.error('Error getting value from DOM:', domError);
+          }
+        }
+      } else {
+        // Fallback: try to get value from DOM
+        try {
+          const searchBarInput = document.querySelector('textarea[placeholder*="Search"], textarea[placeholder*="search"]') as HTMLTextAreaElement;
+          if (searchBarInput) {
+            currentQuery = searchBarInput.value || '';
+          }
+        } catch (domError) {
+          console.error('Error getting value from DOM:', domError);
+        }
+      }
+      
+      // Ensure hasPerformedSearch is false when entering map view (so SearchBar is visible)
+      setHasPerformedSearch(false);
+      
+      // Also capture SideChatPanel attachments if it was visible (shouldn't be, but just in case)
+      // This handles the case where user was in SideChatPanel and switches to dashboard, then back to map
+      if (sideChatPanelRef.current?.getAttachments) {
+        try {
+          const sideChatAttachments = sideChatPanelRef.current.getAttachments();
+          if (sideChatAttachments.length > 0) {
+            // Store in SideChat attachments
+            pendingSideChatAttachmentsRef.current = sideChatAttachments;
+            setPendingSideChatAttachments(sideChatAttachments);
+          }
+        } catch (error) {
+          console.error('Error capturing SideChatPanel attachments when switching to map:', error);
+        }
+      }
+      
+      // Capture file attachments from dashboard SearchBar
+      // First check if we have stored attachments - if so, prefer those over captured (in case SearchBar hasn't restored yet)
+      const existingStoredAttachments = pendingDashboardAttachmentsRef.current.length > 0 
+        ? pendingDashboardAttachmentsRef.current 
+        : pendingDashboardAttachments;
+      
+      let currentAttachments: FileAttachmentData[] = [];
+      
+      if (searchBarRef.current?.getAttachments) {
+        try {
+          const capturedAttachments = searchBarRef.current.getAttachments();
+          
+          // CRITICAL: Prioritize stored attachments if they exist, as they're more reliable
+          // Only use captured if it's non-empty AND we don't have stored attachments
+          // This prevents losing attachments due to timing issues with refs
+          if (existingStoredAttachments.length > 0) {
+            // We have stored attachments - use them (they're more reliable)
+            currentAttachments = existingStoredAttachments;
+          } else if (capturedAttachments.length > 0) {
+            // No stored attachments, but captured has some - use captured
+            currentAttachments = capturedAttachments;
+          } else {
+            // Both are empty
+            currentAttachments = [];
+          }
+        } catch (error) {
+          console.error('Error calling getAttachments on dashboard SearchBar ref:', error);
+          // Fallback to stored attachments if capture fails
+          if (existingStoredAttachments.length > 0) {
+            currentAttachments = existingStoredAttachments;
+          } else {
+            currentAttachments = [];
+          }
+        }
+      } else {
+        // Fallback to stored attachments if ref not available
+        if (existingStoredAttachments.length > 0) {
+          currentAttachments = existingStoredAttachments;
+        } else {
+          currentAttachments = [];
+        }
+      }
+      
+      // CRITICAL: Also update pendingDashboardAttachments if we captured new attachments
+      // This ensures they're preserved for when we switch back to dashboard
+      if (currentAttachments.length > 0 && currentAttachments !== existingStoredAttachments) {
+        pendingDashboardAttachmentsRef.current = currentAttachments;
+        setPendingDashboardAttachments(currentAttachments);
+      }
+      
+      // Set pending query and attachments, then toggle map visibility
+      if (currentQuery && currentQuery.trim()) {
+        // Store in ref immediately for synchronous access
+        pendingMapQueryRef.current = currentQuery;
+        // Also set state for React re-renders
+        setPendingMapQuery(currentQuery);
+      } else {
+        // No query to preserve
+        pendingMapQueryRef.current = "";
+        setPendingMapQuery("");
+      }
+      
+      // Store attachments - CRITICAL: Only store if we have attachments, otherwise preserve existing stored attachments
+      // This prevents overwriting valid stored attachments with empty arrays
+      if (currentAttachments.length > 0) {
+        // Store in ref FIRST (synchronous) - this ensures map SearchBar can read it immediately
+        pendingMapAttachmentsRef.current = currentAttachments;
+        // Then update state (async) - this triggers re-renders
+        setPendingMapAttachments(currentAttachments);
+      } else {
+        // Don't overwrite existing stored attachments with empty array
+        const existingMapAttachments = pendingMapAttachmentsRef.current.length > 0 
+          ? pendingMapAttachmentsRef.current 
+          : pendingMapAttachments;
+        if (existingMapAttachments.length === 0) {
+          // Only clear if both are truly empty
+          pendingMapAttachmentsRef.current = [];
+          setPendingMapAttachments([]);
+        }
+      }
+      
+      // Now toggle map visibility - attachments are already stored in ref
+      setIsMapVisible(true);
+    } else {
+      // Switching back to dashboard - capture map view SearchBar value BEFORE state change
+      let currentMapQuery = '';
+      
+      if (mapSearchBarRef.current?.getValue) {
+        try {
+          currentMapQuery = mapSearchBarRef.current.getValue();
+        } catch (error) {
+          console.error('Error calling getValue on map SearchBar ref:', error);
+        }
+      }
+      
+      // Capture file attachments from map SearchBar OR SideChatPanel
+      // If SideChatPanel is visible (hasPerformedSearch is true), capture from SideChatPanel
+      // Otherwise, capture from map SearchBar
+      let currentMapAttachments: FileAttachmentData[] = [];
+      
+      if (hasPerformedSearch && sideChatPanelRef.current?.getAttachments) {
+        // SideChatPanel is visible - capture from it
+        const existingStoredSideChatAttachments = pendingSideChatAttachmentsRef.current.length > 0 
+          ? pendingSideChatAttachmentsRef.current 
+          : pendingSideChatAttachments;
+        
+        try {
+          const capturedAttachments = sideChatPanelRef.current.getAttachments();
+          
+          // Use captured if non-empty, otherwise use stored if available
+          if (capturedAttachments.length > 0) {
+            currentMapAttachments = capturedAttachments;
+          } else if (existingStoredSideChatAttachments.length > 0) {
+            currentMapAttachments = existingStoredSideChatAttachments;
+          } else {
+            currentMapAttachments = [];
+          }
+        } catch (error) {
+          console.error('Error calling getAttachments on SideChatPanel ref:', error);
+          // Fallback to stored attachments if capture fails
+          if (existingStoredSideChatAttachments.length > 0) {
+            currentMapAttachments = existingStoredSideChatAttachments;
+          }
+        }
+      } else if (mapSearchBarRef.current?.getAttachments) {
+        // Map SearchBar is visible - capture from it
+        const existingStoredMapAttachments = pendingMapAttachmentsRef.current.length > 0 
+          ? pendingMapAttachmentsRef.current 
+          : pendingMapAttachments;
+        
+        try {
+          const capturedAttachments = mapSearchBarRef.current.getAttachments();
+          
+          // Use captured if non-empty, otherwise use stored if available
+          if (capturedAttachments.length > 0) {
+            currentMapAttachments = capturedAttachments;
+          } else if (existingStoredMapAttachments.length > 0) {
+            currentMapAttachments = existingStoredMapAttachments;
+          } else {
+            currentMapAttachments = [];
+          }
+        } catch (error) {
+          console.error('Error calling getAttachments on map SearchBar ref:', error);
+          // Fallback to stored attachments if capture fails
+          if (existingStoredMapAttachments.length > 0) {
+            currentMapAttachments = existingStoredMapAttachments;
+          }
+        }
+      }
+      
+      // Store captured query for dashboard view
+      if (currentMapQuery && currentMapQuery.trim()) {
+        pendingDashboardQueryRef.current = currentMapQuery;
+        setPendingDashboardQuery(currentMapQuery);
+      } else {
+        pendingDashboardQueryRef.current = "";
+        setPendingDashboardQuery("");
+      }
+      
+      // Store attachments for dashboard view - always store the best available
+      // Always store what we have (even if empty) - the logic above ensures we have the best available
+      pendingDashboardAttachmentsRef.current = currentMapAttachments;
+      setPendingDashboardAttachments(currentMapAttachments);
+      
+      // Also store SideChatPanel attachments separately if they came from SideChatPanel
+      if (hasPerformedSearch && currentMapAttachments.length > 0) {
+        pendingSideChatAttachmentsRef.current = currentMapAttachments;
+        setPendingSideChatAttachments(currentMapAttachments);
+      }
+      
+      // Clear pending map query (but NOT attachments - preserve them for when switching back to map)
+      pendingMapQueryRef.current = "";
+      setPendingMapQuery("");
+      // DO NOT clear pendingMapAttachmentsRef or pendingMapAttachments here
+      // They should only be cleared when:
+      // - A search is submitted (handleSearch)
+      // - Entering chat mode
+      // - Parent reset trigger fires
+      setIsMapVisible(false);
+      // Reset hasPerformedSearch when leaving map view
+      setHasPerformedSearch(false);
+    }
   };
 
   const handleQueryStart = (query: string) => {
@@ -1765,7 +2011,17 @@ export const MainContent = ({
   };
 
   const handleSearch = (query: string) => {
-    console.log('MainContent: Search submitted with query:', query);
+    // Clear stored attachments when search is submitted
+    pendingMapAttachmentsRef.current = [];
+    setPendingMapAttachments([]);
+    pendingDashboardAttachmentsRef.current = [];
+    setPendingDashboardAttachments([]);
+    
+    // Clear preserved queries when search is submitted
+    pendingMapQueryRef.current = "";
+    setPendingMapQuery("");
+    pendingDashboardQueryRef.current = "";
+    setPendingDashboardQuery("");
     
     // Always update map search query
     setMapSearchQuery(query);
@@ -1786,7 +2042,21 @@ export const MainContent = ({
       return;
     }
     
-    // Normal chat search when map is not visible
+    // Dashboard view: Route query to SideChatPanel
+    // Open map view and show SideChatPanel
+    console.log('Dashboard search - opening SideChatPanel');
+    setIsMapVisible(true);
+    setHasPerformedSearch(true);
+    
+    // Collapse sidebar for cleaner UI when opening SideChatPanel
+    if (onCloseSidebar) {
+      onCloseSidebar();
+    }
+    
+    // Don't enter normal chat mode - SideChatPanel handles the query
+    return;
+
+    // Normal chat search when map is not visible (now unused - all queries go to SideChatPanel)
     setChatQuery(query);
     setChatMessages([]); // Reset messages for new chat
 
@@ -1917,6 +2187,14 @@ export const MainContent = ({
   // Reset SearchBar when switching to chat mode or creating new chat
   React.useEffect(() => {
     if (isInChatMode && currentChatData?.query) {
+      pendingMapQueryRef.current = "";
+      setPendingMapQuery("");
+      pendingDashboardQueryRef.current = "";
+      setPendingDashboardQuery("");
+      pendingMapAttachmentsRef.current = [];
+      setPendingMapAttachments([]);
+      pendingDashboardAttachmentsRef.current = [];
+      setPendingDashboardAttachments([]);
       setResetTrigger(prev => prev + 1);
     }
   }, [isInChatMode, currentChatData]);
@@ -1924,6 +2202,14 @@ export const MainContent = ({
   // Reset from parent trigger (new chat created)
   React.useEffect(() => {
     if (parentResetTrigger !== undefined) {
+      pendingMapQueryRef.current = "";
+      setPendingMapQuery("");
+      pendingDashboardQueryRef.current = "";
+      setPendingDashboardQuery("");
+      pendingMapAttachmentsRef.current = [];
+      setPendingMapAttachments([]);
+      pendingDashboardAttachmentsRef.current = [];
+      setPendingDashboardAttachments([]);
       setResetTrigger(prev => prev + 1);
     }
   }, [parentResetTrigger]);
@@ -1944,21 +2230,6 @@ export const MainContent = ({
     }
   }, [currentChatId, isInChatMode]);
 
-  // Debug: Log SearchBar ref when it changes
-  React.useEffect(() => {
-    const hasRef = !!searchBarRef.current;
-    console.log('🔍 SearchBar ref status:', { 
-      hasRef,
-      currentView,
-      isInChatMode,
-      refValue: searchBarRef.current
-    });
-    if (hasRef) {
-      console.log('✅ SearchBar ref is available!');
-    } else {
-      console.log('❌ SearchBar ref is NOT available');
-    }
-  }, [currentView, isInChatMode]);
   // Track if we have a previous session to restore
   const [previousSessionQuery, setPreviousSessionQuery] = React.useState<string | null>(null);
 
@@ -1973,7 +2244,8 @@ export const MainContent = ({
     switch (currentView) {
       case 'home':
       case 'search':
-        return <AnimatePresence mode="wait">
+        return <>
+          <AnimatePresence mode="wait">
             {isInChatMode && !isMapVisible ? <motion.div key="chat" initial={{
             opacity: 0
           }} animate={{
@@ -2024,7 +2296,7 @@ export const MainContent = ({
                 
                 {/* Centered Content Container - Responsive layout based on viewport size */}
                 {/* When map is visible, don't render the container - search bar will be rendered separately */}
-                {!isMapVisible && (() => {
+                {!isMapVisible ? (() => {
                   // Check if search bar should be at bottom (same logic as below)
                   const VERY_SMALL_WIDTH_THRESHOLD = 600;
                   const VERY_SMALL_HEIGHT_THRESHOLD = 500;
@@ -2059,28 +2331,34 @@ export const MainContent = ({
                       : (shouldCenterLogo ? (shouldPositionAtBottom ? 'calc(100vh - 120px)' : '100vh') : `${availableHeight}px`));
                   
                   return (
-                    <div className="flex flex-col items-center w-full max-w-6xl mx-auto px-4" style={{ 
-                      paddingLeft: 'clamp(1rem, 2vw, 1rem)', 
-                      paddingRight: 'clamp(1rem, 2vw, 1rem)',
-                      height: logoContainerHeight,
-                      minHeight: logoContainerHeight,
-                      paddingTop: '0',
-                      paddingBottom: shouldPositionAtBottom ? '120px' : (isLogoOnlyView ? `${searchBarHeight}px` : '0'), // Reserve space for search bar when in flow and logo-only view
-                      justifyContent: 'center', // Always center vertically - this centers the logo in the available space
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      position: 'relative',
-                      transform: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'translateY(-20px)' : 'none' // Move content up slightly for better visual centering
-                    }}>
+                    <div 
+                      className="flex flex-col items-center w-full max-w-6xl mx-auto px-4" 
+                      style={{ 
+                        paddingLeft: 'clamp(1rem, 2vw, 1rem)', 
+                        paddingRight: 'clamp(1rem, 2vw, 1rem)',
+                        height: logoContainerHeight,
+                        minHeight: logoContainerHeight,
+                        paddingTop: '0',
+                        paddingBottom: shouldPositionAtBottom ? '120px' : (isLogoOnlyView ? `${searchBarHeight}px` : '0'), // Reserve space for search bar when in flow and logo-only view
+                        justifyContent: 'center', // Always center vertically - this centers the logo in the available space
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        position: 'relative',
+                        transform: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'translateY(-20px)' : 'none', // Move content up slightly for better visual centering
+                        zIndex: 2
+                      }}
+                    >
                 {/* VELORA Branding Section */}
                       <div className="flex flex-col items-center" style={{ 
                         marginTop: '0',
-                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 5vh, 3rem)' : '0' // Balanced spacing between logo and cards
+                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 5vh, 3rem)' : '0', // Balanced spacing between logo and cards
+                        position: 'relative',
+                        zIndex: 10 // Above background image
                       }}>
                         {/* VELORA Logo - Always visible, fixed minimum size to prevent shrinking */}
                         <img 
-                          src="/VELORA%20LOGO%20%E2%80%93%201.png" 
+                          src="/%28DASH%20VELORA%29%20Logo%20-%20NB.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
@@ -2117,23 +2395,35 @@ export const MainContent = ({
                     };
                     const userName = getUserName();
                     return userName ? (
-                            <p className="text-gray-400 font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
-                              fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              paddingLeft: 'clamp(0.5rem, 2vw, 1rem)',
-                              paddingRight: 'clamp(0.5rem, 2vw, 1rem)'
-                            }}>
-                              Welcome back <span className="font-normal text-gray-500">{userName}</span>, your workspace is synced and ready for your next move
-                      </p>
+                            <div style={{
+                              position: 'relative',
+                              display: 'inline-block',
+                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                            } as React.CSSProperties}>
+                              <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
+                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                color: '#333333', // Dark grey text
+                                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 2px rgba(255, 255, 255, 0.5)', // Light shadow for depth
+                                fontWeight: 500 // Slightly bolder
+                              } as React.CSSProperties}>
+                                Welcome back <span className="font-normal" style={{ color: '#333333', fontWeight: 500 } as React.CSSProperties}>{userName}</span>, your workspace is synced and ready for your next move
+                              </p>
+                            </div>
                     ) : (
-                            <p className="text-gray-400 font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
-                              fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              paddingLeft: 'clamp(0.5rem, 2vw, 1rem)',
-                              paddingRight: 'clamp(0.5rem, 2vw, 1rem)'
-                            }}>
-                        Welcome back, your workspace is synced and ready for your next move
-                      </p>
+                            <div style={{
+                              position: 'relative',
+                              display: 'inline-block',
+                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                            } as React.CSSProperties}>
+                              <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
+                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                color: '#333333', // Dark grey text
+                                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 2px rgba(255, 255, 255, 0.5)', // Light shadow for depth
+                                fontWeight: 500 // Slightly bolder
+                              } as React.CSSProperties}>
+                                Welcome back, your workspace is synced and ready for your next move
+                              </p>
+                            </div>
                     );
                   })()}
                 </div>
@@ -2147,6 +2437,8 @@ export const MainContent = ({
                             }}
                             onOpenProperty={(address, coordinates, propertyId) => {
                               console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
+                              // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
+                              // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
                               
                               // OPTIMIZATION: Check cache FIRST for instant display (<1s)
                               let instantDisplay = false;
@@ -2167,10 +2459,10 @@ export const MainContent = ({
                                       // Open map and select property immediately
                                       setIsMapVisible(true);
                                       
-                                      // Store selection for map
+                                      // Store selection for map with property pin location coordinates
                                       (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
                                       
-                                      // Select property immediately if map is ready
+                                      // Select property immediately if map is ready, using property pin location coordinates
                                       if (mapRef.current) {
                                         mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                       }
@@ -2192,18 +2484,18 @@ export const MainContent = ({
                                 setHasPerformedSearch(true);
                               }
                               
-                              // Store selection for when map is ready
+                              // Store selection for when map is ready, with property pin location coordinates
                               (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
                               
-                                // Try to select immediately (no delay - map should be ready or will retry)
+                                // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
                                 if (mapRef.current) {
-                                  console.log('✅ Selecting property immediately');
+                                  console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
                                   mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                 } else {
                                   // Map not ready - try again very soon
                               setTimeout(() => {
                                 if (mapRef.current) {
-                                  console.log('✅ Selecting property after map initialization');
+                                  console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
                                   mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                 }
                                   }, 10); // Minimal delay - check every 10ms
@@ -2292,115 +2584,46 @@ export const MainContent = ({
                   currentView={currentView}
                   hasPerformedSearch={hasPerformedSearch}
                   isSidebarCollapsed={isSidebarCollapsed}
+                  onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
+                    if (previousSessionQuery) {
+                      setMapSearchQuery(previousSessionQuery);
+                      setHasPerformedSearch(true);
+                      pendingMapQueryRef.current = ""; // Clear ref
+                      setPendingMapQuery(""); // Clear pending query when opening panel
+                      // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                    }
+                  } : undefined}
+                  hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
+                  initialValue={(() => {
+                    const value = isMapVisible && !hasPerformedSearch 
+                      ? (pendingMapQueryRef.current || pendingMapQuery) 
+                      : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
+                    return value;
+                  })()}
+                  initialAttachedFiles={(() => {
+                    // When in dashboard view (!isMapVisible), use dashboard attachments
+                    // When in map view but not performed search, use map attachments
+                    const attachments = !isMapVisible 
+                      ? (pendingDashboardAttachmentsRef.current.length > 0 ? pendingDashboardAttachmentsRef.current : (pendingDashboardAttachments.length > 0 ? pendingDashboardAttachments : undefined))
+                      : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
+                    return attachments;
+                  })()}
                 />
                           </div>
                         );
                       })()}
                     </div>
                   );
-                })()}
+                })() : null}
                 
-                {/* Chat Bar for Map View - Default opening bar, hide when SideChatPanel is visible */}
-                {isMapVisible && !hasPerformedSearch && (
-                  <MapChatBar
-                    onQuerySubmit={(query) => {
-                      handleSearch(query);
-                    }}
-                    onMapToggle={handleMapToggle}
-                    placeholder="Ask anything..."
-                    hasPreviousSession={!!previousSessionQuery}
-                    onPanelToggle={() => {
-                      if (previousSessionQuery) {
-                        setMapSearchQuery(previousSessionQuery);
-                        setHasPerformedSearch(true);
-                        // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-                        // and hide MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-                      }
-                    }}
-                  />
-                )}
                 
-                {/* Side Chat Panel - Left Side (Fixed positioning to overlay map) */}
-                <SideChatPanel
-                  isVisible={isMapVisible && hasPerformedSearch}
-                  query={mapSearchQuery}
-                  sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
-                  restoreChatId={restoreChatId}
-                  onQuerySubmit={(newQuery) => {
-                    // Handle new query from panel
-                    setMapSearchQuery(newQuery);
-                    // Keep hasPerformedSearch true
-                  }}
-                  onMapToggle={() => {
-                    // Close panel and show MapChatBar by resetting hasPerformedSearch
-                    setMapSearchQuery("");
-                    setHasPerformedSearch(false);
-                    setRestoreChatId(null);
-                    // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-                    // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-                  }}
-                  onNewChat={() => {
-                    // Clear the query to ensure a fresh start, but keep panel visible
-                    // We'll use an empty string to signal a new chat, but the panel visibility
-                    // is controlled by hasPerformedSearch, so we keep that true
-                    setMapSearchQuery("");
-                    setRestoreChatId(null);
-                    // Note: We keep hasPerformedSearch true so the panel stays visible
-                    // The SideChatPanel will handle showing an empty state
-                  }}
-                  onSidebarToggle={onSidebarToggle}
-                  onOpenProperty={(address, coordinates, propertyId) => {
-                    console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
-                    
-                    // Ensure map is visible
-                    if (!isMapVisible) {
-                      setIsMapVisible(true);
-                    }
-                    
-                    // Convert propertyId to string if needed
-                    const propertyIdStr = propertyId ? String(propertyId) : undefined;
-                    
-                    // Select property on map
-                    if (mapRef.current && coordinates) {
-                      mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
-                    } else if (mapRef.current) {
-                      // Try to select even without coordinates
-                      mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
-                    } else {
-                      // Map not ready - store for later
-                      (window as any).__pendingPropertySelection = { address, coordinates, propertyId: propertyIdStr };
-                      // Try again soon
-                      setTimeout(() => {
-                        if (mapRef.current) {
-                          if (coordinates) {
-                            mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
-                          } else {
-                            mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
-                          }
-                        }
-                      }, 100);
-                    }
-                  }}
-                />
+                {/* MapChatBar and SideChatPanel are now rendered outside content container for proper visibility */}
                 
-                {/* Full Screen Map */}
-                <SquareMap
-                  ref={mapRef}
-                  isVisible={isMapVisible}
-                  searchQuery={mapSearchQuery}
-                  hasPerformedSearch={hasPerformedSearch}
-                  isInChatMode={isInChatMode}
-                  onLocationUpdate={(location) => {
-                    setCurrentLocation(location.address);
-                  }}
-                  // Add left padding to map content when panel is visible
-                  containerStyle={{
-                    paddingLeft: (isMapVisible && hasPerformedSearch && mapSearchQuery) ? '450px' : '0',
-                    transition: 'padding-left 0.3s ease-out'
-                  }}
-                />
+                {/* Map is now rendered at top level for background mode */}
               </motion.div>}
-          </AnimatePresence>;
+          </AnimatePresence>
+          
+        </>
       case 'notifications':
         return <div className="w-full h-full max-w-none m-0 p-0">
             <FileManager />
@@ -2441,10 +2664,38 @@ export const MainContent = ({
               currentView={currentView}
               hasPerformedSearch={hasPerformedSearch}
               onFileDrop={(file) => {
-                console.log('📎 MainContent: onFileDrop prop called for SearchBar with file:', file.name);
                 // This will be handled by SearchBar's handleFileUpload
                 // The prop is just for notification - SearchBar handles the file internally
               }}
+              onAttachmentsChange={!isMapVisible ? (attachments) => {
+                // Proactively store dashboard attachments when they change
+                pendingDashboardAttachmentsRef.current = attachments;
+                setPendingDashboardAttachments(attachments);
+              } : undefined}
+              onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
+                if (previousSessionQuery) {
+                  setMapSearchQuery(previousSessionQuery);
+                  setHasPerformedSearch(true);
+                  pendingMapQueryRef.current = ""; // Clear ref
+                  setPendingMapQuery(""); // Clear pending query when opening panel
+                  // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                }
+              } : undefined}
+              hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
+              initialValue={(() => {
+                const value = isMapVisible && !hasPerformedSearch 
+                  ? (pendingMapQueryRef.current || pendingMapQuery) 
+                  : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
+                return value;
+              })()}
+              initialAttachedFiles={(() => {
+                // When in dashboard view (!isMapVisible), use dashboard attachments
+                // When in map view but not performed search, use map attachments
+                const attachments = !isMapVisible 
+                  ? (pendingDashboardAttachmentsRef.current.length > 0 ? pendingDashboardAttachmentsRef.current : (pendingDashboardAttachments.length > 0 ? pendingDashboardAttachments : undefined))
+                  : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
+                return attachments;
+              })()}
             />
           </div>;
     }
@@ -2452,7 +2703,8 @@ export const MainContent = ({
   // Drag and drop state
   const [isDragging, setIsDragging] = React.useState(false);
   const [dragCounter, setDragCounter] = React.useState(0);
-  const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
+  const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
+  const mapSearchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
   const chatInterfaceRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
   const pendingFileDropRef = React.useRef<File | null>(null);
   const [refsReady, setRefsReady] = React.useState(false);
@@ -2465,13 +2717,11 @@ export const MainContent = ({
   }, []);
   
   // Memoize ref callbacks to ensure they're stable across renders
-  const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void } | null) => {
-    console.log('🔗 SearchBar ref callback called with:', instance);
+  const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
     searchBarRef.current = instance;
     // Update state to trigger pending file processing
     setRefsReady(prev => {
       const newReady = !!instance || !!chatInterfaceRef.current;
-      console.log('🔗 SearchBar ref ready state:', { instance: !!instance, chatRef: !!chatInterfaceRef.current, newReady });
       return newReady;
     });
   }, []);
@@ -2485,6 +2735,10 @@ export const MainContent = ({
       console.log('🔗 ChatInterface ref ready state:', { instance: !!instance, searchRef: !!searchBarRef.current, newReady });
       return newReady;
     });
+  }, []);
+  
+  const mapSearchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
+    mapSearchBarRef.current = instance;
   }, []);
 
   // Drag and drop handlers
@@ -2853,17 +3107,230 @@ export const MainContent = ({
   const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
   
   return <div 
-    className={`flex-1 relative bg-white ${leftMargin} ${className || ''}`} 
-    style={{ backgroundColor: '#ffffff', position: 'relative', zIndex: 1 }}
+    className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${leftMargin} ${className || ''}`} 
+    style={{ backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', position: 'relative', zIndex: 1 }}
     onDragEnter={handleDragEnter}
     onDragOver={handleDragOver}
     onDragLeave={handleDragLeave}
     onDrop={handleDrop}
   >
+      {/* Background Map - Always rendered but only visible/interactive when map view is active */}
+      {(currentView === 'search' || currentView === 'home') && (
+        <div 
+          className="fixed" 
+          style={{ 
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100vw',
+            height: '100vh',
+            zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
+            opacity: isMapVisible ? 1 : 0, // Hide visually when not in map view
+            pointerEvents: isMapVisible ? 'auto' : 'none' // Only allow interactions when visible
+          }}
+        >
+          <SquareMap
+            ref={mapRef}
+            isVisible={isMapVisible}
+            isInteractive={isMapVisible}
+            searchQuery={mapSearchQuery}
+            hasPerformedSearch={hasPerformedSearch}
+            isInChatMode={isInChatMode}
+            onLocationUpdate={(location) => {
+              setCurrentLocation(location.address);
+            }}
+            containerStyle={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
+              pointerEvents: isMapVisible ? 'auto' : 'none' // Enable clicks when map is visible
+            }}
+          />
+        </div>
+      )}
+      
       {/* Background based on current view - Hidden to show white background */}
       {/* Background components commented out to show white background */}
       
-      {/* Content container - white background */}
+      {/* MapChatBar removed - using unified SearchBar instead */}
+      
+      {/* Search Bar for Map View - Rendered at top level to ensure visibility */}
+      {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && (
+        <div 
+          ref={(el) => {
+            if (el) {
+              // Use requestAnimationFrame to check after layout
+              requestAnimationFrame(() => {
+                const rect = el.getBoundingClientRect();
+                const computedStyle = window.getComputedStyle(el);
+                
+                // Check parent containers
+                let parent = el.parentElement;
+                const parentInfo: any[] = [];
+                let depth = 0;
+                while (parent && depth < 5) {
+                  const parentStyle = window.getComputedStyle(parent);
+                  parentInfo.push({
+                    tagName: parent.tagName,
+                    className: parent.className,
+                    display: parentStyle.display,
+                    visibility: parentStyle.visibility,
+                    opacity: parentStyle.opacity,
+                    position: parentStyle.position,
+                    zIndex: parentStyle.zIndex,
+                    overflow: parentStyle.overflow,
+                    overflowX: parentStyle.overflowX,
+                    overflowY: parentStyle.overflowY,
+                    height: parentStyle.height,
+                    width: parentStyle.width
+                  });
+                  parent = parent.parentElement;
+                  depth++;
+                }
+                
+                // For fixed elements, offsetParent is null by design, so check visibility differently
+                const isActuallyVisible = computedStyle.display !== 'none' && 
+                                        computedStyle.visibility !== 'hidden' && 
+                                        computedStyle.opacity !== '0' &&
+                                        rect.width > 0 && 
+                                        rect.height > 0;
+                
+              });
+            }
+          }}
+          className="w-full" 
+          style={{ 
+            position: 'fixed',
+            bottom: '24px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10000, // VERY HIGH z-index to ensure it's on top
+            width: 'clamp(450px, 90vw, 700px)',
+            maxWidth: 'clamp(450px, 90vw, 700px)',
+            boxSizing: 'border-box',
+            pointerEvents: 'auto', // Ensure it's clickable
+            // Remove flex from container - let SearchBar determine its own size
+            display: 'block',
+            // Add minHeight to prevent collapse before content renders
+            minHeight: '60px'
+          }}>
+          <SearchBar 
+            ref={mapSearchBarRefCallback}
+            onSearch={handleSearch} 
+            onQueryStart={handleQueryStart} 
+            onMapToggle={handleMapToggle}
+            resetTrigger={resetTrigger}
+            isMapVisible={isMapVisible}
+            isInChatMode={isInChatMode}
+            currentView={currentView}
+            hasPerformedSearch={hasPerformedSearch}
+            isSidebarCollapsed={isSidebarCollapsed}
+            onAttachmentsChange={isMapVisible && !hasPerformedSearch ? (attachments) => {
+              // Proactively store map attachments when they change
+              pendingMapAttachmentsRef.current = attachments;
+              setPendingMapAttachments(attachments);
+            } : undefined}
+            onPanelToggle={() => {
+              if (previousSessionQuery) {
+                setMapSearchQuery(previousSessionQuery);
+                setHasPerformedSearch(true);
+                pendingMapQueryRef.current = ""; // Clear ref
+                setPendingMapQuery(""); // Clear pending query when opening panel
+                // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+              }
+            }}
+            hasPreviousSession={!!previousSessionQuery}
+            initialValue={(() => {
+              const value = pendingMapQueryRef.current || pendingMapQuery;
+              return value;
+            })()}
+            initialAttachedFiles={(() => {
+              const attachments = pendingMapAttachmentsRef.current.length > 0 
+                ? pendingMapAttachmentsRef.current 
+                : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined);
+              return attachments;
+            })()}
+          />
+        </div>
+      )}
+
+      {/* SideChatPanel - Render outside content container to ensure visibility */}
+      {(currentView === 'search' || currentView === 'home') && (
+        <SideChatPanel
+          ref={sideChatPanelRef}
+          isVisible={isMapVisible && hasPerformedSearch}
+          query={mapSearchQuery}
+          sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+          restoreChatId={restoreChatId}
+          initialAttachedFiles={(() => {
+            const attachments = pendingSideChatAttachmentsRef.current.length > 0 
+              ? pendingSideChatAttachmentsRef.current 
+              : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
+            return attachments;
+          })()}
+          onQuerySubmit={(newQuery) => {
+            // Handle new query from panel
+            setMapSearchQuery(newQuery);
+            // Keep hasPerformedSearch true
+          }}
+          onMapToggle={() => {
+            // Close panel and show MapChatBar by resetting hasPerformedSearch
+            setMapSearchQuery("");
+            setHasPerformedSearch(false);
+            setRestoreChatId(null);
+            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+          }}
+          onNewChat={() => {
+            // Clear the query to ensure a fresh start, but keep panel visible
+            // We'll use an empty string to signal a new chat, but the panel visibility
+            // is controlled by hasPerformedSearch, so we keep that true
+            setMapSearchQuery("");
+            setRestoreChatId(null);
+            // Note: We keep hasPerformedSearch true so the panel stays visible
+            // The SideChatPanel will handle showing an empty state
+          }}
+          onSidebarToggle={onSidebarToggle}
+          onOpenProperty={(address, coordinates, propertyId) => {
+            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
+            
+            // Ensure map is visible
+            if (!isMapVisible) {
+              setIsMapVisible(true);
+            }
+            
+            // Convert propertyId to string if needed
+            const propertyIdStr = propertyId ? String(propertyId) : undefined;
+            
+            // Select property on map
+            if (mapRef.current && coordinates) {
+              mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+            } else if (mapRef.current) {
+              // Try to select even without coordinates
+              mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+            } else {
+              // Map not ready - store for later
+              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr };
+              // Try again soon
+              setTimeout(() => {
+                if (mapRef.current) {
+                  if (coordinates) {
+                    mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+                  } else {
+                    mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+                  }
+                }
+              }, 100);
+            }
+          }}
+        />
+      )}
+
+      {/* Content container - transparent to show map background */}
       <div className={`relative h-full flex flex-col ${
         isInChatMode 
           ? 'bg-white' 
@@ -2875,8 +3342,13 @@ export const MainContent = ({
                 ? 'bg-white'
                 : currentView === 'notifications'
                   ? 'bg-white'
-                  : 'bg-white'
-      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ backgroundColor: '#ffffff' }}>
+                  : (currentView === 'search' || currentView === 'home') ? '' : 'bg-white'
+      } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ 
+        backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
+        background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
+        pointerEvents: isMapVisible ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
+        zIndex: isMapVisible ? 0 : 1 // Below map when map is visible, above background when not
+      }}>
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 
@@ -2901,7 +3373,7 @@ export const MainContent = ({
         </div>
       </div>
       
-      {/* Search Bar positioning is now handled internally by the SearchBar component */}
+      {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Shared Document Preview Modal - used by SearchBar, ChatInterface, and PropertyFilesModal */}
       <DocumentPreviewModal

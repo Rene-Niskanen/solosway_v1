@@ -1,0 +1,472 @@
+# UI Rules & Design System
+
+## Core Design Philosophy
+
+The UI should feel like an **infinity pool** - information has clean, distinct, sharp boundaries that create a sense of depth and precision. Every element should be modern, sharp, neat, well-positioned, and thoroughly thought through. The overall aesthetic should evoke Apple OS design - minimal, refined, and professional.
+
+---
+
+## 1. Card Padding Rules
+
+### Minimal Padding for Card-Related Elements
+- **Cards**: Use minimal padding - typically 8-12px for small cards, 12-16px for medium cards
+- **Card content**: Inner content padding should be 50-70% of outer card padding
+- **Property cards**: Maximum 12px padding on all sides
+- **Recent project cards**: Use proportional padding (e.g., `padding * 0.5` = 10px for 20px base)
+- **Modal cards**: 16px maximum padding, prefer 12px for sleek appearance
+- **Avoid**: Excessive padding (20px+) that makes cards feel bloated or unprofessional
+
+### Implementation
+```typescript
+// Good: Minimal card padding
+style={{ padding: '12px' }}
+
+// Good: Proportional padding
+const padding = Math.max(8, cardWidth * 0.05); // 5% of card width, min 8px
+
+// Avoid: Excessive padding
+style={{ padding: '24px' }} // Too much
+```
+
+---
+
+## 2. Infinity Pool Boundary Design
+
+### Sharp, Distinct Boundaries
+- **Border color**: Always use `#E9E9EB` for standard boundaries
+- **Border width**: 1px for standard boundaries, 2px for selected/active states only
+- **Border style**: Always `solid` - no dashed or dotted borders
+- **Background separation**: Use distinct background colors to create clear boundaries
+  - Light content: `#F9F9F9` background
+  - Dark panels: `#212121` background
+  - Cards: `#FFFFFF` or `#F9F9F9` with `#E9E9EB` border
+
+### Visual Depth
+- **Shadows**: Use subtle shadows (`0 1px 3px rgba(0,0,0,0.05)` or `shadow-sm`) for depth
+- **Layering**: Clear visual hierarchy through background colors and borders
+- **Separation**: Elements should have distinct boundaries, not blend together
+
+### Implementation
+```typescript
+// Good: Sharp, distinct boundary
+style={{
+  backgroundColor: '#F9F9F9',
+  border: '1px solid #E9E9EB',
+  borderRadius: '0' // Sharp corners
+}}
+
+// Avoid: Blended, unclear boundaries
+style={{
+  backgroundColor: '#F9F9F9',
+  border: 'none' // No clear boundary
+}}
+```
+
+---
+
+## 3. Border Radius Rules
+
+### Minimal Rounding (Apple OS Vibe)
+- **Default**: `borderRadius: 0` (sharp corners) for all cards, modals, and containers
+- **Minimal rounding allowed**: Only when necessary for specific interactive elements
+  - Small interactive elements (icons, small buttons): `borderRadius: 2-4px` maximum
+  - Input fields: `borderRadius: 2px` maximum if needed
+  - Avatar/Profile images: `borderRadius: 4px` maximum
+- **Never use**: `rounded-lg` (8px), `rounded-xl` (12px), `rounded-2xl` (16px), or `rounded-full` unless specifically required
+- **Apple OS principle**: Sharp corners with minimal, purposeful rounding only where interaction requires it
+
+### Implementation
+```typescript
+// Good: Sharp corners (default)
+style={{ borderRadius: '0' }}
+
+// Good: Minimal rounding for small interactive elements
+style={{ borderRadius: '4px' }} // Only for icons, small buttons
+
+// Avoid: Excessive rounding
+className="rounded-lg" // 8px - too much
+className="rounded-xl" // 12px - too much
+```
+
+---
+
+## 4. Typography: Small & Neat Text
+
+### Font Size Guidelines
+- **Body text**: 11-13px (prefer 12px)
+- **Small text**: 10-11px (labels, metadata)
+- **Very small text**: 8-10px (captions, timestamps)
+- **Headings**: 14-16px maximum (prefer 14px for card headings)
+- **Large headings**: 18-20px maximum (only for page titles)
+- **Responsive scaling**: Scale proportionally but maintain minimum readable sizes
+
+### Font Weight
+- **Body text**: 400 (regular) or 500 (medium)
+- **Labels**: 500 (medium)
+- **Headings**: 600 (semibold) - avoid bold (700) unless absolutely necessary
+- **Avoid**: Heavy font weights that feel unprofessional
+
+### Line Height
+- **Tight line spacing**: 1.2-1.4 for headings, 1.4-1.5 for body text
+- **Neat organization**: Text should feel compact and organized, not loose
+
+### Text Fitting Rule
+- **Single line preference**: If text is minimal but doesn't fit on one line, reduce font size to fit neatly
+- **Implementation**: Use `truncate` or reduce fontSize until text fits on one line
+- **Example**: If "Property Address" doesn't fit, reduce from 12px to 11px or 10px
+
+### Implementation
+```typescript
+// Good: Small, neat text
+style={{ fontSize: '12px', fontWeight: 400, lineHeight: 1.4 }}
+
+// Good: Responsive but neat
+const fontSize = Math.max(10, cardWidth * 0.042); // Small, proportional
+
+// Good: Reduce size to fit on one line
+style={{ fontSize: textFits ? '12px' : '11px' }}
+
+// Avoid: Large, unprofessional text
+style={{ fontSize: '16px' }} // Too large for body text
+```
+
+---
+
+## 5. Color Palette (No AI Slop Colors)
+
+### Approved Color Palette Only
+
+#### Background Colors
+- **#F9F9F9** - Very light gray/off-white (Chat Interface, main content, card backgrounds)
+- **#212121** - Very dark gray (Dark panels, left side containers in modals)
+- **#FFFFFF** - Pure white (Card content, modal backgrounds)
+
+#### Interactive Elements
+- **#F3F4F6** - Light gray (Resting state of Send Buttons, inactive buttons)
+- **#F0F6FF** - Very light blue tint (Button selection states, hover states)
+
+#### Borders & Boundaries
+- **#E9E9EB** - Light gray (Borders, boundaries, dividers, card borders)
+
+#### Text & Icons
+- **#6C7180** - Medium slate gray (Secondary text, icons, muted content)
+- **#63748A** - Medium blue-gray (Body text, standard content)
+- **#415C85** - Darker blue-gray (Primary actions, active states, links, headings)
+
+### Forbidden Colors
+- **Never use**: Bright purple (`#8B5CF6`, `#A78BFA`, `#C4B5FD`, etc.)
+- **Never use**: Bright blue (`#3B82F6`, `#60A5FA`, `#93C5FD`, `#2563EB`, etc.)
+- **Never use**: Vivid, saturated colors that feel "AI-generated"
+- **Exception**: Only use approved palette colors - if a color isn't in the palette, don't use it
+
+### Implementation
+```typescript
+// Good: Approved palette colors
+style={{ backgroundColor: '#F9F9F9', color: '#63748A' }}
+
+// Avoid: AI slop colors
+style={{ backgroundColor: '#3B82F6' }} // Bright blue - forbidden
+style={{ color: '#8B5CF6' }} // Bright purple - forbidden
+```
+
+---
+
+## 6. Modern, Sharp, Neat Design Principles
+
+### Positioning & Proportions
+- **Thoughtful spacing**: Every element should have a clear purpose and relationship to others
+- **Alignment**: Strict alignment - use flexbox/grid for precise positioning
+- **Proportions**: Maintain consistent ratios (e.g., card aspect ratios, padding ratios)
+- **Visual balance**: Elements should feel balanced, not cramped or too spacious
+
+### Sharpness
+- **Crisp edges**: Sharp corners, clean lines, no blur or softness
+- **Clear hierarchy**: Use size, weight, and color to create clear visual hierarchy
+- **Precision**: Every pixel should feel intentional
+
+### Neatness
+- **Organized layout**: Text and elements should be neatly organized
+- **Consistent spacing**: Use consistent spacing patterns throughout
+- **Clean appearance**: No visual clutter or unnecessary elements
+
+### Implementation
+```typescript
+// Good: Thoughtful, precise positioning
+<div style={{
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  padding: '12px'
+}}>
+
+// Good: Consistent proportions
+const cardHeight = cardWidth * 1.28; // Maintain aspect ratio
+const padding = Math.max(8, cardWidth * 0.05); // Proportional padding
+```
+
+---
+
+## 7. Line Spacing & Text Organization
+
+### Line Spacing Rules
+- **Tight spacing**: Use line-height of 1.2-1.5 for neat, compact text
+- **Single line preference**: If text is minimal, ensure it fits on one line
+- **Font size reduction**: If minimal text doesn't fit, reduce fontSize until it fits neatly
+- **No wrapping for short text**: Use `truncate` or reduce size rather than wrapping
+
+### Text Organization
+- **Neat alignment**: Text should be properly aligned (left, center, or right consistently)
+- **Consistent spacing**: Use consistent gaps between text elements
+- **Clear hierarchy**: Use font size, weight, and color to create clear text hierarchy
+
+### Implementation
+```typescript
+// Good: Neat, single-line text
+style={{
+  fontSize: textLength > 20 ? '11px' : '12px', // Reduce if needed
+  lineHeight: 1.4,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis'
+}}
+
+// Good: Responsive font size to fit
+const fontSize = Math.max(10, Math.min(12, calculateFitSize(text, containerWidth)));
+
+// Avoid: Wrapping minimal text
+style={{ fontSize: '12px' }} // If it wraps, reduce size instead
+```
+
+---
+
+## 8. Animation Rules: Swift, Clean & Minimal
+
+### Animation Principles
+- **Minimal animations**: Only animate when necessary for feedback
+- **Swift transitions**: 100-200ms maximum duration (prefer 100-150ms)
+- **No excessive animations**: Avoid animations for state changes or selections
+- **Clean transitions**: Simple opacity, transform, or color changes only
+- **No layout animations**: Avoid animations that cause "squishing" or layout shifts
+
+### Forbidden Animations
+- **No vertical movement**: Avoid animations that start low and move up
+- **No layout animations**: No `layout` prop in Framer Motion
+- **No popLayout mode**: Avoid `mode="popLayout"` in AnimatePresence
+- **No excessive transitions**: Avoid `transition-all` with long durations
+- **No bounce/spring**: No bouncy or spring animations
+
+### Allowed Animations
+- **Hover states**: Subtle opacity (0.8-0.9) or background color change, 150ms
+- **Button clicks**: Brief opacity change, 100ms
+- **Modal appearance**: Simple fade (opacity 0 to 1), 150ms
+- **Drag feedback**: Immediate visual feedback, no animation delay
+
+### Implementation
+```typescript
+// Good: Swift, minimal animation
+style={{
+  transition: 'opacity 150ms ease, background-color 150ms ease'
+}}
+
+// Good: Simple fade
+<motion.div
+  initial={{ opacity: 0 }}
+  animate={{ opacity: 1 }}
+  exit={{ opacity: 0 }}
+  transition={{ duration: 0.15 }}
+/>
+
+// Avoid: Excessive animations
+<motion.div
+  initial={{ y: 20, opacity: 0 }} // Vertical movement - forbidden
+  animate={{ y: 0, opacity: 1 }}
+  transition={{ duration: 0.5, type: "spring" }} // Too long, bouncy
+/>
+
+// Avoid: Layout animations
+<motion.div layout /> // Causes squishing - forbidden
+```
+
+---
+
+## 9. Button Design: Small & Neat
+
+### Button Size Guidelines
+- **Small buttons**: Height 28-32px, padding 6-8px horizontal
+- **Standard buttons**: Height 32-36px, padding 8-10px horizontal
+- **Icon buttons**: 32x32px or 36x36px maximum
+- **Avoid**: Large buttons (40px+ height) that look unprofessional or too prominent
+
+### Button Styling
+- **Background**: `#F3F4F6` for resting state, `#F0F6FF` for hover/active
+- **Text color**: `#415C85` for primary actions, `#63748A` for secondary
+- **Border**: `1px solid #E9E9EB` if needed, or no border
+- **Corners**: Sharp (`borderRadius: 0`) or minimal rounding (`2-4px` maximum)
+- **Font size**: 11-12px for button text
+- **Font weight**: 500 (medium) - avoid bold
+
+### Button Prominence
+- **Not too prominent**: Buttons should be functional but not dominate the UI
+- **Subtle appearance**: Use subtle colors and minimal styling
+- **Professional look**: Buttons should feel refined, not flashy
+
+### Implementation
+```typescript
+// Good: Small, neat button
+<button style={{
+  height: '32px',
+  padding: '8px 12px',
+  fontSize: '12px',
+  fontWeight: 500,
+  backgroundColor: '#F3F4F6',
+  color: '#415C85',
+  border: '1px solid #E9E9EB',
+  borderRadius: '0',
+  transition: 'background-color 150ms ease'
+}}>
+
+// Avoid: Large, prominent button
+<button style={{
+  height: '48px', // Too large
+  padding: '16px 24px', // Too much padding
+  fontSize: '16px', // Too large
+  fontWeight: 700, // Too bold
+  backgroundColor: '#3B82F6' // Forbidden color
+}}>
+```
+
+---
+
+## 10. Well-Thought-Out Color Choices
+
+### Color Selection Process
+1. **Always reference the approved palette first**
+2. **Consider context**: Use appropriate colors for the element's purpose
+3. **Maintain consistency**: Use the same colors for similar elements across the app
+4. **Test contrast**: Ensure sufficient contrast for readability
+5. **Avoid arbitrary colors**: Every color should have a purpose
+
+### Color Usage Guidelines
+
+#### Backgrounds
+- Light content areas: `#F9F9F9`
+- Dark panels: `#212121`
+- Cards: `#FFFFFF` or `#F9F9F9`
+- Hover states: `#F0F6FF`
+
+#### Text
+- Primary text: `#63748A` (body), `#415C85` (headings, links)
+- Secondary text: `#6C7180` (labels, metadata)
+- On dark backgrounds: `#F9F9F9` or `#FFFFFF`
+
+#### Interactive Elements
+- Resting: `#F3F4F6`
+- Hover/Active: `#F0F6FF`
+- Borders: `#E9E9EB`
+
+#### Special States
+- Selected: Border `#415C85` or `2px solid #415C85`
+- Error: Use red from system palette (not bright/vivid)
+- Success: Use green from system palette (not bright/vivid)
+
+### Implementation
+```typescript
+// Good: Well-thought-out color choice
+const getButtonColor = (state: 'resting' | 'hover' | 'active') => {
+  switch (state) {
+    case 'resting': return '#F3F4F6';
+    case 'hover': return '#F0F6FF';
+    case 'active': return '#F0F6FF';
+    default: return '#F3F4F6';
+  }
+};
+
+// Avoid: Arbitrary color choice
+style={{ backgroundColor: '#FF5733' }} // Random color - forbidden
+```
+
+---
+
+## Component-Specific Rules
+
+### Cards
+- **Padding**: 8-12px maximum
+- **Border**: `1px solid #E9E9EB`
+- **Background**: `#F9F9F9` or `#FFFFFF`
+- **Corners**: Sharp (`borderRadius: 0`)
+- **Shadow**: Subtle (`0 1px 3px rgba(0,0,0,0.05)`)
+
+### Modals
+- **Padding**: 12-16px maximum
+- **Border**: `1px solid #E9E9EB`
+- **Background**: `#F9F9F9` for light, `#212121` for dark panels
+- **Corners**: Sharp (`borderRadius: 0`)
+- **Shadow**: `0 4px 20px rgba(0,0,0,0.08)`
+
+### Input Fields
+- **Padding**: 8-10px
+- **Border**: `1px solid #E9E9EB`
+- **Background**: `#F9F9F9` or transparent
+- **Font size**: 12px
+- **Corners**: Sharp or `2px` maximum
+
+### Buttons
+- **Size**: 28-36px height, 8-12px horizontal padding
+- **Font size**: 11-12px
+- **Background**: `#F3F4F6` (resting), `#F0F6FF` (hover)
+- **Text color**: `#415C85` (primary), `#63748A` (secondary)
+- **Corners**: Sharp or `2-4px` maximum
+
+### Chat Interface
+- **Background**: `#F9F9F9`
+- **Message bubbles**: Use appropriate background colors
+- **Text**: `#63748A` for body, `#415C85` for links
+- **Borders**: `#E9E9EB` for dividers
+
+---
+
+## Implementation Checklist
+
+When creating or updating UI components, ensure:
+
+- [ ] Minimal padding for card-related elements (8-12px max)
+- [ ] Sharp, distinct boundaries with `#E9E9EB` borders
+- [ ] Sharp corners (`borderRadius: 0`) or minimal rounding (2-4px max)
+- [ ] Small, neat text (11-13px body, 10-11px small)
+- [ ] Only approved palette colors (no AI slop purple/blue)
+- [ ] Modern, sharp, neat, well-positioned design
+- [ ] Neat line spacing (1.2-1.5) and single-line text when possible
+- [ ] Swift, minimal animations (100-200ms max, no layout animations)
+- [ ] Small, neat buttons (28-36px height, not too prominent)
+- [ ] Well-thought-out color choices from approved palette
+
+---
+
+## Quick Reference
+
+### Colors
+- Backgrounds: `#F9F9F9`, `#212121`, `#FFFFFF`
+- Interactive: `#F3F4F6` (resting), `#F0F6FF` (hover)
+- Borders: `#E9E9EB`
+- Text: `#63748A` (body), `#415C85` (primary), `#6C7180` (secondary)
+
+### Sizing
+- Card padding: 8-12px
+- Button height: 28-36px
+- Font size: 11-13px (body), 10-11px (small)
+- Border radius: 0 (default), 2-4px (minimal if needed)
+
+### Animations
+- Duration: 100-200ms max
+- Type: Opacity, color, transform only
+- No layout animations, no vertical movement
+
+---
+
+## Notes
+
+- This design system should be referenced for all new UI components
+- When in doubt, choose the more minimal, sharp, neat option
+- Consistency is key - use the same patterns throughout the application
+- Test at different viewport sizes to ensure responsive behavior
+- Always prioritize the "infinity pool" feeling - clean, distinct, sharp boundaries

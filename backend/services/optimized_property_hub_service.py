@@ -167,21 +167,74 @@ class OptimizedSupabasePropertyHubService:
             logger.error(f"❌ Error getting documents batch: {e}")
             return {}
     
-    def get_all_property_hubs_optimized(self, business_id: str, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    def get_all_property_hubs_optimized(
+        self, 
+        business_id: str, 
+        limit: int = 100, 
+        offset: int = 0,
+        sort_by: str = 'created_at',
+        sort_order: str = 'desc'
+    ) -> List[Dict[str, Any]]:
         """
         Optimized method to get all property hubs with batch operations
+        
+        Args:
+            business_id: Business identifier
+            limit: Maximum number of results
+            offset: Number of results to skip
+            sort_by: Field to sort by (created_at, updated_at, completeness_score, formatted_address)
+            sort_order: Sort order (asc, desc)
         """
         start_time = time.time()
         
         try:
             logger.info(f"🏠 Getting property hubs (optimized) for business: {business_id}")
             
-            # Step 1: Get properties with pagination
+            # Validate sort parameters
+            valid_sort_fields = ['created_at', 'updated_at', 'completeness_score', 'formatted_address']
+            if sort_by not in valid_sort_fields:
+                logger.warning(f"Invalid sort_by '{sort_by}', defaulting to 'created_at'")
+                sort_by = 'created_at'
+            
+            if sort_order not in ['asc', 'desc']:
+                logger.warning(f"Invalid sort_order '{sort_order}', defaulting to 'desc'")
+                sort_order = 'desc'
+            
+            # Step 1: Get properties with pagination and sorting
             # Support both business_id and business_uuid (normalize if needed)
-            properties_result = self.supabase.table('properties').select(
-                'id, formatted_address, normalized_address, latitude, longitude, '
-                'geocoding_status, geocoding_confidence, created_at, updated_at'
-            ).eq('business_uuid', business_id).order('created_at', desc=True).range(offset, offset + limit - 1).execute()
+            # Note: If sorting by completeness_score, we'll need to sort after fetching (it's calculated)
+            needs_post_sort = sort_by == 'completeness_score'
+            
+            if needs_post_sort:
+                # For completeness_score, we need to fetch more properties to sort properly
+                # We must fetch enough properties to cover the offset + limit range after sorting
+                # Fetch with a buffer (2x) to account for potential reordering during sort
+                # This ensures we have enough data to return the requested page
+                required_count = offset + limit
+                fetch_limit = min(required_count * 2, 1000)  # Fetch 2x the required count or max 1000
+                # Ensure we fetch at least enough to cover the offset + limit
+                fetch_limit = max(fetch_limit, required_count)
+                logger.info(f"   📊 Post-sorting required: fetching {fetch_limit} properties to cover offset={offset}, limit={limit}")
+                properties_query = (
+                    self.supabase.table('properties')
+                    .select('id, formatted_address, normalized_address, latitude, longitude, '
+                            'geocoding_status, geocoding_confidence, created_at, updated_at')
+                    .eq('business_uuid', business_id)
+                    .order('created_at', desc=True)  # Default sort for initial fetch
+                    .range(0, fetch_limit - 1)
+                )
+            else:
+                # For database fields (created_at, updated_at, formatted_address), we can sort directly in the query
+                properties_query = (
+                    self.supabase.table('properties')
+                    .select('id, formatted_address, normalized_address, latitude, longitude, '
+                            'geocoding_status, geocoding_confidence, created_at, updated_at')
+                    .eq('business_uuid', business_id)
+                    .order(sort_by, desc=(sort_order == 'desc'))
+                    .range(offset, offset + limit - 1)
+                )
+            
+            properties_result = properties_query.execute()
             
             if not properties_result.data:
                 logger.info(f"   ⚠️ No properties found for business: {business_id}")
@@ -242,6 +295,26 @@ class OptimizedSupabasePropertyHubService:
                 }
                 
                 property_hubs.append(property_hub)
+            
+            # Step 5: Apply post-sorting if needed (for completeness_score which is calculated)
+            if needs_post_sort:
+                # Sort by completeness_score (calculated field)
+                reverse = sort_order == 'desc'
+                property_hubs.sort(
+                    key=lambda hub: hub['summary'].get('completeness_score', 0),
+                    reverse=reverse
+                )
+                # Apply pagination after sorting
+                # Check if we have enough properties to satisfy the offset
+                if offset >= len(property_hubs):
+                    # Requested offset is beyond available data
+                    logger.warning(f"   ⚠️ Offset {offset} exceeds available properties ({len(property_hubs)}), returning empty result")
+                    property_hubs = []
+                else:
+                    # Slice to get the requested page
+                    property_hubs = property_hubs[offset:offset + limit]
+                logger.info(f"   📊 Sorted by {sort_by} ({sort_order}), applied pagination: {len(property_hubs)} results (offset={offset}, limit={limit})")
+            # For created_at, updated_at, and formatted_address, sorting is already done in the database query
             
             execution_time = (time.time() - start_time) * 1000
             self._track_query_performance('get_all_property_hubs_optimized', execution_time)

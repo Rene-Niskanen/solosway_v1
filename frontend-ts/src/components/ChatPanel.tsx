@@ -11,6 +11,8 @@ export interface ChatPanelProps {
   onNewChat?: () => void;
   className?: string;
   showChatHistory?: boolean;
+  sidebarWidth?: number; // Width of the sidebar to position the panel correctly
+  isSmallSidebarMode?: boolean; // True when sidebar is in normal (small) mode (not collapsed, not expanded)
 }
 export const ChatPanel = ({
   isOpen = false,
@@ -18,7 +20,9 @@ export const ChatPanel = ({
   onChatSelect,
   onNewChat,
   className,
-  showChatHistory = false
+  showChatHistory = false,
+  sidebarWidth,
+  isSmallSidebarMode = false
 }: ChatPanelProps) => {
   console.log('ChatPanel rendering with isOpen:', isOpen, 'showChatHistory:', showChatHistory);
   
@@ -187,7 +191,15 @@ export const ChatPanel = ({
               duration: 0.15,
               ease: [0.4, 0, 0.2, 1]
             }} 
-            className={`fixed left-10 lg:left-14 top-0 h-full w-80 bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.08)] z-[350] ${className || ''}`}
+            className={`fixed top-0 h-full w-80 bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.08)] z-[350] ${className || ''}`}
+            style={{
+              left: sidebarWidth !== undefined ? `${sidebarWidth}px` : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? '56px' : '40px'),
+              transition: 'left 0.2s ease-out',
+              // Remove left border when in small sidebar mode to eliminate grey line
+              ...(isSmallSidebarMode ? { 
+                borderLeft: 'none'
+              } : {})
+            }}
           >
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-slate-200/40">

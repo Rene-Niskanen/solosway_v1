@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "framer-motion";
 import { X, Home } from "lucide-react";
 import { PropertyData } from './PropertyResultsDisplay';
 
@@ -48,11 +47,7 @@ export const PropertyAttachment: React.FC<PropertyAttachmentProps> = ({
   const imageUrl = attachment.imageUrl || attachment.property.image || attachment.property.primary_image_url;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.1, ease: "easeOut" }}
+    <div
       className="relative bg-white rounded-lg border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 overflow-hidden"
       style={{ 
         width: '120px',
@@ -62,7 +57,6 @@ export const PropertyAttachment: React.FC<PropertyAttachmentProps> = ({
         padding: 0,
         margin: 0,
       }}
-      layout={false}
       onClick={handleClick}
       title={`Click to view ${attachment.address}`}
     >
@@ -111,7 +105,7 @@ export const PropertyAttachment: React.FC<PropertyAttachmentProps> = ({
       >
         <X className="w-3 h-3 text-white" strokeWidth={2.5} />
       </button>
-    </motion.div>
+    </div>
   );
 };
 

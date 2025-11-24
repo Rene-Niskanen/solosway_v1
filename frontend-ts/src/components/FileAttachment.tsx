@@ -16,19 +16,52 @@ export interface FileAttachmentProps {
   attachment: FileAttachmentData;
   onRemove: (id: string) => void;
   onPreview?: (attachment: FileAttachmentData) => void;
+  onDragStart?: (fileId: string) => void;
+  onDragEnd?: () => void;
 }
 
 export const FileAttachment: React.FC<FileAttachmentProps> = ({
   attachment,
   onRemove,
-  onPreview
+  onPreview,
+  onDragStart,
+  onDragEnd
 }) => {
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
   const isImage = attachment.type.startsWith('image/');
   const isPDF = attachment.type === 'application/pdf';
   const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
                  attachment.type === 'application/msword' ||
                  (attachment.name && (attachment.name.toLowerCase().endsWith('.docx') || attachment.name.toLowerCase().endsWith('.doc')));
+
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('fileId', attachment.id);
+    // Set a type to distinguish from property card drags
+    e.dataTransfer.setData('dragType', 'file');
+    e.stopPropagation(); // Prevent event from bubbling to property card handlers
+    setIsDragging(true);
+    // Add a visual indicator that dragging has started
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+    // Notify parent that dragging has started
+    if (onDragStart) {
+      onDragStart(attachment.id);
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    setIsDragging(false);
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+    // Notify parent that dragging has ended
+    if (onDragEnd) {
+      onDragEnd();
+    }
+  };
 
   // Create preview URL for images
   React.useEffect(() => {
@@ -110,10 +143,14 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           flexShrink: 0,
           padding: 0,
           margin: 0,
+          cursor: isDragging ? 'grabbing' : 'grab',
         }}
         layout={false}
+        draggable
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
         onClick={handleFileClick}
-        title={`Click to open ${attachment.name}`}
+        title={`Drag to delete or click to open ${attachment.name}`}
       >
         {/* Image Preview */}
         <img
@@ -162,10 +199,14 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
         flexShrink: 0,
         flexGrow: 0,
         alignSelf: 'flex-start',
+        cursor: isDragging ? 'grabbing' : 'grab',
       }}
       layout={false}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
       onClick={handleFileClick}
-      title={`Click to open ${attachment.name}`}
+      title={`Drag to delete or click to open ${attachment.name}`}
     >
       <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
         {/* File Icon - Red for PDF, Blue for DOCX, Gray for others */}
