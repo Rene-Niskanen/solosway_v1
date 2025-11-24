@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -1177,13 +1177,170 @@ const LocationPickerModal: React.FC<{
   );
 };
 
+// Background Settings Component
+const BackgroundSettings: React.FC = () => {
+  const BACKGROUNDS = [
+    { id: 'background1', name: 'Background 1', image: '/background1.png' },
+    { id: 'background2', name: 'Background 2', image: '/background2.png' },
+    { id: 'background3', name: 'Background 3', image: '/Background3.png' },
+    { id: 'background4', name: 'Background 4', image: '/Background4.png' },
+    { id: 'background5', name: 'Background 5', image: '/Background5.png' },
+    { id: 'background6', name: 'Background 6', image: '/Background6.png' },
+    { id: 'velora-grass', name: 'Velora Grass', image: '/VeloraGrassBackground.png' },
+  ];
+
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Load saved background on mount - check for custom uploaded background first
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Check for custom uploaded background (stored as data URL)
+      const customBg = localStorage.getItem('customUploadedBackground');
+      if (customBg && customBg.startsWith('data:image')) {
+        setSelectedBackground(customBg);
+      } else {
+        const saved = localStorage.getItem('dashboardBackground');
+        if (saved) {
+          setSelectedBackground(saved);
+        }
+      }
+    }
+  }, []);
+
+  const handleBackgroundSelect = (backgroundId: string) => {
+    setSelectedBackground(backgroundId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('dashboardBackground', backgroundId);
+      // Clear custom uploaded background if selecting a preset
+      if (!backgroundId.startsWith('data:image')) {
+        localStorage.removeItem('customUploadedBackground');
+      }
+      // Trigger a custom event to notify DashboardLayout to update
+      window.dispatchEvent(new CustomEvent('backgroundChanged', { detail: { backgroundId } }));
+    }
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const imageDataUrl = e.target?.result as string;
+      // Store as custom uploaded background
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('customUploadedBackground', imageDataUrl);
+        // Set it as the current background immediately
+        handleBackgroundSelect(imageDataUrl);
+      }
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Background</h3>
+        <p className="text-sm text-slate-600 leading-relaxed">
+          Choose your dashboard background.
+        </p>
+      </div>
+
+      {/* Background Preview Cards - Similar to reference image but with white theme */}
+      <div className="grid grid-cols-3 gap-4">
+        {BACKGROUNDS.map((background) => {
+          const isSelected = selectedBackground === background.id;
+          return (
+            <motion.button
+              key={background.id}
+              onClick={() => handleBackgroundSelect(background.id)}
+              className={`relative rounded-lg overflow-hidden border-2 transition-all ${
+                isSelected
+                  ? 'border-slate-900 shadow-lg ring-2 ring-slate-900 ring-offset-2'
+                  : 'border-slate-200 hover:border-slate-300'
+              }`}
+              style={{
+                aspectRatio: '16/9',
+                background: 'white',
+              }}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {/* Background Preview */}
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: `url(${background.image})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat',
+                }}
+              />
+              {/* Overlay for selected state - subtle white overlay */}
+              {isSelected && (
+                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-lg" />
+              )}
+              {/* Checkmark indicator - white circle with checkmark */}
+              {isSelected && (
+                <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-md border border-slate-200">
+                  <svg
+                    className="w-4 h-4 text-slate-900"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2.5}
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+              )}
+            </motion.button>
+          );
+        })}
+        {/* Add Background Button */}
+        <motion.button
+          onClick={() => fileInputRef.current?.click()}
+          className="relative rounded-lg overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
+          style={{
+            aspectRatio: '16/9',
+            background: 'white',
+          }}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <Plus className="w-8 h-8 text-slate-400" />
+          <input
+            type="file"
+            accept="image/*"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+        </motion.button>
+      </div>
+    </div>
+  );
+};
+
 // Settings View Component with Sidebar Navigation
 const SettingsView: React.FC<{ 
   onCloseSidebar?: () => void;
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
 }> = ({ onCloseSidebar, onRestoreSidebarState, getSidebarState }) => {
-  const [activeCategory, setActiveCategory] = React.useState<string>('appearance');
+  const [activeCategory, setActiveCategory] = React.useState<string>('background');
   const [savedLocation, setSavedLocation] = React.useState<string>('');
 
   // Load saved location on mount
@@ -1215,12 +1372,12 @@ const SettingsView: React.FC<{
   };
 
   const settingsCategories = [
-    { id: 'appearance', label: 'Appearance', icon: Palette },
-    { id: 'map-settings', label: 'Map Settings', icon: MapPin },
+    { id: 'background', label: 'Background', icon: Image },
+    { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'privacy', label: 'Privacy', icon: Shield },
     { id: 'language', label: 'Language & Region', icon: Globe },
-    { id: 'display', label: 'Display', icon: Monitor },
+    { id: 'display', label: 'Display', icon: Layout },
   ];
 
   const renderSettingsContent = () => {
@@ -1244,20 +1401,8 @@ const SettingsView: React.FC<{
             />
           </div>
         );
-      case 'appearance':
-        return (
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Appearance</h3>
-              <p className="text-sm text-slate-600">
-                Customize the look and feel of Velora.
-              </p>
-            </div>
-            <div className="text-slate-500 text-sm">
-              Appearance settings coming soon...
-            </div>
-          </div>
-        );
+      case 'background':
+        return <BackgroundSettings />;
       case 'notifications':
         return (
           <div className="space-y-6">
@@ -1321,13 +1466,13 @@ const SettingsView: React.FC<{
 
   return (
     <div className="w-full h-full flex">
-      {/* Settings Sidebar */}
-      <div className="w-64 border-r border-slate-200 bg-white">
-        <div className="p-6 border-b border-slate-200">
-          <h2 className="text-lg font-semibold text-slate-800">Settings</h2>
-          <p className="text-sm text-slate-500 mt-1">Manage your preferences</p>
+      {/* Settings Sidebar - Sleek Design */}
+      <div className="w-64 border-r border-slate-100 bg-white/95 backdrop-blur-sm">
+        <div className="p-6 border-b border-slate-100">
+          <h2 className="text-xl font-semibold text-slate-900 tracking-tight">Settings</h2>
+          <p className="text-sm text-slate-500 mt-1.5 font-normal">Manage your preferences</p>
         </div>
-        <nav className="p-4 space-y-1">
+        <nav className="px-4 py-3 space-y-0.5">
           {settingsCategories.map((category) => {
             const Icon = category.icon;
             const isActive = activeCategory === category.id;
@@ -1335,16 +1480,23 @@ const SettingsView: React.FC<{
               <motion.button
                 key={category.id}
                 onClick={() => setActiveCategory(category.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                className={`relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
                   isActive
-                    ? 'bg-blue-50 text-blue-700'
+                    ? 'bg-slate-700 text-white shadow-sm'
                     : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                 }`}
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                initial={false}
               >
-                <Icon className="w-4 h-4" />
-                <span>{category.label}</span>
+                <Icon 
+                  className={`transition-all duration-200 ${
+                    isActive ? 'w-5 h-5' : 'w-4 h-4'
+                  }`}
+                  strokeWidth={isActive ? 2.5 : 2}
+                />
+                <span className="tracking-tight">{category.label}</span>
               </motion.button>
             );
           })}

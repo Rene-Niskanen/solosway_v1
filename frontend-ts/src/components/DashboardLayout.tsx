@@ -17,6 +17,54 @@ export interface DashboardLayoutProps {
 const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+
+  // Load saved background on mount - check for custom uploaded background first
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Check for custom uploaded background (stored as data URL) - this is the default
+      const customBg = localStorage.getItem('customUploadedBackground');
+      if (customBg && customBg.startsWith('data:image')) {
+        setSelectedBackground(customBg);
+      } else {
+        const saved = localStorage.getItem('dashboardBackground');
+        if (saved) {
+          setSelectedBackground(saved);
+        }
+      }
+    }
+  }, []);
+
+  // Listen for background changes
+  React.useEffect(() => {
+    const handleBackgroundChange = (event: CustomEvent) => {
+      setSelectedBackground(event.detail.backgroundId);
+    };
+
+    window.addEventListener('backgroundChanged', handleBackgroundChange as EventListener);
+    return () => {
+      window.removeEventListener('backgroundChanged', handleBackgroundChange as EventListener);
+    };
+  }, []);
+
+  // Get background image URL based on selected background
+  const getBackgroundImage = () => {
+    // Check if it's a custom uploaded background (data URL)
+    if (selectedBackground.startsWith('data:image')) {
+      return selectedBackground;
+    }
+
+    const backgroundMap: { [key: string]: string } = {
+      'background1': '/background1.png',
+      'background2': '/background2.png',
+      'background3': '/Background3.png',
+      'background4': '/Background4.png',
+      'background5': '/Background5.png',
+      'background6': '/Background6.png',
+      'velora-grass': '/VeloraGrassBackground.png',
+    };
+    return backgroundMap[selectedBackground] || '/Background5.png';
+  };
 
   const [currentView, setCurrentView] = React.useState<string>('search');
   const [isChatPanelOpen, setIsChatPanelOpen] = React.useState<boolean>(false);
@@ -253,7 +301,7 @@ const DashboardLayoutContent = ({
             bottom: 0,
             width: '100vw',
             height: '100vh',
-            backgroundImage: 'url(/Background5.png)',
+            backgroundImage: `url(${getBackgroundImage()})`,
             backgroundSize: 'cover',
             backgroundPosition: 'center',
             backgroundRepeat: 'no-repeat',
