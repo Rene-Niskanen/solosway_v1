@@ -487,8 +487,8 @@ def query_documents_stream():
 
 CONTEXT
 
-The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
-They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
+The user is a real estate professional (for example, a commercial/residential agent, RICS valuer, property acquisitions specialist, asset manager, investor, or analyst) working on behalf of a client, investment group, or company.
+They have uploaded {len(doc_outputs)} property-related documents for review and analysis. These may include valuation (“Red Book”) reports, commercial leases, energy performance certificates (EPCs), heads of terms, purchase/sale offer letters, rent review memoranda, building surveys, legal due diligence, correspondence with owners or tenants, or planning/consent documents.
 
 The user has asked:
 
@@ -502,30 +502,66 @@ GUIDELINES FOR YOUR RESPONSE
 
 Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
 
-Focus on what matters in real estate:
-- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
+Respond with the information that truly matters to real estate professionals making decisions:
+- Focus on property value, rent and yield metrics, recent sales or lease comparables, asset condition and building specification, location strengths or weaknesses, lease or contract terms (breaks, obligations, expiry), material risks, regulatory or compliance issues, potential upsides (development, refurbishment, leasing), and anything that could materially impact valuation or deal structure. 
+Be succinct and prioritise what a surveyor, valuer, acquisitions, or asset manager would consider most relevant to a transaction or asset strategy.
 
-When referencing a document, keep it light and natural:
-→ "One of the valuation reports mentions…"
-→ "In the lease document, there's a note that…"
+When referring to documents, reference them naturally and conversationally, without being overly formal or technical. For example:
+→ "One of the valuation reports notes that…"
+→ "The lease document indicates…"
 → "The report highlights…"
 → "Page 7 shows that…"
 
+Avoid wording that sounds robotic or over-structured; refer to documents as a professional would in conversation.
+
 Only cite pages if the information is clearly page-specific. Otherwise keep it general.
 
-CRITICAL RULES:
-1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
-2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
-3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
-4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
+CRITICAL RESPONSE RULES FOR THE ASSISTANT:
+1. **Begin your response immediately with the answer.** Never restate or repeat the user's original question, and do not use the question as a heading or introduction.
+2. **DO NOT create any extra sections such as "Additional Context" or "Background."** Only refer to context or documents if and where the user's prompt specifically requests it.
+3. **Strictly avoid giving any recommendations, action steps, opinions, or unsolicited commentary.** Only answer the exact question the user asked, with no further suggestions or follow-up guidance.
+4. **Once the answer is complete, stop.** Do not add summary statements, next steps, or closing remarks; finish the response cleanly.
 
-Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
+FORMATTING REQUIREMENTS:
+**You MUST structure your response using markdown formatting to make it easy to read and skim:**
+
+- Use **headings** (## or ###) to break up different topics or sections
+- Use **bullet points** (- or *) for lists of items, facts, or details
+- Use **numbered lists** (1. 2. 3.) for sequential information or steps
+- Use **bold text** (**text**) to highlight key figures, dates, names, or important terms
+- Use **tables** when presenting structured data (e.g., property details, financial metrics)
+- Use **horizontal rules** (---) to separate major sections if needed
+- Keep paragraphs short (2-3 sentences max) - break up long blocks of text
+- Use line breaks between sections for visual breathing room
+
+**Example structure:**
+```
+## Property Overview
+
+The property is located at [address] and consists of [description].
+
+### Key Details
+- **Size:** [sq ft / sq m]
+- **Bedrooms:** [number]
+- **Valuation Date:** [date]
+
+### Valuation Information
+- **Valuer:** [name]
+- **Value:** [amount]
+- **Method:** [approach]
+
+## Additional Information
+[Further details broken into readable sections]
+```
+
+**Never write long paragraphs without structure.** Always break information into digestible sections with clear headings and lists. Make it scannable - a professional should be able to quickly find the information they need.
 
 TONE
 
-Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
+Professional, succinct, and helpful—write as a knowledgeable real estate professional addressing a peer. Use natural, conversational language, and be human, not robotic.
 
-Now provide your response (answer directly, no heading, no additional context):"""
+Now provide your response (answer directly, no heading, no additional context):
+"""
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -1774,6 +1810,7 @@ def proxy_upload():
             try:
                 from .services.document_storage_service import DocumentStorageService
                 doc_storage = DocumentStorageService()
+                logger.info(f"Syncing document {new_document.id} to Supabase...")
                 success, doc_id, error = doc_storage.create_document({
                     'id': str(new_document.id),
                     'original_filename': filename,
@@ -1781,11 +1818,11 @@ def proxy_upload():
                     'file_type': file.content_type,
                     'file_size': file.content_length or 0,
                     'uploaded_by_user_id': str(current_user.id),
-                    'business_id': current_user.company_name,
-                    'business_uuid': business_uuid_str,
+                    'business_id': business_uuid_str,  # Use business_uuid_str instead of company_name
                     'status': 'uploaded'
                 })
                 if success:
+                    logger.info(f"✅ Successfully synced document {new_document.id} to Supabase")
                     # If property_id was provided, create document relationship in Supabase
                     if property_id:
                         try:
@@ -3776,31 +3813,70 @@ def link_document_to_property(document_id):
         document.property_id = property_uuid
         db.session.commit()
         
-        # Also create relationship in Supabase
+        # Ensure document is synced to Supabase before creating relationship
         try:
+            from .services.document_storage_service import DocumentStorageService
             from .services.supabase_property_hub_service import SupabasePropertyHubService
+            
+            doc_storage = DocumentStorageService()
             property_hub_service = SupabasePropertyHubService()
             
-            relationship_data = {
-                'id': str(uuid.uuid4()),
-                'document_id': str(document_id),
-                'property_id': property_id,
-                'relationship_type': 'property_document',
-                'address_source': 'manual_link',
-                'confidence_score': 1.0,
-                'relationship_metadata': {
-                    'match_type': 'manual_link',
-                    'matching_service': 'workflow',
-                    'match_timestamp': datetime.utcnow().isoformat()
-                },
-                'created_at': datetime.utcnow().isoformat()
-            }
+            # First, ensure document exists in Supabase
+            # Check if document exists in Supabase
+            doc_check = property_hub_service.supabase.table('documents').select('id').eq('id', str(document_id)).execute()
             
-            result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
-            if not result.data:
-                logger.warning("Failed to create document relationship in Supabase")
+            if not doc_check.data or len(doc_check.data) == 0:
+                # Document not in Supabase, sync it now
+                logger.info(f"Document {document_id} not found in Supabase, syncing now...")
+                business_uuid_str = _ensure_business_uuid()
+                success, synced_doc_id, error = doc_storage.create_document({
+                    'id': str(document.id),
+                    'original_filename': document.original_filename,
+                    's3_path': document.s3_path,
+                    'file_type': document.file_type,
+                    'file_size': document.file_size,
+                    'uploaded_by_user_id': str(document.uploaded_by_user_id),
+                    'business_id': business_uuid_str,
+                    'status': document.status.value if hasattr(document.status, 'value') else str(document.status),
+                    'created_at': document.created_at.isoformat() if document.created_at else datetime.utcnow().isoformat()
+                })
+                
+                if not success:
+                    logger.warning(f"Failed to sync document {document_id} to Supabase: {error}")
+                else:
+                    logger.info(f"✅ Successfully synced document {document_id} to Supabase")
+            else:
+                logger.info(f"✅ Document {document_id} already exists in Supabase")
+            
+            # Now create relationship in Supabase (check for duplicates first)
+            relationship_check = property_hub_service.supabase.table('document_relationships').select('id').eq('document_id', str(document_id)).eq('property_id', property_id).execute()
+            
+            if relationship_check.data and len(relationship_check.data) > 0:
+                logger.info(f"Relationship between document {document_id} and property {property_id} already exists")
+            else:
+                relationship_data = {
+                    'id': str(uuid.uuid4()),
+                    'document_id': str(document_id),
+                    'property_id': property_id,
+                    'relationship_type': 'property_document',
+                    'address_source': 'manual_link',
+                    'confidence_score': 1.0,
+                    'relationship_metadata': {
+                        'match_type': 'manual_link',
+                        'matching_service': 'workflow',
+                        'match_timestamp': datetime.utcnow().isoformat()
+                    },
+                    'created_at': datetime.utcnow().isoformat()
+                }
+                
+                result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
+                if result.data:
+                    logger.info(f"✅ Created document relationship: document {document_id} -> property {property_id}")
+                else:
+                    logger.warning(f"Failed to create document relationship in Supabase - no data returned")
         except Exception as rel_error:
-            logger.warning(f"Failed to create Supabase relationship (non-fatal): {rel_error}")
+            logger.error(f"Error creating Supabase relationship: {rel_error}", exc_info=True)
+            # Don't fail the whole operation if Supabase sync fails
         
         return jsonify({
             'success': True,
@@ -3849,6 +3925,7 @@ def get_property_documents_light(property_id):
         
         # OPTIMIZATION: Use batch queries instead of N+1
         # 1. Get document relationships for this property (single query)
+        logger.info(f"Fetching documents for property {property_id_str}")
         relationships_result = (
             supabase.table('document_relationships')
             .select('document_id, relationship_type, confidence_score, created_at')
@@ -3857,6 +3934,7 @@ def get_property_documents_light(property_id):
         )
         
         if not relationships_result.data:
+            logger.info(f"No document relationships found for property {property_id_str}")
             return jsonify({
                 'success': True,
                 'data': {
@@ -3866,12 +3944,16 @@ def get_property_documents_light(property_id):
                 }
             }), 200
         
+        logger.info(f"Found {len(relationships_result.data)} document relationships for property {property_id_str}")
+        
         # 2. Get all document IDs
         document_ids = [rel['document_id'] for rel in relationships_result.data]
         
         # 3. Batch fetch all documents (single query)
         optimized_service = OptimizedSupabasePropertyHubService()
         documents_map = optimized_service.get_documents_batch(document_ids)
+        
+        logger.info(f"Fetched {len(documents_map)} documents from batch query")
         
         # 4. Combine documents with relationship data
         documents = []
@@ -3883,6 +3965,10 @@ def get_property_documents_light(property_id):
                 doc['confidence_score'] = rel['confidence_score']
                 doc['relationship_created_at'] = rel['created_at']
                 documents.append(doc)
+            else:
+                logger.warning(f"Document {doc_id} found in relationships but not in documents table")
+        
+        logger.info(f"Returning {len(documents)} documents for property {property_id_str}")
         
         return jsonify({
             'success': True,
@@ -4046,10 +4132,12 @@ def download_file():
         
         # If document_id is provided, fetch the document to get s3_path
         if document_id and not s3_path:
+            logger.info(f"Fetching document {document_id} for download")
             doc_service = SupabaseDocumentService()
             document = doc_service.get_document_by_id(document_id)
             
             if not document:
+                logger.warning(f"Document {document_id} not found")
                 return jsonify({'error': 'Document not found'}), 404
             
             # Verify business access
@@ -4057,15 +4145,20 @@ def download_file():
             if not business_uuid_str:
                 return jsonify({'error': 'User not associated with a business'}), 400
             
-            if str(document.get('business_uuid')) != business_uuid_str:
+            # Check business_id or business_uuid field
+            doc_business_id = document.get('business_id') or document.get('business_uuid')
+            if str(doc_business_id) != business_uuid_str:
+                logger.warning(f"Unauthorized access attempt: user business {business_uuid_str} != document business {doc_business_id}")
                 return jsonify({'error': 'Unauthorized'}), 403
             
             s3_path = document.get('s3_path')
             if not s3_path:
+                logger.error(f"Document {document_id} has no s3_path")
                 return jsonify({'error': 'Document has no s3_path'}), 404
             
             original_filename = document.get('original_filename', 'document')
             file_type = document.get('file_type', 'application/octet-stream')
+            logger.info(f"Downloading document {document_id}: {original_filename} from {s3_path}")
         else:
             # If only s3_path is provided, we still need to verify access
             # For now, we'll allow it if the user is authenticated

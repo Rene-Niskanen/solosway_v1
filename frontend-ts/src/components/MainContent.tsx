@@ -28,6 +28,7 @@ import { usePreview } from '../contexts/PreviewContext';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
+import { QuickStartBar } from './QuickStartBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1583,6 +1584,7 @@ export const MainContent = ({
   const [pendingMapAttachments, setPendingMapAttachments] = React.useState<FileAttachmentData[]>([]);
   const pendingMapAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
   const [pendingDashboardAttachments, setPendingDashboardAttachments] = React.useState<FileAttachmentData[]>([]);
+  const [isQuickStartPopupVisible, setIsQuickStartPopupVisible] = React.useState<boolean>(false);
   const pendingDashboardAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
   // Store SideChatPanel attachments separately
   const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
@@ -2504,7 +2506,7 @@ export const MainContent = ({
                 {/* VELORA Branding Section */}
                       <div className="flex flex-col items-center" style={{ 
                         marginTop: '0',
-                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 5vh, 3rem)' : '0', // Balanced spacing between logo and cards
+                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2.5rem, 6vh, 4rem)' : '0', // Balanced spacing between logo and cards
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
@@ -2550,7 +2552,9 @@ export const MainContent = ({
                             <div style={{
                               position: 'relative',
                               display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                              maxWidth: 'clamp(280px, 80vw, 42rem)',
+                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
+                              transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
                               <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
                                 fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
@@ -2565,7 +2569,9 @@ export const MainContent = ({
                             <div style={{
                               position: 'relative',
                               display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                              maxWidth: 'clamp(280px, 80vw, 42rem)',
+                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
+                              transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
                               <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
                                 fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
@@ -2579,6 +2585,17 @@ export const MainContent = ({
                     );
                   })()}
                 </div>
+                
+                {/* Quick Start Bar - between welcome message and recent projects */}
+                {!isVerySmall && !shouldHideProjectsForSearchBar && (
+                  <QuickStartBar
+                    onDocumentLinked={(propertyId, documentId) => {
+                      console.log('Document linked:', { propertyId, documentId });
+                      // Optionally refresh recent projects or show success
+                    }}
+                    onPopupVisibilityChange={setIsQuickStartPopupVisible}
+                  />
+                )}
                 
                       {/* Recent Projects Section - Hide when very small OR when search bar needs space */}
                       {!isVerySmall && !shouldHideProjectsForSearchBar && (

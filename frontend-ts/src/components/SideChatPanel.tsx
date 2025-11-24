@@ -1220,9 +1220,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <div
                         key={message.id}
                         style={{
-                          backgroundColor: '#ffffff',
+                          backgroundColor: '#EAEAEA',
                           borderRadius: '12px',
-                          padding: '6px 14px', // Reduced padding on all sides
+                          padding: '5px 12px', // Adjusted padding for smaller font size
                           boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                           alignSelf: 'flex-start',
                           maxWidth: '85%',
@@ -1282,9 +1282,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         {/* Display query text */}
                         {message.text && (
                           <div style={{
-                            color: '#1F2937',
-                            fontSize: '14px',
-                            lineHeight: '20px',
+                            color: '#0D0D0D',
+                            fontSize: '13px',
+                            lineHeight: '19px',
                             margin: 0,
                             padding: 0,
                             textAlign: 'left',
@@ -1295,16 +1295,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             <ReactMarkdown
                               components={{
                                 p: ({ children }) => <p style={{ margin: 0, padding: 0 }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
-                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
+                                h2: ({ children }) => <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
+                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
                                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
                                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
                                 li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
                                 strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                                 em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
                                 blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                table: ({ children }) => (
+                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                      {children}
+                                    </table>
+                                  </div>
+                                ),
+                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                tbody: ({ children }) => <tbody>{children}</tbody>,
+                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                               }}
                             >
                               {message.text}
@@ -1385,27 +1398,41 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         {message.text && (
                           <div style={{
                             color: '#374151',
-                            fontSize: '14px',
-                            lineHeight: '20px',
+                            fontSize: '13px',
+                            lineHeight: '19px',
                             margin: 0,
                             padding: '4px 0',
+                            paddingLeft: 0,
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif',
                             fontWeight: 400
                           }}>
                             <ReactMarkdown
                               components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px' }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827' }}>{children}</h2>,
-                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0', color: '#111827' }}>{children}</h3>,
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0 }}>{children}</p>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
+                                h2: ({ children }) => <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h2>,
+                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h3>,
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px', textAlign: 'left' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px', textAlign: 'left' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left' }}>{children}</li>,
+                                strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
+                                em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                table: ({ children }) => (
+                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                      {children}
+                                    </table>
+                                  </div>
+                                ),
+                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                tbody: ({ children }) => <tbody>{children}</tbody>,
+                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                               }}
                             >
                               {message.text}
