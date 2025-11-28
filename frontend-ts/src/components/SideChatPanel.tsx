@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -317,6 +317,8 @@ interface SideChatPanelProps {
   onSidebarToggle?: () => void; // Callback for toggling sidebar
   onOpenProperty?: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string | number) => void; // Callback for opening property card
   initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
+  onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
+  isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
 }
 
 export interface SideChatPanelRef {
@@ -333,15 +335,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onNewChat,
   onSidebarToggle,
   onOpenProperty,
-  initialAttachedFiles
+  initialAttachedFiles,
+  onChatWidthChange,
+  isPropertyDetailsOpen = false // Default to false
 }, ref) => {
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   // Always start in multi-line mode for the requested layout (textarea above icons)
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
+  // State for expanded chat view (half screen)
+  const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  
+  // Calculate and notify parent of chat panel width changes
+  React.useEffect(() => {
+    if (onChatWidthChange && isVisible) {
+      // When PropertyDetailsPanel is open, use narrower width (35vw instead of 50vw when expanded)
+      const chatWidth = isExpanded 
+        ? (isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5)
+        : 450; // Fixed 450px when collapsed
+      onChatWidthChange(chatWidth);
+    } else if (onChatWidthChange && !isVisible) {
+      // Chat is hidden, notify parent that width is 0
+      onChatWidthChange(0);
+    }
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, onChatWidthChange]);
   const hasInitializedAttachmentsRef = React.useRef(false);
   const attachedFilesRef = React.useRef<FileAttachmentData[]>([]);
+  const abortControllerRef = React.useRef<AbortController | null>(null); // For cancelling streaming queries
   const [attachedFiles, setAttachedFiles] = React.useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
     if (initialAttachedFiles !== undefined && initialAttachedFiles.length > 0) {
@@ -355,6 +376,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     attachedFilesRef.current = attachedFiles;
   }, [attachedFiles]);
+
+  // Function to stop streaming query
+  const handleStopQuery = React.useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      
+      // Mark the current loading message as stopped
+      setChatMessages(prev => {
+        const updated = prev.map(msg => 
+          msg.isLoading 
+            ? { ...msg, isLoading: false }
+            : msg
+        );
+        persistedChatMessagesRef.current = updated;
+        return updated;
+      });
+    }
+  }, []);
   
   // Expose getAttachments method via ref
   React.useImperativeHandle(ref, () => ({
@@ -642,6 +682,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Use streaming API for real-time token-by-token updates
             let accumulatedText = '';
             
+            // Create AbortController for this query
+            const abortController = new AbortController();
+            abortControllerRef.current = abortController;
+            
             await backendApi.queryDocumentsStreamFetch(
               queryText,
               propertyId,
@@ -723,10 +767,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onStatus: Show status messages
               (message: string) => {
                 console.log('📊 SideChatPanel: Status:', message);
-              }
+              },
+              // abortSignal: Pass abort signal for cancellation
+              abortController.signal
             );
+            
+            // Clear abort controller on completion
+            abortControllerRef.current = null;
           } catch (error) {
-            console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
+            abortControllerRef.current = null;
+            // Don't log error if it was aborted
+            if (error instanceof Error && error.message !== 'Request aborted') {
+              console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
+            }
             
             // Show error message instead of mock response
             const errorMessage: ChatMessage = {
@@ -952,6 +1005,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Use streaming API for real-time token-by-token updates
           let accumulatedText = '';
           
+          // Create AbortController for this query
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+          
           await backendApi.queryDocumentsStreamFetch(
             submitted || '',
             propertyId,
@@ -1034,10 +1091,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (message: string) => {
               console.log('📊 SideChatPanel: Status:', message);
               // Optionally show status in UI
-            }
+            },
+            // abortSignal: Pass abort signal for cancellation
+            abortController.signal
           );
+          
+          // Clear abort controller on completion
+          abortControllerRef.current = null;
         } catch (error) {
-          console.error('❌ SideChatPanel: Error calling LLM API:', error);
+          abortControllerRef.current = null;
+          // Don't log error if it was aborted
+          if (error instanceof Error && error.message !== 'Request aborted') {
+            console.error('❌ SideChatPanel: Error calling LLM API:', error);
+          }
           
           // Show error message instead of mock response
           const errorMessage: ChatMessage = {
@@ -1112,11 +1178,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           layout
           className="fixed top-0 bottom-0 z-30"
           style={{
-            left: `${sidebarWidth}px`, // Position directly after sidebar (no gap)
-            width: '450px',
+            left: `${sidebarWidth}px`, // Always positioned after sidebar
+            width: isExpanded 
+              ? (isPropertyDetailsOpen ? '35vw' : '50vw') // Narrower when PropertyDetailsPanel is open
+              : '450px', // Fixed width when collapsed
             backgroundColor: '#F9F9F9',
-            boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
-            transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+            boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
+            transition: 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Smooth transition matching map clip-path animation
+            willChange: 'width', // Optimize for smooth width changes
+            backfaceVisibility: 'hidden', // Prevent flickering
+            transform: 'translateZ(0)' // Force GPU acceleration
           }}
         >
           {/* Panel content will go here */}
@@ -1185,6 +1256,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       New chat
                     </span>
                   </motion.button>
+                  <motion.button
+                    onClick={() => {
+                      setIsExpanded(!isExpanded);
+                    }}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group ${
+                      isExpanded 
+                        ? 'border-slate-300/80 bg-slate-100/80 hover:bg-slate-150/80' 
+                        : 'border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80'
+                    }`}
+                    title={isExpanded ? "Collapse chat" : "Expand chat"}
+                  >
+                    <MoveDiagonal className={`w-3.5 h-3.5 group-hover:text-slate-700 transition-colors ${
+                      isExpanded ? 'text-slate-700' : 'text-slate-600'
+                    }`} strokeWidth={1.5} />
+                  </motion.button>
                   <button
                     onClick={onMapToggle}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
@@ -1220,10 +1308,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       <div
                         key={message.id}
                         style={{
-                          backgroundColor: '#EAEAEA',
+                          backgroundColor: '#E6E6E6', // User-requested color
                           borderRadius: '12px',
                           padding: '5px 12px', // Adjusted padding for smaller font size
-                          boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                          boxShadow: 'none', // Removed drop shadow
                           alignSelf: 'flex-start',
                           maxWidth: '85%',
                           width: 'fit-content', // Fit container tightly around content
@@ -1296,7 +1384,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               components={{
                                 p: ({ children }) => <p style={{ margin: 0, padding: 0 }}>{children}</p>,
                                 h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
+                                h2: () => null, // Remove h2 titles from query responses
                                 h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
                                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
                                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
@@ -1403,19 +1491,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             margin: 0,
                             padding: '4px 0',
                             paddingLeft: 0,
+                            paddingRight: 0,
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif',
-                            fontWeight: 400
+                            fontWeight: 400,
+                            textIndent: 0
                           }}>
                             <ReactMarkdown
                               components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0 }}>{children}</p>,
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
                                 h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h2>,
-                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h3>,
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px', textAlign: 'left' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px', textAlign: 'left' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left' }}>{children}</li>,
+                                h2: () => null, // Remove h2 titles from query responses
+                                h3: () => null, // Remove h3 titles from query responses
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
                                 strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
                                 em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
                                 code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
@@ -1596,11 +1686,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </div>
                     
                     {/* Bottom row: Icons (Left) and Send Button (Right) */}
-                    <div 
+                    <div
                       className="relative flex items-center justify-between w-full"
                       style={{
                         width: '100%',
-                        minWidth: '0'
+                        minWidth: '0',
+                        minHeight: '32px'
                       }}
                     >
                       {/* Left Icons: Dashboard */}
@@ -1666,47 +1757,91 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <Mic className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                         
-                        {/* Send button */}
-                        <motion.button 
-                          type="submit" 
-                          onClick={handleSubmit} 
-                          className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                          style={{
-                            width: '32px',
-                            height: '32px',
-                            minWidth: '32px',
-                            minHeight: '32px',
-                            borderRadius: '50%'
-                          }}
-                          animate={{
-                            backgroundColor: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
-                          }}
-                          disabled={isSubmitted || (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
-                          whileHover={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                            scale: 1.05
-                          } : {}}
-                          whileTap={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                            scale: 0.95
-                          } : {}}
-                          transition={{
-                            duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                            ease: [0.16, 1, 0.3, 1]
-                          }}
-                        >
-                          <motion.div
-                            key="arrow-up"
-                            initial={{ opacity: 1 }}
-                            animate={{ opacity: 1 }}
-                            transition={{
-                              duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                              ease: [0.16, 1, 0.3, 1]
-                            }}
-                            className="absolute inset-0 flex items-center justify-center"
-                            style={{ pointerEvents: 'none' }}
-                          >
-                            <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
-                          </motion.div>
-                        </motion.button>
+                        {/* Send button or Stop button (when streaming) */}
+                        {(() => {
+                          const isStreaming = chatMessages.some(msg => msg.isLoading);
+                          
+                          if (isStreaming) {
+                            // Show stop button when streaming - same size as send button to prevent layout shifts
+                            return (
+                              <motion.button 
+                                type="button" 
+                                onClick={handleStopQuery} 
+                                className="flex items-center justify-center relative focus:outline-none outline-none"
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  minWidth: '32px',
+                                  minHeight: '32px',
+                                  borderRadius: '50%',
+                                  border: '1px solid #D1D5DB',
+                                  backgroundColor: '#FFFFFF',
+                                  flexShrink: 0
+                                }}
+                                whileHover={{ 
+                                  scale: 1.05,
+                                  backgroundColor: '#F3F4F6',
+                                  borderColor: '#9CA3AF'
+                                }}
+                                whileTap={{ 
+                                  scale: 0.95
+                                }}
+                                transition={{
+                                  duration: 0.2,
+                                  ease: [0.16, 1, 0.3, 1]
+                                }}
+                                title="Stop generating"
+                              >
+                                <Square className="w-3 h-3" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
+                              </motion.button>
+                            );
+                          }
+                          
+                          // Show normal send button when not streaming
+                          return (
+                            <motion.button 
+                              type="submit" 
+                              onClick={handleSubmit} 
+                              className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                              style={{
+                                width: '32px',
+                                height: '32px',
+                                minWidth: '32px',
+                                minHeight: '32px',
+                                borderRadius: '50%',
+                                flexShrink: 0
+                              }}
+                              animate={{
+                                backgroundColor: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
+                              }}
+                              disabled={isSubmitted || (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
+                              whileHover={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
+                                scale: 1.05
+                              } : {}}
+                              whileTap={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
+                                scale: 0.95
+                              } : {}}
+                              transition={{
+                                duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
+                                ease: [0.16, 1, 0.3, 1]
+                              }}
+                            >
+                              <motion.div
+                                key="arrow-up"
+                                initial={{ opacity: 1 }}
+                                animate={{ opacity: 1 }}
+                                transition={{
+                                  duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
+                                  ease: [0.16, 1, 0.3, 1]
+                                }}
+                                className="absolute inset-0 flex items-center justify-center"
+                                style={{ pointerEvents: 'none' }}
+                              >
+                                <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
+                              </motion.div>
+                            </motion.button>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

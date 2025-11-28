@@ -195,7 +195,8 @@ class BackendApiService {
     onToken: (token: string) => void,
     onComplete: (data: any) => void,
     onError: (error: string) => void,
-    onStatus?: (message: string) => void
+    onStatus?: (message: string) => void,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -207,6 +208,7 @@ class BackendApiService {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
+        signal: abortSignal, // Add abort signal support
         body: JSON.stringify({
           query,
           propertyId,
@@ -229,7 +231,20 @@ class BackendApiService {
       let buffer = '';
       let accumulatedText = '';
 
+      // Set up abort handler
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', () => {
+          reader.cancel();
+        });
+      }
+
       while (true) {
+        // Check if aborted
+        if (abortSignal?.aborted) {
+          reader.cancel();
+          return; // Silently return on abort
+        }
+        
         const { done, value } = await reader.read();
         
         if (done) break;
@@ -268,6 +283,10 @@ class BackendApiService {
         }
       }
     } catch (error) {
+      // Don't call onError if it was aborted (user cancelled)
+      if (error instanceof Error && error.message === 'Request aborted') {
+        return; // Silently return on abort
+      }
       onError(error instanceof Error ? error.message : 'Unknown error');
     }
   }
@@ -637,9 +656,23 @@ class BackendApiService {
             }
           } else {
             console.error(`❌ Upload failed with status: ${xhr.status}`);
+            // Try to parse error response for more details
+            let errorMessage = `Upload failed with status ${xhr.status}`;
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              if (errorResponse.error) {
+                errorMessage = errorResponse.error;
+              }
+              if (errorResponse.details) {
+                errorMessage += ` (${errorResponse.details})`;
+              }
+            } catch (e) {
+              // If response isn't JSON, use status text
+              errorMessage = xhr.statusText || errorMessage;
+            }
             resolve({
               success: false,
-              error: `Upload failed with status ${xhr.status}`
+              error: errorMessage
             });
           }
         };
@@ -909,7 +942,7 @@ class BackendApiService {
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
-    return this.fetchApi(`/api/documents/${documentId}`, {
+    return this.fetchApi(`/api/document/${documentId}`, {
       method: 'DELETE'
     });
   }

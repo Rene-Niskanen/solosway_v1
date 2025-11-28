@@ -22,6 +22,9 @@ interface SquareMapProps {
   isInChatMode?: boolean;
   containerStyle?: React.CSSProperties;
   isInteractive?: boolean; // Controls whether map responds to user interactions
+  chatPanelWidth?: number; // Width of chat panel for centering calculations
+  sidebarWidth?: number; // Width of sidebar for centering calculations
+  onPropertyDetailsVisibilityChange?: (isOpen: boolean) => void; // Callback when PropertyDetailsPanel opens/closes
 }
 
 export interface SquareMapRef {
@@ -29,6 +32,164 @@ export interface SquareMapRef {
   flyToLocation: (lat: number, lng: number, zoom?: number) => void;
   selectPropertyByAddress: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string) => void;
 }
+
+// Utility function to preload document covers
+const preloadDocumentCoversForProperty = async (docs: any[]) => {
+  if (!docs || docs.length === 0) return;
+  
+  // Initialize cache if it doesn't exist
+  if (!(window as any).__preloadedDocumentCovers) {
+    (window as any).__preloadedDocumentCovers = {};
+  }
+  
+  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+  
+  // Prioritize first 6 documents (visible ones) - load them immediately
+  const priorityDocs = docs.slice(0, 6);
+  const remainingDocs = docs.slice(6);
+  
+  // Preload priority documents first with high priority
+  const priorityPromises = priorityDocs.map(async (doc, index) => {
+    const docId = doc.id;
+    
+    // Skip if already cached
+    if ((window as any).__preloadedDocumentCovers[docId]) {
+      return;
+    }
+    
+    try {
+      const fileType = doc.file_type || '';
+      const fileName = doc.original_filename?.toLowerCase() || '';
+      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+      
+      // Only preload images and PDFs (they have visual covers)
+      if (!isImage && !isPDF) {
+        return;
+      }
+      
+      let downloadUrl: string | null = null;
+      if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
+        downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url || null;
+      } else if (doc.s3_path) {
+        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+      } else {
+        downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+      }
+      
+      if (!downloadUrl) return;
+      
+      // Fetch with high priority for first few images
+      const response = await fetch(downloadUrl, {
+        credentials: 'include',
+        // @ts-ignore - fetchPriority is not in all TypeScript definitions yet
+        priority: index < 3 ? 'high' : 'auto'
+      });
+      
+      if (!response.ok) return;
+      
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      
+      // Cache the cover
+      (window as any).__preloadedDocumentCovers[docId] = {
+        url: url,
+        type: blob.type,
+        timestamp: Date.now()
+      };
+    } catch (error) {
+      // Silently fail - don't block other preloads
+    }
+  });
+  
+  // Execute priority preloads immediately
+  Promise.all(priorityPromises).catch(() => {});
+  
+  // Preload remaining documents in smaller batches
+  if (remainingDocs.length > 0) {
+    const BATCH_SIZE = 3;
+    for (let i = 0; i < remainingDocs.length; i += BATCH_SIZE) {
+      const batch = remainingDocs.slice(i, i + BATCH_SIZE);
+      // Small delay between batches
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      const batchPromises = batch.map(async (doc) => {
+        const docId = doc.id;
+        if ((window as any).__preloadedDocumentCovers[docId]) return;
+        
+        try {
+          const fileType = doc.file_type || '';
+          const fileName = doc.original_filename?.toLowerCase() || '';
+          const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+          const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+          
+          if (!isImage && !isPDF) return;
+          
+          let downloadUrl: string | null = null;
+          if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
+            downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url || null;
+          } else if (doc.s3_path) {
+            downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+          } else {
+            downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+          }
+          
+          if (!downloadUrl) return;
+          
+          const response = await fetch(downloadUrl, {
+            credentials: 'include'
+          });
+          
+          if (!response.ok) return;
+          
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          
+          (window as any).__preloadedDocumentCovers[docId] = {
+            url: url,
+            type: blob.type,
+            timestamp: Date.now()
+          };
+        } catch (error) {
+          // Silently fail
+        }
+      });
+      
+      Promise.all(batchPromises).catch(() => {});
+    }
+  }
+};
+
+// Fetch documents and preload their covers
+const fetchAndPreloadDocumentCovers = async (propertyId: string, backendApi: any) => {
+  try {
+    const response = await backendApi.getPropertyHubDocuments(propertyId);
+    
+    let documentsToUse = null;
+    if (response && response.success && response.data) {
+      if (response.data.documents && Array.isArray(response.data.documents)) {
+        documentsToUse = response.data.documents;
+      } else if (response.data.data && response.data.data.documents && Array.isArray(response.data.data.documents)) {
+        documentsToUse = response.data.data.documents;
+      } else if (Array.isArray(response.data)) {
+        documentsToUse = response.data;
+      }
+    }
+    
+    if (documentsToUse && documentsToUse.length > 0) {
+      // Store in preloaded files cache
+      if (!(window as any).__preloadedPropertyFiles) {
+        (window as any).__preloadedPropertyFiles = {};
+      }
+      (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
+      
+      // Preload covers
+      preloadDocumentCoversForProperty(documentsToUse);
+    }
+  } catch (error) {
+    // Silently fail
+  }
+};
 
 export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({ 
   isVisible, 
@@ -38,8 +199,20 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   hasPerformedSearch = false,
   isInChatMode = false,
   containerStyle,
-  isInteractive = true
+  isInteractive = true,
+  chatPanelWidth = 0,
+  sidebarWidth = 0,
+  onPropertyDetailsVisibilityChange
 }, ref) => {
+  // Use refs to store current chat panel and sidebar widths so click handlers can access latest values
+  const chatPanelWidthRef = useRef(chatPanelWidth);
+  const sidebarWidthRef = useRef(sidebarWidth);
+  
+  // Update refs when props change
+  useEffect(() => {
+    chatPanelWidthRef.current = chatPanelWidth;
+    sidebarWidthRef.current = sidebarWidth;
+  }, [chatPanelWidth, sidebarWidth]);
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const currentMarker = useRef<mapboxgl.Marker | null>(null);
@@ -127,8 +300,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     // Apply transform to the scalable container (inner div)
     scalableContainer.style.transform = `scale(${scale})`;
     
-    // Debug logging (can be removed later)
-    console.log(`PropertyTitleCard scale update: zoom=${currentZoom.toFixed(2)}, scale=${scale.toFixed(3)}`);
+    // Debug logging removed to prevent console spam during zoom animations
+    // Scale updates happen continuously during zoom, which is expected behavior
   };
   
   // Set up zoom listener for PropertyTitleCard scaling
@@ -215,6 +388,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
   const [showPropertyTitleCard, setShowPropertyTitleCard] = useState(false);
   const [titleCardPropertyId, setTitleCardPropertyId] = useState<string | null>(null);
+  const [isLargeCardMode, setIsLargeCardMode] = useState(false); // Track if panel should be displayed as large centered card
+
+  // Notify parent when PropertyDetailsPanel visibility changes
+  React.useEffect(() => {
+    if (onPropertyDetailsVisibilityChange) {
+      onPropertyDetailsVisibilityChange(showPropertyDetailsPanel);
+    }
+  }, [showPropertyDetailsPanel, onPropertyDetailsVisibilityChange]);
 
   // Close property card when navigating away from map view
   // BUT: Don't close if chat mode is active (user might be viewing property while in chat)
@@ -1244,39 +1425,59 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Clear any existing selected property effects first
         clearSelectedPropertyEffects();
         
-        // Remove any existing property name marker
+        // Get property ID string for comparison
+        const propertyIdStr = property.id?.toString() || null;
+        
+        // Check if title card is already visible for this property
+        if (showPropertyTitleCard && titleCardPropertyId === propertyIdStr) {
+          // Title card already visible for this property - clicking pin again deselects it
+          console.log('📍 Pin clicked again - deselecting property');
+          clearSelectedPropertyEffects();
+          setShowPropertyTitleCard(false);
+          setTitleCardPropertyId(null);
+          setSelectedProperty(null);
+          setShowPropertyCard(false);
+          setShowPropertyDetailsPanel(false);
+          
+          // Remove property name marker
         if (currentPropertyNameMarkerRef.current) {
-        // Clean up React root if it exists
-        if (currentPropertyTitleCardRootRef.current) {
-          try {
-            currentPropertyTitleCardRootRef.current.unmount();
-          } catch (e) {
-            console.warn('Error unmounting PropertyTitleCard root:', e);
-          }
-          currentPropertyTitleCardRootRef.current = null;
-        }
-        // Clean up zoom listener
-        if (propertyTitleCardZoomListenerRef.current) {
-          propertyTitleCardZoomListenerRef.current();
-          propertyTitleCardZoomListenerRef.current = null;
-        }
+            // Clean up React root if it exists
+            if (currentPropertyTitleCardRootRef.current) {
+              try {
+                currentPropertyTitleCardRootRef.current.unmount();
+              } catch (e) {
+                console.warn('Error unmounting PropertyTitleCard root:', e);
+              }
+              currentPropertyTitleCardRootRef.current = null;
+            }
+            // Clean up zoom listener
+            if (propertyTitleCardZoomListenerRef.current) {
+              propertyTitleCardZoomListenerRef.current();
+              propertyTitleCardZoomListenerRef.current = null;
+            }
           currentPropertyNameMarkerRef.current.remove();
           currentPropertyNameMarkerRef.current = null;
+          }
+          return;
         }
         
-      // Check if title card is already visible for this property
-      const propertyIdStr = property.id?.toString() || null;
-      if (showPropertyTitleCard && titleCardPropertyId === propertyIdStr) {
-        // Title card already visible for this property - clicking pin again deselects it
-        console.log('📍 Pin clicked again - deselecting property');
-        clearSelectedPropertyEffects();
-        setShowPropertyTitleCard(false);
-        setTitleCardPropertyId(null);
-        setSelectedProperty(null);
-        setShowPropertyCard(false);
-        setShowPropertyDetailsPanel(false);
+        // KEY LOGIC: If PropertyDetailsPanel is open for a different property, close it when clicking a new pin
+        const currentSelectedPropertyId = selectedProperty?.id?.toString() || null;
+        const isDifferentProperty = currentSelectedPropertyId && currentSelectedPropertyId !== propertyIdStr;
         
-        // Remove property name marker
+        if (isDifferentProperty && showPropertyDetailsPanel) {
+          console.log('📍 Different property pin clicked - closing previous PropertyDetailsPanel');
+          setShowPropertyDetailsPanel(false);
+          setShowPropertyCard(false);
+        }
+        
+        // Hide previous title card if different property
+        if (titleCardPropertyId && titleCardPropertyId !== propertyIdStr) {
+          setShowPropertyTitleCard(false);
+          setTitleCardPropertyId(null);
+        }
+        
+        // Remove any existing property name marker (always clean up before showing new one)
         if (currentPropertyNameMarkerRef.current) {
           // Clean up React root if it exists
           if (currentPropertyTitleCardRootRef.current) {
@@ -1295,14 +1496,6 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           currentPropertyNameMarkerRef.current.remove();
           currentPropertyNameMarkerRef.current = null;
         }
-        return;
-      }
-      
-      // Hide previous title card if different property
-      if (titleCardPropertyId && titleCardPropertyId !== propertyIdStr) {
-        setShowPropertyTitleCard(false);
-        setTitleCardPropertyId(null);
-      }
       
       // Show property title card (NEW: two-step click logic)
       // First click on pin shows title card, second click on card opens PropertyDetailsPanel
@@ -1341,6 +1534,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           if (map.current) {
             map.current.dragPan.disable();
           }
+          
+          // Preload document covers on hover for faster loading when clicked
+          if (property?.id && backendApi) {
+            const propertyId = property.id;
+            const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+            if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+              preloadDocumentCoversForProperty(preloadedFiles);
+            } else {
+              fetchAndPreloadDocumentCovers(propertyId, backendApi);
+            }
+          }
         });
         
         scalableContainer.addEventListener('mouseleave', () => {
@@ -1355,19 +1559,88 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           // The dragPan.disable() from mouseenter should handle preventing map drag
         });
         
-        // Handle card click - opens PropertyDetailsPanel
+        // Handle card click - opens PropertyDetailsPanel above the title card
         const handleCardClick = () => {
-          console.log('📍 Property title card clicked - opening PropertyDetailsPanel');
+          console.log('📍 Property title card clicked - opening PropertyDetailsPanel above title card');
+          
+          // Preload document covers immediately when title card is clicked
+          if (property?.id && backendApi) {
+            const propertyId = property.id;
+            // Check if we already have preloaded files
+            const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+            if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+              // Preload covers for existing documents
+              preloadDocumentCoversForProperty(preloadedFiles);
+            } else {
+              // Fetch documents and preload covers
+              fetchAndPreloadDocumentCovers(propertyId, backendApi);
+            }
+          }
+          
           // Store pin coordinates
           if (property.latitude && property.longitude) {
             selectedPropertyPinCoordsRef.current = { lat: property.latitude, lng: property.longitude };
           }
+          // Calculate position for PropertyDetailsPanel above the title card
+          // The title card is positioned above the pin, so we position PropertyDetailsPanel above the title card
+          if (map.current && property.longitude && property.latitude) {
+            const point = map.current.project([property.longitude, property.latitude]);
+            // Get map container position to convert to viewport coordinates
+            const mapContainer = map.current.getContainer();
+            const containerRect = mapContainer.getBoundingClientRect();
+            // Position PropertyDetailsPanel using the SAME logic as PropertyTitleCard
+            // PropertyTitleCard uses: anchor: 'bottom', offset: [0, -(pinRadius + gapAbovePin)]
+            // This means the title card's bottom center is at: pin Y - (pinRadius + gapAbovePin)
+            // Title card height is 360px, so its top is at: pin Y - (pinRadius + gapAbovePin) - 360
+            // PropertyDetailsPanel should be positioned above the title card with a gap
+            // Use the same anchor logic: bottom center of PropertyDetailsPanel should align with pin X (same as PropertyTitleCard)
+            const titleCardHeight = 360;
+            const pinRadius = 10;
+            const gapAbovePin = 20; // Gap between pin and title card bottom (same as PropertyTitleCard)
+            const titleCardBottomY = point.y - (pinRadius + gapAbovePin); // Where title card bottom is
+            const titleCardTopY = titleCardBottomY - titleCardHeight; // Where title card top is
+            const panelGap = 20; // Gap between PropertyDetailsPanel and title card
+            // Position PropertyDetailsPanel so its bottom is above the title card top with a gap
+            // The pin X position is where both cards should be centered (same as PropertyTitleCard anchor: 'bottom')
+            setSelectedPropertyPosition({
+              x: containerRect.left + point.x, // Pin X position (same as PropertyTitleCard - will be centered with translate(-50%))
+              y: containerRect.top + titleCardTopY - panelGap // Position above title card with gap
+            });
+          }
+          // Set selected property - this will trigger the useEffect to re-center if chat panel width changes
           setSelectedProperty(property);
           setShowPropertyCard(true);
           setShowPropertyDetailsPanel(true);
+          setIsLargeCardMode(true); // Enable large card mode (positioned above title card)
           setIsExpanded(false);
           setShowFullDescription(false);
-          // Keep title card visible (per user requirement)
+          // Keep title card visible (it should remain below PropertyDetailsPanel)
+          
+          // Also re-center immediately when title card is clicked (in case chat panel is open)
+          if (map.current && property.longitude && property.latitude && chatPanelWidth > 0) {
+            const propertyPinCoordinates: [number, number] = [property.longitude, property.latitude];
+            const cardHeight = 360;
+            const verticalOffset = (cardHeight / 2) - 40;
+            const leftEdge = chatPanelWidth + sidebarWidth;
+            const visibleWidth = window.innerWidth - leftEdge;
+            const visibleCenterX = leftEdge + (visibleWidth / 2);
+            const viewportCenterX = window.innerWidth / 2;
+            const horizontalOffset = visibleCenterX - viewportCenterX;
+            
+            console.log('📍 Title card clicked - re-centering with chat panel:', {
+              chatPanelWidth,
+              horizontalOffset,
+              source: 'title-card-click'
+            });
+            
+            map.current.flyTo({
+              center: propertyPinCoordinates,
+              zoom: map.current.getZoom(),
+              duration: 300,
+              offset: [horizontalOffset, verticalOffset],
+              essential: true
+            });
+          }
         };
         
         // Render PropertyTitleCard component into scalable container
@@ -1418,38 +1691,90 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         setTitleCardPropertyId(propertyIdStr);
         }
         
-        // Smoothly fly to the property location, centering card and pin in the center of the screen
+        // Smoothly fly to the property location, centering card and pin in the center of the visible map area
         const propertyCoordinates: [number, number] = [property.longitude, property.latitude];
         // Calculate offset to center the card and pin
         // Card is positioned above the pin, so offset down slightly to center both
         const cardHeight = 360; // Approximate card height
         const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
+        
+        // Calculate horizontal offset to center in the visible map area (between chat panel and screen edge)
+        // Use refs to get current values (handler might have been created before chat panel opened)
+        const currentChatPanelWidth = chatPanelWidthRef.current;
+        const currentSidebarWidth = sidebarWidthRef.current;
+        const leftEdge = currentChatPanelWidth + currentSidebarWidth; // Left edge of visible map area (right edge of chat panel)
+        const visibleWidth = window.innerWidth - leftEdge; // Width of visible map area (from chat edge to screen edge)
+        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area (middle between chat edge and screen edge)
+        const viewportCenterX = window.innerWidth / 2; // Center of full viewport
+        // Calculate offset needed to center property pin in visible map area
+        const horizontalOffset = visibleCenterX - viewportCenterX;
+        
+        console.log('📍 Property pin clicked - centering calculation:', {
+          chatPanelWidth: currentChatPanelWidth,
+          sidebarWidth: currentSidebarWidth,
+          leftEdge,
+          visibleWidth,
+          visibleCenterX,
+          viewportCenterX,
+          horizontalOffset,
+          windowWidth: window.innerWidth,
+          source: 'pin-click',
+          usingRefs: true
+        });
+        
+        // Store property pin coordinates for re-centering when chat panel width changes
+        if (property.latitude && property.longitude) {
+          selectedPropertyPinCoordsRef.current = { lat: property.latitude, lng: property.longitude };
+        }
+        
+        // First, center the property (with correct offset for chat panel) at current zoom
+        const currentZoom = map.current.getZoom();
         map.current.flyTo({
           center: propertyCoordinates,
-          zoom: 17.5, // Consistent zoom level matching reference image proximity
-          duration: 2000, // 2 second smooth transition
-          essential: true, // Ensure animation completes
-          offset: [0, verticalOffset], // Center horizontally, offset down to center card and pin together
+          zoom: currentZoom, // Keep current zoom level for centering
+          duration: 600, // Smooth centering animation
+          essential: true,
+          offset: [horizontalOffset, verticalOffset], // Center horizontally in visible map area
           easing: (t) => {
-            // Custom easing function for extremely smooth animation
-            // Ease-in-out-cubic for smooth acceleration and deceleration
+            // Smooth easing for centering
             return t < 0.5
-              ? 4 * t * t * t
-              : 1 - Math.pow(-2 * t + 2, 3) / 2;
+              ? 2 * t * t
+              : 1 - Math.pow(-2 * t + 2, 2) / 2;
           }
         });
+        
+        // Then, after centering completes, zoom in smoothly
+        setTimeout(() => {
+          if (map.current) {
+            map.current.flyTo({
+              center: propertyCoordinates,
+              zoom: 17.5, // Zoom in to property
+              duration: 1000, // Smooth zoom animation
+              essential: true,
+              offset: [horizontalOffset, verticalOffset], // Maintain offset during zoom
+              easing: (t) => {
+                // Smooth easing for zoom
+                return t < 0.5
+                  ? 2 * t * t
+                  : 1 - Math.pow(-2 * t + 2, 2) / 2;
+              }
+            });
+          }
+        }, 650); // Start zoom after centering completes (600ms + 50ms buffer)
+        
+        console.log('✅ Property pin clicked - flyTo called with offset:', [horizontalOffset, verticalOffset]);
         
         // Make the base marker transparent (instead of hiding) so click target remains active
         // IMPORTANT: property-click-target layer is separate from property-markers and remains fully functional
         // The property-click-target layer is a map layer (not HTML), so it works even with HTML markers
         // Since PropertyTitleCard's green pin has pointer-events: none, clicks on it pass through to the map layer
         // This ensures clicks still work while only showing the PropertyTitleCard's green pin
-        if (map.current && map.current.getLayer('property-markers')) {
+        if (map.current.getLayer('property-markers')) {
           // Set selected property pin to green, others to white
           map.current.setPaintProperty('property-markers', 'circle-color', [
             'case',
             ['==', ['get', 'id'], property.id],
-            '#FFE2B1', // Peach/beige for selected property
+            '#D1D5DB', // Light grey for selected property
             '#ffffff' // White for others
           ]);
           // Keep selected property visible (green pin) and others visible too
@@ -1732,7 +2057,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 white-space: nowrap;
                 margin-bottom: 0;
               ">
-                <!-- Black circle with orange pin icon -->
+                <!-- Black circle with green pin icon -->
                 <div style="
                   width: 20px;
                   height: 20px;
@@ -1745,7 +2070,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   flex-shrink: 0;
                 ">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#ff6b35"/>
+                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#D1D5DB"/>
                   </svg>
                 </div>
                 <!-- Address text -->
@@ -1771,7 +2096,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               <div style="
                 width: 16px;
                 height: 16px;
-                background: #10B981;
+                background: #D1D5DB;
                 border-radius: 50%;
                 border: 2px solid white;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2);
@@ -2699,8 +3024,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 // REMOVED: Map centering logic - no longer centering on recent project click
               } else {
                 // Map not ready - set position from coordinates (will update when map loads)
+                // Calculate center of visible area (between chat panel edge and screen edge)
+                const leftEdge = chatPanelWidth + sidebarWidth;
+                const visibleWidth = window.innerWidth - leftEdge;
+                const centerX = leftEdge + (visibleWidth / 2);
+                
                 setSelectedPropertyPosition({
-                  x: window.innerWidth / 2,
+                  x: centerX,
                   y: window.innerHeight / 2
                 });
                 
@@ -2797,20 +3127,66 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         
         // Jump directly to just above the pin - no animation, no transition (duration: 0 = instant)
         hasJumpedToPropertyPinRef.current = true; // Flag to prevent default location from overriding
-        // Calculate offset to center the card and pin
+        // Calculate offset to center the card and pin in visible area
         const cardHeight = 360; // Approximate card height
         const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
-        map.current.flyTo({
-          center: propertyPinCoordinates,
-          zoom: 17.5, // Consistent zoom level matching reference image proximity
-          duration: 0, // Instant jump - no animation
-          offset: [0, verticalOffset] // Center horizontally, offset down to center card and pin together
+        // Calculate horizontal offset to center in visible area (between chat panel and screen edge)
+        const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
+        const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
+        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
+        const viewportCenterX = window.innerWidth / 2; // Center of full viewport
+        const horizontalOffset = visibleCenterX - viewportCenterX;
+        
+        console.log('📍 Property centering (instant jump):', {
+          chatPanelWidth,
+          sidebarWidth,
+          leftEdge,
+          visibleWidth,
+          visibleCenterX,
+          viewportCenterX,
+          horizontalOffset
         });
         
-        // Reset flag after a short delay to allow default location logic to work normally later
+        // First, center the property (with correct offset for chat panel) at current zoom
+        const currentZoom = map.current.getZoom();
+        map.current.flyTo({
+          center: propertyPinCoordinates,
+          zoom: currentZoom, // Keep current zoom level for centering
+          duration: 600, // Smooth centering animation
+          essential: true,
+          offset: [horizontalOffset, verticalOffset], // Center horizontally in visible area
+          easing: (t) => {
+            // Smooth easing for centering
+            return t < 0.5
+              ? 2 * t * t
+              : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          }
+        });
+        
+        // Then, after centering completes, zoom in smoothly
+        setTimeout(() => {
+          if (map.current) {
+            map.current.flyTo({
+              center: propertyPinCoordinates,
+              zoom: 17.5, // Zoom in to property
+              duration: 1000, // Smooth zoom animation
+              essential: true,
+              offset: [horizontalOffset, verticalOffset], // Maintain offset during zoom
+              easing: (t) => {
+                // Smooth easing for zoom
+                return t < 0.5
+                  ? 2 * t * t
+                  : 1 - Math.pow(-2 * t + 2, 2) / 2;
+              }
+            });
+          }
+        }, 650); // Start zoom after centering completes (600ms + 50ms buffer)
+        
+        // Reset flag after both animations complete
+        // This prevents re-centering from interfering with the initial animations
         setTimeout(() => {
           hasJumpedToPropertyPinRef.current = false;
-        }, 1000);
+        }, 1700); // Total animation time (600ms + 1000ms) + 100ms buffer
       }
     }
     
@@ -2956,7 +3332,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 type: 'circle' as const,
                 paint: {
                   'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 6, 15, 8, 20, 10],
-                  'circle-color': '#10B981',
+                  'circle-color': '#D1D5DB',
                   'circle-stroke-width': 2,
                   'circle-stroke-color': '#ffffff',
                   'circle-opacity': 1.0
@@ -3133,6 +3509,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           if (map.current) {
             map.current.dragPan.disable();
           }
+          
+          // Preload document covers on hover for faster loading when clicked
+          if (finalProperty?.id && backendApi) {
+            const propertyId = finalProperty.id;
+            const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+            if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+              preloadDocumentCoversForProperty(preloadedFiles);
+            } else {
+              fetchAndPreloadDocumentCovers(propertyId, backendApi);
+            }
+          }
         });
         
         scalableContainer.addEventListener('mouseleave', () => {
@@ -3208,7 +3595,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           map.current.setPaintProperty('property-markers', 'circle-color', [
             'case',
             ['==', ['get', 'id'], finalProperty.id],
-            '#FFE2B1', // Peach/beige for selected property
+            '#D1D5DB', // Light grey for selected property
             '#ffffff' // White for others
           ]);
           // Keep selected property visible (green pin) and others visible too
@@ -3637,6 +4024,131 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
     }
   }, [isVisible, isInteractive]);
+
+  // Track last re-center to prevent rapid successive calls that cause jitter
+  const lastRecenteredRef = useRef<{ chatPanelWidth: number; timestamp: number } | null>(null);
+  // Track previous chat panel width to detect transitions (opening/closing)
+  const previousChatPanelWidthRef = useRef<number>(0);
+  
+  // Re-center property pin when chat panel width changes (e.g., when chat expands/collapses)
+  // This ensures the property stays centered in the visible map area
+  // Works for both selectedProperty (title card clicked) and showPropertyTitleCard (pin clicked)
+  useEffect(() => {
+    // Only re-center if we have coordinates and either a selected property OR a visible title card
+    const hasSelectedProperty = !!selectedProperty;
+    const hasVisibleTitleCard = showPropertyTitleCard && titleCardPropertyId;
+    const hasCoordinates = !!selectedPropertyPinCoordsRef.current;
+    
+    if (!map.current || !isVisible || !hasCoordinates || (!hasSelectedProperty && !hasVisibleTitleCard)) {
+      previousChatPanelWidthRef.current = chatPanelWidth; // Update ref even if we return early
+      return;
+    }
+    
+    // Detect transition: chat panel closing (was open, now closed)
+    const wasOpen = previousChatPanelWidthRef.current > 0;
+    const isNowClosed = chatPanelWidth === 0;
+    const chatJustClosed = wasOpen && isNowClosed;
+    
+    // Re-center when chat panel opens OR closes (to center in visible area)
+    const shouldRecenter = chatPanelWidth > 0 || chatJustClosed;
+    
+    if (!shouldRecenter) {
+      previousChatPanelWidthRef.current = chatPanelWidth; // Update ref
+      return;
+    }
+    
+    // CRITICAL: Don't re-center if we just jumped to a property pin (initial zoom-in animation)
+    // Wait for the initial animation to complete before re-centering
+    if (hasJumpedToPropertyPinRef.current) {
+      console.log('⏸️ Skipping re-center - initial property pin animation in progress');
+      return;
+    }
+    
+    // Prevent rapid successive re-centering calls (debounce)
+    const now = Date.now();
+    const lastRecentered = lastRecenteredRef.current;
+    if (lastRecentered && 
+        lastRecentered.chatPanelWidth === chatPanelWidth && 
+        now - lastRecentered.timestamp < 500) {
+      console.log('⏸️ Skipping re-center - too soon after last re-center (debounce)');
+      return;
+    }
+    
+    const coords = selectedPropertyPinCoordsRef.current;
+    const propertyPinCoordinates: [number, number] = [coords.lng, coords.lat];
+    
+    // Calculate offset to center in visible area (between chat panel and screen edge)
+    const cardHeight = 360; // Approximate card height
+    const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
+    
+    // When chat is open, center in visible area. When chat closes, center in full viewport
+    let horizontalOffset: number;
+    if (chatPanelWidth > 0) {
+      // Chat is open - center in visible area (between chat panel and screen edge)
+      const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
+      const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
+      const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
+      const viewportCenterX = window.innerWidth / 2; // Center of full viewport
+      horizontalOffset = visibleCenterX - viewportCenterX;
+    } else {
+      // Chat is closed - center in full viewport (no offset)
+      horizontalOffset = 0;
+    }
+    
+    console.log('📍 Re-centering property (chat panel width changed):', {
+      chatPanelWidth,
+      previousWidth: previousChatPanelWidthRef.current,
+      chatJustClosed,
+      sidebarWidth,
+      horizontalOffset,
+      hasSelectedProperty,
+      hasVisibleTitleCard,
+      titleCardPropertyId
+    });
+    
+    // Longer delay to ensure chat panel has finished animating and any ongoing animations have settled
+    const timeoutId = setTimeout(() => {
+      if (map.current && selectedPropertyPinCoordsRef.current) {
+        // Double-check that we're not in the middle of an initial animation
+        if (hasJumpedToPropertyPinRef.current) {
+          console.log('⏸️ Skipping re-center - initial animation still in progress');
+          previousChatPanelWidthRef.current = chatPanelWidth; // Update ref even if we skip
+          return;
+        }
+        
+        const currentCenter = map.current.getCenter();
+        const currentZoom = map.current.getZoom();
+        
+        // Use essential: false so it doesn't interrupt other animations
+        // Use a smooth, longer duration to prevent jitter
+        map.current.flyTo({
+          center: propertyPinCoordinates,
+          zoom: currentZoom, // Keep current zoom level
+          duration: 600, // Smooth duration to prevent jitter
+          offset: [horizontalOffset, verticalOffset],
+          essential: false, // Don't interrupt other animations
+          easing: (t) => {
+            // Very smooth easing function - ease-in-out-cubic for buttery smooth animation
+            return t < 0.5
+              ? 4 * t * t * t
+              : 1 - Math.pow(-2 * t + 2, 3) / 2;
+          }
+        });
+        
+        // Update last re-center timestamp to prevent rapid successive calls
+        lastRecenteredRef.current = { chatPanelWidth, timestamp: Date.now() };
+        // Update previous chat panel width for next comparison
+        previousChatPanelWidthRef.current = chatPanelWidth;
+        
+        console.log('✅ Re-centered property pin smoothly');
+      } else {
+        console.warn('⚠️ Could not re-center: map or coords not available');
+        previousChatPanelWidthRef.current = chatPanelWidth; // Update ref even on error
+      }
+    }, 500); // Longer delay to let chat panel finish and any ongoing animations settle
+    
+    return () => clearTimeout(timeoutId);
+  }, [chatPanelWidth, sidebarWidth, isVisible, selectedProperty, showPropertyTitleCard, titleCardPropertyId]);
   
   // Cleanup on unmount only
   useEffect(() => {
@@ -3893,14 +4405,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         style={{ 
           display: 'block',
           pointerEvents: isInteractive ? 'auto' : 'none',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          width: '100vw',
-          height: '100vh',
-          zIndex: isInteractive ? 5 : 0, // Lower z-index than chat panels (30, 50)
-          ...containerStyle
+          position: 'fixed',
+          top: containerStyle?.top || 0,
+          left: 0, // Always at left edge - map stays full width
+          bottom: containerStyle?.bottom || 0,
+          width: '100vw', // Always full width - never resizes, no animations
+          height: containerStyle?.height || '100vh',
+          zIndex: containerStyle?.zIndex !== undefined ? containerStyle.zIndex : (isInteractive ? 5 : 0), // Lower z-index than chat panels (30, 50)
+          overflow: 'hidden', // Clip any content that extends beyond the container
+          backgroundColor: containerStyle?.backgroundColor || '#f5f5f5', // Match map background
+          // Spread containerStyle last to allow overrides, but exclude width/left/right/maxWidth/clipPath/transition to prevent conflicts
+          ...(containerStyle ? Object.fromEntries(
+            Object.entries(containerStyle).filter(([key]) => !['width', 'left', 'right', 'maxWidth', 'clipPath', 'transition'].includes(key))
+          ) : {})
         }}
           className="fixed"
         >
@@ -3908,13 +4425,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             ref={mapContainer} 
             className="w-full h-full"
             style={{
-              width: '100vw',
-              height: '100vh',
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0
+              width: '100%',
+              height: '100%',
+              position: 'relative',
+              overflow: 'hidden', // Ensure map doesn't overflow container
+              boxSizing: 'border-box', // Ensure padding/borders are included in width
+              backgroundColor: '#f5f5f5', // Match parent background to prevent white gap
+              background: '#f5f5f5' // Ensure background is set (some browsers need both)
             }}
           />
           
@@ -4022,9 +4539,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           key="property-details-panel"
           property={selectedProperty}
           isVisible={showPropertyDetailsPanel}
+          isLargeCardMode={isLargeCardMode}
+          pinPosition={selectedPropertyPosition} // Pass pin position for positioning above pin
+          isInChatMode={isInChatMode} // Pass chat mode state
+          chatPanelWidth={chatPanelWidth} // Pass chat panel width for expansion logic
           onClose={() => {
             setShowPropertyDetailsPanel(false);
             setShowPropertyCard(false); // Also close the old property card
+            setIsLargeCardMode(false); // Reset large card mode
             setSelectedProperty(null); // Clear selected property
             clearSelectedPropertyEffects(); // Restore base markers
           }}
