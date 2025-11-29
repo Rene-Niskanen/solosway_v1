@@ -350,6 +350,88 @@ class BackendApiService {
     });
   }
 
+  // Preload documents for a property (call on hover for faster loading)
+  async preloadPropertyDocuments(propertyId: string): Promise<void> {
+    // Skip if already cached
+    if ((window as any).__preloadedPropertyFiles?.[propertyId]) {
+      return;
+    }
+    
+    try {
+      const response = await this.getPropertyHubDocuments(propertyId);
+      
+      let documentsToUse = null;
+      if (response && response.success && response.data) {
+        if (response.data.documents && Array.isArray(response.data.documents)) {
+          documentsToUse = response.data.documents;
+        } else if (Array.isArray(response.data)) {
+          documentsToUse = response.data;
+        }
+      }
+      
+      if (documentsToUse && documentsToUse.length > 0) {
+        // Cache documents
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
+        
+        // Also preload first few document covers
+        this.preloadDocumentCoversQuick(documentsToUse.slice(0, 6));
+      }
+    } catch (error) {
+      // Silently fail - this is just a preload optimization
+    }
+  }
+
+  // Quick preload of document covers (first 6)
+  private async preloadDocumentCoversQuick(docs: any[]): Promise<void> {
+    if (!docs || docs.length === 0) return;
+    
+    if (!(window as any).__preloadedDocumentCovers) {
+      (window as any).__preloadedDocumentCovers = {};
+    }
+    
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    
+    const preloadPromises = docs.map(async (doc) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      try {
+        const fileType = doc.file_type || '';
+        const fileName = (doc.original_filename || '').toLowerCase();
+        const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+        const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+        
+        if (!isImage && !isPDF) return;
+        
+        let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
+        if (!downloadUrl && doc.s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+        } else if (!downloadUrl) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        (window as any).__preloadedDocumentCovers[docId] = {
+          url,
+          type: blob.type,
+          timestamp: Date.now()
+        };
+      } catch (error) {
+        // Silently fail
+      }
+    });
+    
+    await Promise.allSettled(preloadPromises);
+  }
+
   async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {
     return this.fetchApi('/api/properties/analyze', {
       method: 'POST',

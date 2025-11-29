@@ -8,6 +8,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
 import { useBackendApi } from './BackendApi';
+import { backendApi } from '../services/backendApi';
 import { PropertyDetailsPanel } from './PropertyDetailsPanel';
 import { PropertyTitleCard } from './PropertyTitleCard';
 import { DEFAULT_MAP_LOCATION_KEY } from './MainContent';
@@ -1909,12 +1910,20 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     mapClickHandlerRef.current = mapClickHandler;
     map.current.on('click', mapClickHandler);
 
-    // Add simple hover effects for property layers
+    // Add simple hover effects for property layers with preloading
     const propertyLayers = ['property-click-target', 'property-outer', 'property-markers'];
     
     propertyLayers.forEach(layerId => {
       map.current.on('mouseenter', layerId, (e) => {
         map.current.getCanvas().style.cursor = 'pointer';
+        
+        // OPTIMIZATION: Preload documents when hovering over a property marker
+        // This gives us a head start before the user clicks
+        if (e.features && e.features[0]?.properties?.id) {
+          const propertyId = e.features[0].properties.id;
+          // Preload in background - don't block hover effect
+          backendApi.preloadPropertyDocuments(propertyId).catch(() => {});
+        }
       });
 
       map.current.on('mouseleave', layerId, (e) => {
