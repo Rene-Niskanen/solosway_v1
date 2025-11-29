@@ -3,6 +3,7 @@ Summarization code - create final unified answer from all document outputs.
 """
 
 import logging
+from datetime import datetime
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -213,15 +214,17 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         logger.info("[SUMMARIZE_RESULTS] Generated final summary")
         
         # Add current exchange to conversation history
+        # Include timestamp for checkpoint persistence (as per LangGraph documentation)
         conversation_entry = {
             "query": state['user_query'],
             "summary": summary,
+            "timestamp": datetime.now().isoformat(),  # Add timestamp like LangGraph docs
             "document_ids": [output['doc_id'] for output in doc_outputs[:10]]  # Track which docs were used
         }
         
         return {
             "final_summary": summary,
-            "conversation_history": [conversation_entry]
+            "conversation_history": [conversation_entry]  # operator.add will append to existing history
         }
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("[SUMMARIZE_RESULTS] Error creating summary: %s", exc, exc_info=True)

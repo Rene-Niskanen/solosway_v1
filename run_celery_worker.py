@@ -26,7 +26,15 @@ def main():
         
         print("🚀 Starting Celery worker...")
         print(f"📊 Redis URL: {os.environ.get('REDIS_URL', 'redis://redis:6379/0')}")
-        print(f"📊 Database URL: {os.environ.get('DATABASE_URL', 'Not set')}")
+        
+        # Log Supabase DB URL (mask password for security)
+        supabase_db_url = os.environ.get('SUPABASE_DB_URL', 'Not set')
+        if supabase_db_url != 'Not set' and '@' in supabase_db_url:
+            # Mask password in connection string
+            masked_url = supabase_db_url.split('@')[0].rsplit(':', 1)[0] + ':***@' + supabase_db_url.split('@')[1]
+            print(f"📊 Supabase DB URL: {masked_url}")
+        else:
+            print(f"📊 Supabase DB URL: {supabase_db_url}")
         
         # Start the worker
         celery_app.start(['worker', '--loglevel=info', '--concurrency=1'])

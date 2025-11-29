@@ -37,9 +37,18 @@ jobs:
           # Minimal environment variables for CI testing
           # Only essential variables needed for container startup and health check
           
-          # Database (required by app - raises ValueError if not set)
-          DATABASE_URL=postgresql://solosway_user:${{ steps.set-password.outputs.password }}@postgres:5432/solosway_properties
+          # Supabase Database Connection (required by app - raises ValueError if not set)
+          # Point to local postgres container for CI testing
+          SUPABASE_DB_URL=postgresql://solosway_user:${{ steps.set-password.outputs.password }}@postgres:5432/solosway_properties
           POSTGRES_PASSWORD=${{ steps.set-password.outputs.password }}
+          
+          # Supabase API credentials (dummy values for CI - prevent import errors)
+          # These are only needed when Supabase client is actually used, not on startup
+          SUPABASE_URL=https://test-project.supabase.co
+          SUPABASE_SERVICE_KEY=test_service_key_placeholder
+          
+          # Redis (required by Celery)
+          REDIS_URL=redis://redis:6379/0
           EOF
           echo "Created minimal .env file for CI"
 
