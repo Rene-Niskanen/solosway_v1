@@ -659,6 +659,46 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   
   // Section state - determines which view we're in
   // Default to the first tab in the order (leftmost tab)
+  // Editable field state management
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const [savingFields, setSavingFields] = useState<Set<string>>(new Set());
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  
+  // Debounce timers for each field to prevent spamming the database
+  const saveTimersRef = useRef<Record<string, NodeJS.Timeout>>({});
+  // Track pending saves to cancel them if user edits again
+  const pendingSavesRef = useRef<Record<string, AbortController>>({});
+  
+  // Local state for property details to enable optimistic updates
+  const [localPropertyDetails, setLocalPropertyDetails] = useState<any>(null);
+  
+  // Sync local property details with prop when property changes
+  useEffect(() => {
+    if (property?.propertyHub?.property_details) {
+      setLocalPropertyDetails({ ...property.propertyHub.property_details });
+    } else {
+      setLocalPropertyDetails({});
+    }
+  }, [property?.propertyHub?.property_details, property?.id]);
+
+  // Cleanup: Cancel all pending saves and timers on unmount
+  useEffect(() => {
+    return () => {
+      // Cancel all pending timers
+      Object.values(saveTimersRef.current).forEach(timer => {
+        if (timer) clearTimeout(timer);
+      });
+      saveTimersRef.current = {};
+      
+      // Abort all pending API calls
+      Object.values(pendingSavesRef.current).forEach(controller => {
+        if (controller) controller.abort();
+      });
+      pendingSavesRef.current = {};
+    };
+  }, []);
+
   const [activeSection, setActiveSection] = useState<'documents' | 'propertyDetails'>(() => {
     // Load persisted order to determine initial active section
     if (typeof window !== 'undefined') {
@@ -857,6 +897,277 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       }
     }
   }, [property?.id]);
+
+  // Helper functions for formatting numbers with commas
+  const formatNumberWithCommas = (value: number | string | null | undefined): string => {
+    if (value === null || value === undefined || value === '') return '';
+    const num = typeof value === 'number' ? value : parseFloat(String(value).replace(/,/g, ''));
+    if (isNaN(num)) return '';
+    return num.toLocaleString('en-US');
+  };
+
+  const removeCommas = (value: string): string => {
+    return value.replace(/,/g, '');
+  };
+
+  // Helper functions for editable fields
+  const startEditing = (fieldName: string, currentValue: any) => {
+    // Cancel any pending save for this field when starting to edit
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    // Cancel any pending API call for this field
+    if (pendingSavesRef.current[fieldName]) {
+      pendingSavesRef.current[fieldName].abort();
+      delete pendingSavesRef.current[fieldName];
+    }
+    
+    setEditingField(fieldName);
+    const priceFields = ['asking_price', 'sold_price', 'rent_pcm'];
+    let displayValue = '';
+    
+    if (currentValue !== null && currentValue !== undefined) {
+      if (priceFields.includes(fieldName)) {
+        // Format price fields with commas
+        displayValue = formatNumberWithCommas(currentValue);
+            } else {
+        displayValue = String(currentValue);
+      }
+    }
+    
+    setEditValues(prev => ({
+      ...prev,
+      [fieldName]: displayValue
+    }));
+    setFieldErrors(prev => {
+      const newErrors = { ...prev };
+      delete newErrors[fieldName];
+      return newErrors;
+    });
+  };
+
+  const handleFieldChange = (fieldName: string, value: string) => {
+    const priceFields = ['asking_price', 'sold_price', 'rent_pcm'];
+    
+    if (priceFields.includes(fieldName)) {
+      // Allow only digits and commas, remove any other characters
+      const cleaned = value.replace(/[^\d,]/g, '');
+      // Format with commas as user types
+      const withoutCommas = removeCommas(cleaned);
+      if (withoutCommas === '') {
+        setEditValues(prev => ({ ...prev, [fieldName]: '' }));
+        return;
+      }
+      const num = parseFloat(withoutCommas);
+      if (!isNaN(num)) {
+        const formatted = formatNumberWithCommas(num);
+        setEditValues(prev => ({ ...prev, [fieldName]: formatted }));
+      } else {
+        setEditValues(prev => ({ ...prev, [fieldName]: cleaned }));
+      }
+    } else {
+      setEditValues(prev => ({
+        ...prev,
+        [fieldName]: value
+      }));
+    }
+  };
+
+  const validateField = (fieldName: string, value: string): string | null => {
+    const numericFields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm'];
+    
+    if (numericFields.includes(fieldName)) {
+      if (value.trim() === '') {
+        return null; // Empty is valid (will set to null)
+      }
+      // Remove commas before parsing
+      const cleanedValue = removeCommas(value.trim());
+      const num = fieldName === 'size_sqft' || fieldName.includes('price') || fieldName === 'rent_pcm' 
+        ? parseFloat(cleanedValue) 
+        : parseInt(cleanedValue, 10);
+      if (isNaN(num) || num < 0) {
+        return 'Please enter a valid number';
+      }
+    }
+    return null;
+  };
+  
+  const saveField = async (fieldName: string, value: string) => {
+    // Cancel any pending save for this field to prevent duplicate saves
+    if (pendingSavesRef.current[fieldName]) {
+      pendingSavesRef.current[fieldName].abort();
+      delete pendingSavesRef.current[fieldName];
+    }
+    
+    // Cancel any pending timer
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    
+    // Get property ID - try multiple possible locations
+    const propertyId = property?.id?.toString() || property?.property_id?.toString() || property?.propertyHub?.property?.id?.toString();
+    
+    if (!propertyId) {
+      console.error('Cannot save: property ID not found', property);
+      setFieldErrors(prev => ({ ...prev, [fieldName]: 'Property ID not found' }));
+      return;
+    }
+
+    const error = validateField(fieldName, value);
+    if (error) {
+      setFieldErrors(prev => ({ ...prev, [fieldName]: error }));
+      return;
+    }
+
+    // Create abort controller for this save
+    const abortController = new AbortController();
+    pendingSavesRef.current[fieldName] = abortController;
+
+    setSavingFields(prev => new Set(prev).add(fieldName));
+    setFieldErrors(prev => {
+      const newErrors = { ...prev };
+      delete newErrors[fieldName];
+      return newErrors;
+    });
+
+    try {
+      // Parse value based on field type
+      let parsedValue: any = value.trim() === '' ? null : value;
+      const numericFields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm'];
+      
+      if (numericFields.includes(fieldName)) {
+        if (value.trim() === '') {
+          parsedValue = null;
+            } else {
+          // Remove commas before parsing
+          const cleanedValue = removeCommas(value.trim());
+          parsedValue = fieldName === 'size_sqft' || fieldName.includes('price') || fieldName === 'rent_pcm'
+            ? parseFloat(cleanedValue)
+            : parseInt(cleanedValue, 10);
+        }
+      }
+
+      console.log(`💾 Saving ${fieldName}:`, { 
+        value, 
+        parsedValue, 
+        propertyId,
+        fieldType: typeof parsedValue
+      });
+      
+      // Check if save was aborted before making API call
+      if (abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted before API call`);
+        return;
+      }
+      
+      const result = await backendApi.updatePropertyDetails(propertyId, {
+        [fieldName]: parsedValue
+      } as any);
+      
+      // Check if save was aborted after API call
+      if (abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted after API call`);
+        return;
+      }
+
+      console.log(`✅ Save result for ${fieldName}:`, {
+        success: result.success,
+        error: result.error,
+        message: result.message,
+        data: result.data,
+        fullResult: result
+      });
+
+      // The backend response is wrapped in result.data
+      const backendResponse = result.data || result;
+      const isSuccess = backendResponse.success || result.success;
+
+      if (isSuccess) {
+        // Use the updated data from backend response if available, otherwise use parsedValue
+        const updatedData = backendResponse.data || backendResponse;
+        const savedValue = updatedData && updatedData[fieldName] !== undefined 
+          ? updatedData[fieldName] 
+          : parsedValue;
+        
+        // Update local property details state with the saved value from backend
+        setLocalPropertyDetails(prev => ({
+          ...prev,
+          [fieldName]: savedValue
+        }));
+        
+        // Also update the property prop if it exists (for persistence across panel reopens)
+        if (property?.propertyHub?.property_details) {
+          property.propertyHub.property_details = {
+            ...property.propertyHub.property_details,
+            [fieldName]: savedValue
+          };
+        }
+        
+        setEditingField(null);
+        setEditValues(prev => {
+          const newValues = { ...prev };
+          delete newValues[fieldName];
+          return newValues;
+        });
+        console.log(`✅ Successfully saved ${fieldName} = ${savedValue}`);
+      } else {
+        const errorMsg = backendResponse.error || result.error || 'Failed to save';
+        console.error(`❌ Failed to save ${fieldName}:`, errorMsg);
+        setFieldErrors(prev => ({ ...prev, [fieldName]: errorMsg }));
+      }
+    } catch (error: any) {
+      // Don't show error if the save was aborted
+      if (error.name === 'AbortError' || abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted`);
+        return;
+      }
+      console.error(`Error saving ${fieldName}:`, error);
+      setFieldErrors(prev => ({ ...prev, [fieldName]: error.message || 'Failed to save' }));
+    } finally {
+      // Clean up
+      delete pendingSavesRef.current[fieldName];
+      setSavingFields(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fieldName);
+        return newSet;
+      });
+    }
+  };
+
+  const handleFieldBlur = (fieldName: string) => {
+    const value = editValues[fieldName] ?? '';
+    
+    // Cancel any existing timer for this field
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    
+    // Save immediately on blur (no debounce for blur, but still cancel pending)
+    saveField(fieldName, value);
+  };
+
+  const handleFieldKeyDown = (e: React.KeyboardEvent, fieldName: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const value = editValues[fieldName] ?? '';
+      saveField(fieldName, value);
+    } else if (e.key === 'Escape') {
+      setEditingField(null);
+      setEditValues(prev => {
+        const newValues = { ...prev };
+        delete newValues[fieldName];
+        return newValues;
+      });
+      setFieldErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[fieldName];
+        return newErrors;
+      });
+    }
+  };
 
   // CRITICAL: Do NOT load documents when property card opens
   // Documents should ONLY be loaded when user clicks "View Files" button
@@ -1711,8 +2022,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   </div>
                 
                 {/* Close Button - Aligned with section tabs in top right */}
-                    <button
-                  onClick={onClose}
+          <button
+            onClick={onClose}
                   className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
                   title="Close Panel"
                   style={{
@@ -1721,7 +2032,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   }}
                 >
                   <X size={16} />
-                    </button>
+          </button>
                   </div>
               </div>
 
@@ -1732,8 +2043,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span>Documents</span>
                     <span className="font-medium">{filteredDocuments.length}</span>
-                      </div>
-                    )}
+            </div>
+            )}
 
                 {activeSection === 'documents' && (
                   <>
@@ -1749,7 +2060,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           </div>
                 
                     <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
-                      <button
+                    <button
                             onClick={() => {
                           setIsLocalSelectionMode(!isLocalSelectionMode);
                           // Clear local selection when toggling off
@@ -1765,8 +2076,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         title="Select documents to delete"
                       >
                         <SquareMousePointer size={18} />
-                          </button>
-                        </div>
+                    </button>
+                  </div>
                   </>
                 )}
                 
@@ -1792,7 +2103,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               {/* Filter Pills - Only show in documents section */}
               {activeSection === 'documents' && (
                 <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
-                          <button
+                    <button
                     onClick={() => setActiveFilter('all')}
                     className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
                       activeFilter === 'all' 
@@ -1821,10 +2132,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     }`}
                   >
                     PDFs
-                          </button>
-                        </div>
-              )}
+                    </button>
                   </div>
+                )}
+              </div>
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
             {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
@@ -1843,24 +2154,24 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         >
                     <Trash2 className="w-5 h-5" />
                     <span className="font-medium">Drop to delete</span>
-                        </motion.div>
+        </motion.div>
                       )}
-                </AnimatePresence>
+      </AnimatePresence>
 
                     {/* Document Grid - Always rendered but hidden when preview is open */}
                     <div className={selectedCardIndex !== null ? 'hidden' : ''}>
-                      {filteredDocuments.length === 0 ? (
+                    {filteredDocuments.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500">
                           <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
                             <Search size={32} className="text-gray-300" />
-                          </div>
+                  </div>
                           <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
                           <p className="text-sm text-gray-500">Try adjusting your search or upload a new file.</p>
-                        </div>
-                      ) : (
-                        <div 
+                      </div>
+                    ) : (
+                      <div 
                           className="grid gap-6 pb-20" 
-                          style={{ 
+                        style={{ 
                             gridTemplateColumns: 'repeat(auto-fill, 160px)',
                             justifyContent: 'flex-start'
                           }}
@@ -2027,7 +2338,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               const imageSrc = coverUrl;
                               // Once rendered, use stable props - never change loading/fetchPriority
                               const wasCached = !!cachedCover || !!previouslyRenderedSrc;
-                              return (
+  return (
                                 <img 
                                   key={`img-${doc.id}`}
                                   src={imageSrc} 
@@ -2061,7 +2372,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   {!wasCached && (
                                     <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
                                       <FileText className="w-8 h-8 text-gray-300" />
-                                  </div>
+                 </div>
                                 )}
                                   <iframe
                                     key={pdfIframeKey}
@@ -2077,8 +2388,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   />
                                   {/* Transparent overlay to allow clicking the card */}
                                   <div className="absolute inset-0 bg-transparent z-10" />
-                                </div>
-                              );
+              </div>
+        );
                             } else if (isDOC && hasDocxPreview) {
                               // DOCX with cached presigned URL - use Office Online Viewer
                               // Check both ref and cache for loaded state (cache persists across re-renders)
@@ -2099,7 +2410,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 renderedCoversRef.current.set(`docx-${doc.id}`, docxUrl);
                               }
                               
-                              return (
+        return (
                                 <div 
                                   key={`docx-container-${doc.id}`} 
                                   className="w-full h-full relative bg-white overflow-hidden"
@@ -2129,7 +2440,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   />
                                   {/* Transparent overlay to allow clicking the card */}
                                   <div className="absolute inset-0 bg-transparent z-10" />
-                                </div>
+                 </div>
                               );
                             } else {
                               return (
@@ -2145,18 +2456,18 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     /* High-fidelity text simulation */
                                     Array(30).fill("The property valuation report indicates a substantial increase in market value over the last fiscal quarter. Comparable sales in the immediate vicinity support this assessment, with three recent transactions involving similar square footage and amenities. Environmental factors and zoning regulations remain favorable for continued appreciation. The structure appears sound with no immediate repairs required. Rental yield projections suggest a stable income stream for investors.").join(" ")
                                   )}
-                                    </div>
+              </div>
                                 {/* Realistic Page Fade */}
                                 <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white via-white/90 to-transparent pointer-events-none" />
-                                  </div>
-                              );
+          </div>
+        );
                             }
-                            
+      
                             // Fallback - should never reach here, but ensures we always return something
-                            return (
+        return (
                               <div className="w-full h-full flex items-center justify-center bg-gray-50">
                                 <FileText className="w-8 h-8 text-gray-300" />
-                              </div>
+                  </div>
                             );
                           })()}
                                 
@@ -2166,37 +2477,38 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                Open
                              </button>
                           </div> */}
-                                </div>
+                  </div>
                                   
                         {/* Bottom Metadata Area */}
                         <div className="h-[72px] px-3 py-2.5 bg-white border-t border-gray-100 flex flex-col justify-center gap-0.5">
                           <div className="flex items-start justify-between gap-2">
                              <span className="text-xs font-semibold text-gray-700 truncate leading-tight" title={doc.original_filename}>
                                {doc.original_filename}
-                                      </span>
-                                   </div>
+                      </span>
+                  </div>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">
                               {isPDF ? 'PDF' : isDOC ? 'DOC' : isImage ? 'IMG' : 'FILE'}
                             </span>
                             <span className="text-[10px] text-gray-400">
                               {new Date(doc.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                                </span>
-                                    </div>
-                                  </div>
-                                </div>
+                    </span>
+                  </div>
+                </div>
+              </div>
                           );
                         })}
-                        </div>
+            </div>
                       )}
+          </div>
+                                
                     </div>
-
-                            </div>
                             
             {/* Property Details Section - hidden when not active */}
                 <div className={`flex-1 overflow-hidden bg-white ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
                   {(() => {
-                    const propertyDetails = property?.propertyHub?.property_details || {};
+                    // Use local property details if available (for optimistic updates), otherwise use prop
+                    const propertyDetails = localPropertyDetails || property?.propertyHub?.property_details || {};
                     const propertyImages = property?.propertyHub?.property_details?.property_images || 
                                          property?.property_images || [];
                     const primaryImage = property?.propertyHub?.property_details?.primary_image_url || 
@@ -2205,11 +2517,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     const address = property?.address || property?.propertyHub?.property?.formatted_address || 
                                    property?.propertyHub?.property?.normalized_address || 'Address not available';
                     
-                    return (
+        return (
                       <div className="flex h-full">
                         {/* Left: Images Gallery or Preview */}
                         {propertyImages.length > 0 && (
-                          <div className="w-1/2 border-r border-gray-100 flex flex-col">
+                          <div className="w-1/2 border-r border-gray-100 flex flex-col overflow-y-auto scrollbar-hide h-full"
+                            style={{
+                              scrollbarWidth: 'none',
+                              msOverflowStyle: 'none'
+                            }}
+                          >
                             {selectedImageIndex !== null ? (
                               /* Image Preview Mode */
                               <div 
@@ -2247,7 +2564,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     className="max-w-full max-h-full object-contain cursor-pointer"
                                     onClick={() => setSelectedImageIndex(null)}
                                   />
-                              </div>
+                    </div>
                                 
                                 {/* Next Button */}
                                 {propertyImages.length > 1 && (
@@ -2276,17 +2593,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 {propertyImages.length > 1 && (
                                   <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 bg-white/90 rounded-full text-xs text-gray-700 shadow-sm">
                                     {selectedImageIndex + 1} / {propertyImages.length}
-                              </div>
-                                )}
-                            </div>
+                  </div>
+                    )}
+                    </div>
                             ) : (
                               /* Thumbnail Grid Mode */
                               <div 
-                                className="flex-1 grid grid-cols-2 gap-0 bg-gray-50 overflow-y-auto scrollbar-hide" 
+                                className="grid grid-cols-2 gap-0 bg-gray-50" 
                                 style={{ 
-                                  gridAutoRows: 'min-content',
-                                  scrollbarWidth: 'none',
-                                  msOverflowStyle: 'none'
+                                  gridAutoRows: 'min-content'
                                 }}
                               >
                                 {propertyImages.map((img: any, idx: number) => (
@@ -2307,32 +2622,32 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                         (e.target as HTMLImageElement).style.display = 'none';
                                       }}
                                     />
-                                  </div>
+                    </div>
                                 ))}
-                              </div>
+                  </div>
                             )}
-                          </div>
+                </div>
                         )}
                         
                         {/* Right: Content */}
                         <div 
-                          className={`flex-1 overflow-y-auto scrollbar-hide ${propertyImages.length > 0 ? '' : 'w-full'}`}
+                          className={`flex-1 overflow-y-auto scrollbar-hide h-full py-6 ${propertyImages.length > 0 ? '' : 'w-full'}`}
                           style={{
                             scrollbarWidth: 'none',
                             msOverflowStyle: 'none'
                           }}
                         >
-                          <div className="px-6 py-4">
+                          <div className="px-6">
                             {/* Address Header */}
                             <div className="mb-6">
                               <h2 className="text-sm font-semibold text-gray-900 mb-0.5 leading-tight truncate" title={address}>{address}</h2>
                               {propertyDetails.property_type && (
                                 <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">{propertyDetails.property_type}</p>
                               )}
-                              </div>
+                    </div>
                             
                             {/* Key Details Grid - Bedrooms, Bathrooms, Size */}
-                            {(propertyDetails.number_bedrooms || propertyDetails.number_bathrooms || propertyDetails.size_sqft) && (() => {
+                            {(() => {
                               // Get size_unit from property details - use whatever unit is in the documents
                               const sizeUnit = property?.propertyHub?.property_details?.size_unit || (propertyDetails as any).size_unit || 'sqft';
                               const isInAcres = sizeUnit.toLowerCase() === 'acres' || sizeUnit.toLowerCase() === 'acre';
@@ -2382,30 +2697,138 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               
                               return (
                                 <div className={`grid ${showPlotSize ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-4 pb-4 border-b border-gray-100`}>
-                                  {propertyDetails.number_bedrooms && (
-                                    <div className="text-center">
-                                      <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bedrooms}</div>
-                                      <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bedrooms</div>
-                              </div>
-                                  )}
-                                  {propertyDetails.number_bathrooms && (
-                                    <div className="text-center">
-                                      <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bathrooms}</div>
-                                      <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bathrooms</div>
-                                    </div>
-                                  )}
-                                  {propertyDetails.size_sqft && (
-                                    <div className="text-center">
-                                      <div className="text-sm font-semibold text-gray-900 mb-0.5">
-                                        {isInAcres 
-                                          ? (propertyDetails.size_sqft % 1 === 0 ? propertyDetails.size_sqft.toString() : propertyDetails.size_sqft.toFixed(2))
-                                          : propertyDetails.size_sqft.toLocaleString()}
-                                      </div>
-                                      <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
-                                        {isInAcres ? 'acres' : 'sq ft'}
-                                      </div>
-                                    </div>
-                                  )}
+                                  {/* Bedrooms */}
+                                  <div className="text-center">
+                                    {editingField === 'number_bedrooms' ? (
+                                      <>
+                      <input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          value={editValues['number_bedrooms'] ?? ''}
+                                          onChange={(e) => handleFieldChange('number_bedrooms', e.target.value)}
+                                          onBlur={() => handleFieldBlur('number_bedrooms')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'number_bedrooms')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('number_bedrooms')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bedrooms</div>
+                                        {fieldErrors['number_bedrooms'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['number_bedrooms']}</div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <div
+                                        onClick={() => startEditing('number_bedrooms', propertyDetails.number_bedrooms)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.number_bedrooms ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bedrooms}</div>
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bedrooms</div>
+                          </>
+                        ) : (
+                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Bedrooms</div>
+                          </>
+                        )}
+                  </div>
+                                    )}
+                    </div>
+                
+                                  {/* Bathrooms */}
+                                  <div className="text-center">
+                                    {editingField === 'number_bathrooms' ? (
+                                      <>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          value={editValues['number_bathrooms'] ?? ''}
+                                          onChange={(e) => handleFieldChange('number_bathrooms', e.target.value)}
+                                          onBlur={() => handleFieldBlur('number_bathrooms')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'number_bathrooms')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('number_bathrooms')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bathrooms</div>
+                                        {fieldErrors['number_bathrooms'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['number_bathrooms']}</div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <div
+                                        onClick={() => startEditing('number_bathrooms', propertyDetails.number_bathrooms)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.number_bathrooms ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bathrooms}</div>
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bathrooms</div>
+                          </>
+                        ) : (
+                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Bathrooms</div>
+                          </>
+                        )}
+                    </div>
+                                    )}
+                      </div>
+                                  
+                                  {/* Size */}
+                                  <div className="text-center">
+                                    {editingField === 'size_sqft' ? (
+                                      <>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          value={editValues['size_sqft'] ?? ''}
+                                          onChange={(e) => handleFieldChange('size_sqft', e.target.value)}
+                                          onBlur={() => handleFieldBlur('size_sqft')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'size_sqft')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('size_sqft')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
+                                          {isInAcres ? 'acres' : 'sq ft'}
+                                        </div>
+                                        {fieldErrors['size_sqft'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['size_sqft']}</div>
+                                        )}
+                                      </>
+                    ) : (
+                      <div 
+                                        onClick={() => startEditing('size_sqft', propertyDetails.size_sqft)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.size_sqft ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">
+                                              {isInAcres 
+                                                ? (propertyDetails.size_sqft % 1 === 0 ? propertyDetails.size_sqft.toString() : propertyDetails.size_sqft.toFixed(2))
+                                                : propertyDetails.size_sqft.toLocaleString()}
+                  </div>
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
+                                              {isInAcres ? 'acres' : 'sq ft'}
+                </div>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Size</div>
+                                          </>
+                                        )}
+              </div>
+                                    )}
+            </div>
+                  
+                                  {/* Plot Size */}
                                   {showPlotSize && (
                                     <div className="text-center">
                                       <div className="text-sm font-semibold text-gray-900 mb-0.5">
@@ -2419,84 +2842,319 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                       </div>
                                     </div>
                                   )}
-                                </div>
-                              );
+          </div>
+        );
                             })()}
                             
                             {/* Pricing & Details - Two Column Layout */}
-                            {(propertyDetails.asking_price || propertyDetails.sold_price || propertyDetails.rent_pcm || 
-                              propertyDetails.tenure || propertyDetails.epc_rating || propertyDetails.condition) && (
-                              <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-4 pb-4 border-b border-gray-100">
-                                {/* Pricing Column */}
-                                <div className="space-y-2.5">
-                                  {propertyDetails.asking_price && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Asking Price</div>
+                            <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-4 pb-4 border-b border-gray-100">
+                              {/* Pricing Column */}
+                              <div className="space-y-2.5">
+                                {/* Asking Price */}
+                                {editingField === 'asking_price' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Asking Price</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                      <input
+                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['asking_price'] ?? ''}
+                                        onChange={(e) => handleFieldChange('asking_price', e.target.value)}
+                                        onBlur={() => handleFieldBlur('asking_price')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'asking_price')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('asking_price')}
+                                        placeholder="0"
+                  />
+                          </div>
+                                    {fieldErrors['asking_price'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['asking_price']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('asking_price', propertyDetails.asking_price)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Asking Price</div>
+                                    {propertyDetails.asking_price ? (
                                       <div className="text-xs font-semibold text-gray-900">
                                         £{propertyDetails.asking_price.toLocaleString()}
-                                      </div>
                       </div>
-                    )}
-                                  {propertyDetails.sold_price && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {/* Sold Price */}
+                                {editingField === 'sold_price' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['sold_price'] ?? ''}
+                                        onChange={(e) => handleFieldChange('sold_price', e.target.value)}
+                                        onBlur={() => handleFieldBlur('sold_price')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'sold_price')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('sold_price')}
+                                        placeholder="0"
+                                      />
+                                    </div>
+                                    {fieldErrors['sold_price'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['sold_price']}</div>
+                                    )}
+                                  </div>
+                    ) : (
+                      <div 
+                                    onClick={() => startEditing('sold_price', propertyDetails.sold_price)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
+                                    {propertyDetails.sold_price ? (
                                       <div className="text-xs font-semibold text-gray-900">
                                         £{propertyDetails.sold_price.toLocaleString()}
                                       </div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  
+                                {/* Rent */}
+                                {editingField === 'rent_pcm' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Rent (pcm)</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['rent_pcm'] ?? ''}
+                                        onChange={(e) => handleFieldChange('rent_pcm', e.target.value)}
+                                        onBlur={() => handleFieldBlur('rent_pcm')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'rent_pcm')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('rent_pcm')}
+                                        placeholder="0"
+                                      />
                                     </div>
-                                  )}
-                                  {propertyDetails.rent_pcm && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Rent (pcm)</div>
+                                    {fieldErrors['rent_pcm'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['rent_pcm']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('rent_pcm', propertyDetails.rent_pcm)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Rent (pcm)</div>
+                                    {propertyDetails.rent_pcm ? (
                                       <div className="text-xs font-semibold text-gray-900">
                                         £{propertyDetails.rent_pcm.toLocaleString()}
-                                      </div>
-                      </div>
-                    )}
-                    </div>
-                                
-                                {/* Details Column */}
-                                <div className="space-y-2.5">
-                                  {propertyDetails.tenure && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Tenure</div>
+                        </div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                  </div>
+                  
+                              {/* Details Column */}
+                              <div className="space-y-2.5">
+                                {/* Tenure */}
+                                {editingField === 'tenure' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Tenure</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['tenure'] ?? ''}
+                                      onChange={(e) => handleFieldChange('tenure', e.target.value)}
+                                      onBlur={() => handleFieldBlur('tenure')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'tenure')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('tenure')}
+                                      placeholder="e.g. Freehold, Leasehold"
+                                    />
+                                    {fieldErrors['tenure'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['tenure']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('tenure', propertyDetails.tenure)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Tenure</div>
+                                    {propertyDetails.tenure ? (
                                       <div className="text-xs text-gray-900 font-medium">{propertyDetails.tenure}</div>
-                                    </div>
-                                  )}
-                                  {propertyDetails.epc_rating && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">EPC Rating</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  
+                                {/* EPC Rating */}
+                                {editingField === 'epc_rating' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">EPC Rating</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['epc_rating'] ?? ''}
+                                      onChange={(e) => handleFieldChange('epc_rating', e.target.value)}
+                                      onBlur={() => handleFieldBlur('epc_rating')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'epc_rating')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('epc_rating')}
+                                      placeholder="e.g. A, B, C, D, E, F, G"
+                                    />
+                                    {fieldErrors['epc_rating'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['epc_rating']}</div>
+                                    )}
+                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('epc_rating', propertyDetails.epc_rating)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">EPC Rating</div>
+                                    {propertyDetails.epc_rating ? (
                                       <div className="text-xs text-gray-900 font-medium">{propertyDetails.epc_rating}</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                      </div>
+                                )}
+                                
+                                {/* Condition */}
+                                {editingField === 'condition' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Condition</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['condition'] ?? ''}
+                                      onChange={(e) => handleFieldChange('condition', e.target.value)}
+                                      onBlur={() => handleFieldBlur('condition')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'condition')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('condition')}
+                                      placeholder="e.g. Excellent, Good, Fair"
+                                    />
+                                    {fieldErrors['condition'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['condition']}</div>
+                                    )}
                                     </div>
-                                  )}
-                                  {propertyDetails.condition && (
-                                    <div>
-                                      <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Condition</div>
+                    ) : (
+                      <div 
+                                    onClick={() => startEditing('condition', propertyDetails.condition)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Condition</div>
+                                    {propertyDetails.condition ? (
                                       <div className="text-xs text-gray-900 font-medium">{propertyDetails.condition}</div>
-                                    </div>
-                                  )}
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  </div>
                                 </div>
-                              </div>
-                            )}
-                            
+                                
                             {/* Amenities */}
-                            {propertyDetails.other_amenities && (
-                              <div className="mb-4 pb-4 border-b border-gray-100">
-                                <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Amenities</div>
-                                <div className="text-xs text-gray-900 leading-relaxed">{propertyDetails.other_amenities}</div>
-                              </div>
-                            )}
-                            
-                            {/* Notes/Bio */}
-                            {propertyDetails.notes && (
-                              <div>
-                                <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Notes</div>
-                                <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap max-h-32 overflow-y-auto">
-                                  {propertyDetails.notes}
+                            <div className="mb-4 pb-4 border-b border-gray-100">
+                              <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Amenities</div>
+                              {editingField === 'other_amenities' ? (
+                                <>
+                                  <textarea
+                                    value={editValues['other_amenities'] ?? ''}
+                                    onChange={(e) => handleFieldChange('other_amenities', e.target.value)}
+                                    onBlur={() => handleFieldBlur('other_amenities')}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        setEditingField(null);
+                                        setEditValues(prev => {
+                                          const newValues = { ...prev };
+                                          delete newValues['other_amenities'];
+                                          return newValues;
+                                        });
+                                      }
+                                    }}
+                                    className="text-xs text-gray-900 leading-relaxed w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-y min-h-[60px]"
+                                    autoFocus
+                                    disabled={savingFields.has('other_amenities')}
+                                    placeholder="Enter amenities..."
+                                  />
+                                  {fieldErrors['other_amenities'] && (
+                                    <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['other_amenities']}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <div
+                                  onClick={() => startEditing('other_amenities', propertyDetails.other_amenities)}
+                                  className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1.5 -mx-2 -my-1.5"
+                                >
+                                  {propertyDetails.other_amenities ? (
+                                    <div className="text-xs text-gray-900 leading-relaxed whitespace-pre-wrap">{propertyDetails.other_amenities}</div>
+                                  ) : (
+                                    <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                  )}
+                                  </div>
+                                )}
                                 </div>
-                              </div>
-                            )}
-                            
+                                  
+                            {/* Notes/Bio */}
+                            <div>
+                              <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Notes</div>
+                              {editingField === 'notes' ? (
+                                <>
+                                  <textarea
+                                    value={editValues['notes'] ?? ''}
+                                    onChange={(e) => handleFieldChange('notes', e.target.value)}
+                                    onBlur={() => handleFieldBlur('notes')}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        setEditingField(null);
+                                        setEditValues(prev => {
+                                          const newValues = { ...prev };
+                                          delete newValues['notes'];
+                                          return newValues;
+                                        });
+                                      }
+                                    }}
+                                    className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-y min-h-[100px]"
+                                    autoFocus
+                                    disabled={savingFields.has('notes')}
+                                    placeholder="Enter notes..."
+                                  />
+                                  {fieldErrors['notes'] && (
+                                    <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['notes']}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <div
+                                  onClick={() => startEditing('notes', propertyDetails.notes)}
+                                  className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1.5 -mx-2 -my-1.5"
+                                >
+                                  {propertyDetails.notes ? (
+                                    <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{propertyDetails.notes}</div>
+                                  ) : (
+                                    <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                  )}
+                                    </div>
+                              )}
+                                </div>
+                                
                             {/* Empty State */}
                             {!propertyDetails.property_type && 
                              !propertyDetails.number_bedrooms && 
@@ -2508,13 +3166,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 <div>
                                   <p className="text-gray-400 text-sm">No property details available</p>
                                   <p className="text-gray-300 text-xs mt-1">Upload documents to extract property information</p>
+                                   </div>
                                 </div>
+                    )}
+                            </div>
                               </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
+                              </div>
+                          );
                   })()}
                     </div>
             
@@ -2655,7 +3313,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             {selectedCardIndex !== null && (
               <div 
                 className="absolute inset-0 z-[200] bg-white"
-                style={{
+            style={{ 
                   position: 'absolute',
                   top: 0,
                   left: 0,
@@ -2670,7 +3328,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   isFullscreen={isFullscreen}
                   onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
                 />
-              </div>
+                      </div>
             )}
         </motion.div>
                         </div>

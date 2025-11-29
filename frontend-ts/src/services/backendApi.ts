@@ -1118,6 +1118,28 @@ class BackendApiService {
   }
 
   /**
+   * Update property details fields
+   */
+  async updatePropertyDetails(propertyId: string, updates: Partial<{
+    number_bedrooms?: number | null;
+    number_bathrooms?: number | null;
+    size_sqft?: number | null;
+    asking_price?: number | null;
+    sold_price?: number | null;
+    rent_pcm?: number | null;
+    tenure?: string | null;
+    epc_rating?: string | null;
+    condition?: string | null;
+    other_amenities?: string | null;
+    notes?: string | null;
+  }>): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/update-details`, {
+      method: 'PUT',
+      body: JSON.stringify({ updates })
+    });
+  }
+
+  /**
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
