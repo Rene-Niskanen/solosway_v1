@@ -4,13 +4,14 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 
 export interface SearchBarProps {
   className?: string;
@@ -244,6 +245,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     removePropertyAttachment,
     clearPropertyAttachments 
   } = usePropertySelection();
+  
+  // Use document selection context (for document selection like SideChatPanel)
+  const {
+    selectedDocumentIds,
+    isDocumentSelectionMode,
+    toggleDocumentSelectionMode,
+    clearSelectedDocuments,
+    setDocumentSelectionMode
+  } = useDocumentSelection();
+  
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const queryStartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -286,9 +297,24 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
 
   // Context-aware configuration
   const getContextConfig = () => {
+    // Determine placeholder based on document selection
+    const getPlaceholder = () => {
+      if (selectedDocumentIds.size > 0) {
+        return `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`;
+      }
+      
+      if (isMapVisible) {
+        return "Search for properties";
+      } else if (isInChatMode) {
+        return "Ask anything...";
+      } else {
+        return "Search for anything";
+      }
+    };
+    
     if (isMapVisible) {
       return {
-        placeholder: "Search for properties",
+        placeholder: getPlaceholder(),
         showMapToggle: true, // Always show map toggle
         showMic: true, // Show paperclip icon in map view too
         position: "bottom", // Always bottom when map is visible
@@ -299,7 +325,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       };
     } else if (isInChatMode) {
       return {
-        placeholder: "Ask anything...",
+        placeholder: getPlaceholder(),
         showMapToggle: true,
         showMic: true,
         position: "center", // Always center
@@ -316,7 +342,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         : 'clamp(350px, 90vw, 700px)'; // Normal screens: min 350px (reduced since placeholder is shorter), max 700px
       
       return {
-        placeholder: "Search for anything",
+        placeholder: getPlaceholder(),
         showMapToggle: true,
         showMic: true,
         position: "center", // Always center
@@ -1144,35 +1170,59 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   minWidth: '0',
                   flexShrink: 0
                 }}>
-                {/* Property Selection Toggle Button (only in map view) */}
-                {isMapVisible && (
-                  <button
-                    type="button"
-                    onClick={toggleSelectionMode}
-                    className={`p-1 transition-colors ${
-                      propertyAttachments.length > 0
-                        ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                        : isSelectionModeActive 
-                          ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                          : 'text-slate-600 hover:text-green-500'
-                    }`}
-                    title={
-                      propertyAttachments.length > 0
-                        ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
-                        : isSelectionModeActive 
-                          ? "Property selection mode active - Click property cards to add them" 
-                          : "Select property cards"
-                    }
-                  >
-                    {propertyAttachments.length > 0 ? (
-                      <Fullscreen className="w-5 h-5" strokeWidth={1.5} />
-                    ) : isSelectionModeActive ? (
-                      <Scan className="w-5 h-5" strokeWidth={1.5} />
-                    ) : (
-                      <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                {/* Document Selection Toggle Button (works like SideChatPanel) */}
+                <div className="relative flex items-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        console.log('🔘 SearchBar: Document selection button clicked, current mode:', isDocumentSelectionMode);
+                        toggleDocumentSelectionMode();
+                        console.log('🔘 SearchBar: After toggle, new mode should be:', !isDocumentSelectionMode);
+                      }}
+                      className={`p-1 transition-colors relative ${
+                        selectedDocumentIds.size > 0
+                          ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                          : isDocumentSelectionMode
+                            ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
+                            : 'text-slate-600 hover:text-green-500'
+                      }`}
+                      title={
+                        selectedDocumentIds.size > 0
+                          ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
+                          : isDocumentSelectionMode
+                            ? "Document selection mode active - Click document cards to select"
+                            : "Select documents to search within"
+                      }
+                    >
+                      {selectedDocumentIds.size > 0 ? (
+                        <Scan className="w-5 h-5" strokeWidth={1.5} />
+                      ) : isDocumentSelectionMode ? (
+                        <Scan className="w-5 h-5" strokeWidth={1.5} />
+                      ) : (
+                        <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                      )}
+                      {selectedDocumentIds.size > 0 && (
+                        <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
+                          {selectedDocumentIds.size}
+                        </span>
+                      )}
+                    </button>
+                    {selectedDocumentIds.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          clearSelectedDocuments();
+                          setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                        }}
+                        className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                        title="Clear document selection"
+                      >
+                        <X className="w-3.5 h-3.5" strokeWidth={2} />
+                      </button>
                     )}
-                  </button>
-                )}
+                  </div>
                 
                 {contextConfig.showMic && (
                   <ImageUploadButton

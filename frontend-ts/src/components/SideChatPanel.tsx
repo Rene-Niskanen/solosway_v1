@@ -2,13 +2,14 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
@@ -317,6 +318,8 @@ interface SideChatPanelProps {
   onSidebarToggle?: () => void; // Callback for toggling sidebar
   onOpenProperty?: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string | number) => void; // Callback for opening property card
   initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
+  onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
+  isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
 }
 
 export interface SideChatPanelRef {
@@ -333,15 +336,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onNewChat,
   onSidebarToggle,
   onOpenProperty,
-  initialAttachedFiles
+  initialAttachedFiles,
+  onChatWidthChange,
+  isPropertyDetailsOpen = false // Default to false
 }, ref) => {
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   // Always start in multi-line mode for the requested layout (textarea above icons)
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
+  // State for expanded chat view (half screen)
+  const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  
+  // Calculate and notify parent of chat panel width changes
+  React.useEffect(() => {
+    if (onChatWidthChange && isVisible) {
+      // When PropertyDetailsPanel is open, use narrower width (35vw instead of 50vw when expanded)
+      const chatWidth = isExpanded 
+        ? (isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5)
+        : 450; // Fixed 450px when collapsed
+      onChatWidthChange(chatWidth);
+    } else if (onChatWidthChange && !isVisible) {
+      // Chat is hidden, notify parent that width is 0
+      onChatWidthChange(0);
+    }
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, onChatWidthChange]);
   const hasInitializedAttachmentsRef = React.useRef(false);
   const attachedFilesRef = React.useRef<FileAttachmentData[]>([]);
+  const abortControllerRef = React.useRef<AbortController | null>(null); // For cancelling streaming queries
   const [attachedFiles, setAttachedFiles] = React.useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
     if (initialAttachedFiles !== undefined && initialAttachedFiles.length > 0) {
@@ -355,6 +377,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     attachedFilesRef.current = attachedFiles;
   }, [attachedFiles]);
+
+  // Function to stop streaming query
+  const handleStopQuery = React.useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      
+      // Mark the current loading message as stopped
+      setChatMessages(prev => {
+        const updated = prev.map(msg => 
+          msg.isLoading 
+            ? { ...msg, isLoading: false }
+            : msg
+        );
+        persistedChatMessagesRef.current = updated;
+        return updated;
+      });
+    }
+  }, []);
   
   // Expose getAttachments method via ref
   React.useImperativeHandle(ref, () => ({
@@ -391,6 +432,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isOverBin, setIsOverBin] = React.useState(false);
   const [draggedFileId, setDraggedFileId] = React.useState<string | null>(null);
   
+  // Use document selection context
+  const {
+    selectedDocumentIds,
+    isDocumentSelectionMode,
+    toggleDocumentSelectionMode,
+    clearSelectedDocuments,
+    setDocumentSelectionMode
+  } = useDocumentSelection();
+  
   // Store queries with their attachments
   interface SubmittedQuery {
     text: string;
@@ -404,6 +454,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     text: string;
     attachments?: FileAttachmentData[];
     propertyAttachments?: PropertyAttachmentData[];
+    selectedDocumentIds?: string[]; // Document IDs selected when query was sent
+    selectedDocumentNames?: string[]; // Document names for display
     isLoading?: boolean;
   }
   
@@ -427,6 +479,195 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Use chat history context
   const { addChatToHistory, getChatById } = useChatHistory();
+  
+  // Track the last processed query from props to avoid duplicates
+  const lastProcessedQueryRef = React.useRef<string>('');
+  
+  // Process query prop from SearchBar (when in map view)
+  React.useEffect(() => {
+    // Only process if:
+    // 1. Query is provided and not empty
+    // 2. Query is different from last processed query
+    // 3. Panel is visible
+    // 4. Query hasn't already been added to chat messages
+    if (query && query.trim() && query !== lastProcessedQueryRef.current && isVisible) {
+      const queryText = query.trim();
+      
+      // Check if this query is already in chat messages
+      const isAlreadyAdded = chatMessages.some(msg => 
+        msg.type === 'query' && msg.text === queryText
+      );
+      
+      if (!isAlreadyAdded) {
+        console.log('📥 SideChatPanel: Processing query from SearchBar:', queryText);
+        lastProcessedQueryRef.current = queryText;
+        
+        // Get selected document IDs if selection mode was used
+        const selectedDocIds = selectedDocumentIds.size > 0 
+          ? Array.from(selectedDocumentIds) 
+          : undefined;
+        
+        // Try to get document names from property attachments if available
+        let selectedDocNames: string[] | undefined = undefined;
+        if (selectedDocIds && selectedDocIds.length > 0 && propertyAttachments.length > 0) {
+          // Get documents from the first property attachment
+          const property = propertyAttachments[0].property as any;
+          if (property?.propertyHub?.documents) {
+            selectedDocNames = selectedDocIds
+              .map(docId => {
+                const doc = property.propertyHub.documents.find((d: any) => d.id === docId);
+                return doc?.original_filename;
+              })
+              .filter((name): name is string => !!name);
+          }
+        }
+        
+        // Add query message to chat (similar to handleSubmit)
+        const queryId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const newQueryMessage: ChatMessage = {
+          id: queryId,
+          type: 'query',
+          text: queryText,
+          attachments: [...attachedFiles],
+          propertyAttachments: [...propertyAttachments],
+          selectedDocumentIds: selectedDocIds,
+          selectedDocumentNames: selectedDocNames
+        };
+        
+        setChatMessages(prev => {
+          const updated = [...prev, newQueryMessage];
+          persistedChatMessagesRef.current = updated;
+          return updated;
+        });
+        
+        // Add loading response message
+        const loadingResponseId = `response-loading-${Date.now()}`;
+        const loadingMessage: ChatMessage = {
+          id: loadingResponseId,
+          type: 'response',
+          text: '',
+          isLoading: true
+        };
+        setChatMessages(prev => {
+          const updated = [...prev, loadingMessage];
+          persistedChatMessagesRef.current = updated;
+          return updated;
+        });
+        
+        // Call LLM API to query documents (same logic as handleSubmit)
+        (async () => {
+          try {
+            const propertyId = propertyAttachments.length > 0 
+              ? String(propertyAttachments[0].propertyId) 
+              : undefined;
+            
+            const messageHistory = chatMessages
+              .filter(msg => (msg.type === 'query' || msg.type === 'response') && msg.text)
+              .map(msg => ({
+                role: msg.type === 'query' ? 'user' : 'assistant',
+                content: msg.text || ''
+              }));
+            
+            const documentIdsArray = selectedDocumentIds.size > 0 
+              ? Array.from(selectedDocumentIds) 
+              : undefined;
+            
+            const abortController = new AbortController();
+            abortControllerRef.current = abortController;
+            
+            let accumulatedText = '';
+            
+            await backendApi.queryDocumentsStreamFetch(
+              queryText,
+              propertyId,
+              messageHistory,
+              `session_${Date.now()}`,
+              // onToken: Stream each token as it arrives
+              (token: string) => {
+                accumulatedText += token;
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: accumulatedText,
+                  isLoading: true  // Still loading while streaming
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? responseMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onComplete: Final response received
+              (data: any) => {
+                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: finalText,
+                  isLoading: false
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? responseMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onError: Handle errors
+              (error: string) => {
+                console.error('❌ SideChatPanel: Streaming error:', error);
+                
+                const errorMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: error || 'Sorry, I encountered an error processing your query.',
+                  isLoading: false
+                };
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? errorMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              undefined, // onStatus (optional)
+              abortController.signal, // abortSignal
+              documentIdsArray // documentIds
+            );
+          } catch (error: any) {
+            if (error.name === 'AbortError') {
+              console.log('Query aborted');
+              return;
+            }
+            console.error('Error querying documents:', error);
+            setChatMessages(prev => {
+              const updated = prev.map(msg => 
+                msg.id === loadingResponseId
+                  ? { ...msg, text: 'Sorry, I encountered an error processing your query.', isLoading: false }
+                  : msg
+              );
+              persistedChatMessagesRef.current = updated;
+              return updated;
+            });
+          }
+        })();
+      }
+    }
+  }, [query, isVisible, chatMessages, attachedFiles, propertyAttachments, selectedDocumentIds]);
   
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -586,13 +827,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           propertyAttachmentsData: initialPropertyAttachments
         });
         
+        // Get selected document IDs if selection mode was used
+        const initialSelectedDocIds = selectedDocumentIds.size > 0 
+          ? Array.from(selectedDocumentIds) 
+          : undefined;
+        
+        // Try to get document names from property attachments if available
+        let initialSelectedDocNames: string[] | undefined = undefined;
+        if (initialSelectedDocIds && initialSelectedDocIds.length > 0 && initialPropertyAttachments && initialPropertyAttachments.length > 0) {
+          // Get documents from the first property attachment
+          const property = initialPropertyAttachments[0].property as any;
+          if (property?.propertyHub?.documents) {
+            initialSelectedDocNames = initialSelectedDocIds
+              .map(docId => {
+                const doc = property.propertyHub.documents.find((d: any) => d.id === docId);
+                return doc?.original_filename;
+              })
+              .filter((name): name is string => !!name);
+          }
+        }
+        
         // Add query message
         const initialMessage: ChatMessage = {
           id: queryId,
           type: 'query',
           text: queryText,
           attachments: [],
-          propertyAttachments: initialPropertyAttachments
+          propertyAttachments: initialPropertyAttachments,
+          selectedDocumentIds: initialSelectedDocIds,
+          selectedDocumentNames: initialSelectedDocNames
         };
         
         setChatMessages([initialMessage]);
@@ -641,6 +904,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             // Use streaming API for real-time token-by-token updates
             let accumulatedText = '';
+            
+            // Create AbortController for this query
+            const abortController = new AbortController();
+            abortControllerRef.current = abortController;
+            
+            // Convert selected document IDs to array for initial query
+            const initialDocumentIds = selectedDocumentIds.size > 0 
+              ? Array.from(selectedDocumentIds) 
+              : undefined;
+            
+            if (initialDocumentIds && initialDocumentIds.length > 0) {
+              console.log(`📄 SideChatPanel: Query with ${initialDocumentIds.length} document filter(s)`);
+            }
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -723,10 +999,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onStatus: Show status messages
               (message: string) => {
                 console.log('📊 SideChatPanel: Status:', message);
-              }
+              },
+              // abortSignal: Pass abort signal for cancellation
+              abortController.signal,
+              // documentIds: Pass selected document IDs to filter search
+              initialDocumentIds
             );
+            
+            // Clear abort controller on completion
+            abortControllerRef.current = null;
           } catch (error) {
-            console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
+            abortControllerRef.current = null;
+            // Don't log error if it was aborted
+            if (error instanceof Error && error.message !== 'Request aborted') {
+              console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
+            }
             
             // Show error message instead of mock response
             const errorMessage: ChatMessage = {
@@ -844,6 +1131,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
   }, [attachedFiles.length]);
 
+  // Handle opening document selection mode
+  const handleOpenDocumentSelection = React.useCallback(() => {
+    toggleDocumentSelectionMode();
+  }, [toggleDocumentSelectionMode]);
+
   const handleRemoveFile = React.useCallback((fileId: string) => {
     setAttachedFiles(prev => {
       const updated = prev.filter(f => f.id !== fileId);
@@ -893,6 +1185,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         attachments: attachmentsToStore 
       }]);
       
+      // Get selected document IDs and names if selection mode was used
+      const selectedDocIds = selectedDocumentIds.size > 0 
+        ? Array.from(selectedDocumentIds) 
+        : undefined;
+      
+      // Try to get document names from property attachments if available
+      let selectedDocNames: string[] | undefined = undefined;
+      if (selectedDocIds && selectedDocIds.length > 0 && propertiesToStore.length > 0) {
+        // Get documents from the first property attachment
+        const property = propertiesToStore[0].property as any;
+        if (property?.propertyHub?.documents) {
+          selectedDocNames = selectedDocIds
+            .map(docId => {
+              const doc = property.propertyHub.documents.find((d: any) => d.id === docId);
+              return doc?.original_filename;
+            })
+            .filter((name): name is string => !!name);
+        }
+      }
+      
       // Add query message to chat
       const queryId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const newQueryMessage = {
@@ -900,7 +1212,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         type: 'query' as const,
         text: submitted || '',
         attachments: attachmentsToStore,
-        propertyAttachments: propertiesToStore // Always include, even if empty array
+        propertyAttachments: propertiesToStore, // Always include, even if empty array
+        selectedDocumentIds: selectedDocIds,
+        selectedDocumentNames: selectedDocNames
       };
       
       console.log('💬 SideChatPanel: Adding query message:', newQueryMessage);
@@ -951,6 +1265,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           
           // Use streaming API for real-time token-by-token updates
           let accumulatedText = '';
+          
+          // Create AbortController for this query
+          const abortController = new AbortController();
+          abortControllerRef.current = abortController;
+          
+          // Convert selected document IDs to array
+          const documentIdsArray = selectedDocumentIds.size > 0 
+            ? Array.from(selectedDocumentIds) 
+            : undefined;
+          
+          if (documentIdsArray && documentIdsArray.length > 0) {
+            console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s)`);
+          }
           
           await backendApi.queryDocumentsStreamFetch(
             submitted || '',
@@ -1034,10 +1361,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (message: string) => {
               console.log('📊 SideChatPanel: Status:', message);
               // Optionally show status in UI
-            }
+            },
+            // abortSignal: Pass abort signal for cancellation
+            abortController.signal,
+            // documentIds: Pass selected document IDs to filter search
+            documentIdsArray
           );
+          
+          // Clear abort controller on completion
+          abortControllerRef.current = null;
         } catch (error) {
-          console.error('❌ SideChatPanel: Error calling LLM API:', error);
+          abortControllerRef.current = null;
+          // Don't log error if it was aborted
+          if (error instanceof Error && error.message !== 'Request aborted') {
+            console.error('❌ SideChatPanel: Error calling LLM API:', error);
+          }
           
           // Show error message instead of mock response
           const errorMessage: ChatMessage = {
@@ -1112,11 +1450,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           layout
           className="fixed top-0 bottom-0 z-30"
           style={{
-            left: `${sidebarWidth}px`, // Position directly after sidebar (no gap)
-            width: '450px',
+            left: `${sidebarWidth}px`, // Always positioned after sidebar
+            width: isExpanded 
+              ? (isPropertyDetailsOpen ? '35vw' : '50vw') // Narrower when PropertyDetailsPanel is open
+              : '450px', // Fixed width when collapsed
             backgroundColor: '#F9F9F9',
-            boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
-            transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+            boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
+            transition: 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Smooth transition matching map clip-path animation
+            willChange: 'width', // Optimize for smooth width changes
+            backfaceVisibility: 'hidden', // Prevent flickering
+            transform: 'translateZ(0)' // Force GPU acceleration
           }}
         >
           {/* Panel content will go here */}
@@ -1185,6 +1528,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       New chat
                     </span>
                   </motion.button>
+                  <motion.button
+                    onClick={() => {
+                      setIsExpanded(!isExpanded);
+                    }}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.99 }}
+                    className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group ${
+                      isExpanded 
+                        ? 'border-slate-300/80 bg-slate-100/80 hover:bg-slate-150/80' 
+                        : 'border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80'
+                    }`}
+                    title={isExpanded ? "Collapse chat" : "Expand chat"}
+                  >
+                    <MoveDiagonal className={`w-3.5 h-3.5 group-hover:text-slate-700 transition-colors ${
+                      isExpanded ? 'text-slate-700' : 'text-slate-600'
+                    }`} strokeWidth={1.5} />
+                  </motion.button>
                   <button
                     onClick={onMapToggle}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
@@ -1216,101 +1576,136 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const shouldAnimate = !isRestored;
                     
                     return message.type === 'query' ? (
-                      // Query message - with bubble styling
+                      // Query message container - ChatGPT style with attachments above
                       <div
                         key={message.id}
                         style={{
-                          backgroundColor: '#ffffff',
-                          borderRadius: '12px',
-                          padding: '6px 14px', // Reduced padding on all sides
-                          boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                           alignSelf: 'flex-start',
                           maxWidth: '85%',
-                          width: 'fit-content', // Fit container tightly around content
-                          wordWrap: 'break-word',
+                          width: 'fit-content',
                           marginTop: '8px',
-                          marginLeft: '12px', // Move query bubble more to the right
-                          display: 'inline-block' // Ensure container fits content
+                          marginLeft: '12px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px'
                         }}
                       >
-                        {/* Display file attachments if any */}
-                        {message.attachments && message.attachments.length > 0 && (
-                          <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                            {message.attachments.map((attachment) => (
-                              <QueryAttachment key={attachment.id} attachment={attachment} />
-                            ))}
+                        {/* Display selected documents indicator above bubble (ChatGPT style) */}
+                        {message.selectedDocumentIds && message.selectedDocumentIds.length > 0 && (
+                          <div style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '6px',
+                            padding: '4px 8px',
+                            backgroundColor: 'transparent',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            color: '#6B7280',
+                            marginBottom: '2px'
+                          }}>
+                            <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
+                            <span style={{ fontWeight: 400 }}>
+                              {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames && message.selectedDocumentNames.length > 0
+                                ? message.selectedDocumentNames[0]
+                                : `${message.selectedDocumentIds.length} ${message.selectedDocumentIds.length === 1 ? 'document' : 'documents'} selected`}
+                            </span>
                           </div>
                         )}
                         
-                        {/* Display property attachments if any */}
-                        {(() => {
-                          console.log('🔍 Checking property attachments for message:', message.id, {
-                            hasPropertyAttachments: !!message.propertyAttachments,
-                            length: message.propertyAttachments?.length || 0,
-                            propertyAttachments: message.propertyAttachments
-                          });
-                          return message.propertyAttachments && message.propertyAttachments.length > 0 ? (
-                            <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                              {message.propertyAttachments.map((property) => {
-                                console.log('🏠 Rendering property attachment in query bubble:', property);
-                                return (
-                                  <QueryPropertyAttachment 
-                                    key={property.id} 
-                                    attachment={property}
-                                    onOpenProperty={(attachment) => {
-                                      console.log('🔍 QueryPropertyAttachment onOpenProperty called:', attachment);
-                                      if (onOpenProperty) {
-                                        const property = attachment.property;
-                                        console.log('📋 Property data:', property);
-                                        const coordinates = property.latitude && property.longitude
-                                          ? { lat: property.latitude, lng: property.longitude }
-                                          : undefined;
-                                        const propertyId = property.id || attachment.propertyId;
-                                        console.log('📍 Coordinates:', coordinates, 'PropertyId:', propertyId);
-                                        onOpenProperty(attachment.address, coordinates, propertyId);
-                                      } else {
-                                        console.warn('⚠️ SideChatPanel onOpenProperty prop not provided');
-                                      }
-                                    }}
-                                  />
-                                );
-                              })}
+                        {/* Query bubble */}
+                        <div
+                          style={{
+                            backgroundColor: '#E6E6E6', // User-requested color
+                            borderRadius: '12px',
+                            padding: '5px 12px', // Adjusted padding for smaller font size
+                            boxShadow: 'none', // Removed drop shadow
+                            width: 'fit-content', // Fit container tightly around content
+                            wordWrap: 'break-word',
+                            display: 'inline-block' // Ensure container fits content
+                          }}
+                        >
+                          {/* Display file attachments if any */}
+                          {message.attachments && message.attachments.length > 0 && (
+                            <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                              {message.attachments.map((attachment) => (
+                                <QueryAttachment key={attachment.id} attachment={attachment} />
+                              ))}
                             </div>
-                          ) : null;
-                        })()}
-                        
-                        {/* Display query text */}
-                        {message.text && (
-                          <div style={{
-                            color: '#1F2937',
-                            fontSize: '14px',
-                            lineHeight: '20px',
-                            margin: 0,
-                            padding: 0,
-                            textAlign: 'left',
-                            fontFamily: 'system-ui, -apple-system, sans-serif',
-                            width: '100%',
-                            boxSizing: 'border-box'
-                          }}>
-                            <ReactMarkdown
+                          )}
+                          
+                          {/* Display property attachments if any */}
+                          {message.propertyAttachments && message.propertyAttachments.length > 0 ? (
+                              <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                                {message.propertyAttachments.map((property) => (
+                                    <QueryPropertyAttachment 
+                                      key={property.id} 
+                                      attachment={property}
+                                      onOpenProperty={(attachment) => {
+                                        console.log('🔍 QueryPropertyAttachment onOpenProperty called:', attachment);
+                                        if (onOpenProperty) {
+                                          const property = attachment.property;
+                                          console.log('📋 Property data:', property);
+                                          const coordinates = property.latitude && property.longitude
+                                            ? { lat: property.latitude, lng: property.longitude }
+                                            : undefined;
+                                          const propertyId = property.id || attachment.propertyId;
+                                          console.log('📍 Coordinates:', coordinates, 'PropertyId:', propertyId);
+                                          onOpenProperty(attachment.address, coordinates, propertyId);
+                                        } else {
+                                          console.warn('⚠️ SideChatPanel onOpenProperty prop not provided');
+                                        }
+                                      }}
+                                    />
+                                  ))}
+                              </div>
+                            ) : null}
+                          
+                          {/* Display query text */}
+                          {message.text && (
+                            <div style={{
+                              color: '#0D0D0D',
+                              fontSize: '13px',
+                              lineHeight: '19px',
+                              margin: 0,
+                              padding: 0,
+                              textAlign: 'left',
+                              fontFamily: 'system-ui, -apple-system, sans-serif',
+                              width: '100%',
+                              boxSizing: 'border-box'
+                            }}>
+                              <ReactMarkdown
                               components={{
                                 p: ({ children }) => <p style={{ margin: 0, padding: 0 }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h2>,
-                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
+                                h2: () => null, // Remove h2 titles from query responses
+                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
                                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
                                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
                                 li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
                                 strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                                 em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
                                 blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                table: ({ children }) => (
+                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                      {children}
+                                    </table>
+                                  </div>
+                                ),
+                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                tbody: ({ children }) => <tbody>{children}</tbody>,
+                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                               }}
                             >
                               {message.text}
                             </ReactMarkdown>
                           </div>
                         )}
+                        </div>
                       </div>
                     ) : (
                       // Response message - full width, no bubble (Cursor AI style)
@@ -1385,27 +1780,43 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         {message.text && (
                           <div style={{
                             color: '#374151',
-                            fontSize: '14px',
-                            lineHeight: '20px',
+                            fontSize: '13px',
+                            lineHeight: '19px',
                             margin: 0,
                             padding: '4px 0',
+                            paddingLeft: 0,
+                            paddingRight: 0,
                             textAlign: 'left',
                             fontFamily: 'system-ui, -apple-system, sans-serif',
-                            fontWeight: 400
+                            fontWeight: 400,
+                            textIndent: 0
                           }}>
                             <ReactMarkdown
                               components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px' }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
-                                h2: ({ children }) => <h2 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827' }}>{children}</h2>,
-                                h3: ({ children }) => <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '8px 0 4px 0', color: '#111827' }}>{children}</h3>,
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '13px', fontFamily: 'monospace' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
+                                h2: () => null, // Remove h2 titles from query responses
+                                h3: () => null, // Remove h3 titles from query responses
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
+                                strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
+                                em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                table: ({ children }) => (
+                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                      {children}
+                                    </table>
+                                  </div>
+                                ),
+                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                tbody: ({ children }) => <tbody>{children}</tbody>,
+                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
                               }}
                             >
                               {message.text}
@@ -1540,7 +1951,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }, 200);
                             }
                           }} 
-                          placeholder="Ask anything..."
+                          placeholder={selectedDocumentIds.size > 0 
+                            ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
+                            : "Ask anything..."}
                           className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 transition-all duration-200 ease-out"
                           style={{
                             minHeight: '24px',
@@ -1569,11 +1982,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </div>
                     
                     {/* Bottom row: Icons (Left) and Send Button (Right) */}
-                    <div 
+                    <div
                       className="relative flex items-center justify-between w-full"
                       style={{
                         width: '100%',
-                        minWidth: '0'
+                        minWidth: '0',
+                        minHeight: '32px'
                       }}
                     >
                       {/* Left Icons: Dashboard */}
@@ -1598,32 +2012,54 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="hidden"
                           accept="image/*,.pdf,.doc,.docx"
                         />
-                        <button
-                          type="button"
-                          onClick={toggleSelectionMode}
-                          className={`p-1 transition-colors ${
-                            propertyAttachments.length > 0
-                              ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                              : isSelectionModeActive 
-                                ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                                : 'text-slate-600 hover:text-green-500'
-                          }`}
-                          title={
-                            propertyAttachments.length > 0
-                              ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
-                              : isSelectionModeActive 
-                                ? "Property selection mode active - Click property cards to add them" 
-                                : "Select property cards"
-                          }
-                        >
-                          {propertyAttachments.length > 0 ? (
-                            <Fullscreen className="w-5 h-5" strokeWidth={1.5} />
-                          ) : isSelectionModeActive ? (
-                            <Scan className="w-5 h-5" strokeWidth={1.5} />
-                          ) : (
-                            <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                        <div className="relative flex items-center">
+                          <button
+                            type="button"
+                            onClick={handleOpenDocumentSelection}
+                            className={`p-1 transition-colors relative ${
+                              selectedDocumentIds.size > 0
+                                ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                                : isDocumentSelectionMode
+                                  ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
+                                  : 'text-slate-600 hover:text-green-500'
+                            }`}
+                            title={
+                              selectedDocumentIds.size > 0
+                                ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
+                                : isDocumentSelectionMode
+                                  ? "Document selection mode active - Click document cards to select"
+                                  : "Select documents to search within"
+                            }
+                          >
+                            {selectedDocumentIds.size > 0 ? (
+                              <Scan className="w-5 h-5" strokeWidth={1.5} />
+                            ) : isDocumentSelectionMode ? (
+                              <Scan className="w-5 h-5" strokeWidth={1.5} />
+                            ) : (
+                              <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                            )}
+                            {selectedDocumentIds.size > 0 && (
+                              <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
+                                {selectedDocumentIds.size}
+                              </span>
+                            )}
+                          </button>
+                          {selectedDocumentIds.size > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                clearSelectedDocuments();
+                                setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                              }}
+                              className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                              title="Clear document selection"
+                            >
+                              <X className="w-3.5 h-3.5" strokeWidth={2} />
+                            </button>
                           )}
-                        </button>
+                        </div>
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
@@ -1639,47 +2075,91 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           <Mic className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                         
-                        {/* Send button */}
-                        <motion.button 
-                          type="submit" 
-                          onClick={handleSubmit} 
-                          className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                          style={{
-                            width: '32px',
-                            height: '32px',
-                            minWidth: '32px',
-                            minHeight: '32px',
-                            borderRadius: '50%'
-                          }}
-                          animate={{
-                            backgroundColor: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
-                          }}
-                          disabled={isSubmitted || (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
-                          whileHover={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                            scale: 1.05
-                          } : {}}
-                          whileTap={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                            scale: 0.95
-                          } : {}}
-                          transition={{
-                            duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                            ease: [0.16, 1, 0.3, 1]
-                          }}
-                        >
-                          <motion.div
-                            key="arrow-up"
-                            initial={{ opacity: 1 }}
-                            animate={{ opacity: 1 }}
-                            transition={{
-                              duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                              ease: [0.16, 1, 0.3, 1]
-                            }}
-                            className="absolute inset-0 flex items-center justify-center"
-                            style={{ pointerEvents: 'none' }}
-                          >
-                            <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
-                          </motion.div>
-                        </motion.button>
+                        {/* Send button or Stop button (when streaming) */}
+                        {(() => {
+                          const isStreaming = chatMessages.some(msg => msg.isLoading);
+                          
+                          if (isStreaming) {
+                            // Show stop button when streaming - same size as send button to prevent layout shifts
+                            return (
+                              <motion.button 
+                                type="button" 
+                                onClick={handleStopQuery} 
+                                className="flex items-center justify-center relative focus:outline-none outline-none"
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  minWidth: '32px',
+                                  minHeight: '32px',
+                                  borderRadius: '50%',
+                                  border: '1px solid #D1D5DB',
+                                  backgroundColor: '#FFFFFF',
+                                  flexShrink: 0
+                                }}
+                                whileHover={{ 
+                                  scale: 1.05,
+                                  backgroundColor: '#F3F4F6',
+                                  borderColor: '#9CA3AF'
+                                }}
+                                whileTap={{ 
+                                  scale: 0.95
+                                }}
+                                transition={{
+                                  duration: 0.2,
+                                  ease: [0.16, 1, 0.3, 1]
+                                }}
+                                title="Stop generating"
+                              >
+                                <Square className="w-3 h-3" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
+                              </motion.button>
+                            );
+                          }
+                          
+                          // Show normal send button when not streaming
+                          return (
+                            <motion.button 
+                              type="submit" 
+                              onClick={handleSubmit} 
+                              className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                              style={{
+                                width: '32px',
+                                height: '32px',
+                                minWidth: '32px',
+                                minHeight: '32px',
+                                borderRadius: '50%',
+                                flexShrink: 0
+                              }}
+                              animate={{
+                                backgroundColor: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
+                              }}
+                              disabled={isSubmitted || (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
+                              whileHover={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
+                                scale: 1.05
+                              } : {}}
+                              whileTap={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
+                                scale: 0.95
+                              } : {}}
+                              transition={{
+                                duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
+                                ease: [0.16, 1, 0.3, 1]
+                              }}
+                            >
+                              <motion.div
+                                key="arrow-up"
+                                initial={{ opacity: 1 }}
+                                animate={{ opacity: 1 }}
+                                transition={{
+                                  duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
+                                  ease: [0.16, 1, 0.3, 1]
+                                }}
+                                className="absolute inset-0 flex items-center justify-center"
+                                style={{ pointerEvents: 'none' }}
+                              >
+                                <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
+                              </motion.div>
+                            </motion.button>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

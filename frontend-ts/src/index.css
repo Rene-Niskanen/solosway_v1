@@ -380,6 +380,18 @@ button:focus-visible:not(:focus-within) {
   display: none; /* Chrome, Safari, Opera */
 }
 
+/* Completely hidden scrollbar - still scrollable */
+.scrollbar-hide {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+  width: 0;
+  height: 0;
+}
+
 /* Translucent scrollbar for DOCX preview */
 .docx-scrollbar {
   scrollbar-width: thin; /* Firefox */

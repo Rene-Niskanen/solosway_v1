@@ -195,7 +195,9 @@ class BackendApiService {
     onToken: (token: string) => void,
     onComplete: (data: any) => void,
     onError: (error: string) => void,
-    onStatus?: (message: string) => void
+    onStatus?: (message: string) => void,
+    abortSignal?: AbortSignal,
+    documentIds?: string[]
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -207,11 +209,13 @@ class BackendApiService {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
+        signal: abortSignal, // Add abort signal support
         body: JSON.stringify({
           query,
           propertyId,
           messageHistory,
-          sessionId: sessionId || `session_${Date.now()}`
+          sessionId: sessionId || `session_${Date.now()}`,
+          documentIds: documentIds || undefined
         }),
       });
 
@@ -229,7 +233,20 @@ class BackendApiService {
       let buffer = '';
       let accumulatedText = '';
 
+      // Set up abort handler
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', () => {
+          reader.cancel();
+        });
+      }
+
       while (true) {
+        // Check if aborted
+        if (abortSignal?.aborted) {
+          reader.cancel();
+          return; // Silently return on abort
+        }
+        
         const { done, value } = await reader.read();
         
         if (done) break;
@@ -268,6 +285,10 @@ class BackendApiService {
         }
       }
     } catch (error) {
+      // Don't call onError if it was aborted (user cancelled)
+      if (error instanceof Error && error.message === 'Request aborted') {
+        return; // Silently return on abort
+      }
       onError(error instanceof Error ? error.message : 'Unknown error');
     }
   }
@@ -327,6 +348,88 @@ class BackendApiService {
     return this.fetchApi<any>(`/api/properties/${propertyId}/documents`, {
       method: 'GET',
     });
+  }
+
+  // Preload documents for a property (call on hover for faster loading)
+  async preloadPropertyDocuments(propertyId: string): Promise<void> {
+    // Skip if already cached
+    if ((window as any).__preloadedPropertyFiles?.[propertyId]) {
+      return;
+    }
+    
+    try {
+      const response = await this.getPropertyHubDocuments(propertyId);
+      
+      let documentsToUse = null;
+      if (response && response.success && response.data) {
+        if (response.data.documents && Array.isArray(response.data.documents)) {
+          documentsToUse = response.data.documents;
+        } else if (Array.isArray(response.data)) {
+          documentsToUse = response.data;
+        }
+      }
+      
+      if (documentsToUse && documentsToUse.length > 0) {
+        // Cache documents
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
+        
+        // Also preload first few document covers
+        this.preloadDocumentCoversQuick(documentsToUse.slice(0, 6));
+      }
+    } catch (error) {
+      // Silently fail - this is just a preload optimization
+    }
+  }
+
+  // Quick preload of document covers (first 6)
+  private async preloadDocumentCoversQuick(docs: any[]): Promise<void> {
+    if (!docs || docs.length === 0) return;
+    
+    if (!(window as any).__preloadedDocumentCovers) {
+      (window as any).__preloadedDocumentCovers = {};
+    }
+    
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    
+    const preloadPromises = docs.map(async (doc) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      try {
+        const fileType = doc.file_type || '';
+        const fileName = (doc.original_filename || '').toLowerCase();
+        const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+        const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+        
+        if (!isImage && !isPDF) return;
+        
+        let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
+        if (!downloadUrl && doc.s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+        } else if (!downloadUrl) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        (window as any).__preloadedDocumentCovers[docId] = {
+          url,
+          type: blob.type,
+          timestamp: Date.now()
+        };
+      } catch (error) {
+        // Silently fail
+      }
+    });
+    
+    await Promise.allSettled(preloadPromises);
   }
 
   async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {
@@ -637,9 +740,23 @@ class BackendApiService {
             }
           } else {
             console.error(`❌ Upload failed with status: ${xhr.status}`);
+            // Try to parse error response for more details
+            let errorMessage = `Upload failed with status ${xhr.status}`;
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              if (errorResponse.error) {
+                errorMessage = errorResponse.error;
+              }
+              if (errorResponse.details) {
+                errorMessage += ` (${errorResponse.details})`;
+              }
+            } catch (e) {
+              // If response isn't JSON, use status text
+              errorMessage = xhr.statusText || errorMessage;
+            }
             resolve({
               success: false,
-              error: `Upload failed with status ${xhr.status}`
+              error: errorMessage
             });
           }
         };
@@ -909,7 +1026,7 @@ class BackendApiService {
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
-    return this.fetchApi(`/api/documents/${documentId}`, {
+    return this.fetchApi(`/api/document/${documentId}`, {
       method: 'DELETE'
     });
   }
