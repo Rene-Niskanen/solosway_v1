@@ -35,6 +35,106 @@ interface Document {
   extracted_json?: string;
 }
 
+// Global ref for DOCX loaded state (shared across all instances)
+if (typeof window !== 'undefined' && !(window as any).__docxLoadedRef) {
+  (window as any).__docxLoadedRef = new Set<string>();
+}
+
+// Memoized DOCX Card Component - prevents iframe from reloading
+// Once loaded, this component NEVER re-renders - completely frozen in final state
+const DocxCard: React.FC<{
+  docId: string;
+  docxUrl: string;
+  isLoaded: boolean;
+  onLoad: () => void;
+}> = React.memo(({ docId, docxUrl, isLoaded, onLoad }) => {
+  // Use ref to track if we've already called onLoad to prevent multiple calls
+  const hasCalledOnLoadRef = React.useRef(false);
+  
+  // CRITICAL: Use the SAME key for both states - prevents React from recreating the iframe
+  const stableKey = `docx-${docId}`;
+  
+  // Once loaded, render final state and never change
+  if (isLoaded) {
+    return (
+      <iframe
+        key={stableKey}
+        src={docxUrl}
+        className="absolute top-0 left-0 border-none pointer-events-none bg-white"
+        style={{
+          width: '250%',
+          height: '250%',
+          transform: 'scale(0.45)',
+          transformOrigin: 'top left',
+          zIndex: 1,
+          opacity: 1,
+          visibility: 'visible',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          willChange: 'auto',
+          contain: 'layout style paint', // Prevent layout shifts
+          backfaceVisibility: 'hidden', // Prevent flickering
+          transformStyle: 'preserve-3d' // Stable 3D context
+        }}
+        title="preview"
+        loading="lazy"
+        scrolling="no"
+        // No onLoad handler once loaded - prevents any callbacks
+      />
+    );
+  }
+  
+  // Loading state - will transition to loaded state (SAME key so React reuses the iframe)
+  return (
+    <>
+      <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+        <FileText className="w-8 h-8 text-gray-300" />
+      </div>
+      <iframe
+        key={stableKey}
+        src={docxUrl}
+        className="absolute top-0 left-0 border-none pointer-events-none bg-white"
+        style={{
+          width: '250%',
+          height: '250%',
+          transform: 'scale(0.45)',
+          transformOrigin: 'top left',
+          zIndex: 0,
+          opacity: 0,
+          visibility: 'hidden',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          contain: 'layout style paint', // Prevent layout shifts
+          backfaceVisibility: 'hidden', // Prevent flickering
+          transformStyle: 'preserve-3d' // Stable 3D context
+        }}
+        title="preview"
+        loading="eager"
+        scrolling="no"
+        onLoad={() => {
+          if (!hasCalledOnLoadRef.current) {
+            hasCalledOnLoadRef.current = true;
+            onLoad();
+          }
+        }}
+      />
+    </>
+  );
+}, (prevProps, nextProps) => {
+  // CRITICAL: Once loaded, NEVER re-render - completely frozen
+  if (prevProps.isLoaded && nextProps.isLoaded) {
+    return true; // Skip re-render - already in final state
+  }
+  // Only re-render if transitioning from loading to loaded
+  return prevProps.isLoaded === nextProps.isLoaded && 
+         prevProps.docxUrl === nextProps.docxUrl &&
+         prevProps.docId === nextProps.docId;
+});
+
+DocxCard.displayName = 'DocxCard';
+
 // Expanded Card View Component - moved outside to prevent recreation on every render
 // This prevents refs from being reset when parent component re-renders
 const ExpandedCardView: React.FC<{
@@ -482,6 +582,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cachedCoversVersion, setCachedCoversVersion] = useState(0); // Triggers re-render when covers are cached
+  const docxLoadedRef = useRef<Set<string>>(new Set()); // Track which DOCX iframes have loaded
+  // Track which covers have been rendered with their final src - prevent src changes
+  const renderedCoversRef = useRef<Map<string, string>>(new Map()); // docId -> final src URL
+  // Store actual DOM elements - once rendered, reuse them directly to prevent React from recreating
+  const coverElementsRef = useRef<Map<string, HTMLElement>>(new Map()); // docId -> actual DOM element
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
   const [filesSearchQuery, setFilesSearchQuery] = useState<string>(''); // Search query for filtering documents
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null); // Track which card is expanded
@@ -765,6 +870,18 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       setDocuments([]);
     }
   }, [property]);
+
+  // Initialize DOCX loaded state from cache when documents change
+  useEffect(() => {
+    if (documents.length > 0 && (window as any).__preloadedDocumentCovers) {
+      documents.forEach(doc => {
+        const cachedCover = (window as any).__preloadedDocumentCovers[doc.id];
+        if (cachedCover?.isDocx && cachedCover?.isDocxLoaded) {
+          docxLoadedRef.current.add(doc.id);
+        }
+      });
+    }
+  }, [documents]);
 
   const loadPropertyDocuments = async () => {
     if (!property?.id) {
@@ -1054,31 +1171,40 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
     
-    // OPTIMIZED: Load first 12 documents immediately in parallel, remaining in fast batches
-    const MAX_CONCURRENT = 12;
-    const priorityDocs = docs.slice(0, MAX_CONCURRENT);
-    const remainingDocs = docs.slice(MAX_CONCURRENT);
+    // Separate docs by type for optimized loading order
+    const imageDocs: Document[] = [];
+    const pdfDocs: Document[] = [];
+    const docxDocs: Document[] = [];
     
-    // Helper to preload a single document
-    const preloadSingleDoc = async (doc: Document, priority: 'high' | 'auto' = 'auto') => {
-      const docId = doc.id;
+    docs.forEach(doc => {
+      if ((window as any).__preloadedDocumentCovers[doc.id]) return; // Skip cached
       
-      // Skip if already cached
-      if ((window as any).__preloadedDocumentCovers[docId]) {
-        return;
-      }
+      const fileType = (doc as any).file_type || '';
+      const fileName = doc.original_filename.toLowerCase();
+      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+      const isDOCX = 
+        fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        fileType === 'application/msword' ||
+        fileType.includes('word') ||
+        fileType.includes('document') ||
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc');
+      
+      if (isImage) imageDocs.push(doc);
+      else if (isPDF) pdfDocs.push(doc);
+      else if (isDOCX) docxDocs.push(doc);
+    });
+    
+    // Track if we've triggered first re-render
+    let hasTriggeredFirstRender = false;
+    
+    // Helper to preload a single document - triggers re-render on each success
+    const preloadSingleDoc = async (doc: Document, priority: 'high' | 'auto' = 'auto', triggerRender = true) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
       
       try {
-        const fileType = (doc as any).file_type || '';
-        const fileName = doc.original_filename.toLowerCase();
-        const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-        const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
-        
-        // Only preload images and PDFs (they have visual covers)
-        if (!isImage && !isPDF) {
-          return;
-        }
-        
         let downloadUrl: string | null = null;
         if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
           downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
@@ -1090,10 +1216,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         
         if (!downloadUrl) return;
         
-        // Fetch with specified priority
         const response = await fetch(downloadUrl, {
           credentials: 'include',
-          // @ts-ignore - fetchPriority is not in all TypeScript definitions yet
+          // @ts-ignore
           priority: priority
         });
         
@@ -1102,49 +1227,86 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         
-        // Cache the cover
         (window as any).__preloadedDocumentCovers[docId] = {
           url: url,
           type: blob.type,
           timestamp: Date.now()
         };
+        
+        // Trigger re-render immediately for first few, then batch for rest
+        if (triggerRender && !hasTriggeredFirstRender) {
+          hasTriggeredFirstRender = true;
+          setCachedCoversVersion(v => v + 1);
+        }
       } catch (error) {
-        // Silently fail - don't block other preloads
+        // Silently fail
       }
     };
     
-    // Preload priority documents with high priority
-    const priorityPromises = priorityDocs.map((doc, index) => 
-      preloadSingleDoc(doc, index < 6 ? 'high' : 'auto')
+    // Helper to preload DOCX (requires upload to S3)
+    const preloadDocx = async (doc: Document) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      try {
+        let downloadUrl: string | null = null;
+        if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
+          downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
+        } else if ((doc as any).s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
+        } else {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        if (!downloadUrl) return;
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const formData = new FormData();
+        formData.append('file', blob, doc.original_filename);
+        
+        const uploadResponse = await fetch(`${backendUrl}/api/documents/temp-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+        
+        if (uploadResponse.ok) {
+          const data = await uploadResponse.json();
+          if (data.presigned_url) {
+            (window as any).__preloadedDocumentCovers[docId] = {
+              url: data.presigned_url,
+              type: 'docx',
+              isDocx: true,
+              timestamp: Date.now()
+            };
+            setCachedCoversVersion(v => v + 1);
+          }
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // FAST LOADING STRATEGY: Load ALL in parallel immediately
+    // Images, PDFs, and DOCX all start loading at the same time
+    const imagePromises = imageDocs.map((doc, i) => 
+      preloadSingleDoc(doc, i < 6 ? 'high' : 'auto', i < 3)
     );
     
-    // Execute priority preloads immediately and trigger re-render when done
-    Promise.allSettled(priorityPromises).then(() => {
-      // Trigger re-render to use cached covers
+    const pdfPromises = pdfDocs.map((doc, i) => 
+      preloadSingleDoc(doc, i < 4 ? 'high' : 'auto', false)
+    );
+    
+    // DOCX files load in parallel immediately (no delay)
+    const docxPromises = docxDocs.map(doc => preloadDocx(doc));
+    
+    // Execute ALL in parallel - images, PDFs, and DOCX
+    Promise.allSettled([...imagePromises, ...pdfPromises, ...docxPromises]).then(() => {
       setCachedCoversVersion(v => v + 1);
     });
-    
-    // Preload remaining documents in larger, faster batches
-    if (remainingDocs.length > 0) {
-      const BATCH_SIZE = 6; // Increased from 3
-      const loadBatch = async (startIndex: number) => {
-        const batch = remainingDocs.slice(startIndex, startIndex + BATCH_SIZE);
-        if (batch.length === 0) return;
-        
-        const batchPromises = batch.map(doc => preloadSingleDoc(doc, 'auto'));
-        
-        await Promise.allSettled(batchPromises);
-        setCachedCoversVersion(v => v + 1);
-        
-        // Load next batch with minimal delay (25ms instead of 100ms)
-        if (startIndex + BATCH_SIZE < remainingDocs.length) {
-          setTimeout(() => loadBatch(startIndex + BATCH_SIZE), 25);
-        }
-      };
-      
-      // Start loading remaining docs immediately (don't wait for priority)
-      setTimeout(() => loadBatch(0), 0);
-    }
   }, []);
   
   // Filter documents based on search query, active filter, and sort by created_at
@@ -1399,7 +1561,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         if (rafIdRef.current !== null) {
                           cancelAnimationFrame(rafIdRef.current);
                           rafIdRef.current = null;
-                        }
+          }
                         // Store the original index and section from sectionOrder (not displayOrder)
                         const originalIndex = sectionOrder.indexOf(section);
                         setDraggedTabIndex(originalIndex);
@@ -1416,7 +1578,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         if (rafIdRef.current !== null) {
                           cancelAnimationFrame(rafIdRef.current);
                           rafIdRef.current = null;
-                        }
+        }
                         // If we have a preview order, commit it
                         if (previewOrder) {
                           setSectionOrder(previewOrder);
@@ -1455,7 +1617,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           lastDragOverSectionRef.current = null; // Reset ref
                           // Revert to original order when leaving
                           setPreviewOrder(null);
-                        }
+            }
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
@@ -1470,7 +1632,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         // Get current values from refs
                         const currentDraggedSection = draggedSectionRef.current;
                         const currentSectionOrder = sectionOrderRef.current;
-                        
+    
                         // Always calculate the final order based on where we dropped
                         // This ensures it works even if RAF hasn't completed yet
                         if (currentDraggedSection !== null && section !== currentDraggedSection) {
@@ -1646,7 +1808,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       activeFilter === 'images' 
                         ? 'bg-[#F3F4F6] text-gray-900' 
                         : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
-                    }`}
+                  }`}
                   >
                     Images
                   </button>
@@ -1666,7 +1828,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   
             {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
             {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
-              <div className={`flex-1 overflow-y-auto p-6 bg-white ${activeSection !== 'documents' ? 'hidden' : ''}`}>
+              <div className={`flex-1 bg-white relative ${activeSection !== 'documents' ? 'hidden' : ''} ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto p-6'}`}>
               {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
@@ -1685,30 +1847,24 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       )}
                 </AnimatePresence>
 
-                    {filteredDocuments.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                  <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
-                    <Search size={32} className="text-gray-300" />
-                  </div>
-                  <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
-                  <p className="text-sm text-gray-500">Try adjusting your search or upload a new file.</p>
-                      </div>
-                    ) : selectedCardIndex !== null ? (
-                      <ExpandedCardView
-                        selectedDoc={selectedDocument}
-                        onClose={handleClosePreview}
-                        onDocumentClick={handleDocumentClick}
-                        isFullscreen={isFullscreen}
-                        onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
-                      />
-                    ) : (
-                      <div 
-                  className="grid gap-6 pb-20" 
-                        style={{ 
-                    gridTemplateColumns: 'repeat(auto-fill, 160px)',
-                    justifyContent: 'flex-start'
-                  }}
-                >
+                    {/* Document Grid - Always rendered but hidden when preview is open */}
+                    <div className={selectedCardIndex !== null ? 'hidden' : ''}>
+                      {filteredDocuments.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-500">
+                          <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
+                            <Search size={32} className="text-gray-300" />
+                          </div>
+                          <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
+                          <p className="text-sm text-gray-500">Try adjusting your search or upload a new file.</p>
+                        </div>
+                      ) : (
+                        <div 
+                          className="grid gap-6 pb-20" 
+                          style={{ 
+                            gridTemplateColumns: 'repeat(auto-fill, 160px)',
+                            justifyContent: 'flex-start'
+                          }}
+                        >
                         {/* Add New Document Card */}
                         <div
                           className="group relative bg-white border border-gray-200 hover:border-gray-300 hover:shadow-lg cursor-pointer flex flex-col overflow-hidden"
@@ -1718,7 +1874,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             aspectRatio: '3/4',
                           }}
                           onClick={() => fileInputRef.current?.click()}
-                        >
+                >
                           {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
                           <div className="flex items-center justify-center flex-[2] border-b border-gray-100 bg-gray-50">
                             {uploading ? (
@@ -1823,40 +1979,153 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           }}
                         >
                           {(() => {
-                            // Check for cached cover first
+                            // Safety check - ensure doc exists
+                            if (!doc || !doc.id) {
+                              return (
+                                <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                                  <FileText className="w-8 h-8 text-gray-300" />
+                                </div>
+                              );
+                            }
+                            
+                            // Get cached cover - check ONCE and use stored value
                             const cachedCover = (window as any).__preloadedDocumentCovers?.[doc.id];
-                            const coverUrl = cachedCover?.url || getDownloadUrl(doc);
+                            
+                            // CRITICAL: Once a cover has been rendered, NEVER change its src
+                            // Check if we've already rendered this cover - if yes, use the stored src
+                            const previouslyRenderedSrc = renderedCoversRef.current.get(doc.id);
+                            
+                            let coverUrl: string;
+                            if (previouslyRenderedSrc) {
+                              // Already rendered - use the exact same src to prevent reload
+                              coverUrl = previouslyRenderedSrc;
+                            } else if (cachedCover?.url) {
+                              // Use cached URL - this is stable and won't change
+                              coverUrl = cachedCover.url;
+                              // Store it so we never change it
+                              renderedCoversRef.current.set(doc.id, coverUrl);
+                            } else {
+                              // Not cached yet - calculate and store it
+                              coverUrl = getDownloadUrl(doc);
+                              // Store in cache immediately to prevent recalculation
+                              if (!(window as any).__preloadedDocumentCovers) {
+                                (window as any).__preloadedDocumentCovers = {};
+                              }
+                              (window as any).__preloadedDocumentCovers[doc.id] = {
+                                url: coverUrl,
+                                type: (doc as any).file_type || '',
+                                timestamp: Date.now()
+                              };
+                              // Store the rendered src
+                              renderedCoversRef.current.set(doc.id, coverUrl);
+                            }
+                            
+                            const hasDocxPreview = cachedCover?.isDocx && cachedCover?.url;
                             
                             if (isImage) {
+                              // Use the stable src that never changes
+                              const imageSrc = coverUrl;
+                              // Once rendered, use stable props - never change loading/fetchPriority
+                              const wasCached = !!cachedCover || !!previouslyRenderedSrc;
                               return (
                                 <img 
                                   key={`img-${doc.id}`}
-                                  src={coverUrl} 
+                                  src={imageSrc} 
                                   className="w-full h-full object-cover opacity-90 group-hover:opacity-100"
                                   alt={doc.original_filename}
-                                  loading={index < 8 ? "eager" : "lazy"}
+                                  loading={wasCached ? "lazy" : "eager"}
                                   decoding="async"
-                                  fetchPriority={index < 4 ? "high" : "auto"}
-                                style={{
-                                    contentVisibility: index < 8 ? 'visible' : 'auto',
+                                  fetchPriority={wasCached ? "auto" : "high"}
+                                  style={{
+                                    contentVisibility: 'auto',
                                     containIntrinsicSize: '160px 213px',
-                                    pointerEvents: isSelectionMode ? 'none' : 'auto'
+                                    pointerEvents: 'auto',
+                                    imageRendering: 'auto'
                                   }}
                                 />
                               );
                             } else if (isPDF) {
+                              // Use stable src - once rendered, never change
+                              // CRITICAL: Use the stored src to prevent reloading
+                              const pdfSrc = `${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+                              
+                              // Stable key ensures React reuses the same iframe
+                              const pdfIframeKey = `pdf-iframe-${doc.id}`;
+                              
+                              // Once rendered, use stable props - never change loading
+                              const wasCached = !!cachedCover || !!previouslyRenderedSrc;
+                              
                               return (
                                 <div key={`pdf-${doc.id}`} className="w-full h-full relative bg-gray-50">
-                                  {/* Placeholder shown while PDF loads */}
-                                  <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
-                                    <FileText className="w-8 h-8 text-gray-300" />
+                                  {/* Placeholder shown while PDF loads - only if not cached */}
+                                  {!wasCached && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
+                                      <FileText className="w-8 h-8 text-gray-300" />
                                   </div>
+                                )}
                                   <iframe
-                                    src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                                    key={pdfIframeKey}
+                                    src={pdfSrc}
                                     className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
                                     title="preview"
-                                    loading={index < 6 ? "eager" : "lazy"}
+                                    loading={wasCached ? "lazy" : "eager"}
                                     scrolling="no"
+                                    // Prevent iframe from reloading when parent re-renders
+                                    style={{
+                                      contain: 'layout style paint'
+                                    }}
+                                  />
+                                  {/* Transparent overlay to allow clicking the card */}
+                                  <div className="absolute inset-0 bg-transparent z-10" />
+                                </div>
+                              );
+                            } else if (isDOC && hasDocxPreview) {
+                              // DOCX with cached presigned URL - use Office Online Viewer
+                              // Check both ref and cache for loaded state (cache persists across re-renders)
+                              const isDocxLoadedInRef = docxLoadedRef.current.has(doc.id);
+                              const isDocxLoadedInCache = cachedCover.isDocxLoaded === true;
+                              const isDocxLoaded = isDocxLoadedInRef || isDocxLoadedInCache;
+                              
+                              // CRITICAL: Use stored presigned URL - once rendered, never change
+                              // Check if we've already rendered this DOCX
+                              const storedDocxUrl = renderedCoversRef.current.get(`docx-${doc.id}`);
+                              let docxUrl: string;
+                              if (storedDocxUrl) {
+                                // Already rendered - use exact same URL to prevent reload
+                                docxUrl = storedDocxUrl;
+                              } else {
+                                // First time rendering - create URL and store it
+                                docxUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(cachedCover.url)}&action=embedview&wdStartOn=1`;
+                                renderedCoversRef.current.set(`docx-${doc.id}`, docxUrl);
+                              }
+                              
+                              return (
+                                <div 
+                                  key={`docx-container-${doc.id}`} 
+                                  className="w-full h-full relative bg-white overflow-hidden"
+                                  style={{
+                                    contain: 'layout style paint', // Prevent layout shifts
+                                    willChange: isDocxLoaded ? 'auto' : 'contents' // Optimize for loaded state
+                                  }}
+                                >
+                                  {/* Memoized DOCX card component - prevents iframe from reloading */}
+                                  <DocxCard
+                                    docId={doc.id}
+                                    docxUrl={docxUrl}
+                                    isLoaded={isDocxLoaded}
+                                    onLoad={() => {
+                                      // Only update if not already loaded - prevents re-renders
+                                      if (!docxLoadedRef.current.has(doc.id)) {
+                                        docxLoadedRef.current.add(doc.id);
+                                        // Persist loaded state in cache
+                                        if ((window as any).__preloadedDocumentCovers[doc.id]) {
+                                          (window as any).__preloadedDocumentCovers[doc.id].isDocxLoaded = true;
+                                        }
+                                        // Only trigger state update ONCE when first loaded
+                                        // After this, isDocxLoaded will be true and component won't re-render
+                                        setCachedCoversVersion(v => v + 1);
+                                      }
+                                    }}
                                   />
                                   {/* Transparent overlay to allow clicking the card */}
                                   <div className="absolute inset-0 bg-transparent z-10" />
@@ -1882,6 +2151,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   </div>
                               );
                             }
+                            
+                            // Fallback - should never reach here, but ensures we always return something
+                            return (
+                              <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                                <FileText className="w-8 h-8 text-gray-300" />
+                              </div>
+                            );
                           })()}
                                 
                           {/* Hover Action Button - Only show for non-PDF/Image or if needed */}
@@ -1911,10 +2187,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 </div>
                           );
                         })}
-                      </div>
-                    )}
+                        </div>
+                      )}
                     </div>
-            
+
+                            </div>
+                            
             {/* Property Details Section - hidden when not active */}
                 <div className={`flex-1 overflow-hidden bg-white ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
                   {(() => {
@@ -1969,7 +2247,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     className="max-w-full max-h-full object-contain cursor-pointer"
                                     onClick={() => setSelectedImageIndex(null)}
                                   />
-                                   </div>
+                              </div>
                                 
                                 {/* Next Button */}
                                 {propertyImages.length > 1 && (
@@ -1998,7 +2276,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 {propertyImages.length > 1 && (
                                   <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 bg-white/90 rounded-full text-xs text-gray-700 shadow-sm">
                                     {selectedImageIndex + 1} / {propertyImages.length}
-                                </div>
+                              </div>
                                 )}
                             </div>
                             ) : (
@@ -2051,7 +2329,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               {propertyDetails.property_type && (
                                 <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">{propertyDetails.property_type}</p>
                               )}
-                            </div>
+                              </div>
                             
                             {/* Key Details Grid - Bedrooms, Bathrooms, Size */}
                             {(propertyDetails.number_bedrooms || propertyDetails.number_bathrooms || propertyDetails.size_sqft) && (() => {
@@ -2157,8 +2435,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                       <div className="text-xs font-semibold text-gray-900">
                                         £{propertyDetails.asking_price.toLocaleString()}
                                       </div>
-                                    </div>
-                                  )}
+                      </div>
+                    )}
                                   {propertyDetails.sold_price && (
                                     <div>
                                       <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
@@ -2238,7 +2516,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       </div>
                     );
                   })()}
-                </div>
+                    </div>
             
             {/* Hidden Input */}
             <input
@@ -2301,7 +2579,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                        <div className="px-5 py-4">
                          <p className="text-sm text-gray-600 leading-relaxed">
                            Are you sure? This will permanently delete {localSelectedDocumentIds.size} {localSelectedDocumentIds.size === 1 ? 'document' : 'documents'}. This action cannot be undone.
-                         </p>
+                       </p>
                        </div>
                        <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
                               <button
@@ -2324,7 +2602,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     const selectedDoc = documents[selectedCardIndex];
                                     if (selectedDoc && localSelectedDocumentIds.has(selectedDoc.id)) {
                                       setSelectedCardIndex(null);
-                                    }
+                                }
                                   }
                                   
                                   // Clear selection and close dialog immediately
@@ -2372,6 +2650,28 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   </div>
               )}
             </AnimatePresence>
+
+            {/* Document Preview - Covers entire panel including headers */}
+            {selectedCardIndex !== null && (
+              <div 
+                className="absolute inset-0 z-[200] bg-white"
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0
+                }}
+              >
+                <ExpandedCardView
+                  selectedDoc={selectedDocument}
+                  onClose={handleClosePreview}
+                  onDocumentClick={handleDocumentClick}
+                  isFullscreen={isFullscreen}
+                  onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+                />
+              </div>
+            )}
         </motion.div>
                         </div>
           )}

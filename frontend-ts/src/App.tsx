@@ -26,7 +26,7 @@ const App = () => (
           <PreviewProvider>
             <PropertySelectionProvider>
               <DocumentSelectionProvider>
-                <BrowserRouter>
+              <BrowserRouter>
               <Toaster />
               <Sonner />
               <Routes>

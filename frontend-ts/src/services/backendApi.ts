@@ -8,6 +8,22 @@ import { env } from '@/config/env';
 
 const BACKEND_URL = env.backendUrl;
 
+// OPTIMIZATION: Preconnect to backend immediately when module loads
+// This establishes TCP connection + TLS handshake before first request
+if (typeof window !== 'undefined' && BACKEND_URL) {
+  const preconnectLink = document.createElement('link');
+  preconnectLink.rel = 'preconnect';
+  preconnectLink.href = BACKEND_URL;
+  preconnectLink.crossOrigin = 'use-credentials';
+  document.head.appendChild(preconnectLink);
+  
+  // Also add dns-prefetch as fallback
+  const dnsPrefetch = document.createElement('link');
+  dnsPrefetch.rel = 'dns-prefetch';
+  dnsPrefetch.href = BACKEND_URL;
+  document.head.appendChild(dnsPrefetch);
+}
+
 interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -350,7 +366,23 @@ class BackendApiService {
     });
   }
 
-  // Preload documents for a property (call on hover for faster loading)
+  // Warm up connection to backend (establishes TCP + TLS early)
+  private connectionWarmedUp = false;
+  async warmConnection(): Promise<void> {
+    if (this.connectionWarmedUp) return;
+    this.connectionWarmedUp = true;
+    
+    try {
+      await fetch(`${BACKEND_URL}/api/health`, {
+        method: 'HEAD',
+        credentials: 'include'
+      }).catch(() => {});
+    } catch {
+      // Ignore
+    }
+  }
+
+  // Preload documents for a property (call on click)
   async preloadPropertyDocuments(propertyId: string): Promise<void> {
     // Skip if already cached
     if ((window as any).__preloadedPropertyFiles?.[propertyId]) {
@@ -376,15 +408,15 @@ class BackendApiService {
         }
         (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
         
-        // Also preload first few document covers
-        this.preloadDocumentCoversQuick(documentsToUse.slice(0, 6));
+        // Preload covers
+        this.preloadDocumentCoversQuick(documentsToUse);
       }
     } catch (error) {
-      // Silently fail - this is just a preload optimization
+      // Silently fail
     }
   }
 
-  // Quick preload of document covers (first 6)
+  // Quick preload of document covers - images, PDFs, and DOCX (all in parallel)
   private async preloadDocumentCoversQuick(docs: any[]): Promise<void> {
     if (!docs || docs.length === 0) return;
     
@@ -394,18 +426,19 @@ class BackendApiService {
     
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
     
-    const preloadPromises = docs.map(async (doc) => {
+    // Preload images and PDFs (fast)
+    const preloadImageOrPdf = async (doc: any) => {
       const docId = doc.id;
       if ((window as any).__preloadedDocumentCovers[docId]) return;
       
+      const fileType = doc.file_type || '';
+      const fileName = (doc.original_filename || '').toLowerCase();
+      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+      
+      if (!isImage && !isPDF) return;
+      
       try {
-        const fileType = doc.file_type || '';
-        const fileName = (doc.original_filename || '').toLowerCase();
-        const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-        const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
-        
-        if (!isImage && !isPDF) return;
-        
         let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
         if (!downloadUrl && doc.s3_path) {
           downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
@@ -427,9 +460,71 @@ class BackendApiService {
       } catch (error) {
         // Silently fail
       }
-    });
+    };
     
-    await Promise.allSettled(preloadPromises);
+    // Preload DOCX files (requires upload to S3)
+    const preloadDocx = async (doc: any) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      const fileType = doc.file_type || '';
+      const fileName = (doc.original_filename || '').toLowerCase();
+      const isDOCX = 
+        fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        fileType === 'application/msword' ||
+        fileType.includes('word') ||
+        fileType.includes('document') ||
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc');
+      
+      if (!isDOCX) return;
+      
+      try {
+        let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
+        if (!downloadUrl && doc.s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+        } else if (!downloadUrl) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        // Download and upload in one flow
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const formData = new FormData();
+        formData.append('file', blob, doc.original_filename || 'document.docx');
+        
+        // Upload to get presigned URL
+        const uploadResponse = await fetch(`${backendUrl}/api/documents/temp-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+        
+        if (uploadResponse.ok) {
+          const data = await uploadResponse.json();
+          if (data.presigned_url) {
+            (window as any).__preloadedDocumentCovers[docId] = {
+              url: data.presigned_url,
+              type: 'docx',
+              isDocx: true,
+              timestamp: Date.now()
+            };
+          }
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // Fire ALL requests in parallel - images, PDFs, and DOCX all at once
+    const allPromises = [
+      ...docs.map(preloadImageOrPdf),
+      ...docs.map(preloadDocx)
+    ];
+    
+    await Promise.allSettled(allPromises);
   }
 
   async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {

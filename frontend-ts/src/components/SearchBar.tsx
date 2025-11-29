@@ -1172,8 +1172,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 }}>
                 {/* Document Selection Toggle Button (works like SideChatPanel) */}
                 <div className="relative flex items-center">
-                    <button
-                      type="button"
+                  <button
+                    type="button"
                       onClick={() => {
                         console.log('🔘 SearchBar: Document selection button clicked, current mode:', isDocumentSelectionMode);
                         toggleDocumentSelectionMode();
@@ -1181,26 +1181,26 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       }}
                       className={`p-1 transition-colors relative ${
                         selectedDocumentIds.size > 0
-                          ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                        ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
                           : isDocumentSelectionMode
-                            ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
-                            : 'text-slate-600 hover:text-green-500'
-                      }`}
-                      title={
+                          ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
+                          : 'text-slate-600 hover:text-green-500'
+                    }`}
+                    title={
                         selectedDocumentIds.size > 0
                           ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
                           : isDocumentSelectionMode
                             ? "Document selection mode active - Click document cards to select"
                             : "Select documents to search within"
-                      }
-                    >
+                    }
+                  >
                       {selectedDocumentIds.size > 0 ? (
                         <Scan className="w-5 h-5" strokeWidth={1.5} />
                       ) : isDocumentSelectionMode ? (
-                        <Scan className="w-5 h-5" strokeWidth={1.5} />
-                      ) : (
-                        <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
-                      )}
+                      <Scan className="w-5 h-5" strokeWidth={1.5} />
+                    ) : (
+                      <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                    )}
                       {selectedDocumentIds.size > 0 && (
                         <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
                           {selectedDocumentIds.size}
@@ -1220,8 +1220,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         title="Clear document selection"
                       >
                         <X className="w-3.5 h-3.5" strokeWidth={2} />
-                      </button>
-                    )}
+                  </button>
+                )}
                   </div>
                 
                 {contextConfig.showMic && (
