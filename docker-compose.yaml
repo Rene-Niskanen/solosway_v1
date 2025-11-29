@@ -26,13 +26,13 @@ services:
     environment:
       - FLASK_ENV=development
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
+      # DATABASE_URL removed - uses SUPABASE_DB_URL from .env file (loaded via env_file)
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
     depends_on:
       - redis
-      - postgres
       - embedding-server
+      # postgres removed - using Supabase PostgreSQL instead
 
   worker:
     build: .
@@ -43,13 +43,13 @@ services:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://solosway_user:${POSTGRES_PASSWORD:-secure_password}@postgres:5432/solosway_properties
+      # DATABASE_URL removed - uses SUPABASE_DB_URL from .env file (loaded via env_file)
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
     depends_on:
       - redis
-      - postgres
       - embedding-server
+      # postgres removed - using Supabase PostgreSQL instead
 
   embedding-server:
     build: .
