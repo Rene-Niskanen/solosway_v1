@@ -670,6 +670,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   // Track pending saves to cancel them if user edits again
   const pendingSavesRef = useRef<Record<string, AbortController>>({});
   
+  // Refs for textarea auto-resize
+  const amenitiesTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
+  
   // Local state for property details to enable optimistic updates
   const [localPropertyDetails, setLocalPropertyDetails] = useState<any>(null);
   
@@ -945,6 +949,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       delete newErrors[fieldName];
       return newErrors;
     });
+    
+    // Auto-resize textareas when editing starts
+    requestAnimationFrame(() => {
+      if (fieldName === 'other_amenities' && amenitiesTextareaRef.current) {
+        amenitiesTextareaRef.current.style.height = 'auto';
+        amenitiesTextareaRef.current.style.height = `${amenitiesTextareaRef.current.scrollHeight}px`;
+      } else if (fieldName === 'notes' && notesTextareaRef.current) {
+        notesTextareaRef.current.style.height = 'auto';
+        notesTextareaRef.current.style.height = `${notesTextareaRef.current.scrollHeight}px`;
+      }
+    });
   };
 
   const handleFieldChange = (fieldName: string, value: string) => {
@@ -971,6 +986,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         ...prev,
         [fieldName]: value
       }));
+      
+      // Auto-resize textareas for amenities and notes
+      if (fieldName === 'other_amenities' && amenitiesTextareaRef.current) {
+        amenitiesTextareaRef.current.style.height = 'auto';
+        amenitiesTextareaRef.current.style.height = `${amenitiesTextareaRef.current.scrollHeight}px`;
+      } else if (fieldName === 'notes' && notesTextareaRef.current) {
+        notesTextareaRef.current.style.height = 'auto';
+        notesTextareaRef.current.style.height = `${notesTextareaRef.current.scrollHeight}px`;
+      }
     }
   };
 
@@ -2037,7 +2061,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               </div>
 
             {/* Header Area - Clean & Minimal */}
-            <div className="px-6 py-4 pb-6 bg-white">
+            <div className="px-6 bg-white">
               <div className="flex items-center gap-3">
                 {activeSection === 'documents' && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">
@@ -2639,10 +2663,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         >
                           <div className="px-6">
                             {/* Address Header */}
-                            <div className="mb-6">
-                              <h2 className="text-sm font-semibold text-gray-900 mb-0.5 leading-tight truncate" title={address}>{address}</h2>
+                            <div className="mb-10">
+                              <h2 className="text-sm font-semibold text-gray-900 mb-0 leading-tight truncate" title={address}>{address}</h2>
                               {propertyDetails.property_type && (
-                                <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide">{propertyDetails.property_type}</p>
+                                <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide mb-3">{propertyDetails.property_type}</p>
                               )}
                     </div>
                             
@@ -3077,6 +3101,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               {editingField === 'other_amenities' ? (
                                 <>
                                   <textarea
+                                    ref={amenitiesTextareaRef}
                                     value={editValues['other_amenities'] ?? ''}
                                     onChange={(e) => handleFieldChange('other_amenities', e.target.value)}
                                     onBlur={() => handleFieldBlur('other_amenities')}
@@ -3090,7 +3115,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                         });
                                       }
                                     }}
-                                    className="text-xs text-gray-900 leading-relaxed w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-y min-h-[60px]"
+                                    className="text-xs text-gray-900 leading-relaxed w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-none overflow-hidden"
                                     autoFocus
                                     disabled={savingFields.has('other_amenities')}
                                     placeholder="Enter amenities..."
@@ -3119,6 +3144,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               {editingField === 'notes' ? (
                                 <>
                                   <textarea
+                                    ref={notesTextareaRef}
                                     value={editValues['notes'] ?? ''}
                                     onChange={(e) => handleFieldChange('notes', e.target.value)}
                                     onBlur={() => handleFieldBlur('notes')}
@@ -3132,7 +3158,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                         });
                                       }
                                     }}
-                                    className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-y min-h-[100px]"
+                                    className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-none overflow-hidden"
                                     autoFocus
                                     disabled={savingFields.has('notes')}
                                     placeholder="Enter notes..."
