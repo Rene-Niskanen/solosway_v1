@@ -22,12 +22,9 @@ def create_app():
     app = Flask(__name__, template_folder='../frontend/public')
     app.config['SECRET_KEY'] = 'hjshjhdjah kjshkjdhjs'
     
-    # Ensure the DATABASE_URL is loaded correctly
-    database_url = os.environ.get('DATABASE_URL')
-    if not database_url:
-        raise ValueError("No DATABASE_URL set for Flask application")
-    
-    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    # Use Supabase PostgreSQL connection (via Config class)
+    # Uses SUPABASE_DB_URL environment variable (same as LangGraph checkpointer)
+    app.config['SQLALCHEMY_DATABASE_URI'] = Config.SQLALCHEMY_DATABASE_URI
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     # Session cookie configuration for cross-origin requests

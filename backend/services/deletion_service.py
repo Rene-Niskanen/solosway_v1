@@ -158,40 +158,48 @@ class DeletionService:
     def delete_postgresql_property_nodes(self, document_id):
         """Delete property nodes from PostgreSQL (only if no other documents linked)"""
         try:
-            from ..models import db, Property, Document
-            from .. import create_app
+            from ..models import db, Property
+            from .supabase_client_factory import get_supabase_client
             
-            # Get the document to find its property_id
-            document = Document.query.get(document_id)
-            if not document or not document.property_id:
-                print("✅ No property node linked to this document")
+            supabase = get_supabase_client()
+            
+            # Get document from Supabase to find its property_id
+            doc_result = supabase.table('documents').select('property_id').eq('id', document_id).execute()
+            
+            if not doc_result.data or len(doc_result.data) == 0:
+                logger.info("✅ Document not found in Supabase - skipping property node deletion")
                 return True
             
-            property_id = document.property_id
+            document_data = doc_result.data[0]
+            property_id = document_data.get('property_id')
             
-            # Check if other documents are linked to this property
-            other_documents = Document.query.filter(
-                Document.property_id == property_id,
-                Document.id != document_id
-            ).count()
-            
-            if other_documents > 0:
-                print(f"✅ Property node {property_id} has {other_documents} other documents - keeping property node")
+            if not property_id:
+                logger.info("✅ No property node linked to this document")
                 return True
             
-            # No other documents linked, safe to delete property node
+            # Check if other documents are linked to this property in Supabase
+            other_docs_result = supabase.table('documents').select('id').eq('property_id', property_id).neq('id', document_id).execute()
+            other_documents_count = len(other_docs_result.data) if other_docs_result.data else 0
+            
+            if other_documents_count > 0:
+                logger.info(f"✅ Property node {property_id} has {other_documents_count} other documents - keeping property node")
+                return True
+            
+            # No other documents linked, safe to delete property node from PostgreSQL
             property_node = Property.query.get(property_id)
             if property_node:
                 db.session.delete(property_node)
                 db.session.commit()
-                print(f"✅ Deleted property node {property_id}")
+                logger.info(f"✅ Deleted property node {property_id}")
             else:
-                print(f"✅ Property node {property_id} not found (already deleted)")
+                logger.info(f"✅ Property node {property_id} not found in PostgreSQL (already deleted)")
             
             return True
             
         except Exception as e:
-            print(f"❌ Error deleting PostgreSQL property nodes: {e}")
+            logger.error(f"❌ Error deleting PostgreSQL property nodes: {e}")
+            import traceback
+            traceback.print_exc()
             try:
                 db.session.rollback()
             except:

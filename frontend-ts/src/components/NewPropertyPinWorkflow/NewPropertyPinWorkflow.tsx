@@ -78,9 +78,10 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
     try {
       // Upload without property_id (temporary upload)
+      // Send empty metadata object instead of property_id: null to avoid string "null" issues
       const response = await backendApi.uploadPropertyDocumentViaProxy(
         file,
-        { property_id: null }, // Temporary upload
+        {}, // Empty metadata when no property_id (don't send null)
         (percent) => {
           setUploadProgress(prev => ({ ...prev, [fileId]: percent }));
         }
