@@ -792,6 +792,18 @@ This information has been verified and extracted from the property database. The
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
         
+        # STEP 5: Filter by document_ids if provided (for document-specific search)
+        document_ids = state.get('document_ids')
+        if document_ids and len(document_ids) > 0:
+            # Convert to set for faster lookup
+            document_ids_set = set(document_ids)
+            filtered_results = [
+                doc for doc in final_results
+                if (doc.get('doc_id') or doc.get('document_id')) in document_ids_set
+            ]
+            logger.info(f"[QUERY_FILTERED] Filtered from {len(final_results)} to {len(filtered_results)} documents by document_ids")
+            final_results = filtered_results
+        
         logger.info(f"[QUERY_COMBINED] Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, Hybrid: {len(merged_results)}, Final: {len(final_results)}")
         return {"relevant_documents": final_results[:config.vector_top_k]}
 

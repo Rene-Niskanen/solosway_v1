@@ -2,9 +2,8 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { SendToBack, Upload, GitPullRequestArrow, X, Home, FileText } from "lucide-react";
+import { SendToBack, Upload, GitPullRequestArrow, X, Home, FileText, Check } from "lucide-react";
 import { backendApi } from "@/services/backendApi";
-import { toast } from "@/hooks/use-toast";
 
 interface PropertyData {
   id: string | number;
@@ -81,6 +80,7 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
   const [showResultsPopup, setShowResultsPopup] = React.useState<boolean>(false);
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
+  const [notification, setNotification] = React.useState<{ type: 'success' | 'failed' } | null>(null);
 
   // Notify parent when popup visibility changes
   React.useEffect(() => {
@@ -222,24 +222,16 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
     // Validate file type
     const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'image/jpeg', 'image/png', 'image/jpg'];
     if (!allowedTypes.some(type => file.type === type || file.name.toLowerCase().endsWith('.pdf') || file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.doc'))) {
-      toast({
-        title: "Invalid File Type",
-        description: "Please upload a PDF, DOCX, or image file.",
-        variant: "destructive",
-        duration: 3000
-      });
+      setNotification({ type: 'failed' });
+      setTimeout(() => setNotification(null), 2000);
       return;
     }
 
     // Validate file size (16MB max)
     const maxSize = 16 * 1024 * 1024; // 16MB
     if (file.size > maxSize) {
-      toast({
-        title: "File Too Large",
-        description: "Please upload a file smaller than 16MB.",
-        variant: "destructive",
-        duration: 3000
-      });
+      setNotification({ type: 'failed' });
+      setTimeout(() => setNotification(null), 2000);
       return;
     }
 
@@ -290,55 +282,57 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
   // Handle save/upload and link
   const handleSave = async () => {
     if (!selectedProperty) {
-      toast({
-        title: "Property Required",
-        description: "Please select a property first.",
-        variant: "destructive",
-        duration: 3000
-      });
+      setNotification({ type: 'failed' });
+      setTimeout(() => setNotification(null), 2000);
       return;
     }
 
     if (!uploadedFile) {
-      toast({
-        title: "File Required",
-        description: "Please upload a document first.",
-        variant: "destructive",
-        duration: 3000
-      });
+      setNotification({ type: 'failed' });
+      setTimeout(() => setNotification(null), 2000);
       return;
     }
 
     setIsUploading(true);
 
     try {
-      // Step 1: Upload document
-      const uploadResponse = await backendApi.uploadPropertyDocumentViaProxy(uploadedFile);
-      
-      if (!uploadResponse.success || !uploadResponse.data?.id) {
-        throw new Error(uploadResponse.error || 'Upload failed');
-      }
-
-      const documentId = uploadResponse.data.id;
-
-      // Step 2: Link document to property
+      // Get property ID - ensure it's a string
       const propertyId = typeof selectedProperty.id === 'number' 
         ? selectedProperty.id.toString() 
         : selectedProperty.id;
       
-      const linkResponse = await backendApi.linkDocumentToProperty(documentId, propertyId);
-
-      if (!linkResponse.success) {
-        throw new Error(linkResponse.error || 'Linking failed');
+      // Upload document with property_id in metadata (backend will auto-link)
+      // This matches how property card uploads work
+      const uploadResponse = await backendApi.uploadPropertyDocumentViaProxy(
+        uploadedFile,
+        {
+          property_id: propertyId,
+          property_address: selectedProperty.address,
+          property_latitude: selectedProperty.latitude,
+          property_longitude: selectedProperty.longitude
+        }
+      );
+      
+      if (!uploadResponse.success) {
+        throw new Error(uploadResponse.error || 'Upload failed');
       }
 
-      // Success!
-      toast({
-        title: "Document Linked Successfully",
-        description: `Document linked to ${selectedProperty.address}`,
-        duration: 4000,
-        className: "border-emerald-200 bg-gradient-to-r from-emerald-50 to-green-50"
-      });
+      // Get document ID from response (handle different response formats)
+      // Backend returns: { success: true, document_id: "..." }
+      // backendApi.fetchApi wraps it, so check response.data.document_id or response.data.data.document_id
+      const documentId = uploadResponse.data?.document_id || 
+                        uploadResponse.data?.id || 
+                        (uploadResponse.data?.data as any)?.document_id ||
+                        (uploadResponse as any).document_id;
+
+      if (!documentId) {
+        throw new Error('Document ID not found in response');
+      }
+
+      // Success! Document is already linked by backend
+      setNotification({ type: 'success' });
+      // Auto-hide after 2 seconds
+      setTimeout(() => setNotification(null), 2000);
 
       // Callback
       if (onDocumentLinked) {
@@ -353,12 +347,24 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
 
     } catch (error) {
       console.error('Error uploading and linking document:', error);
-      toast({
-        title: "Upload Failed",
-        description: error instanceof Error ? error.message : 'Failed to upload and link document.',
-        variant: "destructive",
-        duration: 5000
-      });
+      // Try to get more detailed error message from response
+      let errorMessage = 'Failed to upload and link document.';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        // Check if there's a response with error details
+        if ((error as any).response) {
+          const responseError = (error as any).response;
+          if (responseError.error) {
+            errorMessage = responseError.error;
+          }
+          if (responseError.details) {
+            errorMessage += ` (${responseError.details})`;
+          }
+        }
+      }
+      setNotification({ type: 'failed' });
+      // Auto-hide after 2.5 seconds
+      setTimeout(() => setNotification(null), 2500);
     } finally {
       setIsUploading(false);
     }
@@ -444,8 +450,8 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
       {/* Main Pill Container */}
       <motion.div
         animate={{
-          width: selectedProperty || uploadedFile ? 'auto' : 'fit-content',
-          minWidth: selectedProperty || uploadedFile ? 'auto' : '400px'
+          width: notification ? 'auto' : (selectedProperty || uploadedFile ? 'auto' : 'fit-content'),
+          minWidth: notification ? 'auto' : (selectedProperty || uploadedFile ? 'auto' : '400px')
         }}
         transition={{ duration: 0.3, ease: 'easeInOut' }}
         style={{
@@ -463,306 +469,378 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
           transition: 'all 0.2s ease'
         }}
       >
-        {/* Property Selection Area */}
-        {selectedProperty ? (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="relative bg-white border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 flex-shrink-0"
-            style={{ 
-              width: 'auto',
-              height: 'auto',
-              borderRadius: '8px',
-              padding: '5px 10px'
-            }}
-          >
-            <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
-              {/* Property Icon */}
-              <div className="bg-green-500 rounded flex items-center justify-center flex-shrink-0" style={{ width: '22px', height: '22px' }}>
-                <Home className="text-white" style={{ width: '14px', height: '14px' }} strokeWidth={2} />
-              </div>
-              
-              {/* Property Info */}
-              <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
-                <span className="font-medium text-black truncate" style={{ whiteSpace: 'nowrap', fontSize: '11px', lineHeight: '14px' }}>
-                  {selectedProperty.custom_name || formatAddress(selectedProperty.address)}
-                </span>
-                <span className="text-gray-500 font-normal" style={{ fontSize: '9px', lineHeight: '12px' }}>
-                  {selectedProperty.property_type || 'Property'}
-                </span>
-              </div>
-              
-              {/* Remove Button */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePropertyRemove();
-                }}
-                className="rounded-full bg-black flex items-center justify-center flex-shrink-0 hover:bg-gray-800 transition-colors ml-2"
-                style={{ width: '16px', height: '16px' }}
-                title="Remove property"
-              >
-                <X className="text-white" style={{ width: '11px', height: '11px' }} strokeWidth={2.5} />
-              </button>
-            </div>
-          </motion.div>
-        ) : (
-          <div className="relative flex-1" style={{ minWidth: '200px', maxWidth: '400px', position: 'relative' }}>
-            <div className="relative" style={{ position: 'relative' }}>
-              <SendToBack className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" style={{ zIndex: 1 }} />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => {
-                  if (searchResults.length > 0) {
-                    setShowResultsPopup(true);
-                  }
-                }}
-                placeholder="Find property to link documents"
-                className="quick-start-search-input"
-                style={{
-                  width: '100%',
-                  padding: '6px 12px 6px 36px',
-                  border: '1px solid rgba(0, 0, 0, 0.1)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  outline: 'none',
-                  transition: 'border-color 0.2s',
-                  position: 'relative',
-                  zIndex: 1,
-                  background: 'transparent',
-                  color: '#1F2937'
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    setShowResultsPopup(false);
-                  }
-                }}
-                onBlur={(e) => {
-                  // Don't close popup immediately on blur - wait a bit to allow clicks on popup items
-                  setTimeout(() => {
-                    // Check if the related target (what's being focused) is not inside the popup
-                    if (resultsPopupRef.current && !resultsPopupRef.current.contains(document.activeElement)) {
-                      setShowResultsPopup(false);
-                    }
-                  }, 200);
-                }}
-              />
-            </div>
-
-            {/* Search Results Popup - positioned ABOVE the search bar */}
-            <AnimatePresence mode="wait">
-              {showResultsPopup && searchResults.length > 0 && (
+        {/* Notification - appears alone in the bar when present */}
+        <AnimatePresence>
+          {notification ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '5px 10px',
+                borderRadius: '8px',
+                backgroundColor: notification.type === 'success' ? '#f0fdf4' : '#fef2f2',
+                border: `1px solid ${notification.type === 'success' ? '#86efac' : '#fca5a5'}`,
+                flexShrink: 0
+              }}
+            >
+              {notification.type === 'success' ? (
+                <>
+                  <div style={{
+                    width: '22px',
+                    height: '22px',
+                    borderRadius: '50%',
+                    border: '2px solid #22c55e',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    backgroundColor: '#22c55e'
+                  }}>
+                    <Check className="w-3.5 h-3.5" style={{ color: 'white', strokeWidth: 2.5 }} />
+                  </div>
+                  <span style={{
+                    color: '#22c55e',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    lineHeight: '14px'
+                  }}>
+                    Document Linked
+                  </span>
+                </>
+              ) : (
+                <>
+                  <div style={{
+                    width: '22px',
+                    height: '22px',
+                    borderRadius: '50%',
+                    border: '2px solid #ef4444',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    backgroundColor: '#ef4444'
+                  }}>
+                    <X className="w-3.5 h-3.5" style={{ color: 'white', strokeWidth: 2.5 }} />
+                  </div>
+                  <span style={{
+                    color: '#ef4444',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    lineHeight: '14px'
+                  }}>
+                    Failed
+                  </span>
+                </>
+              )}
+            </motion.div>
+          ) : (
+            <>
+              {/* Property Selection Area */}
+              {selectedProperty ? (
                 <motion.div
-                  ref={resultsPopupRef}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 10 }}
-                  transition={{ duration: 0.2 }}
-                  style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 16px)',
-                    left: 0,
-                    right: 0,
-                    background: 'rgba(255, 255, 255, 0.35)',
-                    backdropFilter: 'blur(40px)',
-                    WebkitBackdropFilter: 'blur(40px)',
-                    borderRadius: '6px',
-                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05)',
-                    border: '1px solid rgba(255, 255, 255, 0.25)',
-                    maxHeight: '300px',
-                    overflowY: 'auto',
-                    zIndex: 10000,
-                    marginBottom: '0',
-                    width: '100%',
-                    minWidth: '200px'
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="relative bg-white border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 flex-shrink-0"
+                  style={{ 
+                    width: 'auto',
+                    height: 'auto',
+                    borderRadius: '8px',
+                    padding: '5px 10px'
                   }}
                 >
-                  {searchResults.map((property) => (
-                    <div
-                      key={property.id}
-                      onClick={() => handlePropertySelect(property)}
+                  <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
+                    {/* Property Icon */}
+                    <div className="bg-green-500 rounded flex items-center justify-center flex-shrink-0" style={{ width: '22px', height: '22px' }}>
+                      <Home className="text-white" style={{ width: '14px', height: '14px' }} strokeWidth={2} />
+                    </div>
+                    
+                    {/* Property Info */}
+                    <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
+                      <span className="font-medium text-black truncate" style={{ whiteSpace: 'nowrap', fontSize: '11px', lineHeight: '14px' }}>
+                        {selectedProperty.custom_name || formatAddress(selectedProperty.address)}
+                      </span>
+                      <span className="text-gray-500 font-normal" style={{ fontSize: '9px', lineHeight: '12px' }}>
+                        {selectedProperty.property_type || 'Property'}
+                      </span>
+                    </div>
+                    
+                    {/* Remove Button */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePropertyRemove();
+                      }}
+                      className="rounded-full bg-black flex items-center justify-center flex-shrink-0 hover:bg-gray-800 transition-colors ml-2"
+                      style={{ width: '16px', height: '16px' }}
+                      title="Remove property"
+                    >
+                      <X className="text-white" style={{ width: '11px', height: '11px' }} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                </motion.div>
+              ) : (
+                <div className="relative flex-1" style={{ minWidth: '200px', maxWidth: '400px', position: 'relative' }}>
+                  <div className="relative" style={{ position: 'relative' }}>
+                    <SendToBack className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" style={{ zIndex: 1 }} />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onFocus={() => {
+                        if (searchResults.length > 0) {
+                          setShowResultsPopup(true);
+                        }
+                      }}
+                      placeholder="Find property to link documents"
+                      className="quick-start-search-input"
                       style={{
-                        padding: '10px 14px',
-                        cursor: 'pointer',
-                        borderBottom: '1px solid rgba(0, 0, 0, 0.05)',
-                        backgroundColor: selectedProperty?.id === property.id ? 'rgba(243, 244, 246, 0.6)' : 'transparent',
-                        transition: 'background-color 0.15s',
+                        width: '100%',
+                        padding: '6px 12px 6px 42px',
+                        border: '1px solid rgba(0, 0, 0, 0.1)',
+                        borderRadius: '6px',
+                        fontSize: '14px',
+                        outline: 'none',
+                        transition: 'border-color 0.2s',
+                        position: 'relative',
+                        zIndex: 1,
+                        background: 'transparent',
+                        color: '#1F2937'
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setShowResultsPopup(false);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        // Don't close popup immediately on blur - wait a bit to allow clicks on popup items
+                        setTimeout(() => {
+                          // Check if the related target (what's being focused) is not inside the popup
+                          if (resultsPopupRef.current && !resultsPopupRef.current.contains(document.activeElement)) {
+                            setShowResultsPopup(false);
+                          }
+                        }, 200);
+                      }}
+                    />
+                  </div>
+
+                  {/* Search Results Popup - positioned ABOVE the search bar */}
+                  <AnimatePresence mode="wait">
+                    {showResultsPopup && searchResults.length > 0 && (
+                      <motion.div
+                        ref={resultsPopupRef}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        transition={{ duration: 0.2 }}
+                        style={{
+                          position: 'absolute',
+                          bottom: 'calc(100% + 16px)',
+                          left: 0,
+                          right: 0,
+                          background: 'rgba(255, 255, 255, 0.35)',
+                          backdropFilter: 'blur(40px)',
+                          WebkitBackdropFilter: 'blur(40px)',
+                          borderRadius: '6px',
+                          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05)',
+                          border: '1px solid rgba(255, 255, 255, 0.25)',
+                          maxHeight: '240px',
+                          overflowY: 'auto',
+                          zIndex: 10000,
+                          marginBottom: '0',
+                          width: '100%',
+                          minWidth: '200px'
+                        }}
+                      >
+                        {searchResults.map((property) => (
+                          <div
+                            key={property.id}
+                            onClick={() => handlePropertySelect(property)}
+                            style={{
+                              padding: '8px 14px',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid rgba(0, 0, 0, 0.05)',
+                              backgroundColor: selectedProperty?.id === property.id ? 'rgba(243, 244, 246, 0.6)' : 'transparent',
+                              transition: 'background-color 0.15s',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '10px'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (selectedProperty?.id !== property.id) {
+                                e.currentTarget.style.backgroundColor = 'rgba(249, 250, 251, 0.6)';
+                              }
+                            }}
+                            onMouseLeave={(e) => {
+                              if (selectedProperty?.id !== property.id) {
+                                e.currentTarget.style.backgroundColor = 'transparent';
+                              }
+                            }}
+                          >
+                            {/* Property Image Thumbnail */}
+                            <PropertyImageThumbnail property={property} />
+                            
+                            {/* Property Info */}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ 
+                                fontWeight: 500, 
+                                fontSize: '14px', 
+                                color: '#111827', 
+                                marginBottom: '2px',
+                                lineHeight: '1.4',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap'
+                              }}>
+                                {property.custom_name || property.address}
+                              </div>
+                              {property.property_type && (
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: '#6b7280',
+                                  lineHeight: '1.3',
+                                  fontWeight: 300
+                                }}>
+                                  {property.property_type}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+
+              {/* Separator - only show if property or file is selected and no notification */}
+              {(selectedProperty || uploadedFile) && !notification && (
+                <div style={{ width: '1px', height: '24px', background: 'rgba(0, 0, 0, 0.1)' }} />
+              )}
+
+              {/* Document Selection Area */}
+              {uploadedFile && !notification ? (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  className="relative bg-white border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 flex-shrink-0"
+                  style={{ 
+                    width: 'auto',
+                    height: 'auto',
+                    borderRadius: '8px',
+                    padding: '5px 10px'
+                  }}
+                >
+                  <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
+                    {/* File Icon or Image Preview */}
+                    {isImage && imagePreviewUrl ? (
+                      <div className="rounded overflow-hidden flex-shrink-0 border border-gray-200" style={{ 
+                        width: '22px',
+                        height: '22px',
+                        minWidth: '22px',
+                        minHeight: '22px'
+                      }}>
+                        <img
+                          src={imagePreviewUrl}
+                          alt={uploadedFile.name}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover',
+                            display: 'block'
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className={`rounded flex items-center justify-center flex-shrink-0`} style={{
+                        width: '22px',
+                        height: '22px',
+                        backgroundColor: isPDF ? '#ef4444' : isDOCX ? '#3b82f6' : '#6b7280'
+                      }}>
+                        <FileText className="text-white" style={{ width: '14px', height: '14px' }} strokeWidth={2} />
+                      </div>
+                    )}
+                    
+                    {/* File Info */}
+                    <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
+                      <span className="font-medium text-black truncate" style={{ whiteSpace: 'nowrap', fontSize: '11px', lineHeight: '14px' }}>
+                        {formatFileName(uploadedFile.name)}
+                      </span>
+                      <span className="text-gray-500 font-normal" style={{ fontSize: '9px', lineHeight: '12px' }}>
+                        {getFileTypeLabel(uploadedFile.type)}
+                      </span>
+                    </div>
+                    
+                    {/* Remove Button */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setUploadedFile(null);
+                      }}
+                      className="rounded-full bg-black flex items-center justify-center flex-shrink-0 hover:bg-gray-800 transition-colors ml-2"
+                      style={{ width: '16px', height: '16px' }}
+                      title="Remove file"
+                    >
+                      <X className="text-white" style={{ width: '11px', height: '11px' }} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                </motion.div>
+              ) : !notification ? (
+                <>
+                  {/* Icons Group */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {/* Upload Button */}
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '10px'
+                        justifyContent: 'center',
+                        width: '32px',
+                        height: '32px',
+                        border: '1px solid rgba(0, 0, 0, 0.1)',
+                        borderRadius: '6px',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        color: '#374151'
                       }}
                       onMouseEnter={(e) => {
-                        if (selectedProperty?.id !== property.id) {
-                          e.currentTarget.style.backgroundColor = 'rgba(249, 250, 251, 0.6)';
-                        }
+                        e.currentTarget.style.backgroundColor = '#f3f4f6';
+                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.2)';
                       }}
                       onMouseLeave={(e) => {
-                        if (selectedProperty?.id !== property.id) {
-                          e.currentTarget.style.backgroundColor = 'transparent';
-                        }
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.1)';
                       }}
+                      title="Upload document"
                     >
-                      {/* Property Image Thumbnail */}
-                      <PropertyImageThumbnail property={property} />
-                      
-                      {/* Property Info */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ 
-                          fontWeight: 500, 
-                          fontSize: '14px', 
-                          color: '#111827', 
-                          marginBottom: '2px',
-                          lineHeight: '1.4',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap'
-                        }}>
-                          {property.custom_name || property.address}
-                        </div>
-                        {property.property_type && (
-                          <div style={{ 
-                            fontSize: '12px', 
-                            color: '#6b7280',
-                            lineHeight: '1.3'
-                          }}>
-                            {property.property_type}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        )}
+                      <Upload className="w-4 h-4" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.docx,.doc,image/*"
+                      onChange={handleFileInputChange}
+                      style={{ display: 'none' }}
+                    />
+                  </div>
+                </>
+              ) : null}
 
-        {/* Separator - only show if property or file is selected */}
-        {(selectedProperty || uploadedFile) && (
-          <div style={{ width: '1px', height: '24px', background: 'rgba(0, 0, 0, 0.1)' }} />
-        )}
-
-        {/* Document Selection Area */}
-        {uploadedFile ? (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="relative bg-white border border-gray-200 shadow-sm cursor-pointer hover:border-gray-300 hover:shadow-md transition-all duration-100 flex-shrink-0"
-            style={{ 
-              width: 'auto',
-              height: 'auto',
-              borderRadius: '8px',
-              padding: '5px 10px'
-            }}
-          >
-            <div className="flex items-center gap-2" style={{ width: 'auto', flexShrink: 0 }}>
-              {/* File Icon or Image Preview */}
-              {isImage && imagePreviewUrl ? (
-                <div className="rounded overflow-hidden flex-shrink-0 border border-gray-200" style={{ 
-                  width: '22px',
-                  height: '22px',
-                  minWidth: '22px',
-                  minHeight: '22px'
-                }}>
-                  <img
-                    src={imagePreviewUrl}
-                    alt={uploadedFile.name}
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'cover',
-                      display: 'block'
-                    }}
-                  />
-                </div>
-              ) : (
-                <div className={`rounded flex items-center justify-center flex-shrink-0`} style={{
-                  width: '22px',
-                  height: '22px',
-                  backgroundColor: isPDF ? '#ef4444' : isDOCX ? '#3b82f6' : '#6b7280'
-                }}>
-                  <FileText className="text-white" style={{ width: '14px', height: '14px' }} strokeWidth={2} />
-                </div>
-              )}
-              
-              {/* File Info */}
-              <div className="flex flex-col" style={{ width: 'auto', flexShrink: 0 }}>
-                <span className="font-medium text-black truncate" style={{ whiteSpace: 'nowrap', fontSize: '11px', lineHeight: '14px' }}>
-                  {formatFileName(uploadedFile.name)}
-                </span>
-                <span className="text-gray-500 font-normal" style={{ fontSize: '9px', lineHeight: '12px' }}>
-                  {getFileTypeLabel(uploadedFile.type)}
-                </span>
-              </div>
-              
-              {/* Remove Button */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setUploadedFile(null);
-                }}
-                className="rounded-full bg-black flex items-center justify-center flex-shrink-0 hover:bg-gray-800 transition-colors ml-2"
-                style={{ width: '16px', height: '16px' }}
-                title="Remove file"
-              >
-                <X className="text-white" style={{ width: '11px', height: '11px' }} strokeWidth={2.5} />
-              </button>
-            </div>
-          </motion.div>
-        ) : (
-          <>
-            {/* Icons Group */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {/* Upload Button */}
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: '32px',
-                  height: '32px',
-                  border: '1px solid rgba(0, 0, 0, 0.1)',
-                  borderRadius: '6px',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  color: '#374151'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#f3f4f6';
-                  e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.2)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.1)';
-                }}
-                title="Upload document"
-              >
-                <Upload className="w-4 h-4" />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf,.docx,.doc,image/*"
-                onChange={handleFileInputChange}
-                style={{ display: 'none' }}
-              />
-            </div>
-          </>
-        )}
-
-        {/* Save Button */}
-        {(selectedProperty || uploadedFile) && (
-          <>
-            <div style={{ width: '1px', height: '24px', background: 'rgba(0, 0, 0, 0.1)' }} />
+              {/* Save Button */}
+              {(selectedProperty || uploadedFile) && !notification && (
+                <>
+                  <div style={{ width: '1px', height: '24px', background: 'rgba(0, 0, 0, 0.1)' }} />
             <button
               onClick={handleSave}
               disabled={isUploading || !selectedProperty || !uploadedFile}
@@ -807,6 +885,9 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
             </button>
           </>
         )}
+            </>
+          )}
+        </AnimatePresence>
       </motion.div>
     </div>
     </>

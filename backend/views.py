@@ -14,6 +14,7 @@ import sys
 import logging
 import boto3
 import time
+import re
 from .tasks import process_document_task
 from .services.deletion_service import DeletionService
 from sqlalchemy import text
@@ -326,7 +327,6 @@ def query_documents_stream():
         import json
         import asyncio
         import time
-        from backend.llm.graphs.main_graph import build_main_graph
         from langchain_openai import ChatOpenAI
         from backend.llm.config import config
         
@@ -407,26 +407,14 @@ def query_documents_stream():
                     except Exception as e:
                         logger.warning(f"⚠️ [STREAM] Could not find document for property {property_id}: {e}")
                 
-                # Convert message history
-                conversation_history = []
-                for msg in message_history:
-                    conversation_history.append({
-                        'role': msg.get('role', 'user'),
-                        'content': msg.get('content', '')
-                    })
-                logger.info(f"🟢 [STREAM] Conversation history length: {len(conversation_history)}")
-                
-                # Build initial state
+                # Build initial state for LangGraph
+                # Note: conversation_history will be loaded from checkpoint if thread_id exists
+                # Only provide minimal required fields - checkpointing will restore previous state
                 initial_state = {
                     "user_query": query,
-                    "query_intent": None,
-                    "relevant_documents": [],
-                    "document_outputs": [],
-                    "final_summary": "",
                     "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
                     "business_id": business_id,
                     "session_id": session_id,
-                    "conversation_history": conversation_history,
                     "property_id": property_id
                 }
                 logger.info(f"🟢 [STREAM] Initial state built: query='{query[:30]}...', business_id={business_id}")
@@ -439,10 +427,23 @@ def query_documents_stream():
                     """Run LangGraph and stream the final summary"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
-                        # Build graph (without checkpointer for streaming)
-                        logger.info("🟡 [STREAM] Building main graph...")
-                        graph = await build_main_graph(use_checkpointer=False)
-                        logger.info("🟡 [STREAM] Graph built successfully")
+                        
+                        # Create checkpointer for THIS event loop (the one in the thread)
+                        # This avoids "bound to different event loop" errors
+                        from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                        
+                        logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
+                        checkpointer = await create_checkpointer_for_current_loop()
+                        
+                        if checkpointer:
+                            # Build graph with checkpointer for this event loop
+                            # All checkpointers point to same database, so state is shared via thread_id
+                            logger.info("🟡 [STREAM] Building graph with checkpointer for this event loop")
+                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                        else:
+                            logger.warning("🟡 [STREAM] Failed to create checkpointer - using stateless mode")
+                            graph, _ = await build_main_graph(use_checkpointer=False)
+                        
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
                         # Run graph to get document outputs
@@ -487,8 +488,8 @@ def query_documents_stream():
 
 CONTEXT
 
-The user is a real estate professional (for example, a commercial/residential agent, RICS valuer, property acquisitions specialist, asset manager, investor, or analyst) working on behalf of a client, investment group, or company.
-They have uploaded {len(doc_outputs)} property-related documents for review and analysis. These may include valuation (“Red Book”) reports, commercial leases, energy performance certificates (EPCs), heads of terms, purchase/sale offer letters, rent review memoranda, building surveys, legal due diligence, correspondence with owners or tenants, or planning/consent documents.
+The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
+They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
 
 The user has asked:
 
@@ -502,66 +503,30 @@ GUIDELINES FOR YOUR RESPONSE
 
 Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
 
-Respond with the information that truly matters to real estate professionals making decisions:
-- Focus on property value, rent and yield metrics, recent sales or lease comparables, asset condition and building specification, location strengths or weaknesses, lease or contract terms (breaks, obligations, expiry), material risks, regulatory or compliance issues, potential upsides (development, refurbishment, leasing), and anything that could materially impact valuation or deal structure. 
-Be succinct and prioritise what a surveyor, valuer, acquisitions, or asset manager would consider most relevant to a transaction or asset strategy.
+Focus on what matters in real estate:
+- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
 
-When referring to documents, reference them naturally and conversationally, without being overly formal or technical. For example:
-→ "One of the valuation reports notes that…"
-→ "The lease document indicates…"
+When referencing a document, keep it light and natural:
+→ "One of the valuation reports mentions…"
+→ "In the lease document, there's a note that…"
 → "The report highlights…"
 → "Page 7 shows that…"
 
-Avoid wording that sounds robotic or over-structured; refer to documents as a professional would in conversation.
-
 Only cite pages if the information is clearly page-specific. Otherwise keep it general.
 
-CRITICAL RESPONSE RULES FOR THE ASSISTANT:
-1. **Begin your response immediately with the answer.** Never restate or repeat the user's original question, and do not use the question as a heading or introduction.
-2. **DO NOT create any extra sections such as "Additional Context" or "Background."** Only refer to context or documents if and where the user's prompt specifically requests it.
-3. **Strictly avoid giving any recommendations, action steps, opinions, or unsolicited commentary.** Only answer the exact question the user asked, with no further suggestions or follow-up guidance.
-4. **Once the answer is complete, stop.** Do not add summary statements, next steps, or closing remarks; finish the response cleanly.
+CRITICAL RULES:
+1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
+2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
+3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
+4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
 
-FORMATTING REQUIREMENTS:
-**You MUST structure your response using markdown formatting to make it easy to read and skim:**
-
-- Use **headings** (## or ###) to break up different topics or sections
-- Use **bullet points** (- or *) for lists of items, facts, or details
-- Use **numbered lists** (1. 2. 3.) for sequential information or steps
-- Use **bold text** (**text**) to highlight key figures, dates, names, or important terms
-- Use **tables** when presenting structured data (e.g., property details, financial metrics)
-- Use **horizontal rules** (---) to separate major sections if needed
-- Keep paragraphs short (2-3 sentences max) - break up long blocks of text
-- Use line breaks between sections for visual breathing room
-
-**Example structure:**
-```
-## Property Overview
-
-The property is located at [address] and consists of [description].
-
-### Key Details
-- **Size:** [sq ft / sq m]
-- **Bedrooms:** [number]
-- **Valuation Date:** [date]
-
-### Valuation Information
-- **Valuer:** [name]
-- **Value:** [amount]
-- **Method:** [approach]
-
-## Additional Information
-[Further details broken into readable sections]
-```
-
-**Never write long paragraphs without structure.** Always break information into digestible sections with clear headings and lists. Make it scannable - a professional should be able to quickly find the information they need.
+Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
 
 TONE
 
-Professional, succinct, and helpful—write as a knowledgeable real estate professional addressing a peer. Use natural, conversational language, and be human, not robotic.
+Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
 
-Now provide your response (answer directly, no heading, no additional context):
-"""
+Now provide your response (answer directly, no heading, no additional context):"""
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -785,7 +750,7 @@ def query_documents():
     
     import asyncio
     import time
-    from backend.llm.graphs.main_graph import build_main_graph
+    from backend.llm.graphs.main_graph import main_graph, checkpointer
     
     data = request.get_json()
     if data is None:
@@ -838,35 +803,39 @@ def query_documents():
             except Exception as e:
                 logger.warning(f"Could not find document for property {property_id}: {e}")
         
-        # Convert message history to conversation history format
-        conversation_history = []
-        for msg in message_history:
-            conversation_history.append({
-                'role': msg.get('role', 'user'),
-                'content': msg.get('content', '')
-            })
-        
         # Build initial state for LangGraph
+        # Note: conversation_history will be loaded from checkpoint if thread_id exists
+        # Only provide minimal required fields - checkpointing will restore previous state
         initial_state = {
             "user_query": query,
-            "query_intent": None,
-            "relevant_documents": [],
-            "document_outputs": [],
-            "final_summary": "",
             "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
             "business_id": business_id,
             "session_id": session_id,
-            "conversation_history": conversation_history,
             "property_id": property_id  # Pass property_id to filter results
         }
         
-        # Build and run the graph
+        # Use global graph instance (initialized on app startup)
         async def run_query():
+            # Create checkpointer for THIS event loop (created by asyncio.run())
+            # This avoids "bound to different event loop" errors
+            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+            
             try:
-                graph = await build_main_graph(use_checkpointer=True)
+                logger.info("Creating checkpointer for current event loop...")
+                checkpointer = await create_checkpointer_for_current_loop()
+                
+                if checkpointer:
+                    # Build graph with checkpointer for this event loop
+                    # All checkpointers point to same database, so state is shared via thread_id
+                    logger.info("Building graph with checkpointer for this event loop")
+                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                else:
+                    logger.warning("Failed to create checkpointer - using stateless mode")
+                    graph, _ = await build_main_graph(use_checkpointer=False)
+                
                 config = {
                     "configurable": {
-                        "thread_id": session_id  # For conversation persistence
+                        "thread_id": session_id  # For conversation persistence via checkpointing
                     }
                 }
                 result = await graph.ainvoke(initial_state, config)
@@ -875,9 +844,10 @@ def query_documents():
                 # Handle connection closed errors gracefully
                 error_msg = str(graph_error)
                 if "connection is closed" in error_msg.lower() or "operationalerror" in error_msg.lower():
-                    logger.warning("Checkpointer connection error, retrying without checkpointer")
-                    # Retry without checkpointer
-                    graph = await build_main_graph(use_checkpointer=False)
+                    logger.warning(f"Checkpointer connection error: {graph_error}")
+                    # Try without checkpointer (will run in stateless mode)
+                    logger.info("Retrying query without checkpointer (stateless mode)")
+                    graph, _ = await build_main_graph(use_checkpointer=False)
                     result = await graph.ainvoke(initial_state, {})
                     return result
                 else:
@@ -1485,7 +1455,13 @@ def get_presigned_url():
 @views.route('/api/documents/proxy-upload', methods=['POST'])
 @login_required
 def proxy_upload():
-    """Proxy upload to S3 (alternative to presigned URLs if CORS issues)"""
+    """
+    Proxy upload to S3 (alternative to presigned URLs if CORS issues)
+    
+    NOTE: This endpoint is disconnected from the main processing pipeline.
+    Documents uploaded here will remain in 'UPLOADED' status and will be
+    processed via the new fast pipeline (chunk + embed) once implemented.
+    """
     try:
         if 'file' not in request.files:
             logger.error("No 'file' key in request.files")
@@ -1528,387 +1504,111 @@ def proxy_upload():
             logger.error(f"Failed to upload to S3: {e}")
             return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
         
-        # Only create document record AFTER successful S3 upload
+        # Create document record in Supabase ONLY (skip local PostgreSQL to avoid enum issues)
         try:
-            # Ensure user exists in local PostgreSQL database (sync from Supabase if needed)
-            local_user = User.query.filter_by(id=current_user.id).first()
-            if not local_user:
-                logger.info(f"User {current_user.id} not found in local DB, syncing from Supabase...")
-                # Sync user from Supabase to local PostgreSQL
-                from .services.supabase_auth_service import SupabaseAuthService
-                auth_service = SupabaseAuthService()
-                supabase_user = auth_service.get_user_by_id(current_user.id)
-                
-                if supabase_user:
-                    local_user = User(
-                        id=supabase_user['id'],
-                        email=supabase_user['email'],
-                        first_name=supabase_user.get('first_name', ''),
-                        company_name=supabase_user.get('company_name', ''),
-                        company_website=supabase_user.get('company_website', ''),
-                        role=UserRole.ADMIN if supabase_user.get('role') == 'admin' else UserRole.USER,
-                        status=UserStatus.ACTIVE if supabase_user.get('status') == 'active' else UserStatus.INVITED
-                    )
-                    if supabase_user.get('business_uuid'):
-                        try:
-                            local_user.business_id = UUID(supabase_user['business_uuid'])
-                        except (ValueError, TypeError):
-                            pass
-                    db.session.add(local_user)
-                    db.session.flush()  # Flush to ensure user is available for foreign key
-                    logger.info(f"✅ Synced user {current_user.id} from Supabase to local DB")
+            from .services.document_storage_service import DocumentStorageService
+            
+            # Get property_id from form data if provided
+            property_id_raw = request.form.get('property_id')
+            property_id = None
+            
+            # Normalize property_id: handle "null", "", None, or invalid UUIDs
+            if property_id_raw:
+                property_id_raw = property_id_raw.strip()
+                # Check if it's the string "null", "none", or empty
+                if property_id_raw.lower() in ['null', 'none', '']:
+                    property_id = None
                 else:
-                    logger.error(f"User {current_user.id} not found in Supabase either!")
-                    return jsonify({'error': 'User not found'}), 404
-            
-            # Check if this is a manual upload to a property card
-            property_id = request.form.get('property_id')
-            manual_upload_metadata = None
-            if property_id:
-                # Mark as manually linked to property (uploaded via property card)
-                manual_upload_metadata = {
-                    "manually_linked_to_property_id": property_id,
-                    "upload_source": "property_card"
-                }
-            
-            new_document = Document(
-                original_filename=filename,
-                s3_path=s3_key,
-                file_type=file.content_type,
-                file_size=file.content_length or 0,
-                uploaded_by_user_id=current_user.id,
-                business_id=business_uuid
-            )
-            
-            # Store manual upload metadata if present
-            if manual_upload_metadata:
-                new_document.metadata_json = json.dumps(manual_upload_metadata)
-            
-            # Link to property if property_id is provided
-            if property_id:
-                try:
-                    property_uuid = UUID(property_id)
-                    # Check if property exists before linking
-                    existing_property = Property.query.filter_by(id=property_uuid).first()
-                    if existing_property:
-                        new_document.property_id = property_uuid
-                    else:
-                        # Property doesn't exist - create it with provided data
-                        # This ensures files uploaded to a property card stay with that property
-                        property_address = request.form.get('property_address')
-                        property_latitude = request.form.get('property_latitude')
-                        property_longitude = request.form.get('property_longitude')
-                        
-                        if property_address:
-                            logger.info(f"Creating property {property_id} with address: {property_address}")
-                            
-                            # Normalize address and compute hash
-                            from .services.address_service import AddressNormalizationService
-                            address_service = AddressNormalizationService()
-                            normalized_address = address_service.normalize_address(property_address)
-                            address_hash = address_service.compute_address_hash(normalized_address)
-                            
-                            # Parse coordinates if provided
-                            latitude = None
-                            longitude = None
-                            if property_latitude:
-                                try:
-                                    latitude = float(property_latitude)
-                                except (ValueError, TypeError):
-                                    pass
-                            if property_longitude:
-                                try:
-                                    longitude = float(property_longitude)
-                                except (ValueError, TypeError):
-                                    pass
-                            
-                            # Create property with the provided ID
-                            new_property = Property(
-                                id=property_uuid,
-                                business_id=business_uuid,
-                                address_hash=address_hash,
-                                normalized_address=normalized_address,
-                                formatted_address=property_address,
-                                latitude=latitude,
-                                longitude=longitude,
-                                geocoding_status='provided' if latitude and longitude else 'pending',
-                                geocoding_confidence=1.0 if latitude and longitude else 0.0
-                            )
-                            
-                            db.session.add(new_property)
-                            db.session.flush()  # Flush to ensure property is available for foreign key
-                            
-                            logger.info(f"✅ Created property {property_id} for upload")
-                            
-                        # Link document to property (whether existing or newly created)
-                        new_document.property_id = property_uuid
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid property_id provided: {property_id}, error: {e}")
-            
-            db.session.add(new_document)
-            
-            # Try to commit - if it fails due to missing column, use raw SQL insert
-            try:
-                db.session.commit()
-            except Exception as commit_error:
-                error_str = str(commit_error)
-                # Check if it's a foreign key violation for user
-                if 'uploaded_by_user_id_fkey' in error_str or ('foreign key constraint' in error_str.lower() and 'user' in error_str.lower()):
-                    # User might not exist - ensure it does
-                    if not User.query.filter_by(id=current_user.id).first():
-                        logger.warning(f"User {current_user.id} missing in commit path, syncing...")
-                        # Sync user (same logic as above)
-                        from .services.supabase_auth_service import SupabaseAuthService
-                        auth_service = SupabaseAuthService()
-                        supabase_user = auth_service.get_user_by_id(current_user.id)
-                        if supabase_user:
-                            local_user = User(
-                                id=supabase_user['id'],
-                                email=supabase_user['email'],
-                                first_name=supabase_user.get('first_name', ''),
-                                company_name=supabase_user.get('company_name', ''),
-                                company_website=supabase_user.get('company_website', ''),
-                                role=UserRole.ADMIN if supabase_user.get('role') == 'admin' else UserRole.USER,
-                                status=UserStatus.ACTIVE if supabase_user.get('status') == 'active' else UserStatus.INVITED
-                            )
-                            if supabase_user.get('business_uuid'):
-                                try:
-                                    local_user.business_id = UUID(supabase_user['business_uuid'])
-                                except (ValueError, TypeError):
-                                    pass
-                            db.session.add(local_user)
-                            db.session.flush()
-                            logger.info(f"✅ Synced user {current_user.id} in commit path")
-                        # Retry the commit
-                        try:
-                            db.session.commit()
-                        except Exception as retry_error:
-                            error_str = str(retry_error)
-                            if 'classification_reasoning' in error_str or 'UndefinedColumn' in error_str:
-                                logger.warning(f"Schema mismatch detected, using raw SQL insert: {error_str}")
-                                db.session.rollback()
-                            else:
-                                raise
-                    else:
-                        raise  # Re-raise if it's a different error
-                
-                if 'classification_reasoning' in error_str or 'UndefinedColumn' in error_str:
-                    logger.warning(f"Schema mismatch detected, using raw SQL insert: {error_str}")
-                    db.session.rollback()
-                    # Use raw SQL insert with only columns that exist
-                    from sqlalchemy import text
-                    # Generate UUID for id if not already set
-                    document_id = new_document.id if new_document.id else uuid.uuid4()
-                    # Handle property_id - create property if needed (same logic as above)
-                    property_id_value = new_document.property_id
-                    if property_id_value:
-                        existing_property_check = Property.query.filter_by(id=property_id_value).first()
-                        if not existing_property_check:
-                            # Try to create property in raw SQL path too
-                            property_address = request.form.get('property_address')
-                            property_latitude = request.form.get('property_latitude')
-                            property_longitude = request.form.get('property_longitude')
-                            
-                            if property_address:
-                                from .services.address_service import AddressNormalizationService
-                                address_service = AddressNormalizationService()
-                                normalized_address = address_service.normalize_address(property_address)
-                                address_hash = address_service.compute_address_hash(normalized_address)
-                                
-                                latitude = None
-                                longitude = None
-                                if property_latitude:
-                                    try:
-                                        latitude = float(property_latitude)
-                                    except (ValueError, TypeError):
-                                        pass
-                                if property_longitude:
-                                    try:
-                                        longitude = float(property_longitude)
-                                    except (ValueError, TypeError):
-                                        pass
-                                
-                                # Insert property using raw SQL
-                                # Property table is 'property' (lowercase, no __tablename__ override)
-                                property_insert_sql = text("""
-                                    INSERT INTO property (id, business_id, address_hash, normalized_address, formatted_address, latitude, longitude, geocoding_status, geocoding_confidence, created_at, updated_at)
-                                    VALUES (CAST(:id AS UUID), CAST(:business_id AS UUID), :address_hash, :normalized_address, :formatted_address, :latitude, :longitude, :geocoding_status, :geocoding_confidence, now(), now())
-                                    ON CONFLICT (id) DO NOTHING
-                                """)
-                                db.session.execute(property_insert_sql, {
-                                    'id': str(property_id_value),
-                                    'business_id': str(business_uuid),
-                                    'address_hash': address_hash,
-                                    'normalized_address': normalized_address,
-                                    'formatted_address': property_address,
-                                    'latitude': latitude,
-                                    'longitude': longitude,
-                                    'geocoding_status': 'provided' if latitude and longitude else 'pending',
-                                    'geocoding_confidence': 1.0 if latitude and longitude else 0.0
-                                })
-                                db.session.flush()
-                                logger.info(f"✅ Created property {property_id_value} in raw SQL path")
-                            else:
-                                logger.warning(f"Property {property_id_value} does not exist and no address provided, using NULL")
-                                property_id_value = None
-                    
-                    if property_id_value:
-                        insert_sql = text("""
-                            INSERT INTO document (id, original_filename, s3_path, file_type, file_size, 
-                                                 business_id, created_at, status, uploaded_by_user_id, property_id)
-                            VALUES (CAST(:id AS UUID), :original_filename, :s3_path, :file_type, :file_size, 
-                                    CAST(:business_id AS UUID), now(), :status, :uploaded_by_user_id, CAST(:property_id AS UUID))
-                            RETURNING id, created_at
-                        """)
-                        result = db.session.execute(insert_sql, {
-                            'id': str(document_id),
-                            'original_filename': filename,
-                            's3_path': s3_key,
-                            'file_type': file.content_type,
-                            'file_size': file.content_length or 0,
-                            'business_id': str(business_uuid),
-                            'status': 'UPLOADED',
-                            'uploaded_by_user_id': current_user.id,
-                            'property_id': str(property_id_value)
-                        })
-                    else:
-                        insert_sql = text("""
-                            INSERT INTO document (id, original_filename, s3_path, file_type, file_size, 
-                                                 business_id, created_at, status, uploaded_by_user_id, property_id)
-                            VALUES (CAST(:id AS UUID), :original_filename, :s3_path, :file_type, :file_size, 
-                                    CAST(:business_id AS UUID), now(), :status, :uploaded_by_user_id, NULL)
-                            RETURNING id, created_at
-                        """)
-                        result = db.session.execute(insert_sql, {
-                            'id': str(document_id),
-                            'original_filename': filename,
-                            's3_path': s3_key,
-                            'file_type': file.content_type,
-                            'file_size': file.content_length or 0,
-                            'business_id': str(business_uuid),
-                            'status': 'UPLOADED',
-                            'uploaded_by_user_id': current_user.id
-                        })
-                    db.session.commit()
-                    # Don't reload document object - it will try to SELECT all columns including classification_reasoning
-                    # Instead, create a minimal document object with just the ID for the rest of the code
-                    new_document = Document()
-                    new_document.id = document_id
-                    new_document.original_filename = filename
-                    new_document.s3_path = s3_key
-                    new_document.file_type = file.content_type
-                    new_document.file_size = file.content_length or 0
-                    new_document.business_id = business_uuid
-                    new_document.uploaded_by_user_id = current_user.id
-                    new_document.property_id = property_id_value
-                    new_document.status = DocumentStatus.UPLOADED
-                else:
-                    raise  # Re-raise if it's a different error
-            
-            
-            # Sync document to Supabase
-            try:
-                from .services.document_storage_service import DocumentStorageService
-                doc_storage = DocumentStorageService()
-                logger.info(f"Syncing document {new_document.id} to Supabase...")
-                success, doc_id, error = doc_storage.create_document({
-                    'id': str(new_document.id),
-                    'original_filename': filename,
-                    's3_path': s3_key,
-                    'file_type': file.content_type,
-                    'file_size': file.content_length or 0,
-                    'uploaded_by_user_id': str(current_user.id),
-                    'business_id': business_uuid_str,  # Use business_uuid_str instead of company_name
-                    'status': 'uploaded'
-                })
-                if success:
-                    logger.info(f"✅ Successfully synced document {new_document.id} to Supabase")
-                    # If property_id was provided, create document relationship in Supabase
-                    if property_id:
-                        try:
-                            from .services.supabase_property_hub_service import SupabasePropertyHubService
-                            property_hub_service = SupabasePropertyHubService()
-                            
-                            # Create relationship directly in Supabase
-                            relationship_data = {
-                                'id': str(uuid.uuid4()),
-                                'document_id': str(new_document.id),
-                                'property_id': property_id,
-                                'relationship_type': 'property_document',
-                                'address_source': 'manual_upload',
-                                'confidence_score': 1.0,
-                                'relationship_metadata': {
-                                    'match_type': 'direct_upload',
-                                    'matching_service': 'manual_upload',
-                                    'match_timestamp': datetime.utcnow().isoformat()
-                                },
-                                'created_at': datetime.utcnow().isoformat()
-                            }
-                            
-                            result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
-                            if not result.data:
-                                logger.warning("Failed to create document relationship in Supabase")
-                        except Exception as rel_error:
-                            logger.warning(f"Failed to create document relationship (non-fatal): {rel_error}")
-                else:
-                    logger.warning(f"Failed to sync document to Supabase: {error}")
-            except Exception as e:
-                logger.warning(f"Supabase sync failed (non-fatal): {e}")
-            
-            # Trigger processing task (optional - don't fail upload if Redis/Celery unavailable)
-            task_id = None
-            try:
-                file.seek(0)  # Reset file pointer again
-                file_content = file.read()
-
-                task = process_document_task.delay(
-                    document_id=new_document.id,
-                    file_content=file_content,
-                    original_filename=filename,
-                    business_id=business_uuid_str
-                )
-                task_id = task.id
-            except Exception as e:
-                # Don't fail the upload if Celery/Redis is unavailable
-                # The document is already created, processing can be retried later
-                logger.warning(f"Failed to create processing task (non-fatal): {e}")
-            
-            # Invalidate/update property card cache if document is linked to a property
-            if new_document.property_id:
-                try:
-                    # Delete existing cache entry - it will be regenerated on next card view
+                    # Try to validate it's a valid UUID
                     try:
-                        cache_entry = db.session.query(PropertyCardCache).filter_by(property_id=new_document.property_id).first()
-                        if cache_entry:
-                            db.session.delete(cache_entry)
-                            db.session.commit()
-                            logger.info(f"Invalidated property card cache for property {new_document.property_id}")
-                    except (OperationalError, ProgrammingError, DatabaseError) as cache_error:
-                        # Cache table doesn't exist - skip cache invalidation
-                        error_str = str(cache_error)
-                        if 'property_card_cache' in error_str.lower() or 'does not exist' in error_str.lower() or 'undefinedtable' in error_str.lower():
-                            logger.debug(f"Cache table not available, skipping cache invalidation: {cache_error}")
-                        else:
-                            logger.debug(f"Cache query failed during document processing: {cache_error}")
-                        db.session.rollback()
-                    except Exception as cache_error:
-                        # Catch any other unexpected errors
-                        logger.debug(f"Cache invalidation skipped (unexpected error): {cache_error}")
-                        db.session.rollback()
-                    # Note: Cache will be automatically regenerated when card is next viewed
-                except Exception as cache_error:
-                    logger.warning(f"Failed to invalidate property card cache: {cache_error}")
-                    db.session.rollback()
+                        UUID(property_id_raw)  # Validate UUID format
+                        property_id = property_id_raw
+                    except (ValueError, TypeError):
+                        # Invalid UUID format - treat as None
+                        logger.warning(f"Invalid property_id format: {property_id_raw}, treating as None")
+                        property_id = None
             
+            # Generate document ID (uuid already imported at top of file)
+            document_id = str(uuid.uuid4())
+            
+            # Create document directly in Supabase
+            doc_storage = DocumentStorageService()
+            success, doc_id, error = doc_storage.create_document({
+                'id': document_id,
+                'original_filename': filename,
+                's3_path': s3_key,
+                'file_type': file.content_type,
+                'file_size': file.content_length or 0,
+                'uploaded_by_user_id': str(current_user.id),
+                'business_id': str(business_uuid),  # Supabase documents.business_id is varchar
+                'business_uuid': business_uuid_str,  # Also store as UUID type
+                'status': 'uploaded',
+                'property_id': property_id  # Already normalized to None or valid UUID string
+            })
+            
+            if not success:
+                logger.error(f"Failed to create document in Supabase: {error}")
+                # Try to clean up S3 file
+                try:
+                    s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
+                except:
+                    pass
+                return jsonify({'error': f'Failed to create document in Supabase: {error}'}), 500
+            
+            logger.info(f"✅ Document {doc_id} created in Supabase documents table")
+            
+            # If property_id was provided, create document_relationships entry in Supabase
+            if property_id:
+                try:
+                    from .services.supabase_property_hub_service import SupabasePropertyHubService
+                    property_hub_service = SupabasePropertyHubService()
+                    
+                    # Check if relationship already exists
+                    existing_check = property_hub_service.supabase.table('document_relationships')\
+                        .select('id')\
+                        .eq('document_id', doc_id)\
+                        .eq('property_id', property_id)\
+                        .execute()
+                    
+                    if not existing_check.data or len(existing_check.data) == 0:
+                        # Create relationship in Supabase
+                        relationship_data = {
+                            'id': str(uuid.uuid4()),
+                            'document_id': doc_id,
+                            'property_id': property_id,
+                            'relationship_type': 'property_document',
+                            'address_source': 'manual_upload',
+                            'confidence_score': 1.0,
+                            'relationship_metadata': {
+                                'match_type': 'direct_upload',
+                                'matching_service': 'manual_upload',
+                                'match_timestamp': datetime.utcnow().isoformat()
+                            },
+                            'created_at': datetime.utcnow().isoformat(),
+                            'last_updated': datetime.utcnow().isoformat()
+                        }
+                        
+                        result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
+                        if result.data:
+                            logger.info(f"✅ Created document_relationships entry linking document {doc_id} to property {property_id}")
+                        else:
+                            logger.warning("Failed to create document relationship in Supabase")
+                    else:
+                        logger.info(f"Document relationship already exists for document {doc_id} and property {property_id}")
+                except Exception as rel_error:
+                    logger.warning(f"Failed to create document relationship (non-fatal): {rel_error}")
+            
+            # Success - document created in Supabase and linked to property if provided
             return jsonify({
                 'success': True,
-                'document_id': str(new_document.id),
-                'message': 'File uploaded successfully' + (' and processing started' if task_id else ' (processing will start when Redis is available)'),
-                'task_id': task_id
+                'document_id': doc_id,
+                'message': 'Document uploaded and created in Supabase successfully.',
+                'status': 'uploaded',
+                'property_linked': property_id is not None
             }), 200
             
         except Exception as e:
-            logger.error(f"Failed to create document record: {e}")
+            logger.error(f"Failed to create document record in Supabase: {e}", exc_info=True)
             # Try to clean up S3 file if database record creation fails
             try:
                 s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
@@ -2571,47 +2271,41 @@ def delete_document(document_id):
     """
     Deletes a document from S3, Supabase stores, and its metadata record from the database.
     """
-    document = Document.query.get(document_id)
-    if not document:
-        return jsonify({'error': 'Document not found'}), 404
-
+    # Get document from Supabase (not local PostgreSQL)
     user_business_uuid = _normalize_uuid_str(getattr(current_user, "business_id", None)) or _ensure_business_uuid()
-    document_business_uuid = _normalize_uuid_str(getattr(document, "business_id", None))
-
+    
     if not user_business_uuid:
         logger.warning("Current user has no business UUID; denying delete request.")
         return jsonify({'error': 'Unauthorized'}), 403
-
+    
+    # Get document from Supabase
+    from .services.document_storage_service import DocumentStorageService
+    doc_storage = DocumentStorageService()
+    success, document_data, error = doc_storage.get_document(str(document_id), user_business_uuid)
+    
+    if not success:
+        if error == "Document not found":
+            return jsonify({'error': 'Document not found'}), 404
+        else:
+            return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
+    
+    # Extract document fields
+    s3_path = document_data.get('s3_path')
+    original_filename = document_data.get('original_filename')
+    document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid') or document_data.get('business_id'))
+    
+    # Verify business ownership
     if document_business_uuid != user_business_uuid:
         logger.warning(
-            "Document business mismatch (doc=%s, user=%s). Falling back to Supabase verification.",
+            "Document business mismatch (doc=%s, user=%s). Denying deletion.",
             document_business_uuid,
             user_business_uuid,
         )
-        supabase_business_uuid = None
-        try:
-            doc_service = SupabaseDocumentService()
-            supabase_doc = doc_service.get_document_by_id(str(document_id))
-            if supabase_doc:
-                supabase_business_uuid = _normalize_uuid_str(
-                    supabase_doc.get('business_uuid') or supabase_doc.get('business_id')
-                )
-        except Exception as supabase_error:
-            logger.warning(f"Failed to verify document ownership via Supabase: {supabase_error}")
-            supabase_business_uuid = None
-
-        if supabase_business_uuid != user_business_uuid:
-            return jsonify({'error': 'Unauthorized'}), 403
-
-        # Align local document row for future requests if missing business_id
-        if not document_business_uuid and supabase_business_uuid:
-            try:
-                document.business_id = UUID(supabase_business_uuid)
-                db.session.commit()
-                document_business_uuid = supabase_business_uuid
-            except Exception as sync_error:
-                db.session.rollback()
-                logger.warning(f"Failed to sync document business_id locally: {sync_error}")
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    if not s3_path:
+        logger.error(f"Document {document_id} missing s3_path")
+        return jsonify({'error': 'Document missing S3 path'}), 400
 
     deletion_results = {
         's3': False,
@@ -2634,15 +2328,15 @@ def delete_document(document_id):
     logger.info("=" * 100)
     logger.info(f"VIEWS.PY - DELETE DOCUMENT ENDPOINT CALLED")
     logger.info(f"Document ID: {document_id}")
-    logger.info(f"Filename: {document.original_filename}")
-    logger.info(f"Business ID: {document.business_id}")
+    logger.info(f"Filename: {original_filename}")
+    logger.info(f"Business ID: {document_business_uuid}")
     logger.info(f"User: {current_user.email}")
     logger.info("=" * 100)
     
     # 2. Delete the object from S3
     logger.info("[S3 DELETION]")
     try:
-        s3_key = document.s3_path
+        s3_key = s3_path
         final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
         service = 'execute-api'
         aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
@@ -2664,7 +2358,7 @@ def delete_document(document_id):
         deletion_service = DeletionService()
         all_stores_success, store_results = deletion_service.delete_document_from_all_stores(
             str(document_id), 
-            document.business_id
+            document_business_uuid
         )
         
         # Update deletion results with individual store statuses
@@ -2684,22 +2378,29 @@ def delete_document(document_id):
         # Don't return error - continue with PostgreSQL document deletion
 
     # 4. Collect impacted properties, then delete relationships FIRST (before document)
-    logger.info("[POSTGRESQL RELATIONSHIPS DELETION]")
+    logger.info("[SUPABASE DOCUMENT RELATIONSHIPS DELETION]")
     impacted_property_ids = set()
     try:
-        from .models import DocumentRelationship
-        relationships = DocumentRelationship.query.filter_by(document_id=document_id).all()
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Get relationships from Supabase
+        relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', str(document_id)).execute()
+        relationships = relationships_result.data if relationships_result.data else []
         relationship_count = len(relationships)
-        impacted_property_ids = {str(rel.property_id) for rel in relationships}
+        impacted_property_ids = {str(rel.get('property_id')) for rel in relationships if rel.get('property_id')}
         logger.info(f"   Found {relationship_count} document relationships; impacted properties: {len(impacted_property_ids)}")
         
-        # Delete all document relationships for this document
-        DocumentRelationship.query.filter_by(document_id=document_id).delete()
-        db.session.commit()
-        logger.info(f"   SUCCESS: Deleted {relationship_count} document relationships")
+        # Delete all document relationships for this document from Supabase
+        if relationship_count > 0:
+            delete_result = supabase.table('document_relationships').delete().eq('document_id', str(document_id)).execute()
+            logger.info(f"   SUCCESS: Deleted {relationship_count} document relationships from Supabase")
+        else:
+            logger.info(f"   No document relationships found for this document")
     except Exception as e:
         logger.warning(f"   WARNING: Failed to delete document relationships - {e}")
-        db.session.rollback()
+        import traceback
+        traceback.print_exc()
         # Continue anyway - don't fail the whole deletion
     
     # 5. Delete vectors linked to this document (document vectors + property vectors by source doc)
@@ -2763,20 +2464,12 @@ def delete_document(document_id):
     else:
         logger.info("   No Supabase properties required cleanup")
 
-    # 8. Delete the PostgreSQL document record
+    # 8. PostgreSQL document record deletion (SKIPPED - documents are in Supabase)
+    # Documents are now stored in Supabase, not local PostgreSQL
+    # The deletion service already handles Supabase document deletion
     logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
-    try:
-        logger.info(f"   Deleting document record: {document_id}")
-        db.session.delete(document)
-        db.session.commit()
-        deletion_results['postgresql'] = True
-        logger.info(f"   SUCCESS: Deleted PostgreSQL record")
-        
-    except Exception as e:
-        db.session.rollback()
-        error_message = f"Failed to delete database record: {e}"
-        logger.error(f"   FAILED: PostgreSQL record deletion - {e}")
-        return jsonify({'error': 'Failed to delete database record.'}), 500
+    logger.info("   SKIPPED: Documents are stored in Supabase, not local PostgreSQL")
+    deletion_results['postgresql'] = True  # Mark as success since there's nothing to delete
 
     # 9. Return comprehensive results
     success_count = sum(deletion_results.values())
@@ -3681,6 +3374,32 @@ def create_property():
         property_id = str(uuid.uuid4())
         property_data = service._create_supabase_property(property_id, address_data, business_uuid_str)
         
+        # Create property_details record in Supabase (required for property hub)
+        try:
+            from datetime import datetime
+            property_details_data = {
+                'property_id': property_id,
+                'property_address': formatted_address,
+                'normalized_address': normalized_address,
+                'address_hash': address_hash,
+                'address_source': 'manual_creation',
+                'latitude': float(data['latitude']),
+                'longitude': float(data['longitude']),
+                'geocoded_address': formatted_address,
+                'geocoding_status': 'manual',
+                'geocoding_confidence': 1.0,
+                'business_uuid': business_uuid_str,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            result = service.supabase.table('property_details').insert(property_details_data).execute()
+            if result.data:
+                logger.info(f"✅ Created property_details for property {property_id}")
+            else:
+                logger.warning(f"⚠️ Failed to create property_details for property {property_id}")
+        except Exception as details_error:
+            logger.warning(f"⚠️ Failed to create property_details (non-fatal): {details_error}")
+        
         return jsonify({
             'success': True,
             'data': {
@@ -3711,16 +3430,40 @@ def extract_address_from_document(document_id):
         return response, 200
     
     try:
-        # Get document
-        document = Document.query.get_or_404(document_id)
-        
-        # Verify business access
+        # Verify business access first
         business_uuid_str = _ensure_business_uuid()
-        if not business_uuid_str or str(document.business_id) != business_uuid_str:
+        if not business_uuid_str:
             return jsonify({
                 'success': False,
-                'error': 'Unauthorized'
-            }), 403
+                'error': 'User is not associated with a business'
+            }), 400
+        
+        # Get document from Supabase (not local PostgreSQL)
+        from .services.document_storage_service import DocumentStorageService
+        doc_storage = DocumentStorageService()
+        success, document_data, error = doc_storage.get_document(str(document_id), business_uuid_str)
+        
+        if not success:
+            if error == "Document not found":
+                return jsonify({
+                    'success': False,
+                    'error': 'Document not found'
+                }), 404
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f'Failed to retrieve document: {error}'
+                }), 500
+        
+        # Extract document fields
+        s3_path = document_data.get('s3_path')
+        original_filename = document_data.get('original_filename')
+        
+        if not s3_path or not original_filename:
+            return jsonify({
+                'success': False,
+                'error': 'Document missing required fields (s3_path or original_filename)'
+            }), 400
         
         # Get document text from S3 or use filename
         import boto3
@@ -3736,7 +3479,7 @@ def extract_address_from_document(document_id):
         try:
             response = s3_client.get_object(
                 Bucket=os.environ['S3_UPLOAD_BUCKET'],
-                Key=document.s3_path
+                Key=s3_path
             )
             # For quick extraction, we'll use filename and basic text extraction
             # Full extraction would require processing the file
@@ -3744,16 +3487,46 @@ def extract_address_from_document(document_id):
         except Exception as e:
             logger.warning(f"Could not read document from S3 for address extraction: {e}")
         
-        # Use fallback extraction to get address
-        from .tasks import _fallback_text_extraction
-        extracted_data = _fallback_text_extraction(document_text, document.original_filename)
+        # PRIORITY 1: Try FilenameAddressService first (most reliable for filenames)
+        from .services.filename_address_service import FilenameAddressService
+        filename_service = FilenameAddressService()
+        address = filename_service.extract_address_from_filename(original_filename)
         
-        # Get address from extracted data
-        address = None
-        if extracted_data.get('extracted_address'):
-            address = extracted_data['extracted_address']
-        elif extracted_data.get('address'):
-            address = extracted_data['address']
+        # PRIORITY 2: If filename extraction fails, try fallback extraction
+        if not address:
+            from .tasks import _fallback_text_extraction
+            extracted_data = _fallback_text_extraction(document_text, original_filename)
+            
+            # Extract address from the properties array (correct return structure)
+            if extracted_data.get('properties') and len(extracted_data['properties']) > 0:
+                property_data = extracted_data['properties'][0]
+                potential_address = property_data.get('property_address')
+                
+                # Validate address - reject obviously invalid ones
+                if potential_address and potential_address != 'Address not found':
+                    # Reject addresses that are too short or look like references
+                    if len(potential_address) >= 10 and not potential_address.lower().startswith('xref'):
+                        address = potential_address
+        
+        # PRIORITY 3: If still no address, try to extract from filename manually (for international addresses)
+        if not address and original_filename:
+            # Remove file extension
+            name_without_ext = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+            # Replace underscores and hyphens with spaces
+            cleaned = name_without_ext.replace('_', ' ').replace('-', ' ').replace('.', ' ')
+            # Remove common document prefixes and suffixes
+            document_terms = ['particulars', 'valuation', 'report', 'appraisal', 'lease', 'contract', 'agreement', 'document']
+            for term in document_terms:
+                # Remove from start
+                cleaned = re.sub(r'^' + re.escape(term) + r'\s+', '', cleaned, flags=re.IGNORECASE)
+                # Remove from end
+                cleaned = re.sub(r'\s+' + re.escape(term) + r'$', '', cleaned, flags=re.IGNORECASE)
+            # Clean up whitespace
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            # Validate it's a reasonable address (at least 10 chars, not just numbers)
+            if len(cleaned) >= 10 and not cleaned.replace(' ', '').replace(',', '').isdigit():
+                address = cleaned
+                logger.info(f"✅ Extracted address from filename (manual): {address}")
         
         if address:
             return jsonify({
@@ -3813,70 +3586,31 @@ def link_document_to_property(document_id):
         document.property_id = property_uuid
         db.session.commit()
         
-        # Ensure document is synced to Supabase before creating relationship
+        # Also create relationship in Supabase
         try:
-            from .services.document_storage_service import DocumentStorageService
             from .services.supabase_property_hub_service import SupabasePropertyHubService
-            
-            doc_storage = DocumentStorageService()
             property_hub_service = SupabasePropertyHubService()
             
-            # First, ensure document exists in Supabase
-            # Check if document exists in Supabase
-            doc_check = property_hub_service.supabase.table('documents').select('id').eq('id', str(document_id)).execute()
+            relationship_data = {
+                'id': str(uuid.uuid4()),
+                'document_id': str(document_id),
+                'property_id': property_id,
+                'relationship_type': 'property_document',
+                'address_source': 'manual_link',
+                'confidence_score': 1.0,
+                'relationship_metadata': {
+                    'match_type': 'manual_link',
+                    'matching_service': 'workflow',
+                    'match_timestamp': datetime.utcnow().isoformat()
+                },
+                'created_at': datetime.utcnow().isoformat()
+            }
             
-            if not doc_check.data or len(doc_check.data) == 0:
-                # Document not in Supabase, sync it now
-                logger.info(f"Document {document_id} not found in Supabase, syncing now...")
-                business_uuid_str = _ensure_business_uuid()
-                success, synced_doc_id, error = doc_storage.create_document({
-                    'id': str(document.id),
-                    'original_filename': document.original_filename,
-                    's3_path': document.s3_path,
-                    'file_type': document.file_type,
-                    'file_size': document.file_size,
-                    'uploaded_by_user_id': str(document.uploaded_by_user_id),
-                    'business_id': business_uuid_str,
-                    'status': document.status.value if hasattr(document.status, 'value') else str(document.status),
-                    'created_at': document.created_at.isoformat() if document.created_at else datetime.utcnow().isoformat()
-                })
-                
-                if not success:
-                    logger.warning(f"Failed to sync document {document_id} to Supabase: {error}")
-                else:
-                    logger.info(f"✅ Successfully synced document {document_id} to Supabase")
-            else:
-                logger.info(f"✅ Document {document_id} already exists in Supabase")
-            
-            # Now create relationship in Supabase (check for duplicates first)
-            relationship_check = property_hub_service.supabase.table('document_relationships').select('id').eq('document_id', str(document_id)).eq('property_id', property_id).execute()
-            
-            if relationship_check.data and len(relationship_check.data) > 0:
-                logger.info(f"Relationship between document {document_id} and property {property_id} already exists")
-            else:
-                relationship_data = {
-                    'id': str(uuid.uuid4()),
-                    'document_id': str(document_id),
-                    'property_id': property_id,
-                    'relationship_type': 'property_document',
-                    'address_source': 'manual_link',
-                    'confidence_score': 1.0,
-                    'relationship_metadata': {
-                        'match_type': 'manual_link',
-                        'matching_service': 'workflow',
-                        'match_timestamp': datetime.utcnow().isoformat()
-                    },
-                    'created_at': datetime.utcnow().isoformat()
-                }
-                
-                result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
-                if result.data:
-                    logger.info(f"✅ Created document relationship: document {document_id} -> property {property_id}")
-                else:
-                    logger.warning(f"Failed to create document relationship in Supabase - no data returned")
+            result = property_hub_service.supabase.table('document_relationships').insert(relationship_data).execute()
+            if not result.data:
+                logger.warning("Failed to create document relationship in Supabase")
         except Exception as rel_error:
-            logger.error(f"Error creating Supabase relationship: {rel_error}", exc_info=True)
-            # Don't fail the whole operation if Supabase sync fails
+            logger.warning(f"Failed to create Supabase relationship (non-fatal): {rel_error}")
         
         return jsonify({
             'success': True,
@@ -3925,7 +3659,6 @@ def get_property_documents_light(property_id):
         
         # OPTIMIZATION: Use batch queries instead of N+1
         # 1. Get document relationships for this property (single query)
-        logger.info(f"Fetching documents for property {property_id_str}")
         relationships_result = (
             supabase.table('document_relationships')
             .select('document_id, relationship_type, confidence_score, created_at')
@@ -3934,7 +3667,6 @@ def get_property_documents_light(property_id):
         )
         
         if not relationships_result.data:
-            logger.info(f"No document relationships found for property {property_id_str}")
             return jsonify({
                 'success': True,
                 'data': {
@@ -3944,16 +3676,12 @@ def get_property_documents_light(property_id):
                 }
             }), 200
         
-        logger.info(f"Found {len(relationships_result.data)} document relationships for property {property_id_str}")
-        
         # 2. Get all document IDs
         document_ids = [rel['document_id'] for rel in relationships_result.data]
         
         # 3. Batch fetch all documents (single query)
         optimized_service = OptimizedSupabasePropertyHubService()
         documents_map = optimized_service.get_documents_batch(document_ids)
-        
-        logger.info(f"Fetched {len(documents_map)} documents from batch query")
         
         # 4. Combine documents with relationship data
         documents = []
@@ -3965,10 +3693,6 @@ def get_property_documents_light(property_id):
                 doc['confidence_score'] = rel['confidence_score']
                 doc['relationship_created_at'] = rel['created_at']
                 documents.append(doc)
-            else:
-                logger.warning(f"Document {doc_id} found in relationships but not in documents table")
-        
-        logger.info(f"Returning {len(documents)} documents for property {property_id_str}")
         
         return jsonify({
             'success': True,
@@ -4132,12 +3856,10 @@ def download_file():
         
         # If document_id is provided, fetch the document to get s3_path
         if document_id and not s3_path:
-            logger.info(f"Fetching document {document_id} for download")
             doc_service = SupabaseDocumentService()
             document = doc_service.get_document_by_id(document_id)
             
             if not document:
-                logger.warning(f"Document {document_id} not found")
                 return jsonify({'error': 'Document not found'}), 404
             
             # Verify business access
@@ -4145,20 +3867,15 @@ def download_file():
             if not business_uuid_str:
                 return jsonify({'error': 'User not associated with a business'}), 400
             
-            # Check business_id or business_uuid field
-            doc_business_id = document.get('business_id') or document.get('business_uuid')
-            if str(doc_business_id) != business_uuid_str:
-                logger.warning(f"Unauthorized access attempt: user business {business_uuid_str} != document business {doc_business_id}")
+            if str(document.get('business_uuid')) != business_uuid_str:
                 return jsonify({'error': 'Unauthorized'}), 403
             
             s3_path = document.get('s3_path')
             if not s3_path:
-                logger.error(f"Document {document_id} has no s3_path")
                 return jsonify({'error': 'Document has no s3_path'}), 404
             
             original_filename = document.get('original_filename', 'document')
             file_type = document.get('file_type', 'application/octet-stream')
-            logger.info(f"Downloading document {document_id}: {original_filename} from {s3_path}")
         else:
             # If only s3_path is provided, we still need to verify access
             # For now, we'll allow it if the user is authenticated

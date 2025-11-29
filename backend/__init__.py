@@ -22,6 +22,10 @@ def create_app():
     app = Flask(__name__, template_folder='../frontend/public')
     app.config['SECRET_KEY'] = 'hjshjhdjah kjshkjdhjs'
     
+    # CRITICAL: Prevent Flask debug mode from showing HTML error pages for API routes
+    # This ensures our JSON error handlers are used instead
+    app.config['PROPAGATE_EXCEPTIONS'] = True
+    
     # Ensure the DATABASE_URL is loaded correctly
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
@@ -63,15 +67,49 @@ def create_app():
     app.celery_app = celery_app
 
     # Enable CORS for React frontend with explicit methods
+    # Configure CORS to handle all origins and methods explicitly
     CORS(app, 
-         resources={r"/api/*": {"origins": Config.CORS_ORIGINS}},
+         resources={r"/api/*": {
+             "origins": Config.CORS_ORIGINS,
+             "methods": ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+             "allow_headers": ['Content-Type', 'Authorization'],
+             "supports_credentials": True
+         }},
          supports_credentials=True,
          methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-         allow_headers=['Content-Type', 'Authorization'])
+         allow_headers=['Content-Type', 'Authorization'],
+         expose_headers=['Content-Type'],
+         max_age=3600)
 
     login_manager = LoginManager()
     login_manager.login_view = 'auth.login'
     login_manager.init_app(app)
+
+    @login_manager.unauthorized_handler
+    def unauthorized():
+        """Handle unauthorized requests with CORS headers"""
+        from flask import request, jsonify
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
+        response.status_code = 401
+        
+        # CRITICAL: Add CORS headers for all origins in the allowed list
+        # flask_cors might not catch this since it's called from login_required decorator
+        origin = request.headers.get('Origin') if request else None
+        if origin:
+            # Check if origin is in allowed list
+            if origin in Config.CORS_ORIGINS:
+                response.headers['Access-Control-Allow-Origin'] = origin
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+                # Also add Vary header to indicate origin-based response
+                # Include Cookie in Vary since we're using credentials
+                response.headers['Vary'] = 'Origin, Cookie'
+        
+        return response
 
     @login_manager.user_loader
     def load_user(id):
@@ -111,27 +149,50 @@ def create_app():
     # This catches exceptions that escape route-level error handling
     @app.errorhandler(500)
     def handle_500_error(e):
-        """Ensure CORS headers on 500 errors"""
+        """Ensure CORS headers on 500 errors - CRITICAL for CORS"""
         from flask import request, jsonify
+        import traceback
         logger.error(f"500 error: {e}", exc_info=True)
+        traceback.print_exc()
         
-        # Create error response
+        # Create JSON error response (not HTML)
         response = jsonify({
             'success': False,
             'error': str(e) if e else 'Internal server error'
         })
+        response.status_code = 500
         
-        # Add CORS headers
+        # CRITICAL: Add CORS headers - this is what the browser needs!
+        # With supports_credentials=True, we cannot use '*' - must use specific origin
         try:
-            origin = request.headers.get('Origin', '*') if request else '*'
-        except:
-            origin = '*'
-        response.headers.add('Access-Control-Allow-Origin', origin)
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            origin = request.headers.get('Origin') if request else None
+            if origin and origin in Config.CORS_ORIGINS:
+                response.headers['Access-Control-Allow-Origin'] = origin
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+                response.headers['Vary'] = 'Origin, Cookie'
+            else:
+                # Even if origin not in list, add CORS headers if origin is present
+                # This prevents CORS errors when debugging
+                if origin:
+                    response.headers['Access-Control-Allow-Origin'] = origin
+                    response.headers['Access-Control-Allow-Credentials'] = 'true'
+                    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        except Exception as cors_error:
+            logger.error(f"Error adding CORS headers in 500 handler: {cors_error}")
+            # Still try to add basic CORS
+            try:
+                if request and hasattr(request, 'headers'):
+                    origin = request.headers.get('Origin')
+                    if origin:
+                        response.headers['Access-Control-Allow-Origin'] = origin
+                        response.headers['Access-Control-Allow-Credentials'] = 'true'
+            except:
+                pass
         
-        return response, 500
+        return response
 
 
     from .models import User, Document

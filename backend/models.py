@@ -32,6 +32,8 @@ class DocumentStatus(enum.Enum):
 
 
 class User(db.Model, UserMixin):
+    __tablename__ = 'users'
+    
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(150), unique=True)
     password = db.Column(db.String(150), nullable=True) # Password can be null until user registers
@@ -49,6 +51,8 @@ class User(db.Model, UserMixin):
 
 
 class Document(db.Model):
+    __tablename__ = 'documents'
+    
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     original_filename = db.Column(db.String(255), nullable=False)
     s3_path = db.Column(db.String(1024), nullable=False, unique=True)
@@ -68,10 +72,10 @@ class Document(db.Model):
     metadata_json = db.Column(db.Text)  # Store additional metadata (e.g., filename address)
     
     # Property linking
-    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'))
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('properties.id'))
     
     # Foreign Key to User who uploaded the file
-    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     
     # New relationships for property-centric view
     property_relationships = db.relationship('DocumentRelationship', back_populates='document')
@@ -94,10 +98,12 @@ class Document(db.Model):
 
 class DocumentProcessingHistory(db.Model):
     """Audit trail for document processing pipeline steps"""
+    __tablename__ = 'document_processing_history'
+    
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Foreign key to documents
-    document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('document.id'), nullable=False)
+    document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('documents.id'), nullable=False)
 
     # Step information
     step_name = db.Column(db.String(100), nullable=False)
@@ -136,6 +142,8 @@ class DocumentProcessingHistory(db.Model):
 
 class Property(db.Model):
     """Unified property node - central hub for all documents"""
+    __tablename__ = 'properties'
+    
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     address_hash = db.Column(db.String(64), unique=True, index=True)
     normalized_address = db.Column(db.String(500))
@@ -180,7 +188,7 @@ class PropertyDetails(db.Model):
     """Enriched property details from multiple documents"""
     __tablename__ = 'property_details'
     
-    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'), primary_key=True)
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('properties.id'), primary_key=True)
     property_type = db.Column(db.String(100))
     size_sqft = db.Column(db.Float)
     number_bedrooms = db.Column(db.Integer)
@@ -232,8 +240,8 @@ class DocumentRelationship(db.Model):
     __tablename__ = 'document_relationships'
     
     id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('document.id'), nullable=False)
-    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'), nullable=False)
+    document_id = db.Column(UUID(as_uuid=True), db.ForeignKey('documents.id'), nullable=False)
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('properties.id'), nullable=False)
     relationship_type = db.Column(db.String(50), nullable=False)  # 'valuation', 'lease', 'offer', etc.
     address_source = db.Column(db.String(20), nullable=False)  # 'filename' or 'extraction'
     confidence_score = db.Column(db.Float)
@@ -268,7 +276,7 @@ class PropertyCardCache(db.Model):
     """Cached property card summary data for instant rendering"""
     __tablename__ = 'property_card_cache'
     
-    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('property.id'), primary_key=True)
+    property_id = db.Column(UUID(as_uuid=True), db.ForeignKey('properties.id'), primary_key=True)
     card_data = db.Column(JSONB, nullable=False)  # Stores all card summary data as JSON
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     cache_version = db.Column(db.Integer, default=1, nullable=False)  # Increments on updates

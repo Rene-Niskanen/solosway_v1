@@ -1117,26 +1117,28 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
             onClick={(e) => e.stopPropagation()}
             ref={modalRef}
           >
-            {/* Tabs Bar - Floating island tabs - Fixed container separate from resize */}
+            {/* Tabs Bar - File Tab Style - Fixed container */}
             {files.length > 0 && (
               <div 
                 ref={tabsContainerRef}
-                className="flex items-center gap-1.5 pt-3 pb-2 overflow-x-auto overflow-y-visible tabs-scrollbar" 
+                className="flex items-end gap-1 pt-4 pb-0 overflow-x-auto overflow-y-visible tabs-scrollbar border-b border-gray-100" 
                 style={{ 
-                  background: 'transparent', 
+                  background: 'white', 
                   width: '100%',
                   minWidth: '100%',
                   maxWidth: '100%',
                   paddingLeft: '16px', 
-                  paddingRight: '0', // Remove right padding - spacer div will handle it
+                  paddingRight: '16px',
                   marginBottom: '0',
                   flexWrap: 'nowrap',
-                  alignItems: 'center', // Keep all tabs aligned at the same level
+                  alignItems: 'flex-end', // Align tabs at bottom
                   boxSizing: 'border-box',
                   overflowX: 'auto',
                   overflowY: 'hidden',
                   flexShrink: 0,
                   flexGrow: 0,
+                  position: 'relative',
+                  zIndex: 1,
                 }}
               >
                 {files.map((tabFile, index) => {
@@ -1216,15 +1218,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         e.stopPropagation();
                       }}
                       className={`
-                        flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-all duration-150
+                        flex items-center gap-2 px-3 py-2 text-sm font-medium cursor-pointer transition-all relative
                         ${isActive 
-                          ? 'bg-white border border-gray-300 rounded-lg shadow-sm' 
-                          : 'hover:bg-gray-100/50 rounded-lg'
+                          ? 'bg-white text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
+                          : 'text-gray-500 hover:text-gray-700 bg-gray-50 border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-gray-100'
                         }
-                        flex-shrink-0 relative
+                        flex-shrink-0
                       `}
                       style={{
-                        marginBottom: '0', // Keep all tabs at the same level
+                        marginBottom: isActive ? '-1px' : '0',
                         zIndex: isActive ? 10 : 1,
                         minWidth: 'fit-content',
                         maxWidth: 'none',
@@ -1238,52 +1240,24 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         userSelect: 'none',
                         WebkitUserSelect: 'none',
                         touchAction: 'none',
+                        position: 'relative',
                       }}
                     >
-                      {/* Icon - With color-coordinated background */}
-                      <div 
-                        className={`flex-shrink-0 rounded flex items-center justify-center ${
-                          tabFile.type.includes('pdf') 
-                            ? 'bg-red-500' 
-                            : tabFile.type.includes('word') || tabFile.type.includes('document') || tabFile.name?.toLowerCase().endsWith('.docx') || tabFile.name?.toLowerCase().endsWith('.doc')
-                            ? 'bg-blue-500'
-                            : tabFile.type.includes('image')
-                            ? 'bg-gray-500'
-                            : 'bg-gray-500'
-                        }`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                        style={{ 
-                          minWidth: '16px', 
-                          minHeight: '16px', 
-                          maxWidth: '16px', 
-                          maxHeight: '16px',
-                          width: '16px',
-                          height: '16px',
-                          flexShrink: 0,
-                          pointerEvents: 'none',
-                        }}
-                      >
-                        {(() => {
-                          const iconStyle = { width: '12px', height: '12px', minWidth: '12px', minHeight: '12px', maxWidth: '12px', maxHeight: '12px', flexShrink: 0, color: 'white' };
-                          if (tabFile.type.includes('pdf')) {
-                            return <FileText className="text-white" style={iconStyle} />;
-                          }
-                          if (tabFile.type.includes('image')) {
-                            return <ImageIcon className="text-white" style={iconStyle} />;
-                          }
-                          if (tabFile.type.includes('word') || tabFile.type.includes('document') || tabFile.name?.toLowerCase().endsWith('.docx') || tabFile.name?.toLowerCase().endsWith('.doc')) {
-                            return <FileText className="text-white" style={iconStyle} />;
-                          }
-                          return <Globe className="text-white" style={iconStyle} />;
-                        })()}
-                      </div>
+                      {/* Icon */}
+                      {(() => {
+                        const iconStyle = { width: '12px', height: '12px', minWidth: '12px', minHeight: '12px', maxWidth: '12px', maxHeight: '12px', flexShrink: 0 };
+                        const iconColor = isActive ? 'text-gray-900' : 'text-gray-500';
+                        if (tabFile.type.includes('pdf')) {
+                          return <FileText className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
+                        }
+                        if (tabFile.type.includes('image')) {
+                          return <ImageIcon className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
+                        }
+                        if (tabFile.type.includes('word') || tabFile.type.includes('document') || tabFile.name?.toLowerCase().endsWith('.docx') || tabFile.name?.toLowerCase().endsWith('.doc')) {
+                          return <FileText className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
+                        }
+                        return <Globe className={`flex-shrink-0 ${iconColor}`} style={iconStyle} />;
+                      })()}
                       {/* File name */}
                       <span 
                         className={`text-xs ${isActive ? 'text-gray-900' : 'text-gray-600'}`}
@@ -1319,6 +1293,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       >
                         <X className="w-3 h-3 text-gray-600" />
                       </button>
+                      {isActive && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white" />
+                      )}
                     </div>
                   );
                 })}
@@ -1329,17 +1306,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       e.stopPropagation();
                       onAddAttachment();
                     }}
-                    className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-gray-100/50 transition-all duration-150 focus:outline-none outline-none"
+                    className="flex items-center justify-center w-7 h-7 rounded-t-lg hover:bg-gray-100/50 transition-all duration-150 focus:outline-none outline-none border-t border-l border-r border-gray-200 bg-gray-50"
                     style={{
-                      marginBottom: '3px',
+                      marginBottom: '0',
                     }}
                     title="Add attachment"
                   >
                     <Plus className="w-4 h-4 text-gray-600" />
                   </button>
                 )}
-                {/* Spacer to ensure right padding is visible when scrolled - matches left padding */}
-                <div style={{ width: '16px', minWidth: '16px', flexShrink: 0, flexGrow: 0 }} />
               </div>
             )}
             

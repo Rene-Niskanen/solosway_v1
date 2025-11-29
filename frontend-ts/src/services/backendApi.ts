@@ -196,7 +196,8 @@ class BackendApiService {
     onComplete: (data: any) => void,
     onError: (error: string) => void,
     onStatus?: (message: string) => void,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    documentIds?: string[]
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -213,7 +214,8 @@ class BackendApiService {
           query,
           propertyId,
           messageHistory,
-          sessionId: sessionId || `session_${Date.now()}`
+          sessionId: sessionId || `session_${Date.now()}`,
+          documentIds: documentIds || undefined
         }),
       });
 

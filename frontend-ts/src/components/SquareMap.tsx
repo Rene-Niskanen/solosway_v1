@@ -4085,10 +4085,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     let horizontalOffset: number;
     if (chatPanelWidth > 0) {
       // Chat is open - center in visible area (between chat panel and screen edge)
-      const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
-      const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
-      const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
-      const viewportCenterX = window.innerWidth / 2; // Center of full viewport
+    const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
+    const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
+    const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
+    const viewportCenterX = window.innerWidth / 2; // Center of full viewport
       horizontalOffset = visibleCenterX - viewportCenterX;
     } else {
       // Chat is closed - center in full viewport (no offset)

@@ -323,12 +323,12 @@ const DashboardLayoutContent = ({
       
       {/* Chat Panel - Only show when sidebar is NOT expanded (chat history shown in sidebar when expanded) */}
       {!isSidebarExpanded && (
-        <ChatPanel 
-          isOpen={isChatPanelOpen} 
-          onToggle={handleChatPanelToggle} 
-          onChatSelect={handleChatSelect} 
-          onNewChat={handleNewChat}
-          showChatHistory={true}
+      <ChatPanel 
+        isOpen={isChatPanelOpen} 
+        onToggle={handleChatPanelToggle} 
+        onChatSelect={handleChatSelect} 
+        onNewChat={handleNewChat}
+        showChatHistory={true}
           isSmallSidebarMode={!isSidebarCollapsed && !isSidebarExpanded}
           sidebarWidth={(() => {
             // Calculate sidebar width based on state

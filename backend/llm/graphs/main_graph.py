@@ -14,10 +14,12 @@ logger = logging.getLogger(__name__)
 # Conditional import for checkpointer (only needed if use_checkpointer=True)
 try:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg_pool import AsyncConnectionPool
     CHECKPOINTER_AVAILABLE = True
 except ImportError:
     CHECKPOINTER_AVAILABLE = False
     AsyncPostgresSaver = None  # Placeholder to avoid NameError
+    AsyncConnectionPool = None
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
@@ -30,7 +32,78 @@ from backend.llm.nodes.retrieval_nodes import (
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 
-async def build_main_graph(use_checkpointer: bool = True):
+async def create_checkpointer_for_current_loop():
+    """
+    Create a new checkpointer instance for the current event loop.
+    Each event loop needs its own checkpointer to avoid lock conflicts.
+    All checkpointers point to the same database, so persistence is shared.
+    
+    This allows multiple threads/event loops to use checkpointing simultaneously
+    while maintaining conversation state per user_id & chat_id (thread_id).
+    
+    Returns:
+        AsyncPostgresSaver instance or None if checkpointer unavailable
+    """
+    if not CHECKPOINTER_AVAILABLE:
+        logger.warning("Checkpointer not available - returning None")
+        return None
+    
+    try:
+        import asyncio
+        from backend.services.supabase_client_factory import get_supabase_db_url
+        db_url = get_supabase_db_url()
+        
+        # Create connection pool for THIS event loop with optimized settings
+        # Reduced max_size to avoid connection exhaustion - each event loop gets 2 connections
+        # This prevents authentication timeout issues when multiple checkpointers exist
+        pool = AsyncConnectionPool(
+            conninfo=db_url, 
+            min_size=1,  # Minimum connections in the pool (required by psycopg_pool)
+            max_size=2,  # Maximum connections per event loop
+            open=True  # Open connections immediately to catch errors early
+        )
+        
+        # Create checkpointer instance for this event loop
+        checkpointer = AsyncPostgresSaver(pool)
+        
+        # Setup tables with timeout to prevent hanging
+        # Idempotent - safe to call multiple times
+        # Note: If tables were manually created (via migration), setup() may fail with
+        # "CREATE INDEX CONCURRENTLY cannot run inside transaction" error.
+        # Since tables already exist from migration, we continue with checkpointer anyway.
+        try:
+            await asyncio.wait_for(checkpointer.setup(), timeout=30.0)
+            logger.info("Checkpointer setup completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Checkpointer setup timed out after 30 seconds - possible connection issue")
+            return None
+        except Exception as setup_error:
+            error_msg = str(setup_error)
+            # If setup fails with CONCURRENTLY error, tables already exist from migration
+            # This is expected when tables are manually created - setup() can't use CONCURRENTLY in transactions
+            if "CREATE INDEX CONCURRENTLY cannot run inside a transaction block" in error_msg:
+                logger.warning("Checkpointer setup() failed with CONCURRENTLY error - this is expected")
+                logger.info("Tables already exist from migration with correct schema - continuing with checkpointer")
+                # Continue with checkpointer - tables are already created and ready
+            elif "does not exist" in error_msg and ("column" in error_msg or "relation" in error_msg):
+                # Schema mismatch error - this should not happen after our migrations
+                logger.error(f"Checkpointer setup failed with schema error: {setup_error}")
+                logger.error("This indicates a schema mismatch - tables may need to be recreated")
+                return None
+            else:
+                # For any other error, log it but still try to continue if tables exist
+                # Worst case, checkpointer will fail and fall back to stateless mode
+                logger.warning(f"Checkpointer setup() encountered an error: {setup_error}")
+                logger.info("Assuming tables are correctly set up from migration - continuing with checkpointer")
+                # Continue anyway - if tables don't work, checkpointer operations will fail and fall back to stateless
+        
+        logger.info("✅ Checkpointer created for current event loop (pool size: 2)")
+        return checkpointer
+    except Exception as e:
+        logger.error(f"Error creating checkpointer for event loop: {e}", exc_info=True)
+        return None
+
+async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=None):
     """
     Build and compile the main LangGraph orchestration (async for checkpointer setup).
 
@@ -49,7 +122,10 @@ async def build_main_graph(use_checkpointer: bool = True):
     
     Args:
         use_checkpointer: If True, enables state persistence across conversation turns
-                         via PostgreSQL. Requires DATABASE_URL environment variable.
+                         via PostgreSQL. Requires SUPABASE_DB_URL environment variable.
+        checkpointer_instance: Optional pre-created checkpointer instance.
+                              If None and use_checkpointer=True, creates one for current event loop.
+                              Use this to create checkpointers per event loop to avoid lock conflicts.
 
     Returns:
         Compiled LangGraph StateGraph with optional checkpointer
@@ -149,67 +225,41 @@ async def build_main_graph(use_checkpointer: bool = True):
     builder.add_edge("summarize_results", END)
     logger.debug("Edge: summarize_results -> END")
 
-    # NEW: Add PostgreSQL checkpointer for state persistence
+    # Add checkpointer setup
+    checkpointer = None 
+
     if use_checkpointer:
-        if not CHECKPOINTER_AVAILABLE:
-            logger.warning("Checkpointer requested but langgraph.checkpoint.postgres not available, falling back to stateless mode")
-            main_graph = builder.compile()
-            logger.info("Main graph compiled WITHOUT checkpointer (stateless)")
-            return main_graph
-        
-        try:
-            # Use DATABASE_URL from environment (Supabase PostgreSQL connection)
-            db_url = os.getenv("DATABASE_URL")
-            if not db_url:
-                logger.warning("DATABASE_URL not set, falling back to stateless mode")
+        # Use provided checkpointer instance, or create one for current event loop
+        if checkpointer_instance:
+            checkpointer = checkpointer_instance
+            logger.info("Using provided checkpointer instance")
+        else:
+            # Create checkpointer for current event loop
+            checkpointer = await create_checkpointer_for_current_loop()
+            if not checkpointer:
+                logger.warning("Failed to create checkpointer - using stateless mode")
                 main_graph = builder.compile()
-                logger.info("Main graph compiled WITHOUT checkpointer (stateless)")
-                return main_graph
-            
-            # Create AsyncPostgreSQL checkpointer for async graph execution
-            # Setup tables first, then create checkpointer instance
-            checkpointer = AsyncPostgresSaver.from_conn_string(db_url)
-            async with checkpointer:
-                await checkpointer.setup()
-            
-            # Create a new checkpointer instance for the graph (connection will be managed by LangGraph)
-            checkpointer = AsyncPostgresSaver.from_conn_string(db_url)
-            
-            # Compile WITH checkpointer (enables conversation memory)
-            main_graph = builder.compile(checkpointer=checkpointer)
-            logger.info("Main graph compiled WITH PostgreSQL checkpointer (stateful)")
-            logger.info("   Conversation state will persist across turns")
-            logger.info("   Use thread_id in config to maintain context")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize checkpointer: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            logger.warning("   Falling back to stateless mode")
-            main_graph = builder.compile()
-            logger.info("Main graph compiled WITHOUT checkpointer (stateless)")
+                return main_graph, None
+
+        # Compile with checkpointer (subgraphs will inherit it automatically)
+        main_graph = builder.compile(checkpointer=checkpointer)
+        logger.info("Graph compiled with checkpointer")
+
+        return main_graph, checkpointer
+
     else:
-        # Compile WITHOUT checkpointer (for testing or stateless mode)
         main_graph = builder.compile()
-        logger.info("Main graph compiled WITHOUT checkpointer (stateless)")
+        return main_graph, checkpointer
 
-    return main_graph 
+# Global graph and checkpointer instances (initialized on app startup)
+main_graph = None 
+checkpointer = None
 
-# Export and compile graph with checkpointer enabled
-# Note: This needs to be called at module import time, so we use asyncio
-import asyncio
-
-def _build_graph_sync():
-    """Synchronous wrapper for async graph building."""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(build_main_graph(use_checkpointer=True))
-
-main_graph = _build_graph_sync()
+async def initialize_graph():
+    """Initialize LangGraph on app startup - call this once before handling requests"""
+    global main_graph, checkpointer
+    main_graph, checkpointer = await build_main_graph(use_checkpointer=True)
+    logger.info("✅ LangGraph initialized with checkpointer")
 
 
 
