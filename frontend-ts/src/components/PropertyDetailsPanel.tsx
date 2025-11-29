@@ -772,6 +772,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
     
+    // OPTIMIZATION: Use cached documents immediately if available
+    const cachedDocs = (window as any).__preloadedPropertyFiles?.[property.id];
+    if (cachedDocs && cachedDocs.length > 0) {
+      console.log('⚡ Using cached documents:', cachedDocs.length, 'documents');
+      setDocuments(cachedDocs);
+      setHasFilesFetched(true);
+      preloadDocumentCovers(cachedDocs);
+      // Still fetch fresh data in background
+    }
+    
     // Don't show loading state - load silently in background
     setError(null);
     
@@ -1044,13 +1054,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
     
-    // Limit concurrent preloads to avoid overwhelming the network (load first 6 immediately, rest in batches)
-    const MAX_CONCURRENT = 6;
+    // OPTIMIZED: Load first 12 documents immediately in parallel, remaining in fast batches
+    const MAX_CONCURRENT = 12;
     const priorityDocs = docs.slice(0, MAX_CONCURRENT);
     const remainingDocs = docs.slice(MAX_CONCURRENT);
     
-    // Preload priority documents first (visible ones)
-    const priorityPromises = priorityDocs.map(async (doc, index) => {
+    // Helper to preload a single document
+    const preloadSingleDoc = async (doc: Document, priority: 'high' | 'auto' = 'auto') => {
       const docId = doc.id;
       
       // Skip if already cached
@@ -1080,11 +1090,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         
         if (!downloadUrl) return;
         
-        // Fetch with high priority for first few images
+        // Fetch with specified priority
         const response = await fetch(downloadUrl, {
           credentials: 'include',
           // @ts-ignore - fetchPriority is not in all TypeScript definitions yet
-          priority: index < 3 ? 'high' : 'auto'
+          priority: priority
         });
         
         if (!response.ok) return;
@@ -1101,69 +1111,39 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       } catch (error) {
         // Silently fail - don't block other preloads
       }
-    });
+    };
+    
+    // Preload priority documents with high priority
+    const priorityPromises = priorityDocs.map((doc, index) => 
+      preloadSingleDoc(doc, index < 6 ? 'high' : 'auto')
+    );
     
     // Execute priority preloads immediately and trigger re-render when done
-    Promise.all(priorityPromises).then(() => {
+    Promise.allSettled(priorityPromises).then(() => {
       // Trigger re-render to use cached covers
       setCachedCoversVersion(v => v + 1);
-    }).catch(() => {});
+    });
     
-    // Preload remaining documents in batches to avoid overwhelming network
+    // Preload remaining documents in larger, faster batches
     if (remainingDocs.length > 0) {
-      const BATCH_SIZE = 3;
-      for (let i = 0; i < remainingDocs.length; i += BATCH_SIZE) {
-        const batch = remainingDocs.slice(i, i + BATCH_SIZE);
-        // Wait a bit between batches to avoid network congestion
-        await new Promise(resolve => setTimeout(resolve, 100));
+      const BATCH_SIZE = 6; // Increased from 3
+      const loadBatch = async (startIndex: number) => {
+        const batch = remainingDocs.slice(startIndex, startIndex + BATCH_SIZE);
+        if (batch.length === 0) return;
         
-        const batchPromises = batch.map(async (doc) => {
-          const docId = doc.id;
-          if ((window as any).__preloadedDocumentCovers[docId]) return;
-          
-          try {
-            const fileType = (doc as any).file_type || '';
-            const fileName = doc.original_filename.toLowerCase();
-            const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-            const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
-            
-            if (!isImage && !isPDF) return;
-            
-            let downloadUrl: string | null = null;
-            if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
-              downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
-            } else if ((doc as any).s3_path) {
-              downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
-            } else {
-              downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
-            }
-            
-            if (!downloadUrl) return;
-            
-            const response = await fetch(downloadUrl, {
-              credentials: 'include'
-            });
-            
-            if (!response.ok) return;
-            
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            
-            (window as any).__preloadedDocumentCovers[docId] = {
-              url: url,
-              type: blob.type,
-              timestamp: Date.now()
-            };
-          } catch (error) {
-            // Silently fail
-          }
-        });
+        const batchPromises = batch.map(doc => preloadSingleDoc(doc, 'auto'));
         
-        Promise.all(batchPromises).then(() => {
-          // Trigger re-render for batch completion
-          setCachedCoversVersion(v => v + 1);
-        }).catch(() => {});
-      }
+        await Promise.allSettled(batchPromises);
+        setCachedCoversVersion(v => v + 1);
+        
+        // Load next batch with minimal delay (25ms instead of 100ms)
+        if (startIndex + BATCH_SIZE < remainingDocs.length) {
+          setTimeout(() => loadBatch(startIndex + BATCH_SIZE), 25);
+        }
+      };
+      
+      // Start loading remaining docs immediately (don't wait for priority)
+      setTimeout(() => loadBatch(0), 0);
     }
   }, []);
   
@@ -1854,11 +1834,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   src={coverUrl} 
                                   className="w-full h-full object-cover opacity-90 group-hover:opacity-100"
                                   alt={doc.original_filename}
-                                  loading={cachedCover ? "eager" : "lazy"}
+                                  loading={index < 8 ? "eager" : "lazy"}
                                   decoding="async"
-                                  fetchPriority={index < 6 ? "high" : "auto"}
+                                  fetchPriority={index < 4 ? "high" : "auto"}
                                 style={{
-                                    contentVisibility: 'auto',
+                                    contentVisibility: index < 8 ? 'visible' : 'auto',
                                     containIntrinsicSize: '160px 213px',
                                     pointerEvents: isSelectionMode ? 'none' : 'auto'
                                   }}
@@ -1875,7 +1855,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
                                     className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
                                     title="preview"
-                                    loading={cachedCover ? "eager" : "lazy"}
+                                    loading={index < 6 ? "eager" : "lazy"}
                                     scrolling="no"
                                   />
                                   {/* Transparent overlay to allow clicking the card */}
