@@ -481,6 +481,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cachedCoversVersion, setCachedCoversVersion] = useState(0); // Triggers re-render when covers are cached
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
   const [filesSearchQuery, setFilesSearchQuery] = useState<string>(''); // Search query for filtering documents
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null); // Track which card is expanded
@@ -804,6 +805,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         console.log('✅ Loaded documents:', documentsToUse.length, 'documents');
         setDocuments(documentsToUse);
         setHasFilesFetched(true);
+        // Preload document covers for instant rendering
+        preloadDocumentCovers(documentsToUse);
         // Store in preloaded files for future use
         if (!(window as any).__preloadedPropertyFiles) {
           (window as any).__preloadedPropertyFiles = {};
@@ -825,6 +828,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
           setDocuments(property.propertyHub.documents);
           setHasFilesFetched(true);
+          // Preload covers for fallback documents
+          preloadDocumentCovers(property.propertyHub.documents);
         } else {
           setDocuments([]);
           setHasFilesFetched(false);
@@ -836,6 +841,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       // Fallback to propertyHub documents on error
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
         setDocuments(property.propertyHub.documents);
+        // Preload covers even on error fallback
+        preloadDocumentCovers(property.propertyHub.documents);
       } else {
         setDocuments([]);
       }
@@ -1096,8 +1103,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       }
     });
     
-    // Execute priority preloads immediately
-    Promise.all(priorityPromises).catch(() => {});
+    // Execute priority preloads immediately and trigger re-render when done
+    Promise.all(priorityPromises).then(() => {
+      // Trigger re-render to use cached covers
+      setCachedCoversVersion(v => v + 1);
+    }).catch(() => {});
     
     // Preload remaining documents in batches to avoid overwhelming network
     if (remainingDocs.length > 0) {
@@ -1149,7 +1159,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           }
         });
         
-        Promise.all(batchPromises).catch(() => {});
+        Promise.all(batchPromises).then(() => {
+          // Trigger re-render for batch completion
+          setCachedCoversVersion(v => v + 1);
+        }).catch(() => {});
       }
     }
   }, []);
@@ -1837,6 +1850,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             if (isImage) {
                               return (
                                 <img 
+                                  key={`img-${doc.id}-${cachedCover ? 'cached' : 'loading'}`}
                                   src={coverUrl} 
                                   className="w-full h-full object-cover opacity-90 group-hover:opacity-100"
                                   alt={doc.original_filename}
@@ -1852,7 +1866,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               );
                             } else if (isPDF) {
                               return (
-                                <div className="w-full h-full relative bg-white">
+                                <div key={`pdf-${doc.id}-${cachedCover ? 'cached' : 'loading'}`} className="w-full h-full relative bg-white">
                                   <iframe
                                     src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
                                     className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top"
