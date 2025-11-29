@@ -1684,9 +1684,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               )}
                   </div>
                   
-            {/* Content Area - Switch between sections */}
-            {activeSection === 'documents' ? (
-              <div className="flex-1 overflow-y-auto p-6 bg-white">
+            {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
+            {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
+              <div className={`flex-1 overflow-y-auto p-6 bg-white ${activeSection !== 'documents' ? 'hidden' : ''}`}>
               {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
@@ -1850,7 +1850,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             if (isImage) {
                               return (
                                 <img 
-                                  key={`img-${doc.id}-${cachedCover ? 'cached' : 'loading'}`}
+                                  key={`img-${doc.id}`}
                                   src={coverUrl} 
                                   className="w-full h-full object-cover opacity-90 group-hover:opacity-100"
                                   alt={doc.original_filename}
@@ -1866,17 +1866,21 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               );
                             } else if (isPDF) {
                               return (
-                                <div key={`pdf-${doc.id}-${cachedCover ? 'cached' : 'loading'}`} className="w-full h-full relative bg-white">
+                                <div key={`pdf-${doc.id}`} className="w-full h-full relative bg-gray-50">
+                                  {/* Placeholder shown while PDF loads */}
+                                  <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
+                                    <FileText className="w-8 h-8 text-gray-300" />
+                                  </div>
                                   <iframe
                                     src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
-                                    className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top"
+                                    className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
                                     title="preview"
                                     loading={cachedCover ? "eager" : "lazy"}
                                     scrolling="no"
                                   />
                                   {/* Transparent overlay to allow clicking the card */}
                                   <div className="absolute inset-0 bg-transparent z-10" />
-                                  </div>
+                                </div>
                               );
                             } else {
                               return (
@@ -1930,9 +1934,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       </div>
                     )}
                     </div>
-              ) : (
-                /* Property Details Section */
-                <div className="flex-1 overflow-hidden bg-white">
+            
+            {/* Property Details Section - hidden when not active */}
+                <div className={`flex-1 overflow-hidden bg-white ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
                   {(() => {
                     const propertyDetails = property?.propertyHub?.property_details || {};
                     const propertyImages = property?.propertyHub?.property_details?.property_images || 
@@ -2255,7 +2259,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                     );
                   })()}
                 </div>
-              )}
             
             {/* Hidden Input */}
             <input
