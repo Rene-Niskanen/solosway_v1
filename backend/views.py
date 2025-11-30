@@ -3248,7 +3248,7 @@ def update_property_name(property_id):
             }), 400
         
         # Get property and verify business access
-        from .models.property_models import Property, PropertyDetails
+        # Property is already imported at the top of the file
         property = Property.query.get_or_404(property_id)
         
         if str(property.business_id) != business_uuid_str:
@@ -3311,6 +3311,159 @@ def update_property_name(property_id):
     except Exception as e:
         logger.error(f"Error updating property name: {e}")
         db.session.rollback()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/properties/<uuid:property_id>/update-details', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_property_details(property_id):
+    """Update property details fields"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    try:
+        data = request.get_json()
+        updates = data.get('updates', {})
+        
+        if not updates:
+            return jsonify({
+                'success': False,
+                'error': 'updates object is required'
+            }), 400
+        
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({
+                'success': False,
+                'error': 'User not associated with a business'
+            }), 400
+        
+        # Get property and verify business access
+        # Property is already imported at the top of the file
+        property = Property.query.get_or_404(property_id)
+        
+        if str(property.business_id) != business_uuid_str:
+            return jsonify({
+                'success': False,
+                'error': 'Unauthorized'
+            }), 403
+        
+        # Get Supabase client
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Validate and prepare update data
+        allowed_fields = {
+            'number_bedrooms': int,
+            'number_bathrooms': int,
+            'size_sqft': float,
+            'asking_price': float,
+            'sold_price': float,
+            'rent_pcm': float,
+            'tenure': str,
+            'epc_rating': str,
+            'condition': str,
+            'other_amenities': str,
+            'notes': str
+        }
+        
+        update_data = {}
+        for field, value in updates.items():
+            if field not in allowed_fields:
+                continue
+            
+            # Handle None/empty values - set to None for database
+            if value is None or value == '':
+                update_data[field] = None
+            else:
+                # Type conversion and validation
+                field_type = allowed_fields[field]
+                try:
+                    if field_type == int:
+                        parsed_value = int(float(str(value)))  # Handle "5.0" -> 5
+                        if parsed_value < 0:
+                            continue  # Skip negative values
+                        update_data[field] = parsed_value
+                    elif field_type == float:
+                        parsed_value = float(str(value))
+                        if parsed_value < 0:
+                            continue  # Skip negative values
+                        update_data[field] = parsed_value
+                    else:  # str
+                        update_data[field] = str(value).strip()
+                except (ValueError, TypeError):
+                    # Skip invalid values
+                    continue
+        
+        if not update_data:
+            return jsonify({
+                'success': False,
+                'error': 'No valid fields to update'
+            }), 400
+        
+        # Add timestamp
+        from datetime import datetime
+        update_data['updated_at'] = datetime.utcnow().isoformat()
+        
+        # Check if property_details exists
+        logger.info(f"Updating property details for property_id: {property_id}, updates: {update_data}")
+        existing_result = supabase.table('property_details').select('*').eq('property_id', str(property_id)).execute()
+        
+        logger.info(f"Existing property_details check result: {existing_result.data}")
+        
+        if existing_result.data and len(existing_result.data) > 0:
+            # Update existing
+            logger.info(f"Updating existing property_details with data: {update_data}")
+            result = supabase.table('property_details').update(update_data).eq('property_id', str(property_id)).execute()
+            logger.info(f"Update result: {result.data}")
+            if result.data and len(result.data) > 0:
+                return jsonify({
+                    'success': True,
+                    'message': 'Property details updated successfully',
+                    'data': result.data[0]
+                }), 200
+            else:
+                logger.error(f"Update returned no data: {result}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to update property details - no data returned'
+                }), 500
+        else:
+            # Create new property_details record
+            logger.info(f"Creating new property_details record")
+            create_data = {
+                'property_id': str(property_id),
+                'business_uuid': business_uuid_str,
+                **update_data
+            }
+            result = supabase.table('property_details').insert(create_data).execute()
+            logger.info(f"Insert result: {result.data}")
+            if result.data and len(result.data) > 0:
+                return jsonify({
+                    'success': True,
+                    'message': 'Property details created successfully',
+                    'data': result.data[0]
+                }), 200
+            else:
+                logger.error(f"Insert returned no data: {result}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to create property details - no data returned'
+                }), 500
+        
+    except Exception as e:
+        logger.error(f"Error updating property details: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'error': str(e)

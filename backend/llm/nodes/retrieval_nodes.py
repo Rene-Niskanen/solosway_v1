@@ -376,7 +376,7 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                         if property_ids:
                             try:
                                 prop_details = supabase.table('property_details')\
-                                    .select('property_id, number_bedrooms, number_bathrooms, property_type, size_sqft, asking_price, sold_price, rent_pcm, epc_rating, tenure')\
+                                    .select('property_id, number_bedrooms, number_bathrooms, property_type, size_sqft, size_unit, asking_price, sold_price, rent_pcm, epc_rating, tenure, condition, other_amenities, notes')\
                                     .in_('property_id', property_ids)\
                                     .execute()
                                 property_details_map = {pd['property_id']: pd for pd in prop_details.data}
@@ -426,7 +426,7 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                                 logger.debug(f"[QUERY_STRUCTURED] Could not extract party names: {e}")
                             
                             # Build property details context to prepend to chunks
-                            # This is VERIFIED information from the property database
+                            # This is VERIFIED information from the property database (including manually updated values)
                             property_context = ""
                             if prop_details:
                                 context_parts = []
@@ -437,18 +437,32 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                                 if prop_details.get('property_type'):
                                     context_parts.append(f"Type: {prop_details['property_type']}")
                                 if prop_details.get('size_sqft'):
-                                    context_parts.append(f"Size: {prop_details['size_sqft']:,.0f} sqft")
+                                    size_value = prop_details['size_sqft']
+                                    size_unit = prop_details.get('size_unit', '').lower() if prop_details.get('size_unit') else ''
+                                    # Only show as acres if explicitly stated in size_unit field
+                                    if size_unit in ('acres', 'acre'):
+                                        context_parts.append(f"Size: {size_value:,.2f} acres")
+                                    else:
+                                        context_parts.append(f"Size: {size_value:,.0f} sqft")
                                 if prop_details.get('asking_price'):
                                     context_parts.append(f"Asking price: £{prop_details['asking_price']:,.0f}")
+                                if prop_details.get('sold_price'):
+                                    context_parts.append(f"Sold price: £{prop_details['sold_price']:,.0f}")
+                                if prop_details.get('rent_pcm'):
+                                    context_parts.append(f"Rent (pcm): £{prop_details['rent_pcm']:,.0f}")
+                                if prop_details.get('tenure'):
+                                    context_parts.append(f"Tenure: {prop_details['tenure']}")
                                 if prop_details.get('epc_rating'):
                                     context_parts.append(f"EPC: {prop_details['epc_rating']}")
+                                if prop_details.get('condition'):
+                                    context_parts.append(f"Condition: {prop_details['condition']}")
                                 
                                 if context_parts:
                                     # Make it very clear this is verified property information
-                                    property_context = f"""PROPERTY DETAILS (VERIFIED FROM DATABASE):
+                                    property_context = f"""PROPERTY DETAILS (VERIFIED FROM DATABASE - INCLUDES MANUALLY UPDATED VALUES):
 This property has: {', '.join(context_parts)}.
 
-This information has been verified and extracted from the property database. The document below may contain additional details about this property.
+This information has been verified and extracted from the property database, including any manually updated values. The document below may contain additional details about this property.
 
 """
                             
@@ -689,7 +703,7 @@ This information has been verified and extracted from the property database. The
                                 prop_id = next((dr['property_id'] for dr in doc_results.data if dr['document_id'] == doc['id']), None)
                                 prop_details = property_details_map.get(prop_id, {}) if prop_id else {}
                                 
-                                # Build property context
+                                # Build property context (include all fields for completeness)
                                 property_context = ""
                                 if prop_details:
                                     context_parts = []
@@ -699,8 +713,33 @@ This information has been verified and extracted from the property database. The
                                         context_parts.append(f"{prop_details['number_bathrooms']} bathroom(s)")
                                     if prop_details.get('property_type'):
                                         context_parts.append(f"Type: {prop_details['property_type']}")
+                                    if prop_details.get('size_sqft'):
+                                        size_value = prop_details['size_sqft']
+                                        size_unit = prop_details.get('size_unit', '').lower() if prop_details.get('size_unit') else ''
+                                        # Only show as acres if explicitly stated in size_unit field
+                                        if size_unit in ('acres', 'acre'):
+                                            context_parts.append(f"Size: {size_value:,.2f} acres")
+                                        else:
+                                            context_parts.append(f"Size: {size_value:,.0f} sqft")
+                                    if prop_details.get('asking_price'):
+                                        context_parts.append(f"Asking price: £{prop_details['asking_price']:,.0f}")
+                                    if prop_details.get('sold_price'):
+                                        context_parts.append(f"Sold price: £{prop_details['sold_price']:,.0f}")
+                                    if prop_details.get('rent_pcm'):
+                                        context_parts.append(f"Rent (pcm): £{prop_details['rent_pcm']:,.0f}")
+                                    if prop_details.get('tenure'):
+                                        context_parts.append(f"Tenure: {prop_details['tenure']}")
+                                    if prop_details.get('epc_rating'):
+                                        context_parts.append(f"EPC: {prop_details['epc_rating']}")
+                                    if prop_details.get('condition'):
+                                        context_parts.append(f"Condition: {prop_details['condition']}")
                                     if context_parts:
-                                        property_context = f"PROPERTY DETAILS (SIMILAR MATCH): {', '.join(context_parts)}.\n\n"
+                                        property_context = f"""PROPERTY DETAILS (VERIFIED FROM DATABASE - INCLUDES MANUALLY UPDATED VALUES):
+This property has: {', '.join(context_parts)}.
+
+This information has been verified and extracted from the property database, including any manually updated values. The document below may contain additional details about this property.
+
+"""
                                 
                                 # Get chunks
                                 chunks_result = supabase.table('document_vectors')\
@@ -791,6 +830,18 @@ This information has been verified and extracted from the property database. The
             if doc_id and doc_id not in seen_doc_ids:
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
+        
+        # STEP 5: Filter by document_ids if provided (for document-specific search)
+        document_ids = state.get('document_ids')
+        if document_ids and len(document_ids) > 0:
+            # Convert to set for faster lookup
+            document_ids_set = set(document_ids)
+            filtered_results = [
+                doc for doc in final_results
+                if (doc.get('doc_id') or doc.get('document_id')) in document_ids_set
+            ]
+            logger.info(f"[QUERY_FILTERED] Filtered from {len(final_results)} to {len(filtered_results)} documents by document_ids")
+            final_results = filtered_results
         
         logger.info(f"[QUERY_COMBINED] Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, Hybrid: {len(merged_results)}, Final: {len(final_results)}")
         return {"relevant_documents": final_results[:config.vector_top_k]}

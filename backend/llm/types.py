@@ -50,6 +50,7 @@ class MainWorkflowState(TypedDict, total=False):
     business_id: str
     conversation_history: Annotated[list[dict], operator.add]  # New: stores Q&A history
     session_id: str  # New: unique chat session identifier
+    document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
 
 class DocumentQAState(TypedDict):
     """State for per-document Q&A subgraph"""

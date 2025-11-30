@@ -28,6 +28,7 @@ import { usePreview } from '../contexts/PreviewContext';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
+import { QuickStartBar } from './QuickStartBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1570,6 +1571,19 @@ export const MainContent = ({
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
+  const [chatPanelWidth, setChatPanelWidth] = React.useState<number>(0); // Track chat panel width for property pin centering
+  const [isPropertyDetailsOpen, setIsPropertyDetailsOpen] = React.useState<boolean>(false); // Track PropertyDetailsPanel visibility
+  
+  // Reset chat panel width when map view is closed or chat is hidden
+  React.useEffect(() => {
+    if (!isMapVisible || !hasPerformedSearch) {
+      // Reset chat panel width when map is hidden or chat is closed
+      setChatPanelWidth(0);
+    }
+  }, [isMapVisible, hasPerformedSearch]);
+  
+  // Calculate sidebar width for property pin centering
+  const sidebarWidthValue = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
   
   // Notify parent of map visibility changes
   React.useEffect(() => {
@@ -1583,6 +1597,7 @@ export const MainContent = ({
   const [pendingMapAttachments, setPendingMapAttachments] = React.useState<FileAttachmentData[]>([]);
   const pendingMapAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
   const [pendingDashboardAttachments, setPendingDashboardAttachments] = React.useState<FileAttachmentData[]>([]);
+  const [isQuickStartPopupVisible, setIsQuickStartPopupVisible] = React.useState<boolean>(false);
   const pendingDashboardAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
   // Store SideChatPanel attachments separately
   const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
@@ -2504,7 +2519,7 @@ export const MainContent = ({
                 {/* VELORA Branding Section */}
                       <div className="flex flex-col items-center" style={{ 
                         marginTop: '0',
-                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 5vh, 3rem)' : '0', // Balanced spacing between logo and cards
+                        marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2.5rem, 6vh, 4rem)' : '0', // Balanced spacing between logo and cards
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
@@ -2550,7 +2565,9 @@ export const MainContent = ({
                             <div style={{
                               position: 'relative',
                               display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                              maxWidth: 'clamp(280px, 80vw, 42rem)',
+                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
+                              transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
                               <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
                                 fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
@@ -2559,13 +2576,15 @@ export const MainContent = ({
                                 fontWeight: 500 // Slightly bolder
                               } as React.CSSProperties}>
                                 Welcome back <span className="font-normal" style={{ color: '#333333', fontWeight: 500 } as React.CSSProperties}>{userName}</span>, your workspace is synced and ready for your next move
-                              </p>
+                      </p>
                             </div>
                     ) : (
                             <div style={{
                               position: 'relative',
                               display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)'
+                              maxWidth: 'clamp(280px, 80vw, 42rem)',
+                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
+                              transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
                               <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
                                 fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
@@ -2573,12 +2592,23 @@ export const MainContent = ({
                                 textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 2px rgba(255, 255, 255, 0.5)', // Light shadow for depth
                                 fontWeight: 500 // Slightly bolder
                               } as React.CSSProperties}>
-                                Welcome back, your workspace is synced and ready for your next move
-                              </p>
+                        Welcome back, your workspace is synced and ready for your next move
+                      </p>
                             </div>
                     );
                   })()}
                 </div>
+                
+                {/* Quick Start Bar - between welcome message and recent projects */}
+                {!isVerySmall && !shouldHideProjectsForSearchBar && (
+                  <QuickStartBar
+                    onDocumentLinked={(propertyId, documentId) => {
+                      console.log('Document linked:', { propertyId, documentId });
+                      // Optionally refresh recent projects or show success
+                    }}
+                    onPopupVisibilityChange={setIsQuickStartPopupVisible}
+                  />
+                )}
                 
                       {/* Recent Projects Section - Hide when very small OR when search bar needs space */}
                       {!isVerySmall && !shouldHideProjectsForSearchBar && (
@@ -3279,7 +3309,11 @@ export const MainContent = ({
             height: '100vh',
             zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
             opacity: isMapVisible ? 1 : 0, // Hide visually when not in map view
-            pointerEvents: isMapVisible ? 'auto' : 'none' // Only allow interactions when visible
+            pointerEvents: 'none', // Disable pointer events on wrapper - let SquareMap handle it
+            overflow: 'hidden', // Clip any overflow
+            transition: 'opacity 0.2s ease-out', // Smooth fade in/out
+            backgroundColor: '#f5f5f5', // Match map background to prevent white gap
+            background: '#f5f5f5' // Ensure background is set
           }}
         >
           <SquareMap
@@ -3292,15 +3326,22 @@ export const MainContent = ({
             onLocationUpdate={(location) => {
               setCurrentLocation(location.address);
             }}
+            onPropertyDetailsVisibilityChange={(isOpen) => {
+              setIsPropertyDetailsOpen(isOpen);
+            }}
             containerStyle={{
               position: 'fixed',
               top: 0,
-              left: 0,
-              width: '100vw',
+              left: 0, // Always at left edge - map stays full width
+              width: '100vw', // Always full width - never resizes, no animations
               height: '100vh',
               zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
-              pointerEvents: isMapVisible ? 'auto' : 'none' // Enable clicks when map is visible
+              pointerEvents: isMapVisible ? 'auto' : 'none', // Enable clicks when map is visible
+              backgroundColor: '#f5f5f5', // Match map background
+              background: '#f5f5f5' // Ensure background is set
             }}
+            chatPanelWidth={chatPanelWidth}
+            sidebarWidth={sidebarWidthValue}
           />
         </div>
       )}
@@ -3424,6 +3465,7 @@ export const MainContent = ({
               : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
             return attachments;
           })()}
+          isPropertyDetailsOpen={isPropertyDetailsOpen}
           onQuerySubmit={(newQuery) => {
             // Handle new query from panel
             setMapSearchQuery(newQuery);
@@ -3447,6 +3489,10 @@ export const MainContent = ({
             // The SideChatPanel will handle showing an empty state
           }}
           onSidebarToggle={onSidebarToggle}
+          onChatWidthChange={(width) => {
+            // Update chat panel width for map resizing
+            setChatPanelWidth(width);
+          }}
           onOpenProperty={(address, coordinates, propertyId) => {
             console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
             

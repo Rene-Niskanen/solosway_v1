@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Bed, Bath, Ruler } from "lucide-react";
+import { Bed, Bath, Ruler, ChevronDown, ChevronUp, FileText, Home } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { backendApi } from "@/services/backendApi";
 
 export interface PropertyTitleCardProps {
@@ -20,6 +21,14 @@ export interface PropertyTitleCardProps {
     image?: string;
     created_at?: string;
     propertyHub?: any;
+    summary?: string;
+    notes?: string;
+    epc_rating?: string;
+    tenure?: string;
+    transaction_date?: string;
+    yield_percentage?: number;
+    documentCount?: number;
+    document_count?: number;
   };
   onCardClick?: () => void;
 }
@@ -109,6 +118,8 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
   const [isEditingName, setIsEditingName] = React.useState(false);
   const [editedName, setEditedName] = React.useState("");
   const [isSaving, setIsSaving] = React.useState(false);
+  const [isExpanded, setIsExpanded] = React.useState(false);
+  const [isSummaryExpanded, setIsSummaryExpanded] = React.useState(false);
   
   // Extract property data with fallbacks
   const initialPropertyName = getPropertyName(property.address || "", property.property_type) || "Property";
@@ -227,7 +238,7 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
   
   // Format address for display (remove property name if it was extracted from address)
   // Use propertyName state for the current displayed name
-  const displayAddress = formatAddress(address, propertyName, 35) || "Address not available";
+  const displayAddress = formatAddress(address, propertyName, 200) || "Address not available";
   const imageUrl = property.image || property.propertyHub?.property?.image || property.propertyHub?.property_details?.primary_image_url || "/property-1.png";
   const bedrooms = property.bedrooms || property.propertyHub?.property_details?.number_bedrooms || 0;
   const bathrooms = property.bathrooms || property.propertyHub?.property_details?.number_bathrooms || 0;
@@ -241,12 +252,67 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
     ? (squareFeet < 1000 ? squareFeet : squareFeet / 43560)
     : 0;
   
-  // Get price (priority: soldPrice > askingPrice > rentPcm)
-  const price = property.soldPrice || property.askingPrice || property.rentPcm || property.price || 0;
-  const formattedPrice = price > 0 ? formatPrice(price) : "";
+  // Calculate document count (priority: propertyHub?.documents?.length > documentCount > document_count)
+  let docCount = 0;
+  const propertyAny = property as any;
+  if (property.propertyHub?.documents?.length) {
+    docCount = property.propertyHub.documents.length;
+  } else if (propertyAny.documentCount) {
+    docCount = propertyAny.documentCount;
+  } else if (propertyAny.document_count) {
+    docCount = propertyAny.document_count;
+  }
   
-  // Check if newly listed
-  const newlyListed = isNewlyListed(property.created_at || property.propertyHub?.property?.created_at);
+  // Build property features string for bottom right
+  const featuresParts: string[] = [];
+  if (bedrooms > 0) featuresParts.push(`${bedrooms} Bed`);
+  if (bathrooms > 0) featuresParts.push(`${bathrooms} Bath`);
+  if (squareFeet > 0) {
+    if (isInAcres && acres > 0) {
+      featuresParts.push(`${acres.toFixed(2)} Acres`);
+    } else {
+      featuresParts.push(`${squareFeet.toLocaleString()} Sqft`);
+    }
+  }
+  const featuresText = featuresParts.join(' • ');
+
+  // Derived Data for Expanded View
+  const summaryText = property.summary || property.propertyHub?.property_details?.notes || property.notes;
+  const epcRating = property.epc_rating || property.propertyHub?.property_details?.epc_rating;
+  const propertyType = property.property_type || property.propertyHub?.property_details?.property_type;
+  const tenure = property.tenure || property.propertyHub?.property_details?.tenure;
+  const rentPcm = property.rentPcm || property.propertyHub?.property_details?.rentPcm || 0;
+  
+  // Calculate yield
+  let yieldPercentage = property.yield_percentage;
+  if (!yieldPercentage && rentPcm > 0) {
+    const price = property.soldPrice || property.askingPrice || property.price || 0;
+    if (price > 0) {
+      yieldPercentage = parseFloat(((rentPcm * 12 / price) * 100).toFixed(1));
+    }
+  }
+
+  // Letting Info
+  const formatLettingDate = (dateString: string): string => {
+    try {
+      const date = new Date(dateString);
+      const month = date.toLocaleDateString('en-GB', { month: 'short' });
+      const year = date.getFullYear();
+      return `${month} ${year}`;
+    } catch {
+      return 'Unknown';
+    }
+  };
+  
+  const getLettingInfo = () => {
+    const dateStr = property.transaction_date || property.propertyHub?.property_details?.transaction_date;
+    if (dateStr && rentPcm > 0) {
+      const date = formatLettingDate(dateStr);
+      return `Let (AST ${date})`;
+    }
+    return null;
+  };
+  const lettingInfo = getLettingInfo();
   
   const handleCardClick = (e: React.MouseEvent) => {
     // Don't trigger card click if user is selecting text
@@ -260,9 +326,18 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
     onCardClick?.();
   };
 
+  const toggleExpand = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isExpanded) {
+      setIsSummaryExpanded(false);
+    }
+    setIsExpanded(!isExpanded);
+  };
+
   return (
     <div
       onClick={handleCardClick}
+      onWheel={(e) => e.stopPropagation()}
       className="property-title-card-marker"
       style={{
         position: "relative",
@@ -271,25 +346,27 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
         alignItems: "stretch",
         cursor: "pointer",
         width: "320px",
-        borderRadius: "14px",
+        borderRadius: "24px",
         overflow: "hidden",
         boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-        background: "#000000",
+        background: "#1E1E1E",
+        border: "5px solid #000000",
         fontFamily: "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
-        userSelect: "text", // Allow text selection
-        WebkitUserSelect: "text", // Safari
+        userSelect: "text",
+        WebkitUserSelect: "text",
       }}
     >
-      {/* Property Image Section - 66% of card height */}
+      {/* Property Image Section - ~33% of card height (100px) */}
       <div
         style={{
           position: "relative",
           width: "100%",
-          height: "240px",
+          height: "100px",
           overflow: "hidden",
         }}
       >
         {imageUrl && !imageUrl.includes("/property-1.png") ? (
+          <>
           <img
             src={imageUrl}
             alt={propertyName}
@@ -297,118 +374,72 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
               width: "100%",
               height: "100%",
               objectFit: "cover",
+                filter: "blur(0.5px)",
             }}
             onError={(e) => {
               (e.target as HTMLImageElement).style.display = "none";
             }}
           />
+            {/* Dark overlay for contrast */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: "rgba(0, 0, 0, 0.15)",
+                pointerEvents: "none",
+              }}
+            />
+          </>
         ) : (
           <div
             style={{
               width: "100%",
               height: "100%",
-              background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "white",
-              fontSize: "14px",
-              fontWeight: 500,
+              background: "linear-gradient(135deg, #ef4444 0%, #f97316 50%, #fbbf24 100%)",
+              filter: "blur(0.5px)",
             }}
-          >
-            {propertyName}
-          </div>
+          />
         )}
-        
-        {/* Blur Gradient Overlay - smooth gradual transition from image to information section */}
-        <div
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: "120px",
-            background: "linear-gradient(to bottom, transparent 0%, rgba(25, 30, 29, 0.05) 20%, rgba(25, 30, 29, 0.15) 40%, rgba(25, 30, 29, 0.35) 60%, rgba(25, 30, 29, 0.6) 75%, rgba(25, 30, 29, 0.85) 90%, #191E1D 100%)",
-            pointerEvents: "none",
-          }}
-        />
-        
-        {/* Image Carousel Indicators - 4 dots, first solid, others outlined */}
-        <div
-          style={{
-            position: "absolute",
-            bottom: "12px",
-            left: "50%",
-            transform: "translateX(-50%)",
-            display: "flex",
-            gap: "8px",
-            alignItems: "center",
-            zIndex: 1,
-          }}
-        >
-          {/* First dot - solid white */}
-          <div
-            style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "white",
-              opacity: 1,
-            }}
-          />
-          {/* Other dots - outlined (border only) */}
-          <div
-            style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "transparent",
-              border: "2px solid white",
-              opacity: 0.4,
-            }}
-          />
-          <div
-            style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "transparent",
-              border: "2px solid white",
-              opacity: 0.4,
-            }}
-          />
-          <div
-            style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "transparent",
-              border: "2px solid white",
-              opacity: 0.4,
-            }}
-          />
-        </div>
       </div>
       
-      {/* Property Details Section - 33% of card height, solid dark green background */}
+      {/* Dark Gray Content Area - ~67% of card height (160px) */}
       <div
         style={{
+          position: "relative",
           width: "100%",
-          padding: "18px",
-          background: "#191E1D",
-          minHeight: "120px",
+          minHeight: "160px",
+          background: "#1E1E1E",
+          paddingTop: "50px", // Space for tab
+          paddingLeft: "18px",
+          paddingRight: "18px",
+          paddingBottom: "18px",
         }}
       >
-        {/* Property Name and Price Row */}
+        {/* Tab Shape - Protruding from top-left (organic file folder shape with rounded top-right corner) */}
         <div
           style={{
+            position: "absolute",
+            top: "-22px",
+            left: 0,
+            width: "220px",
+            height: "90px",
+            background: "#1E1E1E",
+            clipPath: "polygon(0 8px, 1px 6px, 2px 4px, 4px 2px, 6px 1px, 8px 0, 150px 0, 152px 0.2px, 154px 0.8px, 156px 1.8px, 158px 3.2px, 160px 5px, 190px 35px, 192px 36.8px, 194px 38.2px, 196px 39.2px, 198px 39.8px, 200px 40px, 220px 40px, 220px 90px, 0 90px)",
+            paddingLeft: "18px",
+            paddingTop: "14px",
+            paddingRight: "18px",
+            paddingBottom: "20px",
             display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            marginBottom: "6px",
+            flexDirection: "column",
+            justifyContent: "flex-start",
+            zIndex: isEditingName ? 10001 : 10, // Higher z-index when editing to appear above PropertyDetailsPanel
+            overflow: "visible",
           }}
         >
-          <div style={{ flex: 1, marginRight: "12px" }}>
+          {/* Property Title in Tab */}
             {isEditingName ? (
               <input
                 type="text"
@@ -420,14 +451,13 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                     setIsEditingName(false);
                     return;
                   }
-                  
                   const newName = editedName.trim();
                   saveName(newName);
                 }}
                 onKeyDown={async (e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    e.currentTarget.blur(); // Trigger blur which will handle the save
+                  e.currentTarget.blur();
                   } else if (e.key === 'Escape') {
                     setEditedName(propertyName);
                     setIsEditingName(false);
@@ -437,19 +467,20 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                 autoFocus
                 style={{
                   fontSize: "20px",
-                  fontWeight: 400,
-                  color: "white",
+                fontWeight: 600,
+                color: "#FFFFFF",
                   margin: 0,
                   marginBottom: "4px",
                   lineHeight: 1.2,
-                  letterSpacing: "-0.2px",
                   fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                   background: "transparent",
-                  border: "1px solid rgba(255, 255, 255, 0.3)",
+                border: "1px solid rgba(255, 255, 255, 0.3)",
                   borderRadius: "4px",
                   padding: "2px 6px",
                   width: "100%",
                   outline: "none",
+                  position: "relative",
+                  zIndex: 10000, // Ensure it appears above PropertyDetailsPanel tabs
                 }}
               />
             ) : (
@@ -461,12 +492,11 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                 }}
                 style={{
                   fontSize: "20px",
-                  fontWeight: 400,
-                  color: "white",
+                fontWeight: 600,
+                color: "#FFFFFF",
                   margin: 0,
                   marginBottom: "4px",
                   lineHeight: 1.2,
-                  letterSpacing: "-0.2px",
                   fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
                   cursor: "pointer",
                 }}
@@ -474,145 +504,320 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
                 {propertyName}
               </h3>
             )}
-          </div>
-          {formattedPrice && (
-            <div
-              style={{
-                fontSize: "20px",
-                fontWeight: 400,
-                color: "white",
-                whiteSpace: "nowrap",
-                lineHeight: 1.2,
-                letterSpacing: "-0.2px",
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
-              }}
-            >
-              {formattedPrice}
-            </div>
-          )}
-        </div>
-        
-        {/* Address */}
+          
+          {/* Address in Tab (below title) */}
         <p
           style={{
             fontSize: "13px",
-            color: "#979F95",
+              color: "#9CA3AF",
             margin: 0,
-            marginBottom: "14px",
             lineHeight: 1.4,
-            fontWeight: 300,
+              fontWeight: 400,
             fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
           }}
         >
           {displayAddress}
         </p>
+        </div>
         
-        {/* Separator Line */}
+        {/* Bottom Stats Section */}
         <div
           style={{
-            width: "100%",
-            height: "1px",
-            background: "#979F95",
-            opacity: 0.3,
-            marginBottom: "14px",
-          }}
-        />
-        
-        {/* Property Stats Bar - Horizontal row, no dividers */}
-        <div
-          style={{
+            position: "absolute",
+            bottom: "40px",
+            left: "18px",
+            right: "18px",
             display: "flex",
             justifyContent: "space-between",
-            alignItems: "center",
-            gap: "8px",
+            alignItems: "flex-end",
           }}
         >
-          {/* Bedrooms */}
+          {/* Left Side - Document Count */}
           <div
             style={{
               display: "flex",
               flexDirection: "row",
-              alignItems: "center",
-              gap: "6px",
-              flex: 1,
+              alignItems: "baseline",
             }}
           >
-            <Bed
-              size={16}
-              color="#979F95"
-              strokeWidth={2}
-            />
             <span
               style={{
-                fontSize: "12px",
-                color: "#979F95",
-                fontWeight: 400,
-                fontFamily: "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
+                fontSize: "16px",
+                fontWeight: 600,
+                color: "#FFFFFF",
+                lineHeight: 1,
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
               }}
             >
-              Bed: {bedrooms > 0 ? bedrooms : "N/A"}
+              {docCount.toString().padStart(2, '0')}
+            </span>
+            <span
+              style={{
+                fontSize: "10px",
+                color: "#9CA3AF",
+                fontWeight: 400,
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                marginLeft: "3px",
+              }}
+            >
+              Documents
             </span>
           </div>
           
-          {/* Bathrooms */}
+          {/* Right Side - Property Features */}
           <div
             style={{
               display: "flex",
-              flexDirection: "row",
               alignItems: "center",
-              gap: "6px",
-              flex: 1,
+              gap: "8px",
             }}
           >
-            <Bath
-              size={16}
-              color="#979F95"
-              strokeWidth={2}
-            />
-            <span
-              style={{
-                fontSize: "12px",
-                color: "#979F95",
-                fontWeight: 400,
-                fontFamily: "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
-              }}
-            >
-              Baths: {bathrooms > 0 ? bathrooms : "N/A"}
-            </span>
-          </div>
-          
-          {/* Square Feet */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "row",
-              alignItems: "center",
-              gap: "6px",
-              flex: 1,
-            }}
-          >
-            <Ruler
-              size={16}
-              color="#979F95"
-              strokeWidth={2}
-            />
-            <span
-              style={{
-                fontSize: "12px",
-                color: "#979F95",
-                fontWeight: 400,
-                fontFamily: "'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont, sans-serif",
-              }}
-            >
-              {isInAcres && acres > 0 
-                ? `Acres: ${acres.toFixed(2)}` 
-                : `Sqft: ${squareFeet > 0 ? squareFeet.toLocaleString() : "N/A"}`}
-            </span>
+            {bedrooms > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                <Bed size={13} color="#FFFFFF" />
+                <span
+                  style={{
+                    fontSize: "10px",
+                    color: "#FFFFFF",
+                    fontWeight: 400,
+                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {bedrooms} Bed
+                </span>
+              </div>
+            )}
+            {bathrooms > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                <Bath size={13} color="#FFFFFF" />
+                <span
+                  style={{
+                    fontSize: "10px",
+                    color: "#FFFFFF",
+                    fontWeight: 400,
+                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {bathrooms} Bath
+                </span>
+              </div>
+            )}
+            {squareFeet > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                <Ruler size={13} color="#FFFFFF" />
+                <span
+                  style={{
+                    fontSize: "10px",
+                    color: "#FFFFFF",
+                    fontWeight: 400,
+                    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {isInAcres && acres > 0 ? `${acres.toFixed(2)} Acres` : `${squareFeet.toLocaleString()} Sqft`}
+                </span>
+              </div>
+            )}
           </div>
         </div>
+          </div>
+          
+      {/* Expandable Details Section */}
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            style={{
+              overflow: "hidden",
+              background: "#333939",
+              paddingLeft: "18px",
+              paddingRight: "18px",
+            }}
+          >
+            <div style={{ paddingTop: "16px", paddingBottom: "60px", position: "relative" }}>
+              {/* Default Content Layer (Blurred when summary expanded) */}
+              <div style={{ 
+                filter: isSummaryExpanded ? "blur(4px)" : "none",
+                transition: "filter 0.2s ease"
+              }}>
+                {/* Summary Text Placeholder */}
+                {summaryText && (
+                  <div style={{ marginBottom: "24px", visibility: isSummaryExpanded ? "hidden" : "visible" }}>
+                    <p
+                      style={{
+                        fontSize: "13px",
+                        color: "#E5E7EB",
+                        lineHeight: "1.6",
+                        letterSpacing: "0.01em",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 3,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                        marginBottom: "4px",
+                        whiteSpace: "pre-line"
+                      }}
+                    >
+                      {summaryText.replace(/\. /g, '.\n')}
+                    </p>
+                    {summaryText.length > 120 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsSummaryExpanded(true);
+                        }}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "#FFFFFF",
+                          fontSize: "12px",
+                          fontWeight: 500,
+                          padding: 0,
+                          cursor: "pointer",
+                          opacity: 0.8
+                        }}
+                      >
+                        View more
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Tags/Features */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", marginBottom: "16px" }}>
+                  {epcRating && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <FileText size={14} color="#FFFFFF" />
+                      <span style={{ fontSize: "12px", color: "#FFFFFF" }}>EPC {epcRating}</span>
+                    </div>
+                  )}
+                  {propertyType && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <Home size={14} color="#FFFFFF" />
+                      <span style={{ fontSize: "12px", color: "#FFFFFF" }}>{propertyType}</span>
+                    </div>
+                  )}
+                  {tenure && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <FileText size={14} color="#FFFFFF" />
+                      <span style={{ fontSize: "12px", color: "#FFFFFF" }}>{tenure}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Financial Info */}
+                {(rentPcm > 0 || lettingInfo) && (
+                  <div style={{ 
+                    paddingTop: "12px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "4px"
+                  }}>
+                    {rentPcm > 0 && (
+                      <div style={{ fontSize: "13px", color: "#FFFFFF" }}>
+                        <span style={{ fontWeight: 500, color: "#FFFFFF" }}>Rent:</span> £{rentPcm.toLocaleString()} pcm
+                        {yieldPercentage && (
+                          <span style={{ color: "#D1D5DB", marginLeft: "6px" }}>({yieldPercentage}% yield)</span>
+                        )}
+                      </div>
+                    )}
+                    {lettingInfo && (
+                      <div style={{ fontSize: "13px", color: "#FFFFFF" }}>
+                        <span style={{ fontWeight: 500, color: "#FFFFFF" }}>Letting:</span> {lettingInfo}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Expanded Summary Overlay */}
+      {isExpanded && isSummaryExpanded && summaryText && (
+        <div 
+          onClick={(e) => e.stopPropagation()}
+          style={{
+          position: "absolute",
+          top: "170px",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          paddingTop: "16px",
+          paddingBottom: "10px",
+          paddingLeft: "18px",
+          paddingRight: "18px",
+          background: "rgba(51, 57, 57, 0.95)",
+          backdropFilter: "blur(4px)",
+          zIndex: 25,
+          display: "flex",
+          flexDirection: "column"
+        }}>
+          <div className="tabs-scrollbar" style={{ flex: 1, overflowY: "auto", paddingRight: "4px", marginBottom: "8px" }}>
+            <p
+              style={{
+                fontSize: "13px",
+                color: "#FFFFFF",
+                lineHeight: "1.5",
+                marginBottom: "4px",
+                whiteSpace: "pre-line"
+              }}
+            >
+              {summaryText.replace(/\. /g, '.\n\n')}
+            </p>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsSummaryExpanded(false);
+            }}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#FFFFFF",
+              fontSize: "12px",
+              fontWeight: 500,
+              padding: 0,
+              cursor: "pointer",
+              opacity: 0.8,
+              alignSelf: "flex-start"
+            }}
+          >
+            View less
+          </button>
+        </div>
+      )}
+
+      {/* Toggle Button */}
+      <div
+        onClick={toggleExpand}
+        style={{
+          position: "absolute",
+          bottom: "0",
+          left: "0",
+          right: "0",
+          height: "40px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          zIndex: 20,
+        }}
+      >
+        <div style={{ position: "relative", zIndex: 1, display: "flex" }}>
+          {isExpanded ? (
+            <ChevronUp size={16} color="#9CA3AF" />
+          ) : (
+            <ChevronDown size={16} color="#9CA3AF" />
+          )}
+        </div>
       </div>
-      
     </div>
   );
 };
-

@@ -146,9 +146,9 @@ class OptimizedSupabasePropertyHubService:
             if not document_ids:
                 return {}
             
-            # Use IN clause for batch retrieval
+            # Use IN clause for batch retrieval - include s3_path for document preview
             result = self.supabase.table('documents').select(
-                'id, original_filename, file_type, status, classification_type, created_at'
+                'id, original_filename, s3_path, file_type, file_size, status, classification_type, created_at, updated_at'
             ).in_('id', document_ids).execute()
             
             execution_time = (time.time() - start_time) * 1000

@@ -8,6 +8,22 @@ import { env } from '@/config/env';
 
 const BACKEND_URL = env.backendUrl;
 
+// OPTIMIZATION: Preconnect to backend immediately when module loads
+// This establishes TCP connection + TLS handshake before first request
+if (typeof window !== 'undefined' && BACKEND_URL) {
+  const preconnectLink = document.createElement('link');
+  preconnectLink.rel = 'preconnect';
+  preconnectLink.href = BACKEND_URL;
+  preconnectLink.crossOrigin = 'use-credentials';
+  document.head.appendChild(preconnectLink);
+  
+  // Also add dns-prefetch as fallback
+  const dnsPrefetch = document.createElement('link');
+  dnsPrefetch.rel = 'dns-prefetch';
+  dnsPrefetch.href = BACKEND_URL;
+  document.head.appendChild(dnsPrefetch);
+}
+
 interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -195,7 +211,9 @@ class BackendApiService {
     onToken: (token: string) => void,
     onComplete: (data: any) => void,
     onError: (error: string) => void,
-    onStatus?: (message: string) => void
+    onStatus?: (message: string) => void,
+    abortSignal?: AbortSignal,
+    documentIds?: string[]
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -207,11 +225,13 @@ class BackendApiService {
           'Content-Type': 'application/json',
         },
         credentials: 'include',
+        signal: abortSignal, // Add abort signal support
         body: JSON.stringify({
           query,
           propertyId,
           messageHistory,
-          sessionId: sessionId || `session_${Date.now()}`
+          sessionId: sessionId || `session_${Date.now()}`,
+          documentIds: documentIds || undefined
         }),
       });
 
@@ -229,7 +249,20 @@ class BackendApiService {
       let buffer = '';
       let accumulatedText = '';
 
+      // Set up abort handler
+      if (abortSignal) {
+        abortSignal.addEventListener('abort', () => {
+          reader.cancel();
+        });
+      }
+
       while (true) {
+        // Check if aborted
+        if (abortSignal?.aborted) {
+          reader.cancel();
+          return; // Silently return on abort
+        }
+        
         const { done, value } = await reader.read();
         
         if (done) break;
@@ -268,6 +301,10 @@ class BackendApiService {
         }
       }
     } catch (error) {
+      // Don't call onError if it was aborted (user cancelled)
+      if (error instanceof Error && error.message === 'Request aborted') {
+        return; // Silently return on abort
+      }
       onError(error instanceof Error ? error.message : 'Unknown error');
     }
   }
@@ -327,6 +364,167 @@ class BackendApiService {
     return this.fetchApi<any>(`/api/properties/${propertyId}/documents`, {
       method: 'GET',
     });
+  }
+
+  // Warm up connection to backend (establishes TCP + TLS early)
+  private connectionWarmedUp = false;
+  async warmConnection(): Promise<void> {
+    if (this.connectionWarmedUp) return;
+    this.connectionWarmedUp = true;
+    
+    try {
+      await fetch(`${BACKEND_URL}/api/health`, {
+        method: 'HEAD',
+        credentials: 'include'
+      }).catch(() => {});
+    } catch {
+      // Ignore
+    }
+  }
+
+  // Preload documents for a property (call on click)
+  async preloadPropertyDocuments(propertyId: string): Promise<void> {
+    // Skip if already cached
+    if ((window as any).__preloadedPropertyFiles?.[propertyId]) {
+      return;
+    }
+    
+    try {
+      const response = await this.getPropertyHubDocuments(propertyId);
+      
+      let documentsToUse = null;
+      if (response && response.success && response.data) {
+        if (response.data.documents && Array.isArray(response.data.documents)) {
+          documentsToUse = response.data.documents;
+        } else if (Array.isArray(response.data)) {
+          documentsToUse = response.data;
+        }
+      }
+      
+      if (documentsToUse && documentsToUse.length > 0) {
+        // Cache documents
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
+        
+        // Preload covers
+        this.preloadDocumentCoversQuick(documentsToUse);
+      }
+    } catch (error) {
+      // Silently fail
+    }
+  }
+
+  // Quick preload of document covers - images, PDFs, and DOCX (all in parallel)
+  private async preloadDocumentCoversQuick(docs: any[]): Promise<void> {
+    if (!docs || docs.length === 0) return;
+    
+    if (!(window as any).__preloadedDocumentCovers) {
+      (window as any).__preloadedDocumentCovers = {};
+    }
+    
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    
+    // Preload images and PDFs (fast)
+    const preloadImageOrPdf = async (doc: any) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      const fileType = doc.file_type || '';
+      const fileName = (doc.original_filename || '').toLowerCase();
+      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+      
+      if (!isImage && !isPDF) return;
+      
+      try {
+        let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
+        if (!downloadUrl && doc.s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+        } else if (!downloadUrl) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        (window as any).__preloadedDocumentCovers[docId] = {
+          url,
+          type: blob.type,
+          timestamp: Date.now()
+        };
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // Preload DOCX files (requires upload to S3)
+    const preloadDocx = async (doc: any) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      const fileType = doc.file_type || '';
+      const fileName = (doc.original_filename || '').toLowerCase();
+      const isDOCX = 
+        fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        fileType === 'application/msword' ||
+        fileType.includes('word') ||
+        fileType.includes('document') ||
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc');
+      
+      if (!isDOCX) return;
+      
+      try {
+        let downloadUrl = doc.url || doc.download_url || doc.file_url || doc.s3_url;
+        if (!downloadUrl && doc.s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+        } else if (!downloadUrl) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        // Download and upload in one flow
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const formData = new FormData();
+        formData.append('file', blob, doc.original_filename || 'document.docx');
+        
+        // Upload to get presigned URL
+        const uploadResponse = await fetch(`${backendUrl}/api/documents/temp-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+        
+        if (uploadResponse.ok) {
+          const data = await uploadResponse.json();
+          if (data.presigned_url) {
+            (window as any).__preloadedDocumentCovers[docId] = {
+              url: data.presigned_url,
+              type: 'docx',
+              isDocx: true,
+              timestamp: Date.now()
+            };
+          }
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // Fire ALL requests in parallel - images, PDFs, and DOCX all at once
+    const allPromises = [
+      ...docs.map(preloadImageOrPdf),
+      ...docs.map(preloadDocx)
+    ];
+    
+    await Promise.allSettled(allPromises);
   }
 
   async analyzePropertyQuery(query: string, previousResults: PropertyData[] = []): Promise<ApiResponse<any>> {
@@ -637,9 +835,23 @@ class BackendApiService {
             }
           } else {
             console.error(`❌ Upload failed with status: ${xhr.status}`);
+            // Try to parse error response for more details
+            let errorMessage = `Upload failed with status ${xhr.status}`;
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              if (errorResponse.error) {
+                errorMessage = errorResponse.error;
+              }
+              if (errorResponse.details) {
+                errorMessage += ` (${errorResponse.details})`;
+              }
+            } catch (e) {
+              // If response isn't JSON, use status text
+              errorMessage = xhr.statusText || errorMessage;
+            }
             resolve({
               success: false,
-              error: `Upload failed with status ${xhr.status}`
+              error: errorMessage
             });
           }
         };
@@ -906,10 +1118,32 @@ class BackendApiService {
   }
 
   /**
+   * Update property details fields
+   */
+  async updatePropertyDetails(propertyId: string, updates: Partial<{
+    number_bedrooms?: number | null;
+    number_bathrooms?: number | null;
+    size_sqft?: number | null;
+    asking_price?: number | null;
+    sold_price?: number | null;
+    rent_pcm?: number | null;
+    tenure?: string | null;
+    epc_rating?: string | null;
+    condition?: string | null;
+    other_amenities?: string | null;
+    notes?: string | null;
+  }>): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/update-details`, {
+      method: 'PUT',
+      body: JSON.stringify({ updates })
+    });
+  }
+
+  /**
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
-    return this.fetchApi(`/api/documents/${documentId}`, {
+    return this.fetchApi(`/api/document/${documentId}`, {
       method: 'DELETE'
     });
   }

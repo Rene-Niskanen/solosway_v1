@@ -9,6 +9,7 @@ import { SystemProvider } from "./contexts/SystemContext";
 import { BackendApiProvider } from "./components/BackendApi";
 import { PreviewProvider } from "./contexts/PreviewContext";
 import { PropertySelectionProvider } from "./contexts/PropertySelectionContext";
+import { DocumentSelectionProvider } from "./contexts/DocumentSelectionContext";
 import { AuthGuard } from "./components/AuthGuard";
 import { Landing } from "./components/Landing";
 import { BookDemo } from "./components/BookDemo";
@@ -24,6 +25,7 @@ const App = () => (
         <BackendApiProvider>
           <PreviewProvider>
             <PropertySelectionProvider>
+              <DocumentSelectionProvider>
               <BrowserRouter>
               <Toaster />
               <Sonner />
@@ -48,6 +50,7 @@ const App = () => (
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
+              </DocumentSelectionProvider>
             </PropertySelectionProvider>
           </PreviewProvider>
         </BackendApiProvider>

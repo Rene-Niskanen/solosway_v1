@@ -1,15 +1,15 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Star, Image as ImageIcon, Globe, Trash2 } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
 import { FileAttachmentData } from './FileAttachment';
-import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
+import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 
 interface PropertyDetailsPanelProps {
@@ -17,6 +17,10 @@ interface PropertyDetailsPanelProps {
   isVisible: boolean;
   onClose: () => void;
   onPropertySelect?: (property: PropertyData) => void;
+  isLargeCardMode?: boolean;
+  pinPosition?: { x: number; y: number } | null;
+  isInChatMode?: boolean; // Add chat mode prop
+  chatPanelWidth?: number; // Width of the chat panel (0 when closed)
 }
 
 interface Document {
@@ -31,12 +35,541 @@ interface Document {
   extracted_json?: string;
 }
 
+// Global ref for DOCX loaded state (shared across all instances)
+if (typeof window !== 'undefined' && !(window as any).__docxLoadedRef) {
+  (window as any).__docxLoadedRef = new Set<string>();
+}
+
+// Memoized DOCX Card Component - prevents iframe from reloading
+// Once loaded, this component NEVER re-renders - completely frozen in final state
+const DocxCard: React.FC<{
+  docId: string;
+  docxUrl: string;
+  isLoaded: boolean;
+  onLoad: () => void;
+}> = React.memo(({ docId, docxUrl, isLoaded, onLoad }) => {
+  // Use ref to track if we've already called onLoad to prevent multiple calls
+  const hasCalledOnLoadRef = React.useRef(false);
+  
+  // CRITICAL: Use the SAME key for both states - prevents React from recreating the iframe
+  const stableKey = `docx-${docId}`;
+  
+  // Once loaded, render final state and never change
+  if (isLoaded) {
+    return (
+      <iframe
+        key={stableKey}
+        src={docxUrl}
+        className="absolute top-0 left-0 border-none pointer-events-none bg-white"
+        style={{
+          width: '250%',
+          height: '250%',
+          transform: 'scale(0.45)',
+          transformOrigin: 'top left',
+          zIndex: 1,
+          opacity: 1,
+          visibility: 'visible',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          willChange: 'auto',
+          contain: 'layout style paint', // Prevent layout shifts
+          backfaceVisibility: 'hidden', // Prevent flickering
+          transformStyle: 'preserve-3d' // Stable 3D context
+        }}
+        title="preview"
+        loading="lazy"
+        scrolling="no"
+        // No onLoad handler once loaded - prevents any callbacks
+      />
+    );
+  }
+  
+  // Loading state - will transition to loaded state (SAME key so React reuses the iframe)
+  return (
+    <>
+      <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+        <FileText className="w-8 h-8 text-gray-300" />
+      </div>
+      <iframe
+        key={stableKey}
+        src={docxUrl}
+        className="absolute top-0 left-0 border-none pointer-events-none bg-white"
+        style={{
+          width: '250%',
+          height: '250%',
+          transform: 'scale(0.45)',
+          transformOrigin: 'top left',
+          zIndex: 0,
+          opacity: 0,
+          visibility: 'hidden',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          contain: 'layout style paint', // Prevent layout shifts
+          backfaceVisibility: 'hidden', // Prevent flickering
+          transformStyle: 'preserve-3d' // Stable 3D context
+        }}
+        title="preview"
+        loading="eager"
+        scrolling="no"
+        onLoad={() => {
+          if (!hasCalledOnLoadRef.current) {
+            hasCalledOnLoadRef.current = true;
+            onLoad();
+          }
+        }}
+      />
+    </>
+  );
+}, (prevProps, nextProps) => {
+  // CRITICAL: Once loaded, NEVER re-render - completely frozen
+  if (prevProps.isLoaded && nextProps.isLoaded) {
+    return true; // Skip re-render - already in final state
+  }
+  // Only re-render if transitioning from loading to loaded
+  return prevProps.isLoaded === nextProps.isLoaded && 
+         prevProps.docxUrl === nextProps.docxUrl &&
+         prevProps.docId === nextProps.docId;
+});
+
+DocxCard.displayName = 'DocxCard';
+
+// Expanded Card View Component - moved outside to prevent recreation on every render
+// This prevents refs from being reset when parent component re-renders
+const ExpandedCardView: React.FC<{
+  selectedDoc: Document | undefined;
+  onClose: () => void;
+  onDocumentClick: (doc: Document) => void;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
+}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen }) => {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [blobType, setBlobType] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState(false);
+  const [docxPublicUrl, setDocxPublicUrl] = useState<string | null>(null);
+  const [isUploadingDocx, setIsUploadingDocx] = useState(false);
+  const createdBlobUrlRef = useRef<string | null>(null); // Track if we created this blob URL
+  const isLoadingRef = useRef(false); // Prevent race conditions
+  const currentDocIdRef = useRef<string | null>(null); // Track current document ID
+  const previewUrlRef = useRef<string | null>(null); // Track preview URL to prevent unnecessary state updates
+  
+  useEffect(() => {
+    if (!selectedDoc) {
+      setPreviewUrl(null);
+      setBlobType(null);
+      setLoading(false);
+      setError(null);
+      setImageError(false);
+      // Don't clear ref here immediately to prevent flash if same doc re-opened
+      return;
+    }
+    
+    // Early return: If document ID hasn't changed, skip ALL work to prevent re-renders
+    const docId = selectedDoc.id;
+    
+    // CRITICAL: If document ID is unchanged AND we already have a preview URL, return immediately
+    // This prevents the flashing when parent component re-renders (e.g., typing in chat)
+    // Check both the ref AND the state to ensure we've already loaded this doc
+    if (currentDocIdRef.current === docId && previewUrl !== null) {
+      // Document ID unchanged and preview already loaded - do nothing, return silently
+      // This prevents any state updates, logging, or re-fetching
+      return;
+    }
+    
+    // New document (ID changed) - proceed with loading
+    const cachedBlob = (window as any).__preloadedDocumentBlobs?.[docId];
+    
+    
+    // Check cache first (Instagram-style persistent cache)
+    if (cachedBlob && cachedBlob.url) {
+      // This is a new document (ID changed) - log and update state
+      console.log('✅ Using cached preview blob for:', docId);
+      previewUrlRef.current = cachedBlob.url; // Update ref first
+      setPreviewUrl(cachedBlob.url);
+      setBlobType(cachedBlob.type);
+      setLoading(false);
+      setError(null);
+      setImageError(false);
+      isLoadingRef.current = false;
+      createdBlobUrlRef.current = null; // We didn't create it in this mount, so don't cleanup
+      currentDocIdRef.current = docId;
+      return;
+    }
+    
+    // If we're already loading this doc, don't restart
+    if (isLoadingRef.current && currentDocIdRef.current === docId) {
+      return;
+    }
+    
+    currentDocIdRef.current = docId;
+    
+    const loadPreview = async () => {
+      try {
+        isLoadingRef.current = true;
+        setLoading(true);
+        setError(null);
+        setImageError(false);
+        
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        let downloadUrl: string | null = null;
+        
+        if ((selectedDoc as any).url || (selectedDoc as any).download_url || (selectedDoc as any).file_url || (selectedDoc as any).s3_url) {
+          downloadUrl = (selectedDoc as any).url || (selectedDoc as any).download_url || (selectedDoc as any).file_url || (selectedDoc as any).s3_url || null;
+        } else if ((selectedDoc as any).s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((selectedDoc as any).s3_path)}`;
+        } else {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${selectedDoc.id}`;
+        }
+        
+        if (!downloadUrl) {
+          throw new Error('No download URL available');
+        }
+        
+        const response = await fetch(downloadUrl, {
+          credentials: 'include'
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to load: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        createdBlobUrlRef.current = url; 
+        
+        // Cache it globally
+        if (!(window as any).__preloadedDocumentBlobs) {
+          (window as any).__preloadedDocumentBlobs = {};
+        }
+        (window as any).__preloadedDocumentBlobs[docId] = {
+          url: url,
+          type: blob.type,
+          timestamp: Date.now()
+        };
+        
+        previewUrlRef.current = url; // Update ref first
+        setPreviewUrl(url);
+        setBlobType(blob.type);
+        setLoading(false);
+        isLoadingRef.current = false;
+      } catch (err: any) {
+        setError(err.message || 'Failed to load preview');
+        setLoading(false);
+        isLoadingRef.current = false;
+        createdBlobUrlRef.current = null;
+      }
+    };
+    
+    loadPreview();
+    
+    return () => {
+      // Don't revoke URL on unmount to keep cache alive
+      isLoadingRef.current = false;
+    };
+  }, [selectedDoc?.id]); // Only depend on document ID, not the entire object
+  
+  // Upload DOCX for Office Online Viewer
+  useEffect(() => {
+    if (!selectedDoc) {
+      setDocxPublicUrl(null);
+      setIsUploadingDocx(false);
+      return;
+    }
+    
+    // Calculate if this is a DOCX file
+    const fileType = (selectedDoc as any).file_type || '';
+    const fileName = selectedDoc.original_filename.toLowerCase();
+    const isDOCX = 
+      fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      fileType === 'application/msword' ||
+      fileType.includes('word') ||
+      fileType.includes('document') ||
+      fileName.endsWith('.docx') ||
+      fileName.endsWith('.doc');
+    
+    if (!isDOCX) {
+      setDocxPublicUrl(null);
+      setIsUploadingDocx(false);
+      return;
+    }
+    
+    // If we already have a public URL for this document, don't re-upload
+    if (docxPublicUrl) {
+      return;
+    }
+    
+    // Upload DOCX file to get presigned URL for Office Online Viewer
+    if (!isUploadingDocx && previewUrl) {
+      setIsUploadingDocx(true);
+      
+      // Fetch the file blob and upload it
+      fetch(previewUrl)
+        .then(response => response.blob())
+        .then(blob => {
+          const formData = new FormData();
+          formData.append('file', blob, selectedDoc.original_filename);
+          
+          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+          return fetch(`${backendUrl}/api/documents/temp-preview`, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+          });
+        })
+        .then(r => r.json())
+        .then(data => {
+          if (data.presigned_url) {
+            setDocxPublicUrl(data.presigned_url);
+          } else {
+            throw new Error('No presigned URL received');
+          }
+        })
+        .catch(e => {
+          console.error('DOCX preview error:', e);
+          setError('Failed to load DOCX preview');
+        })
+        .finally(() => {
+          setIsUploadingDocx(false);
+        });
+    }
+  }, [selectedDoc?.id, previewUrl, docxPublicUrl, isUploadingDocx, selectedDoc]);
+  
+  // Cleanup cache only on full page reload or specific memory management
+  // We removed the aggressive cleanup effect to keep blobs alive for cache
+  
+  if (!selectedDoc) return null;
+  
+  const fileType = (selectedDoc as any).file_type || '';
+  const fileName = selectedDoc.original_filename.toLowerCase();
+  
+  const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf') || blobType?.includes('pdf');
+  const isImage = 
+    fileType.includes('image') || 
+    blobType?.startsWith('image/') ||
+    fileName.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i) ||
+    fileName.includes('screenshot');
+  const isDOCX = 
+    fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    fileType === 'application/msword' ||
+    fileType.includes('word') ||
+    fileType.includes('document') ||
+    fileName.endsWith('.docx') ||
+    fileName.endsWith('.doc');
+  
+  const previewContent = (
+    <motion.div
+      key={`expanded-${selectedDoc.id}`}
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.2 }}
+      className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "absolute inset-0 bg-white flex flex-col z-20"}
+      style={{
+        // Prevent re-rendering during parent layout changes
+        isolation: 'isolate',
+        contain: 'layout style paint',
+        willChange: 'auto',
+        // Ensure fullscreen covers entire viewport
+        ...(isFullscreen ? {
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: '100vw',
+          height: '100vh'
+        } : {})
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+        {/* Preview Header */}
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
+              {isPDF ? <FileText size={16} className="text-slate-700" /> : 
+               isImage ? <ImageIcon size={16} className="text-purple-500" /> : 
+               isDOCX ? <FileText size={16} className="text-slate-700" /> :
+               <File size={16} className="text-gray-400" />}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <h3 className="text-sm font-medium text-gray-900 truncate">{selectedDoc.original_filename}</h3>
+              <span className="text-xs text-gray-500">
+                {new Date(selectedDoc.created_at).toLocaleDateString()}
+              </span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {/* Fullscreen Toggle Button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFullscreen();
+              }}
+              className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+              title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4" />
+              ) : (
+                <Maximize2 className="w-4 h-4" />
+              )}
+            </button>
+            
+            <div className="w-px h-4 bg-gray-200 mx-1" />
+            
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-red-50 hover:text-red-500 rounded-lg text-gray-400 transition-colors"
+              title="Close Preview"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        
+        {/* Preview Content Area */}
+        <div 
+          className="flex-1 overflow-hidden bg-gray-50 relative"
+          style={{
+            // Optimize rendering to prevent glitches during parent layout changes
+            willChange: 'auto',
+            contain: 'layout style paint', // Isolate rendering to prevent parent layout from affecting preview
+            isolation: 'isolate', // Create a new stacking context to prevent re-renders
+            transform: 'translateZ(0)' // Force GPU acceleration and isolation
+          }}
+        >
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white z-10">
+              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+          </div>
+          )}
+          
+          {error && (
+            <div className="flex items-center justify-center h-full text-red-500 gap-2">
+               <span className="text-sm">{error}</span>
+            </div>
+          )}
+
+          {(previewUrl || docxPublicUrl) && !loading && !error && (
+            <div 
+              className="w-full h-full flex items-center justify-center"
+              style={{
+                // Prevent re-rendering during parent layout changes
+                isolation: 'isolate'
+              }}
+            >
+              {isPDF ? (
+                <iframe
+                  key={selectedDoc.id} // Stable key prevents iframe reload
+                  src={previewUrl!}
+                  className="w-full h-full border-0"
+                  title={selectedDoc.original_filename}
+                  style={{
+                    // Prevent iframe from reloading during layout changes
+                    pointerEvents: 'auto',
+                    isolation: 'isolate', // Isolate iframe rendering
+                    transform: 'translateZ(0)' // Force GPU layer
+                  }}
+                />
+              ) : isImage ? (
+                <img
+                  key={selectedDoc.id} // Stable key prevents image reload
+                  src={previewUrl!}
+                  alt={selectedDoc.original_filename}
+                  className="max-w-full max-h-full object-contain p-4"
+                  onError={() => setImageError(true)}
+                  onLoad={() => setImageError(false)}
+                  style={{
+                    // Prevent image from re-rendering
+                    imageRendering: 'auto',
+                    isolation: 'isolate', // Isolate image rendering
+                    transform: 'translateZ(0)' // Force GPU layer
+                  }}
+                />
+              ) : isDOCX && docxPublicUrl ? (
+                <iframe
+                  key={`docx-${selectedDoc.id}`} // Stable key prevents iframe reload
+                  src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(docxPublicUrl)}&action=embedview&wdEmbedCode=0&ui=2`}
+                  className="w-full h-full border-0"
+                  title={selectedDoc.original_filename}
+                  style={{
+                    // Prevent iframe from reloading during layout changes
+                    pointerEvents: 'auto',
+                    isolation: 'isolate', // Isolate iframe rendering
+                    transform: 'translateZ(0)' // Force GPU layer
+                  }}
+                />
+              ) : isDOCX && isUploadingDocx ? (
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                  <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-4" />
+                  <p className="text-sm text-gray-600">Preparing document preview...</p>
+                </div>
+              ) : (
+                 /* Fallback for other types */
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                  <div className="w-20 h-20 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center mb-4">
+                    <FileText className="w-8 h-8 text-gray-400" />
+                  </div>
+                  <p className="text-sm font-medium text-gray-900 mb-1">{selectedDoc.original_filename}</p>
+                  <p className="text-xs text-gray-500 mb-6">Preview not available for this file type</p>
+                  <button
+                    onClick={() => onDocumentClick(selectedDoc)}
+                    className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-xs font-medium shadow-sm"
+                  >
+                    Download File
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+  );
+
+  // Always render with AnimatePresence, but use portal for fullscreen to escape parent constraints
+  const content = (
+    <AnimatePresence mode="wait">
+      {previewContent}
+    </AnimatePresence>
+  );
+
+  // When fullscreen, render in a portal to escape parent constraints
+  if (isFullscreen) {
+    return createPortal(content, document.body);
+  }
+
+  // Normal mode - render inline
+  return content;
+}, (prevProps, nextProps) => {
+  // Only re-render if the document or fullscreen state actually changed (return true if props are equal = skip re-render)
+  // Compare by document ID and fullscreen state - callbacks are stable via useCallback
+  return prevProps.selectedDoc?.id === nextProps.selectedDoc?.id && 
+         prevProps.isFullscreen === nextProps.isFullscreen;
+});
+
+ExpandedCardView.displayName = 'ExpandedCardView';
+
 export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   property,
   isVisible,
   onClose,
-  onPropertySelect
+  onPropertySelect,
+  isLargeCardMode = false,
+  pinPosition = null,
+  isInChatMode = false, // Default to false
+  chatPanelWidth = 0 // Default to 0 (chat panel closed)
 }) => {
+  // Determine if chat panel is actually open based on width
+  const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
   const backendApiContext = useBackendApi();
   const { isSelectionModeActive, addPropertyAttachment, propertyAttachments } = usePropertySelection();
   
@@ -48,24 +581,230 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
-  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const [cachedCoversVersion, setCachedCoversVersion] = useState(0); // Triggers re-render when covers are cached
+  const docxLoadedRef = useRef<Set<string>>(new Set()); // Track which DOCX iframes have loaded
+  // Track which covers have been rendered with their final src - prevent src changes
+  const renderedCoversRef = useRef<Map<string, string>>(new Map()); // docId -> final src URL
+  // Store actual DOM elements - once rendered, reuse them directly to prevent React from recreating
+  const coverElementsRef = useRef<Map<string, HTMLElement>>(new Map()); // docId -> actual DOM element
   const [isFilesModalOpen, setIsFilesModalOpen] = useState(false);
   const [filesSearchQuery, setFilesSearchQuery] = useState<string>(''); // Search query for filtering documents
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null); // Track which card is expanded
   const [hoveredCardIndex, setHoveredCardIndex] = useState<number | null>(null); // Track hover state for wave effect
+  const [isFullscreen, setIsFullscreen] = useState(false); // Fullscreen state for document preview
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null); // Selected image for preview
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const uploadProgressRef = useRef<number>(0); // Track progress to prevent backward jumps
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [showContributorsPopup, setShowContributorsPopup] = useState(false);
-  const contributorsPopupRef = useRef<HTMLDivElement>(null);
-  const [popupPosition, setPopupPosition] = useState({ top: 0, left: 0 });
-  const [contributors, setContributors] = useState<Array<{ name: string; image?: string; initials: string; role: string; date?: string }>>([]);
-  const [currentUser, setCurrentUser] = useState<any>(null);
   const [isDraggingToDelete, setIsDraggingToDelete] = useState(false);
   const [draggedDocumentId, setDraggedDocumentId] = useState<string | null>(null);
+  // Use document selection context
+  const {
+    selectedDocumentIds,
+    isDocumentSelectionMode: isChatSelectionMode,
+    toggleDocumentSelection,
+    clearSelectedDocuments,
+    setDocumentSelectionMode
+  } = useDocumentSelection();
+  
+  // Local selection mode for PropertyDetailsPanel (for deletion)
+  // This is separate from chat selection mode (for querying)
+  const [isLocalSelectionMode, setIsLocalSelectionMode] = useState(false);
+  const [localSelectedDocumentIds, setLocalSelectedDocumentIds] = useState<Set<string>>(new Set());
+  
+  // Combined selection mode: true if either chat mode or local mode is active
+  const isSelectionMode = isChatSelectionMode || isLocalSelectionMode;
+  
+  // Use ref to track current selection mode to avoid stale closures in click handlers
+  const isSelectionModeRef = React.useRef(isSelectionMode);
+  
+  // Debug: Log when selection mode changes
+  React.useEffect(() => {
+    isSelectionModeRef.current = isSelectionMode;
+    console.log('🔍 PropertyDetailsPanel: Selection mode changed:', {
+      isSelectionMode,
+      isChatSelectionMode,
+      isLocalSelectionMode,
+      selectedDocumentIdsSize: selectedDocumentIds.size
+    });
+  }, [isSelectionMode, isChatSelectionMode, isLocalSelectionMode, selectedDocumentIds.size]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Filter state
+  const [activeFilter, setActiveFilter] = useState<'all' | 'images' | 'pdfs'>('all');
+  
+  // Section order - persisted in localStorage
+  const [sectionOrder, setSectionOrder] = useState<('documents' | 'propertyDetails')[]>(() => {
+    // Load persisted order from localStorage
+    if (typeof window !== 'undefined') {
+      const savedOrder = localStorage.getItem('propertyDetailsPanel_sectionOrder');
+      if (savedOrder) {
+        try {
+          const parsed = JSON.parse(savedOrder);
+          // Validate that it contains both sections
+          if (Array.isArray(parsed) && parsed.length === 2 && 
+              parsed.includes('documents') && parsed.includes('propertyDetails')) {
+            return parsed;
+          }
+        } catch (e) {
+          console.error('Failed to parse saved section order:', e);
+        }
+      }
+    }
+    // Default order
+    return ['documents', 'propertyDetails'];
+  });
+  
+  // Section state - determines which view we're in
+  // Default to the first tab in the order (leftmost tab)
+  // Editable field state management
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const [savingFields, setSavingFields] = useState<Set<string>>(new Set());
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  
+  // Debounce timers for each field to prevent spamming the database
+  const saveTimersRef = useRef<Record<string, NodeJS.Timeout>>({});
+  // Track pending saves to cancel them if user edits again
+  const pendingSavesRef = useRef<Record<string, AbortController>>({});
+  
+  // Refs for textarea auto-resize
+  const amenitiesTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
+  
+  // Local state for property details to enable optimistic updates
+  const [localPropertyDetails, setLocalPropertyDetails] = useState<any>(null);
+  
+  // Sync local property details with prop when property changes
+  useEffect(() => {
+    if (property?.propertyHub?.property_details) {
+      setLocalPropertyDetails({ ...property.propertyHub.property_details });
+    } else {
+      setLocalPropertyDetails({});
+    }
+  }, [property?.propertyHub?.property_details, property?.id]);
+
+  // Cleanup: Cancel all pending saves and timers on unmount
+  useEffect(() => {
+    return () => {
+      // Cancel all pending timers
+      Object.values(saveTimersRef.current).forEach(timer => {
+        if (timer) clearTimeout(timer);
+      });
+      saveTimersRef.current = {};
+      
+      // Abort all pending API calls
+      Object.values(pendingSavesRef.current).forEach(controller => {
+        if (controller) controller.abort();
+      });
+      pendingSavesRef.current = {};
+    };
+  }, []);
+
+  const [activeSection, setActiveSection] = useState<'documents' | 'propertyDetails'>(() => {
+    // Load persisted order to determine initial active section
+    if (typeof window !== 'undefined') {
+      const savedOrder = localStorage.getItem('propertyDetailsPanel_sectionOrder');
+      if (savedOrder) {
+        try {
+          const parsed = JSON.parse(savedOrder);
+          if (Array.isArray(parsed) && parsed.length > 0 && 
+              (parsed[0] === 'documents' || parsed[0] === 'propertyDetails')) {
+            return parsed[0];
+          }
+        } catch (e) {
+          // Fall through to default
+        }
+      }
+    }
+    return 'documents'; // Default
+  });
+  
+  // When panel becomes visible, ensure we're showing the leftmost tab
+  useEffect(() => {
+    if (isVisible && sectionOrder.length > 0) {
+      // Only update if we're not already on the leftmost tab
+      // This prevents switching tabs when user is just reordering
+      const leftmostTab = sectionOrder[0];
+      if (activeSection !== leftmostTab) {
+        setActiveSection(leftmostTab);
+      }
+    }
+  }, [isVisible]); // Only run when visibility changes, not when sectionOrder changes
+  
+  // Drag state for tab reordering
+  const [draggedTabIndex, setDraggedTabIndex] = useState<number | null>(null);
+  const [draggedSection, setDraggedSection] = useState<'documents' | 'propertyDetails' | null>(null);
+  const [dragOverSection, setDragOverSection] = useState<'documents' | 'propertyDetails' | null>(null);
+  const [previewOrder, setPreviewOrder] = useState<('documents' | 'propertyDetails')[] | null>(null);
+  
+  // Use refs to track drag state - avoids closure issues and prevents spamming
+  const lastDragOverSectionRef = useRef<'documents' | 'propertyDetails' | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+  const draggedSectionRef = useRef<'documents' | 'propertyDetails' | null>(null);
+  const sectionOrderRef = useRef<('documents' | 'propertyDetails')[]>(sectionOrder);
+  const previewOrderRef = useRef<('documents' | 'propertyDetails')[] | null>(null);
+  
+  // Sync refs with state
+  useEffect(() => {
+    sectionOrderRef.current = sectionOrder;
+  }, [sectionOrder]);
+  
+  useEffect(() => {
+    draggedSectionRef.current = draggedSection;
+  }, [draggedSection]);
+  
+  useEffect(() => {
+    previewOrderRef.current = previewOrder;
+  }, [previewOrder]);
+  
+  // Use preview order during drag, otherwise use actual order
+  const displayOrder = previewOrder || sectionOrder;
+  
+  // Throttle preview updates using requestAnimationFrame
+  // This function uses refs to avoid closure issues and prevent unnecessary work
+  const updatePreviewOrder = useCallback((targetSection: 'documents' | 'propertyDetails') => {
+    // Cancel any pending update
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+    }
+    
+    // Schedule update for next frame
+    rafIdRef.current = requestAnimationFrame(() => {
+      // Use refs to get current values (avoid stale closures)
+      const currentDraggedSection = draggedSectionRef.current;
+      const currentSectionOrder = sectionOrderRef.current;
+      
+      if (currentDraggedSection !== null && targetSection !== currentDraggedSection) {
+        // Create preview order
+        const newPreviewOrder = [...currentSectionOrder];
+        const draggedIndex = newPreviewOrder.indexOf(currentDraggedSection);
+        newPreviewOrder.splice(draggedIndex, 1);
+        const targetIndex = currentSectionOrder.indexOf(targetSection);
+        newPreviewOrder.splice(targetIndex, 0, currentDraggedSection);
+        
+        // Only update if order actually changed
+        const currentOrder = previewOrderRef.current || currentSectionOrder;
+        const orderChanged = JSON.stringify(newPreviewOrder) !== JSON.stringify(currentOrder);
+        
+        if (orderChanged) {
+          setDragOverSection(targetSection);
+          setPreviewOrder(newPreviewOrder);
+        }
+      }
+      rafIdRef.current = null;
+    });
+  }, []); // No dependencies - uses refs instead
+  
+  // Save order to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('propertyDetailsPanel_sectionOrder', JSON.stringify(sectionOrder));
+    }
+  }, [sectionOrder]);
+
   // Store original pin coordinates (user-set location) - don't let backend data override them
   const originalPinCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   
@@ -81,7 +820,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
     
     // Calculate document count using the same logic as PropertyDetailsPanel display
-    // Priority: 1. documents.length, 2. propertyHub?.documents?.length, 3. documentCount/document_count
     let docCount = 0;
     if (documents.length > 0) {
       docCount = documents.length;
@@ -117,7 +855,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [documents.length]);
   
   // State for cached property card data
-  // OPTIMIZATION: Initialize from cache synchronously on mount for instant display
   const [cachedPropertyData, setCachedPropertyData] = useState<any>(() => {
     // Synchronously check cache when component initializes - no useEffect delay
     if (property && property.id) {
@@ -140,281 +877,361 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
     return null;
   });
-  const [isLoadingCardData, setIsLoadingCardData] = useState(false);
-  
-  // Use cached property data if available, otherwise use property prop
-  // This must be declared after cachedPropertyData state
-  const displayProperty = cachedPropertyData || property;
-  
-  // Fetch current user data - non-blocking
-  useEffect(() => {
-    const fetchCurrentUser = async () => {
-      try {
-        const authResult = await backendApi.checkAuth();
-        if (authResult.success && authResult.data?.user) {
-          setCurrentUser(authResult.data.user);
-        }
-      } catch (error) {
-        console.error('Error fetching current user:', error);
-      }
-    };
-    fetchCurrentUser();
-  }, []);
   
   // Use shared preview context
-  const { addPreviewFile, setIsPreviewOpen, setPreviewFiles, setActivePreviewTabIndex } = usePreview();
-  
-  // Track viewport size for responsive sizing
-  const [viewportSize, setViewportSize] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return { width: window.innerWidth, height: window.innerHeight };
-    }
-    return { width: 1024, height: 768 };
-  });
-  
-  useEffect(() => {
-    const handleResize = () => {
-      setViewportSize({ width: window.innerWidth, height: window.innerHeight });
-    };
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  
-  // Calculate search bar height - approximately 80-100px including padding
-  // Search bar is positioned at bottom: 20px, so we need to account for that plus its height
-  const SEARCH_BAR_HEIGHT = 80; // Approximate height of search bar
-  const SEARCH_BAR_BOTTOM_PADDING = 20; // Bottom padding from MainContent
-  const SEARCH_BAR_TOTAL_SPACE = SEARCH_BAR_HEIGHT + SEARCH_BAR_BOTTOM_PADDING + 20; // Extra 20px for spacing
-  
-  // Calculate yield and letting info early for height calculation
-  const calculateYield = () => {
-    if (displayProperty.rentPcm && (displayProperty.soldPrice || displayProperty.askingPrice)) {
-      const annualRent = displayProperty.rentPcm * 12;
-      const price = displayProperty.soldPrice || displayProperty.askingPrice;
-      if (price > 0) {
-        return ((annualRent / price) * 100).toFixed(1);
-      }
-    }
-    return null;
-  };
-  
-  const formatLettingDate = (dateString: string): string => {
-    try {
-      const date = new Date(dateString);
-      const month = date.toLocaleDateString('en-GB', { month: 'short' });
-      const year = date.getFullYear();
-      return `${month} ${year}`;
-    } catch {
-      return 'Unknown';
-    }
-  };
-  
-  const getLettingInfo = () => {
-    if (displayProperty.transaction_date && displayProperty.rentPcm > 0) {
-      const date = formatLettingDate(displayProperty.transaction_date);
-      return `Let (AST ${date})`;
-    }
-    return null;
-  };
-  
-  const yieldPercentage = calculateYield();
-  const lettingInfo = getLettingInfo();
-  
-  // Calculate responsive panel dimensions
-  const panelWidth = Math.min(420, Math.max(280, viewportSize.width * 0.35)); // 35% of viewport, min 280px, max 420px
-  const panelMaxHeight = Math.max(400, viewportSize.height - SEARCH_BAR_TOTAL_SPACE - 20); // Account for search bar + spacing, min 400px
-  
-  // Calculate default height for collapsed state (when "View more" is not clicked)
-  // This should fit all content without scrolling: image, title, collapsed summary (3 lines), property details, rental info, buttons
-  // More accurate calculation:
-  const imageHeight = panelWidth * (10 / 16); // 16:10 aspect ratio
-  const titleHeight = 24 + 12; // Title (text-lg) + margin-bottom (mb-3)
-  const collapsedSummaryHeight = 60; // Approximately 3 lines of text (line-clamp-3) + "View more" button
-  const titleSummaryPadding = 20 + 16; // px-5 pt-5 pb-4 = 20px top, 16px bottom
-  const propertyDetailsHeight = 120; // Property details section with icons (3 rows typically)
-  const propertyDetailsPadding = 14; // space-y-3.5 = 14px between rows
-  const rentalInfoHeight = displayProperty.rentPcm > 0 || lettingInfo ? 60 : 0; // Rental section if present
-  const rentalInfoPadding = 20 + 20; // pt-5 mt-5 mb-5 = 20px top, 20px bottom
-  const buttonsHeight = 48 + 16; // Buttons (py-1.5 = 12px) + padding (pt-3 pb-4 = 12px + 16px)
-  const borderHeight = 1; // Border above buttons
-  
-  // Calculate total collapsed height
-  const collapsedContentHeight = imageHeight + 
-                                 titleSummaryPadding + 
-                                 titleHeight + 
-                                 collapsedSummaryHeight + 
-                                 propertyDetailsPadding + 
-                                 propertyDetailsHeight + 
-                                 (rentalInfoHeight > 0 ? rentalInfoPadding + rentalInfoHeight : 0) + 
-                                 borderHeight + 
-                                 buttonsHeight;
-  
-  // Use the calculated collapsed height, but ensure it's reasonable (not too small, not exceeding max)
-  const panelHeight = Math.max(450, Math.min(collapsedContentHeight, panelMaxHeight)); // Minimum 450px to ensure everything fits
-  
-  const panelBottom = SEARCH_BAR_TOTAL_SPACE; // Position at bottom, above search bar
-  const panelRight = Math.max(8, Math.min(16, viewportSize.width * 0.02)); // Responsive right padding: 0.5-1rem based on viewport
+  const { addPreviewFile } = usePreview();
   
   // Sync ref with state
   React.useEffect(() => {
     isFilesModalOpenRef.current = isFilesModalOpen;
   }, [isFilesModalOpen]);
   const [hasFilesFetched, setHasFilesFetched] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
-  const isClosingRef = useRef(false); // Track if we're in the process of closing
   const isFilesModalOpenRef = useRef(false); // Track modal state in ref to avoid race conditions
 
   // Load property card summary from cache or fetch from backend
   useEffect(() => {
     if (property && property.id) {
       const propertyId = property.id;
-      const cacheKey = `propertyCardCache_${propertyId}`;
       
       // IMPORTANT: Store original pin coordinates BEFORE backend fetch might override them
-      // These are the user-set pin location, not property data coordinates
-      // Reset and store new coordinates when property changes
       if (property.latitude && property.longitude) {
         originalPinCoordsRef.current = { lat: property.latitude, lng: property.longitude };
-        console.log('📍 Stored original pin coordinates for property:', propertyId, originalPinCoordsRef.current);
       } else {
-        // Clear if no coordinates available
         originalPinCoordsRef.current = null;
       }
-      
-      // OPTIMIZATION: If we already have cached data from synchronous init, skip cache check
-      // Only check cache if we don't have it yet (property changed)
-      let hasValidCache = !!cachedPropertyData;
-      
-      if (!hasValidCache) {
-        // Check cache if we don't have it from init
-        try {
-          const cached = localStorage.getItem(cacheKey);
-          if (cached) {
-            const cacheData = JSON.parse(cached);
-            const cacheAge = Date.now() - cacheData.timestamp;
-            const CACHE_MAX_AGE = 30 * 60 * 1000; // OPTIMIZATION: Increased from 5 to 30 minutes
-            
-            if (cacheAge < CACHE_MAX_AGE) {
-              // Cache is fresh - use it immediately for instant rendering
-              console.log('✅ Using cached property card data (age:', Math.round(cacheAge / 1000), 's)');
-              setCachedPropertyData(cacheData.data);
-              hasValidCache = true;
-              // Don't set loading state - data is already available
-            } else {
-              console.log('⚠️ Cache expired (age:', Math.round(cacheAge / 1000), 's), fetching fresh data');
-            }
-          }
-        } catch (e) {
-          console.warn('Failed to read cache:', e);
-        }
-      } else {
-        console.log('✅ Already have cached data from synchronous init - skipping cache check');
-      }
-      
-      // OPTIMIZATION: Only set loading state if we don't have cached data
-      // Fetch fresh card summary data in background (use cache by default on backend)
-      // If we have valid cache, still fetch in background to update it, but don't show loading
-      if (!hasValidCache) {
-        setIsLoadingCardData(true);
-      }
-      
-      // Fetch in background - if it fails, we still have cached data (if available)
-      backendApi.getPropertyCardSummary(propertyId, true) // OPTIMIZATION: Use cache by default
-        .then((response) => {
-          if (response.success && response.data) {
-            // Transform card summary data to match property object format
-            // CRITICAL: Cached property location is ALWAYS the property pin location (user-set), NEVER document-extracted coordinates
-            // Only use coordinates if they represent user-set pin location (geocoding_status: 'manual')
-            // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-            const geocodingStatus = response.data.geocoding_status || property.geocoding_status;
-            const isPinLocation = geocodingStatus === 'manual';
-            
-            // Use pin coordinates (user-set) if available, otherwise fall back only if geocoding_status is 'manual'
-            const pinCoords = originalPinCoordsRef.current || 
-              (isPinLocation && property.latitude && property.longitude ? { lat: property.latitude, lng: property.longitude } : null);
-            
-            const transformedData = {
-              ...property, // Keep existing property data
-              address: response.data.address || property.address,
-              // Use pin location coordinates (user-set) only, never document-extracted coordinates
-              latitude: pinCoords ? pinCoords.lat : (isPinLocation ? (response.data.latitude || property.latitude) : null),
-              longitude: pinCoords ? pinCoords.lng : (isPinLocation ? (response.data.longitude || property.longitude) : null),
-              geocoding_status: geocodingStatus, // Store geocoding_status to identify pin locations
-              primary_image_url: response.data.primary_image_url,
-              image: response.data.primary_image_url || property.image,
-              property_type: response.data.property_type || property.property_type,
-              tenure: response.data.tenure || property.tenure,
-              bedrooms: response.data.number_bedrooms || property.bedrooms || 0,
-              bathrooms: response.data.number_bathrooms || property.bathrooms || 0,
-              epc_rating: response.data.epc_rating || property.epc_rating,
-              documentCount: response.data.document_count || property.documentCount || 0,
-              rentPcm: response.data.rent_pcm || property.rentPcm || 0,
-              soldPrice: response.data.sold_price || property.soldPrice || 0,
-              askingPrice: response.data.asking_price || property.askingPrice || 0,
-              summary: response.data.summary_text || property.summary,
-              notes: response.data.summary_text || property.notes,
-              transaction_date: response.data.last_transaction_date || property.transaction_date,
-              yield_percentage: response.data.yield_percentage || property.yield_percentage
-            };
-            
-            // Update cached property data
-            setCachedPropertyData(transformedData);
-            
-            // Store in localStorage cache
-            try {
-              localStorage.setItem(cacheKey, JSON.stringify({
-                data: transformedData,
-                timestamp: Date.now(),
-                cacheVersion: (response as any).cache_version || 1
-              }));
-              console.log('✅ Stored property card data in cache');
-            } catch (e) {
-              console.warn('Failed to store cache:', e);
-            }
-          }
-        })
-        .catch((error) => {
-          // OPTIMIZATION: If fetch fails but we have cached data, that's okay
-          // Only log error if we don't have cached data to fall back on
-          if (!hasValidCache) {
-            console.error('Error fetching property card summary (no cache available):', error);
-      } else {
-            console.warn('Error fetching property card summary (using cached data):', error);
-          }
-        })
-        .finally(() => {
-          setIsLoadingCardData(false);
-        });
     }
   }, [property?.id]);
 
+  // Helper functions for formatting numbers with commas
+  const formatNumberWithCommas = (value: number | string | null | undefined): string => {
+    if (value === null || value === undefined || value === '') return '';
+    const num = typeof value === 'number' ? value : parseFloat(String(value).replace(/,/g, ''));
+    if (isNaN(num)) return '';
+    return num.toLocaleString('en-US');
+  };
+
+  const removeCommas = (value: string): string => {
+    return value.replace(/,/g, '');
+  };
+
+  // Helper functions for editable fields
+  const startEditing = (fieldName: string, currentValue: any) => {
+    // Cancel any pending save for this field when starting to edit
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    // Cancel any pending API call for this field
+    if (pendingSavesRef.current[fieldName]) {
+      pendingSavesRef.current[fieldName].abort();
+      delete pendingSavesRef.current[fieldName];
+    }
+    
+    setEditingField(fieldName);
+    const priceFields = ['asking_price', 'sold_price', 'rent_pcm'];
+    let displayValue = '';
+    
+    if (currentValue !== null && currentValue !== undefined) {
+      if (priceFields.includes(fieldName)) {
+        // Format price fields with commas
+        displayValue = formatNumberWithCommas(currentValue);
+            } else {
+        displayValue = String(currentValue);
+      }
+    }
+    
+    setEditValues(prev => ({
+      ...prev,
+      [fieldName]: displayValue
+    }));
+    setFieldErrors(prev => {
+      const newErrors = { ...prev };
+      delete newErrors[fieldName];
+      return newErrors;
+    });
+    
+    // Auto-resize textareas when editing starts
+    requestAnimationFrame(() => {
+      if (fieldName === 'other_amenities' && amenitiesTextareaRef.current) {
+        amenitiesTextareaRef.current.style.height = 'auto';
+        amenitiesTextareaRef.current.style.height = `${amenitiesTextareaRef.current.scrollHeight}px`;
+      } else if (fieldName === 'notes' && notesTextareaRef.current) {
+        notesTextareaRef.current.style.height = 'auto';
+        notesTextareaRef.current.style.height = `${notesTextareaRef.current.scrollHeight}px`;
+      }
+    });
+  };
+
+  const handleFieldChange = (fieldName: string, value: string) => {
+    const priceFields = ['asking_price', 'sold_price', 'rent_pcm'];
+    
+    if (priceFields.includes(fieldName)) {
+      // Allow only digits and commas, remove any other characters
+      const cleaned = value.replace(/[^\d,]/g, '');
+      // Format with commas as user types
+      const withoutCommas = removeCommas(cleaned);
+      if (withoutCommas === '') {
+        setEditValues(prev => ({ ...prev, [fieldName]: '' }));
+        return;
+      }
+      const num = parseFloat(withoutCommas);
+      if (!isNaN(num)) {
+        const formatted = formatNumberWithCommas(num);
+        setEditValues(prev => ({ ...prev, [fieldName]: formatted }));
+      } else {
+        setEditValues(prev => ({ ...prev, [fieldName]: cleaned }));
+      }
+    } else {
+      setEditValues(prev => ({
+        ...prev,
+        [fieldName]: value
+      }));
+      
+      // Auto-resize textareas for amenities and notes
+      if (fieldName === 'other_amenities' && amenitiesTextareaRef.current) {
+        amenitiesTextareaRef.current.style.height = 'auto';
+        amenitiesTextareaRef.current.style.height = `${amenitiesTextareaRef.current.scrollHeight}px`;
+      } else if (fieldName === 'notes' && notesTextareaRef.current) {
+        notesTextareaRef.current.style.height = 'auto';
+        notesTextareaRef.current.style.height = `${notesTextareaRef.current.scrollHeight}px`;
+      }
+    }
+  };
+
+  const validateField = (fieldName: string, value: string): string | null => {
+    const numericFields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm'];
+    
+    if (numericFields.includes(fieldName)) {
+      if (value.trim() === '') {
+        return null; // Empty is valid (will set to null)
+      }
+      // Remove commas before parsing
+      const cleanedValue = removeCommas(value.trim());
+      const num = fieldName === 'size_sqft' || fieldName.includes('price') || fieldName === 'rent_pcm' 
+        ? parseFloat(cleanedValue) 
+        : parseInt(cleanedValue, 10);
+      if (isNaN(num) || num < 0) {
+        return 'Please enter a valid number';
+      }
+    }
+    return null;
+  };
+  
+  const saveField = async (fieldName: string, value: string) => {
+    // Cancel any pending save for this field to prevent duplicate saves
+    if (pendingSavesRef.current[fieldName]) {
+      pendingSavesRef.current[fieldName].abort();
+      delete pendingSavesRef.current[fieldName];
+    }
+    
+    // Cancel any pending timer
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    
+    // Get property ID - try multiple possible locations
+    const propertyId = property?.id?.toString() || property?.property_id?.toString() || property?.propertyHub?.property?.id?.toString();
+    
+    if (!propertyId) {
+      console.error('Cannot save: property ID not found', property);
+      setFieldErrors(prev => ({ ...prev, [fieldName]: 'Property ID not found' }));
+      return;
+    }
+
+    const error = validateField(fieldName, value);
+    if (error) {
+      setFieldErrors(prev => ({ ...prev, [fieldName]: error }));
+      return;
+    }
+
+    // Create abort controller for this save
+    const abortController = new AbortController();
+    pendingSavesRef.current[fieldName] = abortController;
+
+    setSavingFields(prev => new Set(prev).add(fieldName));
+    setFieldErrors(prev => {
+      const newErrors = { ...prev };
+      delete newErrors[fieldName];
+      return newErrors;
+    });
+
+    try {
+      // Parse value based on field type
+      let parsedValue: any = value.trim() === '' ? null : value;
+      const numericFields = ['number_bedrooms', 'number_bathrooms', 'size_sqft', 'asking_price', 'sold_price', 'rent_pcm'];
+      
+      if (numericFields.includes(fieldName)) {
+        if (value.trim() === '') {
+          parsedValue = null;
+            } else {
+          // Remove commas before parsing
+          const cleanedValue = removeCommas(value.trim());
+          parsedValue = fieldName === 'size_sqft' || fieldName.includes('price') || fieldName === 'rent_pcm'
+            ? parseFloat(cleanedValue)
+            : parseInt(cleanedValue, 10);
+        }
+      }
+
+      console.log(`💾 Saving ${fieldName}:`, { 
+        value, 
+        parsedValue, 
+        propertyId,
+        fieldType: typeof parsedValue
+      });
+      
+      // Check if save was aborted before making API call
+      if (abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted before API call`);
+        return;
+      }
+      
+      const result = await backendApi.updatePropertyDetails(propertyId, {
+        [fieldName]: parsedValue
+      } as any);
+      
+      // Check if save was aborted after API call
+      if (abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted after API call`);
+        return;
+      }
+
+      console.log(`✅ Save result for ${fieldName}:`, {
+        success: result.success,
+        error: result.error,
+        message: result.message,
+        data: result.data,
+        fullResult: result
+      });
+
+      // The backend response is wrapped in result.data
+      const backendResponse = result.data || result;
+      const isSuccess = backendResponse.success || result.success;
+
+      if (isSuccess) {
+        // Use the updated data from backend response if available, otherwise use parsedValue
+        const updatedData = backendResponse.data || backendResponse;
+        const savedValue = updatedData && updatedData[fieldName] !== undefined 
+          ? updatedData[fieldName] 
+          : parsedValue;
+        
+        // Update local property details state with the saved value from backend
+        setLocalPropertyDetails(prev => ({
+          ...prev,
+          [fieldName]: savedValue
+        }));
+        
+        // Also update the property prop if it exists (for persistence across panel reopens)
+        if (property?.propertyHub?.property_details) {
+          property.propertyHub.property_details = {
+            ...property.propertyHub.property_details,
+            [fieldName]: savedValue
+          };
+        }
+        
+        setEditingField(null);
+        setEditValues(prev => {
+          const newValues = { ...prev };
+          delete newValues[fieldName];
+          return newValues;
+        });
+        console.log(`✅ Successfully saved ${fieldName} = ${savedValue}`);
+      } else {
+        const errorMsg = backendResponse.error || result.error || 'Failed to save';
+        console.error(`❌ Failed to save ${fieldName}:`, errorMsg);
+        setFieldErrors(prev => ({ ...prev, [fieldName]: errorMsg }));
+      }
+    } catch (error: any) {
+      // Don't show error if the save was aborted
+      if (error.name === 'AbortError' || abortController.signal.aborted) {
+        console.log(`⏭️ Save for ${fieldName} was aborted`);
+        return;
+      }
+      console.error(`Error saving ${fieldName}:`, error);
+      setFieldErrors(prev => ({ ...prev, [fieldName]: error.message || 'Failed to save' }));
+    } finally {
+      // Clean up
+      delete pendingSavesRef.current[fieldName];
+      setSavingFields(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(fieldName);
+        return newSet;
+      });
+    }
+  };
+
+  const handleFieldBlur = (fieldName: string) => {
+    const value = editValues[fieldName] ?? '';
+    
+    // Cancel any existing timer for this field
+    if (saveTimersRef.current[fieldName]) {
+      clearTimeout(saveTimersRef.current[fieldName]);
+      delete saveTimersRef.current[fieldName];
+    }
+    
+    // Save immediately on blur (no debounce for blur, but still cancel pending)
+    saveField(fieldName, value);
+  };
+
+  const handleFieldKeyDown = (e: React.KeyboardEvent, fieldName: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const value = editValues[fieldName] ?? '';
+      saveField(fieldName, value);
+    } else if (e.key === 'Escape') {
+      setEditingField(null);
+      setEditValues(prev => {
+        const newValues = { ...prev };
+        delete newValues[fieldName];
+        return newValues;
+      });
+      setFieldErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[fieldName];
+        return newErrors;
+      });
+    }
+  };
+
   // CRITICAL: Do NOT load documents when property card opens
   // Documents should ONLY be loaded when user clicks "View Files" button
-  // This ensures property card renders instantly without waiting for file API calls
+  // BUT for this simplified view, we probably want to load them immediately since it's ONLY documents
   useEffect(() => {
     if (property && property.id) {
-      // Always start with empty documents - files will load ONLY when "View Files" is clicked
-      console.log('📄 PropertyDetailsPanel: Property changed, NOT loading files. Files will load when "View Files" is clicked:', property.id);
-      setDocuments([]);
-      setHasFilesFetched(false);
-      setLoading(false);
+      console.log('📄 PropertyDetailsPanel: Property changed, loading files for Documents view:', property.id);
+      loadPropertyDocuments();
     } else {
       console.log('⚠️ PropertyDetailsPanel: No property or property.id');
       setDocuments([]);
     }
   }, [property]);
 
-  // Don't preload document blobs when property card opens - this slows down rendering
-  // Blobs will be loaded on-demand when user actually previews a document
-  // This significantly improves property card load time
+  // Initialize DOCX loaded state from cache when documents change
+  useEffect(() => {
+    if (documents.length > 0 && (window as any).__preloadedDocumentCovers) {
+      documents.forEach(doc => {
+        const cachedCover = (window as any).__preloadedDocumentCovers[doc.id];
+        if (cachedCover?.isDocx && cachedCover?.isDocxLoaded) {
+          docxLoadedRef.current.add(doc.id);
+        }
+      });
+    }
+  }, [documents]);
 
   const loadPropertyDocuments = async () => {
     if (!property?.id) {
       console.log('⚠️ loadPropertyDocuments: No property or property.id');
       return;
+    }
+    
+    // OPTIMIZATION: Use cached documents immediately if available
+    const cachedDocs = (window as any).__preloadedPropertyFiles?.[property.id];
+    if (cachedDocs && cachedDocs.length > 0) {
+      console.log('⚡ Using cached documents:', cachedDocs.length, 'documents');
+      setDocuments(cachedDocs);
+      setHasFilesFetched(true);
+      preloadDocumentCovers(cachedDocs);
+      // Still fetch fresh data in background
     }
     
     // Don't show loading state - load silently in background
@@ -423,12 +1240,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     try {
       console.log('📄 Loading documents for property:', property.id);
       const response = await backendApi.getPropertyHubDocuments(property.id);
-      console.log('📄 API response:', response);
-      console.log('📄 API response type:', typeof response, 'Is array:', Array.isArray(response));
       
-      // Backend returns: { success: true, data: { documents: [...] } }
-      // backendApi.fetchApi wraps it: { success: true, data: { success: true, data: { documents: [...] } } }
-      // So we need to check response.data.data.documents
       let documentsToUse = null;
       
       // OPTIMIZATION: New lightweight endpoint returns { success: true, data: { documents: [...], document_count: N } }
@@ -436,38 +1248,32 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         // Check for new lightweight endpoint format: response.data.documents
         if (response.data.documents && Array.isArray(response.data.documents)) {
           documentsToUse = response.data.documents;
-          console.log('✅ Found documents in response.data.documents (lightweight endpoint):', documentsToUse.length);
         }
         // Check for nested structure: response.data.data.documents (legacy)
         else if (response.data.data && response.data.data.documents && Array.isArray(response.data.data.documents)) {
           documentsToUse = response.data.data.documents;
-          console.log('✅ Found documents in response.data.data.documents (legacy):', documentsToUse.length);
         } 
         // Check if response.data is an array (legacy)
         else if (Array.isArray(response.data)) {
           documentsToUse = response.data;
-          console.log('✅ Found documents as array in response.data (legacy):', documentsToUse.length);
         }
       } else if (response && (response as any).documents && Array.isArray((response as any).documents)) {
-        // Fallback: handle unwrapped format
         documentsToUse = (response as any).documents;
-        console.log('✅ Found documents in response.documents (fallback):', documentsToUse.length);
       } else if (Array.isArray(response)) {
-        // Fallback: handle direct array
         documentsToUse = response;
-        console.log('✅ Found documents as direct array (fallback):', documentsToUse.length);
       }
       
       if (documentsToUse && documentsToUse.length > 0) {
         console.log('✅ Loaded documents:', documentsToUse.length, 'documents');
         setDocuments(documentsToUse);
         setHasFilesFetched(true);
+        // Preload document covers for instant rendering
+        preloadDocumentCovers(documentsToUse);
         // Store in preloaded files for future use
         if (!(window as any).__preloadedPropertyFiles) {
           (window as any).__preloadedPropertyFiles = {};
         }
         (window as any).__preloadedPropertyFiles[property.id] = documentsToUse;
-        console.log('✅ Stored documents in preloaded cache for property:', property.id);
         
         // Update recent projects with accurate document count (documents.length takes priority)
         if (property) {
@@ -482,35 +1288,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       } else {
         // Fallback to propertyHub documents if API returns nothing
         if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
-          console.log('📄 Using propertyHub documents as fallback:', property.propertyHub.documents.length);
           setDocuments(property.propertyHub.documents);
           setHasFilesFetched(true);
-          
-          // Update recent projects (propertyHub.documents takes priority when documents.length is 0)
-          if (property) {
-            saveToRecentProjects({
-              ...property,
-              propertyHub: {
-                ...property.propertyHub,
-                documents: property.propertyHub.documents
-              }
-            });
-          }
+          // Preload covers for fallback documents
+          preloadDocumentCovers(property.propertyHub.documents);
         } else {
-          console.log('⚠️ No documents found for property:', property.id);
           setDocuments([]);
           setHasFilesFetched(false);
-          
-          // Update recent projects with 0 documents
-          if (property) {
-            saveToRecentProjects({
-              ...property,
-              propertyHub: {
-                ...property.propertyHub,
-                documents: []
-              }
-            });
-          }
         }
       }
     } catch (err) {
@@ -518,208 +1302,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       setError('Failed to load documents');
       // Fallback to propertyHub documents on error
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
-        console.log('📄 Using propertyHub documents as error fallback');
         setDocuments(property.propertyHub.documents);
-        
-        // Update recent projects (propertyHub.documents takes priority when documents.length is 0)
-        if (property) {
-          saveToRecentProjects({
-            ...property,
-            propertyHub: {
-              ...property.propertyHub,
-              documents: property.propertyHub.documents
-            }
-          });
-        }
+        // Preload covers even on error fallback
+        preloadDocumentCovers(property.propertyHub.documents);
       } else {
         setDocuments([]);
-        
-        // Update recent projects with 0 documents
-        if (property) {
-          saveToRecentProjects({
-            ...property,
-            propertyHub: {
-              ...property.propertyHub,
-              documents: []
-            }
-          });
-        }
       }
     }
-  };
-
-  const formatDate = (dateString: string) => {
-    try {
-      return new Date(dateString).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
-    } catch {
-      return 'Unknown date';
-    }
-  };
-
-  // Get primary price to display
-  const getPrimaryPrice = () => {
-    if (displayProperty.soldPrice > 0) {
-      return `£${displayProperty.soldPrice.toLocaleString()}`;
-    } else if (displayProperty.askingPrice > 0) {
-      return `£${displayProperty.askingPrice.toLocaleString()}`;
-    } else if (displayProperty.rentPcm > 0) {
-      return `£${displayProperty.rentPcm.toLocaleString()}/month`;
-    }
-    return 'Price on request';
-  };
-
-  // Get property image
-  const getPropertyImage = () => {
-    return displayProperty.image || 
-           displayProperty.primary_image_url || 
-           displayProperty.propertyHub?.property_details?.primary_image_url ||
-           '/property-1.png';
-  };
-
-  // Get shortened property name (same logic as SquareMap)
-  const getPropertyName = (address: string): string => {
-    if (!address) return 'Unknown Address';
-    
-    // Try to extract a meaningful property name
-    // Examples: "10 Park Drive, 8 Park Dr, London E14 9ZW, UK" -> "8 & 10 Park Drive"
-    // "24 Rudthorpe Road" -> "24 Rudthorpe Road"
-    
-    // Split by comma to get parts
-    const parts = address.split(',').map(p => p.trim());
-    
-    // If first part looks like a property address (contains numbers and street name)
-    if (parts[0] && /^\d+/.test(parts[0])) {
-      // Check if there's a second part that might be a variant (like "8 Park Dr")
-      if (parts[1] && /^\d+/.test(parts[1])) {
-        // Extract numbers from both parts
-        const firstNum = parts[0].match(/^\d+/)?.[0];
-        const secondNum = parts[1].match(/^\d+/)?.[0];
-        const streetName = parts[0].replace(/^\d+\s*/, '').replace(/\s+\d+.*$/, '');
-        
-        if (firstNum && secondNum && streetName) {
-          return `${secondNum} & ${firstNum} ${streetName}`;
-        }
-      }
-      
-      // Otherwise, just return the first part (e.g., "24 Rudthorpe Road")
-      return parts[0];
-    }
-    
-    return address;
-  };
-
-  // Get summary text
-  const summaryText = displayProperty.summary || displayProperty.propertyHub?.property_details?.notes || displayProperty.notes;
-  const maxLength = 120; // Approximate characters for 3 lines
-  const isLong = summaryText ? summaryText.length > maxLength : false;
-
-  // Check if text is actually truncated
-  useEffect(() => {
-    if (summaryRef.current && !isSummaryExpanded && summaryText) {
-      // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
-        if (summaryRef.current) {
-          const isTextTruncated = summaryRef.current.scrollHeight > summaryRef.current.clientHeight;
-          // Character length check as fallback
-          if (!isTextTruncated && isLong) {
-            // Text might still be truncated, keep expanded state false
-          }
-        }
-      });
-    }
-  }, [summaryText, isSummaryExpanded, isLong]);
-
-  // Render expandable summary
-  const renderSummary = () => {
-    if (!summaryText) return null;
-    
-    if (!isLong) {
-      return (
-        <p className="text-sm text-gray-600 leading-relaxed">
-          {summaryText}
-        </p>
-      );
-    }
-    
-    if (isSummaryExpanded) {
-      return (
-        <div>
-          <p
-            ref={summaryRef}
-            className="text-sm text-gray-600 leading-relaxed"
-          >
-            {summaryText}
-          </p>
-          <button
-            onClick={() => setIsSummaryExpanded(false)}
-            className="text-slate-600 hover:text-slate-700 underline mt-1 text-sm font-medium cursor-pointer"
-            type="button"
-          >
-            View less
-          </button>
-        </div>
-      );
-    }
-    
-    // Find a good break point (prefer word boundary)
-    const truncated = summaryText.substring(0, maxLength);
-    const lastSpace = truncated.lastIndexOf(' ');
-    const breakPoint = lastSpace > maxLength * 0.8 ? lastSpace : maxLength;
-    const displayText = summaryText.substring(0, breakPoint).trim();
-    
-    return (
-      <div>
-        <p ref={summaryRef} className="text-sm text-gray-600 leading-relaxed line-clamp-3">
-          {displayText}
-        </p>
-        <button
-          onClick={() => setIsSummaryExpanded(true)}
-          className="text-slate-600 hover:text-slate-700 underline mt-1 text-sm font-medium cursor-pointer"
-          type="button"
-        >
-          View more
-        </button>
-      </div>
-    );
-  };
-
-  if (!isVisible) return null;
-  
-  // Debug logging for blank screen issue
-  if (!property) {
-    console.error('❌ PropertyDetailsPanel: property is null/undefined', {
-      isVisible,
-      property,
-      propertyId: property?.id
-    });
-    return null;
-  }
-  
-  console.log('✅ PropertyDetailsPanel rendering with property:', {
-    id: property.id,
-    address: property.address,
-    hasPropertyHub: !!property.propertyHub
-  });
-
-  // Get property ID
-  const propertyId = property?.id?.toString() || property?.property_id?.toString();
-  
-  // Helper functions for file handling (from PropertyFilesModal)
-  const getFileTypeLabel = (type?: string, filename?: string): string => {
-    if (!type && !filename) return 'FILE';
-    const fileType = type?.toLowerCase() || '';
-    const fileName = filename?.toLowerCase() || '';
-    
-    if (fileType.includes('pdf') || fileName.endsWith('.pdf')) return 'PDF';
-    if (fileType.includes('word') || fileType.includes('document') || fileName.endsWith('.doc') || fileName.endsWith('.docx')) return 'DOC';
-    if (fileType.includes('excel') || fileType.includes('spreadsheet') || fileName.endsWith('.xls') || fileName.endsWith('.xlsx')) return 'XLS';
-    if (fileType.startsWith('image/') || fileName.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i)) return 'IMG';
-    if (fileType.includes('text') || fileName.endsWith('.txt')) return 'TXT';
-    return 'FILE';
   };
 
   const formatFileName = (name: string): string => {
@@ -732,7 +1321,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     return name;
   };
 
-  const handleDocumentClick = async (document: Document) => {
+  const handleDocumentClick = useCallback(async (document: Document) => {
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
       
@@ -791,7 +1380,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     } catch (err) {
       console.error('❌ Error opening document:', err);
     }
-  };
+  }, [addPreviewFile]);
 
   const handleDeleteDocument = async (documentId: string) => {
     try {
@@ -865,7 +1454,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     (e.target as HTMLElement).style.opacity = '0.5';
   };
 
-  const handleDocumentDragEnd = (e: React.DragEvent) => {
+  const handleDocumentDragEnd = (e: any) => {
     (e.target as HTMLElement).style.opacity = '1';
     setIsDraggingToDelete(false);
     setDraggedDocumentId(null);
@@ -895,12 +1484,187 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   };
   
-  // Filter documents based on search query and sort by created_at (newest first for top of stack)
-  const filteredDocuments = documents
+  const getDownloadUrl = (doc: any) => {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
+      return doc.url || doc.download_url || doc.file_url || doc.s3_url;
+    } else if (doc.s3_path) {
+      return `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+    } else {
+      return `${backendUrl}/api/files/download?document_id=${doc.id}`;
+    }
+  };
+
+  // Preload document covers (thumbnails) for faster rendering
+  const preloadDocumentCovers = useCallback(async (docs: Document[]) => {
+    if (!docs || docs.length === 0) return;
+    
+    // Initialize cache if it doesn't exist
+    if (!(window as any).__preloadedDocumentCovers) {
+      (window as any).__preloadedDocumentCovers = {};
+    }
+    
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    
+    // Separate docs by type for optimized loading order
+    const imageDocs: Document[] = [];
+    const pdfDocs: Document[] = [];
+    const docxDocs: Document[] = [];
+    
+    docs.forEach(doc => {
+      if ((window as any).__preloadedDocumentCovers[doc.id]) return; // Skip cached
+      
+      const fileType = (doc as any).file_type || '';
+      const fileName = doc.original_filename.toLowerCase();
+      const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+      const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+      const isDOCX = 
+        fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        fileType === 'application/msword' ||
+        fileType.includes('word') ||
+        fileType.includes('document') ||
+        fileName.endsWith('.docx') ||
+        fileName.endsWith('.doc');
+      
+      if (isImage) imageDocs.push(doc);
+      else if (isPDF) pdfDocs.push(doc);
+      else if (isDOCX) docxDocs.push(doc);
+    });
+    
+    // Track if we've triggered first re-render
+    let hasTriggeredFirstRender = false;
+    
+    // Helper to preload a single document - triggers re-render on each success
+    const preloadSingleDoc = async (doc: Document, priority: 'high' | 'auto' = 'auto', triggerRender = true) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      try {
+        let downloadUrl: string | null = null;
+        if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
+          downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
+        } else if ((doc as any).s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
+        } else {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        if (!downloadUrl) return;
+        
+        const response = await fetch(downloadUrl, {
+          credentials: 'include',
+          // @ts-ignore
+          priority: priority
+        });
+        
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        
+        (window as any).__preloadedDocumentCovers[docId] = {
+          url: url,
+          type: blob.type,
+          timestamp: Date.now()
+        };
+        
+        // Trigger re-render immediately for first few, then batch for rest
+        if (triggerRender && !hasTriggeredFirstRender) {
+          hasTriggeredFirstRender = true;
+          setCachedCoversVersion(v => v + 1);
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // Helper to preload DOCX (requires upload to S3)
+    const preloadDocx = async (doc: Document) => {
+      const docId = doc.id;
+      if ((window as any).__preloadedDocumentCovers[docId]) return;
+      
+      try {
+        let downloadUrl: string | null = null;
+        if ((doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url) {
+          downloadUrl = (doc as any).url || (doc as any).download_url || (doc as any).file_url || (doc as any).s3_url || null;
+        } else if ((doc as any).s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((doc as any).s3_path)}`;
+        } else {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${doc.id}`;
+        }
+        
+        if (!downloadUrl) return;
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        
+        const blob = await response.blob();
+        const formData = new FormData();
+        formData.append('file', blob, doc.original_filename);
+        
+        const uploadResponse = await fetch(`${backendUrl}/api/documents/temp-preview`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData
+        });
+        
+        if (uploadResponse.ok) {
+          const data = await uploadResponse.json();
+          if (data.presigned_url) {
+            (window as any).__preloadedDocumentCovers[docId] = {
+              url: data.presigned_url,
+              type: 'docx',
+              isDocx: true,
+              timestamp: Date.now()
+            };
+            setCachedCoversVersion(v => v + 1);
+          }
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    };
+    
+    // FAST LOADING STRATEGY: Load ALL in parallel immediately
+    // Images, PDFs, and DOCX all start loading at the same time
+    const imagePromises = imageDocs.map((doc, i) => 
+      preloadSingleDoc(doc, i < 6 ? 'high' : 'auto', i < 3)
+    );
+    
+    const pdfPromises = pdfDocs.map((doc, i) => 
+      preloadSingleDoc(doc, i < 4 ? 'high' : 'auto', false)
+    );
+    
+    // DOCX files load in parallel immediately (no delay)
+    const docxPromises = docxDocs.map(doc => preloadDocx(doc));
+    
+    // Execute ALL in parallel - images, PDFs, and DOCX
+    Promise.allSettled([...imagePromises, ...pdfPromises, ...docxPromises]).then(() => {
+      setCachedCoversVersion(v => v + 1);
+    });
+  }, []);
+  
+  // Filter documents based on search query, active filter, and sort by created_at
+  // Memoized to prevent recalculation on every render (only when dependencies change)
+  const filteredDocuments = useMemo(() => {
+    return documents
     .filter(doc => {
-      if (!filesSearchQuery.trim()) return true;
+        // Search Filter
+        if (filesSearchQuery.trim()) {
       const query = filesSearchQuery.toLowerCase();
-      return doc.original_filename.toLowerCase().includes(query);
+          if (!doc.original_filename.toLowerCase().includes(query)) return false;
+        }
+
+        // Type Filter
+        const fileType = (doc as any).file_type || '';
+        const fileName = doc.original_filename.toLowerCase();
+        const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+        const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+
+        if (activeFilter === 'images') return isImage;
+        if (activeFilter === 'pdfs') return isPDF;
+        
+        return true;
     })
     .sort((a, b) => {
       // Sort by created_at descending (newest first) so new files appear at top of stack
@@ -908,19 +1672,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
       return dateB - dateA;
     });
+  }, [documents, filesSearchQuery, activeFilter]);
 
   // File upload handler
   const handleFileUpload = async (file: File) => {
     // CRITICAL: Capture property at the start to ensure we use the correct property_id
-    // This prevents leakage to other properties if property changes during upload
     const currentProperty = property;
     if (!currentProperty?.id) {
       setUploadError('No property selected');
       return;
     }
-
-    // Remember if modal was open before upload - use ref to avoid stale closure
-    const wasModalOpen = isFilesModalOpenRef.current;
 
     // Open files modal when upload starts so user can see the file appear
     setIsFilesModalOpen(true);
@@ -935,7 +1696,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
     try {
       // CRITICAL: Always use currentProperty (captured at start) to prevent property leakage
-      // Send property data so backend can create property if it doesn't exist
       const response = await backendApi.uploadPropertyDocumentViaProxy(
         file, 
         { 
@@ -949,203 +1709,32 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           const currentProgress = uploadProgressRef.current;
           // Allow updates if progress increased OR if we're starting from 0
           if (percent > currentProgress || (percent === 0 && currentProgress === 0)) {
-            console.log('📈 Progress callback called with:', percent, '(previous:', currentProgress, ')');
             uploadProgressRef.current = percent;
             setUploadProgress(percent);
-          } else {
-            console.log('📈 Progress callback ignored (would decrease or duplicate):', percent, '(current:', currentProgress, ')');
           }
         }
       );
       
       if (response.success) {
-        // Get current progress from ref (most up-to-date value)
         const currentProgress = uploadProgressRef.current;
-        // Upload is complete, but file hasn't appeared yet
-        // Progress should be at 90% (capped during upload)
-        // We'll set it to 95% to show we're processing, then 100% when file appears
         if (currentProgress < 95) {
-          console.log('📊 Upload complete, setting progress to 95% (was:', currentProgress, ', waiting for file to appear)');
           uploadProgressRef.current = 95;
           setUploadProgress(95);
-        } else {
-          console.log('📊 Upload complete, keeping progress at:', currentProgress, '(waiting for file to appear)');
         }
         
         // CRITICAL: Reload documents for the property we uploaded to (use captured currentProperty)
         const propertyId = currentProperty.id;
         try {
-          const response = await backendApi.getPropertyHubDocuments(propertyId);
-          let documentsToUse = null;
-          
-          // Backend returns: { success: true, data: { documents: [...] } }
-          // backendApi.fetchApi wraps it: { success: true, data: { success: true, data: { documents: [...] } } }
-          // So we need to check response.data.data.documents
-          if (response && response.success && response.data) {
-            // Check for nested structure: response.data.data.documents
-            if (response.data.data && response.data.data.documents && Array.isArray(response.data.data.documents)) {
-              documentsToUse = response.data.data.documents;
-            } 
-            // Check for direct documents in response.data
-            else if (response.data.documents && Array.isArray(response.data.documents)) {
-              documentsToUse = response.data.documents;
-            } 
-            // Check if response.data is an array
-            else if (Array.isArray(response.data)) {
-              documentsToUse = response.data;
-            }
-          } else if (response && (response as any).documents && Array.isArray((response as any).documents)) {
-            // Fallback: handle unwrapped format
-            documentsToUse = (response as any).documents;
-          } else if (Array.isArray(response)) {
-            // Fallback: handle direct array
-            documentsToUse = response;
-          }
-          
-          if (documentsToUse && documentsToUse.length > 0) {
-            // Store in preloaded files
-            if (!(window as any).__preloadedPropertyFiles) {
-              (window as any).__preloadedPropertyFiles = {};
-            }
-            (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
-            
-            // Update documents state - this is when file appears in UI
-            // Use a small delay to ensure React has rendered the file before setting to 100%
-            setDocuments(documentsToUse);
-            setHasFilesFetched(true);
-            setUploadError(null);
-            
-            // Save to recent projects after successful file upload (user interaction)
-            // Use currentProperty (captured at start) to ensure correct property
-            if (currentProperty) {
-              saveToRecentProjects({
-                ...currentProperty,
-                documentCount: documentsToUse.length
-              });
-            }
-            
-            // Invalidate property pins cache - new properties might have been created
-            // This ensures new pins appear immediately on the map
-            try {
-              const pinsCacheKey = 'propertyPinsCache';
-              localStorage.removeItem(pinsCacheKey);
-              console.log('✅ Invalidated property pins cache after file upload (new property may have been created)');
-              
-              // Refetch pins in background to update the map
-              backendApi.getPropertyPins()
-                .then((pinsResponse) => {
-                  if (pinsResponse && pinsResponse.success && Array.isArray(pinsResponse.data)) {
-                    const transformedProperties = pinsResponse.data.map((pin: any) => {
-                      return {
-                        id: pin.id,
-                        address: pin.address || '',
-                        postcode: '',
-                        property_type: '',
-                        bedrooms: 0,
-                        bathrooms: 0,
-                        soldPrice: 0,
-                        rentPcm: 0,
-                        askingPrice: 0,
-                        price: 0,
-                        square_feet: 0,
-                        days_on_market: 0,
-                        latitude: pin.latitude,
-                        longitude: pin.longitude,
-                        summary: '',
-                        features: '',
-                        condition: 8,
-                        epc_rating: '',
-                        tenure: '',
-                        transaction_date: '',
-                        similarity: 90,
-                        image: "/property-1.png",
-                        agent: {
-                          name: "John Bell",
-                          company: "harperjamesproperty36"
-                        },
-                        documentCount: 0,
-                        completenessScore: 0
-                      };
-                    });
-                    
-                    // Update in-memory cache
-                    (window as any).__preloadedProperties = transformedProperties;
-                    
-                    // Update localStorage cache
-                    localStorage.setItem(pinsCacheKey, JSON.stringify({
-                      data: transformedProperties,
-                      timestamp: Date.now()
-                    }));
-                    
-                    console.log(`✅ Refreshed property pins cache (${transformedProperties.length} pins) - new properties will appear on map`);
-                    
-                    // Trigger map refresh if SquareMap is listening
-                    window.dispatchEvent(new CustomEvent('propertyPinsUpdated', { 
-                      detail: { pins: transformedProperties } 
-                    }));
-                  }
-                })
-                .catch((error) => {
-                  console.warn('Failed to refresh pins cache after upload:', error);
-                });
-            } catch (e) {
-              console.warn('Failed to invalidate pins cache:', e);
-            }
-            
-            // Invalidate property card cache so it refreshes with new document count
-            const cacheKey = `propertyCardCache_${propertyId}`;
-            try {
-              localStorage.removeItem(cacheKey);
-              console.log('✅ Invalidated property card cache after file upload');
-              
-              // Fetch fresh card summary to update cache
-              backendApi.getPropertyCardSummary(propertyId, false)
-                .then((response) => {
-                  if (response.success && response.data) {
-                    // Transform and update cache
-                    const transformedData = {
-                      ...property,
-                      ...response.data,
-                      address: response.data.address || property.address,
-                      bedrooms: response.data.number_bedrooms || property.bedrooms || 0,
-                      bathrooms: response.data.number_bathrooms || property.bathrooms || 0,
-                      documentCount: response.data.document_count || documentsToUse.length,
-                      rentPcm: response.data.rent_pcm || property.rentPcm || 0,
-                      soldPrice: response.data.sold_price || property.soldPrice || 0,
-                      askingPrice: response.data.asking_price || property.askingPrice || 0,
-                    };
-                    setCachedPropertyData(transformedData);
-                    localStorage.setItem(cacheKey, JSON.stringify({
-                      data: transformedData,
-                      timestamp: Date.now(),
-                      cacheVersion: (response as any).cache_version || 1
-                    }));
-                  }
-                })
-                .catch((error) => {
-                  console.warn('Failed to refresh cache after upload:', error);
-                });
-            } catch (e) {
-              console.warn('Failed to invalidate cache:', e);
-            }
+          await loadPropertyDocuments(); // Reload documents
             
             // Wait for React to render the file, then set progress to 100%
-            // Use requestAnimationFrame to ensure DOM has updated
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
-                // Double RAF ensures React has finished rendering
                 const finalProgress = uploadProgressRef.current;
                 if (finalProgress < 100) {
-                  console.log('📊 File rendered in UI, setting progress to 100% (was:', finalProgress, ')');
                   uploadProgressRef.current = 100;
                   setUploadProgress(100);
-                } else {
-                  console.log('📊 File rendered in UI, progress already at:', finalProgress);
                 }
-                
-                // Keep modal open (we opened it at the start of upload)
-              setIsFilesModalOpen(true);
-                isFilesModalOpenRef.current = true;
                 
                 // Wait a moment to show 100%, then reset
                 setTimeout(() => {
@@ -1155,61 +1744,19 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                 }, 300);
               });
             });
-          } else {
-            // No documents found, but upload succeeded
-            // Set to 100% since upload completed (even if file not found)
-            const currentProgress = uploadProgressRef.current;
-            if (currentProgress < 100) {
-              uploadProgressRef.current = 100;
-              setUploadProgress(100);
-            }
-            setTimeout(() => {
-              setUploading(false);
-              setUploadProgress(0);
-              uploadProgressRef.current = 0;
-            }, 300);
-          }
         } catch (error) {
           console.error('Error reloading documents:', error);
           setUploadError('Upload successful but failed to reload file list');
-          // Set to 100% since upload completed (even if reload failed)
-          const currentProgress = uploadProgressRef.current;
-          if (currentProgress < 100) {
-            uploadProgressRef.current = 100;
-            setUploadProgress(100);
-          }
-          setTimeout(() => {
             setUploading(false);
-            setUploadProgress(0);
-            uploadProgressRef.current = 0;
-          }, 300);
         }
       } else {
         setUploadError(response.error || 'Upload failed');
-        const currentProgress = uploadProgressRef.current;
-        if (currentProgress < 100) {
-          uploadProgressRef.current = 100;
-          setUploadProgress(100);
-        }
-        setTimeout(() => {
           setUploading(false);
-          setUploadProgress(0);
-          uploadProgressRef.current = 0;
-        }, 300);
       }
     } catch (error) {
       console.error('Error uploading file:', error);
       setUploadError(error instanceof Error ? error.message : 'Upload failed');
-      const currentProgress = uploadProgressRef.current;
-      if (currentProgress < 100) {
-        uploadProgressRef.current = 100;
-        setUploadProgress(100);
-      }
-      setTimeout(() => {
       setUploading(false);
-        setUploadProgress(0);
-        uploadProgressRef.current = 0;
-      }, 300);
     }
   };
 
@@ -1229,1320 +1776,1590 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
 
   // Expanded Card View Component - shows document preview within container
-  const ExpandedCardView: React.FC<{
-    selectedDoc: Document | undefined;
-    onClose: () => void;
-    onDocumentClick: (doc: Document) => void;
-  }> = ({ selectedDoc, onClose, onDocumentClick }) => {
-    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-    const [blobType, setBlobType] = useState<string | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [imageError, setImageError] = useState(false);
-    const createdBlobUrlRef = useRef<string | null>(null); // Track if we created this blob URL
-    const isLoadingRef = useRef(false); // Prevent race conditions
-    const currentDocIdRef = useRef<string | null>(null); // Track current document ID
-    
+  // Memoized to prevent re-renders when parent layout changes (e.g., chat panel opens/closes)
+  // Reset fullscreen when document changes
+  const previousCardIndexRef = useRef<number | null>(null);
     useEffect(() => {
-      if (!selectedDoc) {
-        setPreviewUrl(null);
-        setBlobType(null);
-        setLoading(false);
-        setError(null);
-        setImageError(false);
-        createdBlobUrlRef.current = null;
-        isLoadingRef.current = false;
-        currentDocIdRef.current = null;
-        return;
-      }
-      
-      // If this is the same document we're already showing, don't reload
-      if (currentDocIdRef.current === selectedDoc.id && previewUrl) {
-        setLoading(false);
-        return;
-      }
-      
-      // Prevent multiple simultaneous loads
-      if (isLoadingRef.current) {
-        return;
-      }
-      
-      // Update current doc ID
-      currentDocIdRef.current = selectedDoc.id;
-      
-      const loadPreview = async () => {
-        try {
-          isLoadingRef.current = true;
-          setLoading(true);
-          setError(null);
-          setImageError(false);
-          
-          // First, check for preloaded blob URL (Instagram-style preloading)
-          const preloadedBlob = (window as any).__preloadedDocumentBlobs?.[selectedDoc.id];
-          if (preloadedBlob && preloadedBlob.url) {
-            console.log('✅ Using preloaded blob for document:', selectedDoc.id);
-            setPreviewUrl(preloadedBlob.url);
-            setBlobType(preloadedBlob.type);
-            setLoading(false);
-            isLoadingRef.current = false;
-            createdBlobUrlRef.current = null; // We didn't create this one
-            return;
-          }
-          
-          // If not preloaded, fetch it now
-          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-          let downloadUrl: string | null = null;
-          
-          if ((selectedDoc as any).url || (selectedDoc as any).download_url || (selectedDoc as any).file_url || (selectedDoc as any).s3_url) {
-            downloadUrl = (selectedDoc as any).url || (selectedDoc as any).download_url || (selectedDoc as any).file_url || (selectedDoc as any).s3_url || null;
-          } else if ((selectedDoc as any).s3_path) {
-            downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((selectedDoc as any).s3_path)}`;
-          } else {
-            downloadUrl = `${backendUrl}/api/files/download?document_id=${selectedDoc.id}`;
-          }
-          
-          if (!downloadUrl) {
-            throw new Error('No download URL available');
-          }
-          
-          const response = await fetch(downloadUrl, {
-            credentials: 'include'
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Failed to load: ${response.status}`);
-          }
-          
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          createdBlobUrlRef.current = url; // Track that we created this URL
-          
-          // Cache it for future use
-          if (!(window as any).__preloadedDocumentBlobs) {
-            (window as any).__preloadedDocumentBlobs = {};
-          }
-          (window as any).__preloadedDocumentBlobs[selectedDoc.id] = {
-            url: url,
-            type: blob.type,
-            timestamp: Date.now()
-          };
-          
-          setPreviewUrl(url);
-          setBlobType(blob.type);
-          setLoading(false);
-          isLoadingRef.current = false;
-        } catch (err: any) {
-          console.error('Error loading preview:', err);
-          setError(err.message || 'Failed to load preview');
-          setLoading(false);
-          isLoadingRef.current = false;
-          createdBlobUrlRef.current = null;
-        }
-      };
-      
-      loadPreview();
-      
-      return () => {
-        // Don't cleanup here - let the cleanup effect handle it
-      };
-    }, [selectedDoc]);
-    
-    // Cleanup preview URL when component unmounts or doc changes
-    // Only revoke URLs that we created and aren't in the cache
-    useEffect(() => {
-      const currentCreatedUrl = createdBlobUrlRef.current;
-      const currentDocId = selectedDoc?.id;
-      
-      return () => {
-        // Only revoke if we created this blob URL AND it's not in the cache
-        if (currentCreatedUrl && currentDocId) {
-          const cachedBlob = (window as any).__preloadedDocumentBlobs?.[currentDocId];
-          // Only revoke if it's not in cache (meaning it was a one-time use)
-          if (!cachedBlob || cachedBlob.url !== currentCreatedUrl) {
-            try {
-              URL.revokeObjectURL(currentCreatedUrl);
-            } catch (e) {
-              // URL might already be revoked, ignore
-            }
-          }
-        }
-        createdBlobUrlRef.current = null;
-      };
-    }, [selectedDoc?.id]);
-    
-    if (!selectedDoc) return null;
-    
-    const fileType = (selectedDoc as any).file_type || '';
-    const fileName = selectedDoc.original_filename.toLowerCase();
-    
-    // More robust image detection - check file_type, blob type, and filename
-    const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf') || blobType?.includes('pdf');
-    const isImage = 
-      fileType.includes('image') || 
-      blobType?.startsWith('image/') ||
-      fileName.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i) ||
-      fileName.includes('screenshot');
-    
-    return (
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={`expanded-${selectedDoc.id}`}
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.95 }}
-          transition={{ duration: 0.3 }}
-          className="absolute inset-0 bg-white flex flex-col"
-          style={{ borderRadius: '0.5rem' }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              onClose();
-            }
+    if (selectedCardIndex !== null && previousCardIndexRef.current !== null && previousCardIndexRef.current !== selectedCardIndex) {
+      setIsFullscreen(false); // Reset fullscreen when switching to a different document
+    }
+    previousCardIndexRef.current = selectedCardIndex;
+  }, [selectedCardIndex]);
+
+  // Reset image preview when property changes
+  useEffect(() => {
+    setSelectedImageIndex(null);
+  }, [property?.id]);
+
+  // Reset image preview when property changes
+  useEffect(() => {
+    setSelectedImageIndex(null);
+  }, [property?.id]);
+
+  // Memoized callback to close preview - stable reference prevents re-renders
+  const handleClosePreview = useCallback(() => {
+    setSelectedCardIndex(null);
+    setIsFullscreen(false); // Reset fullscreen when closing preview
+  }, []);
+
+  // Memoize the selected document to ensure stable reference
+  // Only recalculate when filteredDocuments or selectedCardIndex changes
+  const selectedDocument = useMemo(() => {
+    if (selectedCardIndex === null || !filteredDocuments[selectedCardIndex]) {
+      return undefined;
+    }
+    return filteredDocuments[selectedCardIndex];
+  }, [filteredDocuments, selectedCardIndex]);
+
+
+  if (!isVisible) return null;
+
+  return createPortal(
+    <AnimatePresence>
+      {isVisible && (
+        <div 
+          className="fixed inset-0 z-[9999] flex items-center justify-center font-sans pointer-events-none transition-all duration-300 ease-out" 
+          style={{ 
+            pointerEvents: 'none',
           }}
         >
-          {/* Close Button */}
+          {/* Backdrop Removed - Allow clicking behind */}
+
+          {/* Main Window - Compact Grid Layout (Artboard Style) */}
+          <motion.div
+            layout={selectedCardIndex === null} // Only enable layout animations when preview is NOT open
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ 
+              opacity: 1, 
+              scale: 1, 
+              y: 0
+            }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            transition={{ 
+              duration: selectedCardIndex === null ? 0.4 : 0.2, // Faster transition when preview is open
+              ease: [0.25, 0.8, 0.25, 1],
+              layout: { duration: 0.3 } // Smooth layout transitions
+            }}
+            className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
+            style={{ 
+              // Switch to fixed positioning in chat mode to reliably fill screen
+              position: isChatPanelOpen ? 'fixed' : 'relative',
+              
+              // Chat Mode: Anchored to screen edges (sidebar + margins)
+              left: isChatPanelOpen ? `${Math.max(chatPanelWidth, 320) + 22}px` : 'auto', // 320px width + 20px margin + 8px gap
+              right: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
+              top: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
+              bottom: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
+              width: isChatPanelOpen ? 'auto' : '800px',
+              height: isChatPanelOpen ? 'auto' : '600px',
+              transition: 'none', // No transition for width changes - instant like chat
+              
+              // Normal Mode: Centered with margins
+              marginBottom: isChatPanelOpen ? '0' : '15vh',
+              
+              // Reset constraints
+              maxWidth: isChatPanelOpen ? 'none' : '90vw', 
+              maxHeight: isChatPanelOpen ? 'none' : '85vh',
+              
+              display: 'flex',
+              flexDirection: 'column',
+              zIndex: 9999,
+              // Optimize rendering during layout changes
+              willChange: selectedCardIndex !== null ? 'auto' : 'transform'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Section Picker - File Tab Style (Fixed) - Draggable */}
+            <div className="px-6 pt-4 pb-2 bg-white border-b border-gray-100 relative" style={{ zIndex: 1 }}>
+              <div className="flex items-end justify-between gap-1">
+                <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
+                {displayOrder.map((section, index) => {
+                  const isActive = activeSection === section;
+                  const sectionConfig = {
+                    documents: {
+                      label: 'Documents',
+                      icon: FileText,
+                    },
+                    propertyDetails: {
+                      label: 'Property Details',
+                      icon: Building2,
+                    },
+                  }[section];
+                  const IconComponent = sectionConfig.icon;
+                  
+                  return (
+                    <button
+                      key={section}
+                      draggable
+                      onDragStart={(e) => {
+                        // Cancel any pending animation frame
+                        if (rafIdRef.current !== null) {
+                          cancelAnimationFrame(rafIdRef.current);
+                          rafIdRef.current = null;
+          }
+                        // Store the original index and section from sectionOrder (not displayOrder)
+                        const originalIndex = sectionOrder.indexOf(section);
+                        setDraggedTabIndex(originalIndex);
+                        setDraggedSection(section);
+                        setPreviewOrder(null); // Clear any previous preview
+                        setDragOverSection(null);
+                        lastDragOverSectionRef.current = null; // Reset ref
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', section);
+                        (e.currentTarget as HTMLElement).style.opacity = '0.5';
+                      }}
+                      onDragEnd={(e) => {
+                        // Cancel any pending animation frame
+                        if (rafIdRef.current !== null) {
+                          cancelAnimationFrame(rafIdRef.current);
+                          rafIdRef.current = null;
+        }
+                        // If we have a preview order, commit it
+                        if (previewOrder) {
+                          setSectionOrder(previewOrder);
+                        }
+                        setDraggedTabIndex(null);
+                        setDraggedSection(null);
+                        setDragOverSection(null);
+                        setPreviewOrder(null);
+                        lastDragOverSectionRef.current = null; // Reset ref
+                        (e.currentTarget as HTMLElement).style.opacity = '1';
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'move';
+                        
+                        // Use refs to check state (avoids stale closures)
+                        const currentDraggedSection = draggedSectionRef.current;
+                        if (currentDraggedSection !== null && section !== currentDraggedSection) {
+                          // Only update if we've moved to a different section
+                          // This prevents rapid re-renders and state updates
+                          if (lastDragOverSectionRef.current !== section) {
+                            lastDragOverSectionRef.current = section;
+                            // Throttle updates using requestAnimationFrame
+                            updatePreviewOrder(section);
+                          }
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        // Only clear if we're actually leaving the tab area
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = e.clientX;
+                        const y = e.clientY;
+                        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                          setDragOverSection(null);
+                          lastDragOverSectionRef.current = null; // Reset ref
+                          // Revert to original order when leaving
+                          setPreviewOrder(null);
+            }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
+                        // Cancel any pending RAF
+                        if (rafIdRef.current !== null) {
+                          cancelAnimationFrame(rafIdRef.current);
+                          rafIdRef.current = null;
+                        }
+                        
+                        // Get current values from refs
+                        const currentDraggedSection = draggedSectionRef.current;
+                        const currentSectionOrder = sectionOrderRef.current;
+    
+                        // Always calculate the final order based on where we dropped
+                        // This ensures it works even if RAF hasn't completed yet
+                        if (currentDraggedSection !== null && section !== currentDraggedSection) {
+                          const finalOrder = [...currentSectionOrder];
+                          const draggedIndex = finalOrder.indexOf(currentDraggedSection);
+                          finalOrder.splice(draggedIndex, 1);
+                          const targetIndex = currentSectionOrder.indexOf(section);
+                          finalOrder.splice(targetIndex, 0, currentDraggedSection);
+                          setSectionOrder(finalOrder);
+                        } else {
+                          // If no valid drop, use preview order if available, otherwise keep current
+                          const currentPreviewOrder = previewOrderRef.current;
+                          if (currentPreviewOrder) {
+                            setSectionOrder(currentPreviewOrder);
+                          }
+                        }
+                        
+                        setDraggedTabIndex(null);
+                        setDraggedSection(null);
+                        setDragOverSection(null);
+                        setPreviewOrder(null);
+                        lastDragOverSectionRef.current = null; // Reset ref
+                      }}
+                      onClick={() => setActiveSection(section)}
+                      className={`
+                        flex items-center gap-2 px-3 py-2 text-sm font-medium cursor-pointer transition-all relative
+                        ${isActive 
+                          ? 'bg-white text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
+                          : 'text-gray-500 hover:text-gray-700 bg-gray-50 border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-gray-100'
+                        }
+                        ${dragOverSection === section ? 'border-blue-400 border-2' : ''}
+                        flex-shrink-0
+                      `}
+                      style={{
+                        marginBottom: isActive ? '-1px' : '0',
+                        zIndex: isActive ? 10 : 1,
+                        minWidth: 'fit-content',
+                        maxWidth: 'none',
+                        width: 'auto',
+                        flexBasis: 'auto',
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
+                        flexGrow: 0,
+                        boxSizing: 'border-box',
+                        display: 'inline-flex',
+                        userSelect: 'none',
+                        WebkitUserSelect: 'none',
+                        touchAction: 'none',
+                        position: 'relative',
+                      }}
+                    >
+                      {/* Icon */}
+                      <IconComponent className={`flex-shrink-0 ${isActive ? 'text-gray-900' : 'text-gray-500'}`} style={{ width: '12px', height: '12px', minWidth: '12px', minHeight: '12px', maxWidth: '12px', maxHeight: '12px', flexShrink: 0, pointerEvents: 'none' }} />
+                      {/* Section name */}
+                      <span 
+                        className={`text-xs ${isActive ? 'text-gray-900' : 'text-gray-600'}`}
+                        style={{ 
+                          fontSize: '12px', 
+                          lineHeight: '1.2',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          flexShrink: 0,
+                          minWidth: 0,
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {sectionConfig.label}
+                      </span>
+                      {isActive && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white" />
+                      )}
+                    </button>
+                  );
+                })}
+                  </div>
+                
+                {/* Close Button - Aligned with section tabs in top right */}
           <button
             onClick={onClose}
-            className="absolute top-3 right-3 z-50 p-1.5 hover:bg-gray-100 rounded transition-colors"
-            style={{ backgroundColor: 'rgba(255, 255, 255, 0.9)' }}
-          >
-            <X className="w-4 h-4 text-gray-400" />
-          </button>
-          
-          {/* Preview Content Area */}
-          <div className="flex-1 overflow-auto bg-white" style={{ minHeight: 0 }}>
-            {loading && (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-sm text-gray-500">Loading preview...</div>
-            </div>
-            )}
-            {error && (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-sm text-red-500">{error}</div>
-              </div>
-            )}
-            {previewUrl && !loading && !error && (
-              <div className="w-full h-full flex items-center justify-center p-4">
-                {isPDF ? (
-                  <iframe
-                    src={previewUrl}
-                    className="w-full h-full border-0"
-                    style={{ minHeight: '400px' }}
-                    title={selectedDoc.original_filename}
-                  />
-                ) : isImage ? (
-                  <img
-                    src={previewUrl}
-                    alt={selectedDoc.original_filename}
-                    className="max-w-full max-h-full object-contain"
-                    style={{ maxHeight: '100%' }}
-                    onError={(e) => {
-                      console.error('Image failed to load:', selectedDoc.original_filename);
-                      setImageError(true);
-                    }}
-                    onLoad={() => {
-                      setImageError(false);
-                    }}
-                  />
-                ) : imageError ? (
-                  <div className="flex flex-col items-center justify-center h-full">
-                    <FileText className="w-16 h-16 text-gray-400 mb-4" />
-                    <p className="text-sm text-gray-500 mb-2">{selectedDoc.original_filename}</p>
-                    <p className="text-xs text-red-500 mb-4">Failed to load image</p>
-                    <button
-                      onClick={() => onDocumentClick(selectedDoc)}
-                      className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm"
-                    >
-                      Open in Preview
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full">
-                    <FileText className="w-16 h-16 text-gray-400 mb-4" />
-                    <p className="text-sm text-gray-500 mb-2">{selectedDoc.original_filename}</p>
-                    <button
-                      onClick={() => onDocumentClick(selectedDoc)}
-                      className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-sm"
-                    >
-                      Open in Preview
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </motion.div>
-      </AnimatePresence>
-    );
-  };
-
-  return (
-    <>
-      <AnimatePresence>
-        <motion.div
-          ref={panelRef}
-          initial={{ opacity: 0, y: 0 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 0 }}
-          transition={{ duration: 0.1 }}
-          className="fixed z-[100] flex flex-col"
-          style={{ 
-            backgroundColor: 'transparent',
-            width: `${panelWidth}px`,
-            maxWidth: '420px',
-            minWidth: '280px',
-            maxHeight: `${panelMaxHeight}px`,
-            bottom: `${panelBottom}px`,
-            right: `${panelRight}px`,
-            cursor: isSelectionModeActive ? 'pointer' : 'default'
-          }}
-          data-property-panel
-          onClick={(e) => {
-            if (isSelectionModeActive && property) {
-              // Check if click is on a button - if so, prevent selection
-              const target = e.target as HTMLElement;
-              if (target.closest('button') || target.closest('a')) {
-                return; // Don't select if clicking a button
-              }
-              
-              e.stopPropagation();
-              if (onPropertySelect) {
-                onPropertySelect(property as PropertyData);
-              } else {
-                addPropertyAttachment(property as PropertyData);
-              }
-            }
-          }}
-        >
-        {/* Card Container - Modern White Card - Matching database white */}
-        <motion.div 
-          className={`bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden border relative ${
-            isPropertySelected 
-              ? 'border-green-500 border-2' 
-              : isSelectionModeActive 
-                ? 'border-blue-500 border-2' 
-                : 'border-gray-200'
-          }`}
-          style={{ 
-            backgroundColor: '#ffffff',
-            filter: 'none', // Remove any filters that might affect brightness
-            opacity: 1, // Ensure full opacity
-            height: `${panelHeight}px`, // Fixed height - default collapsed size, don't grow with content
-            maxHeight: `${panelMaxHeight}px`, // Ensure it never exceeds max height
-            borderColor: isPropertySelected
-              ? '#22c55e'
-              : isSelectionModeActive 
-                ? '#3b82f6' 
-                : '#e5e7eb',
-            borderWidth: (isSelectionModeActive || isPropertySelected) ? '2px' : '1px',
-            borderStyle: 'solid',
-            pointerEvents: isSelectionModeActive ? 'auto' : 'auto',
-          }}
-          layout={false}
-        >
-          
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileInputChange}
-          />
-          {/* Scrollable Content Container */}
-          <div className="flex-1 relative flex flex-col" style={{ minHeight: 0, overflow: 'hidden' }}>
-            {/* Files Overlay - White background covering property information */}
-            <AnimatePresence>
-              {isFilesModalOpen && hasFilesFetched && documents.length > 0 && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute inset-0 bg-white z-50 flex flex-col"
-                  style={{ borderRadius: '0.5rem', overflow: 'hidden' }}
-                  onDragOver={(e) => {
-                    if (draggedDocumentId) {
-                      e.preventDefault();
-                    }
+                  className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                  title="Close Panel"
+                  style={{
+                    marginBottom: '0px', // Align with tabs, no negative margin
+                    zIndex: 10,
                   }}
                 >
-                  {/* Files Header */}
-                  <div className="px-4 pt-3 pb-2 border-b border-gray-200 flex-shrink-0">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="text-sm font-semibold text-gray-900">Property Files</h3>
-                      <button
-                        onClick={() => setIsFilesModalOpen(false)}
-                        className="p-1.5 hover:bg-gray-100 rounded transition-colors"
-                      >
-                        <X className="w-4 h-4 text-gray-400" />
-                      </button>
-                    </div>
-                    {/* Search bar */}
-                    <div className="relative">
+                  <X size={16} />
+          </button>
+                  </div>
+              </div>
+
+            {/* Header Area - Clean & Minimal */}
+            <div className="px-6 bg-white">
+              <div className="flex items-center gap-3">
+                {activeSection === 'documents' && (
+                  <div className="flex items-center gap-2 text-xs text-gray-400">
+                    <span>Documents</span>
+                    <span className="font-medium">{filteredDocuments.length}</span>
+            </div>
+            )}
+
+                {activeSection === 'documents' && (
+                  <>
+                    <div className="relative flex-1 group">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
                       <input
                         type="text"
                         placeholder="Search documents..."
                         value={filesSearchQuery}
                         onChange={(e) => setFilesSearchQuery(e.target.value)}
-                        className="w-full h-7 px-2.5 pr-8 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300 focus:border-gray-300 bg-white placeholder:text-gray-400"
-                      />
-                      {filesSearchQuery && (
-                        <button
-                          onClick={() => setFilesSearchQuery('')}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 hover:bg-gray-100 rounded transition-colors"
-                        >
-                          <X className="w-3 h-3 text-gray-400" />
-                        </button>
-                      )}
-                      {!filesSearchQuery && (
-                        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
-                          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                          </svg>
-                        </div>
-                      )}
-                    </div>
+                        className="w-full bg-gray-50 hover:bg-gray-100 focus:bg-white border border-gray-200 focus:border-blue-500 rounded-lg py-1.5 pl-9 pr-3 text-xs text-gray-900 placeholder-gray-400 focus:outline-none transition-all h-8"
+                  />
+                          </div>
+                
+                    <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
+                    <button
+                            onClick={() => {
+                          setIsLocalSelectionMode(!isLocalSelectionMode);
+                          // Clear local selection when toggling off
+                          if (isLocalSelectionMode) {
+                            setLocalSelectedDocumentIds(new Set());
+                          }
+                        }}
+                        className={`p-2 rounded-lg border transition-all ${
+                          isLocalSelectionMode 
+                            ? 'bg-blue-50 border-blue-200 text-blue-600' 
+                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                        }`}
+                        title="Select documents to delete"
+                      >
+                        <SquareMousePointer size={18} />
+                    </button>
                   </div>
+                  </>
+                )}
+                
+                {/* Fullscreen Toggle Button - Always visible in top right when document is open */}
+                {selectedCardIndex !== null && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsFullscreen(!isFullscreen);
+                    }}
+                    className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                    title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+                  >
+                    {isFullscreen ? (
+                      <Minimize2 className="w-4 h-4" />
+                    ) : (
+                      <Maximize2 className="w-4 h-4" />
+                        )}
+                      </button>
+                )}
+                  </div>
+                
+              {/* Filter Pills - Only show in documents section */}
+              {activeSection === 'documents' && (
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-3 scrollbar-hide">
+                    <button
+                    onClick={() => setActiveFilter('all')}
+                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                      activeFilter === 'all' 
+                        ? 'bg-[#F3F4F6] text-gray-900' 
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button 
+                    onClick={() => setActiveFilter('images')}
+                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                      activeFilter === 'images' 
+                        ? 'bg-[#F3F4F6] text-gray-900' 
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
+                  }`}
+                  >
+                    Images
+                  </button>
+                  <button 
+                    onClick={() => setActiveFilter('pdfs')}
+                    className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                      activeFilter === 'pdfs' 
+                        ? 'bg-[#F3F4F6] text-gray-900' 
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100 bg-transparent'
+                    }`}
+                  >
+                    PDFs
+                    </button>
+                  </div>
+                )}
+              </div>
                   
-                  {/* Delete Zone - Appears when dragging */}
-                  {typeof document !== 'undefined' && createPortal(
+            {/* Content Area - Both sections rendered, inactive one hidden to preserve state */}
+            {/* Documents Section - hidden when not active to prevent PDF iframe reload */}
+              <div className={`flex-1 bg-white relative ${activeSection !== 'documents' ? 'hidden' : ''} ${selectedCardIndex !== null ? 'overflow-hidden' : 'overflow-y-auto p-6'}`}>
+              {/* Delete Zone */}
                     <AnimatePresence>
                       {isDraggingToDelete && draggedDocumentId && (
                         <motion.div
-                          initial={{ opacity: 0, scale: 0.9 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.9 }}
-                          className="fixed bottom-6 right-6 z-[200] bg-red-500 rounded-full p-4 shadow-2xl cursor-pointer"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 20 }}
+                    className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] bg-red-50 text-red-600 px-8 py-4 rounded-full shadow-lg border-2 border-red-100 flex items-center gap-3"
                           onDragOver={handleDeleteZoneDragOver}
                           onDragLeave={handleDeleteZoneDragLeave}
                           onDrop={handleDeleteZoneDrop}
-                          style={{ pointerEvents: 'auto' }}
-                          whileHover={{ scale: 1.1 }}
-                          transition={{ duration: 0.2 }}
                         >
-                          <Trash2 className="w-8 h-8 text-white" />
-                        </motion.div>
+                    <Trash2 className="w-5 h-5" />
+                    <span className="font-medium">Drop to delete</span>
+        </motion.div>
                       )}
-                    </AnimatePresence>,
-                    document.body
-                  )}
-                  
-                  {/* Filing Cabinet Cards - Scrollable */}
-                  <div className="flex-1 px-4 py-3 overflow-y-auto" style={{ position: 'relative', minHeight: 0 }}>
+      </AnimatePresence>
+
+                    {/* Document Grid - Always rendered but hidden when preview is open */}
+                    <div className={selectedCardIndex !== null ? 'hidden' : ''}>
                     {filteredDocuments.length === 0 ? (
-                      <div className="flex items-center justify-center" style={{ minHeight: '200px' }}>
-                        <div className="text-sm text-gray-500">No documents match your search</div>
+                        <div className="h-full flex flex-col items-center justify-center text-gray-500">
+                          <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
+                            <Search size={32} className="text-gray-300" />
+                  </div>
+                          <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
+                          <p className="text-sm text-gray-500">Try adjusting your search or upload a new file.</p>
                       </div>
-                    ) : selectedCardIndex !== null ? (
-                      <ExpandedCardView
-                        selectedDoc={filteredDocuments[selectedCardIndex]}
-                        onClose={() => setSelectedCardIndex(null)}
-                        onDocumentClick={handleDocumentClick}
-                      />
                     ) : (
-                      // Filing Cabinet Stacked Cards View - Clean Implementation
                       <div 
-                        className="relative w-full"
+                          className="grid gap-6 pb-20" 
                         style={{ 
-                          minHeight: '400px',
-                          // Calculate height to fit all cards: top padding + (number of cards * spacing) + bottom padding
-                          // Ensure enough space so top file is always visible
-                          height: `${Math.max(400, 150 + (filteredDocuments.length * 42) + 60)}px`,
-                          paddingTop: '150px', // Top padding so top file has space above it
-                          paddingBottom: '60px', // Bottom padding for better spacing
-                          position: 'relative',
-                          perspective: '500px',
-                          perspectiveOrigin: 'center bottom'
-                        }}
-                      >
-                        {/* SVG definitions for rounded trapezoid clip-paths */}
-                        <svg width="0" height="0" style={{ position: 'absolute' }}>
-                          <defs>
-                            {filteredDocuments.map((doc) => (
-                              <clipPath key={doc.id} id={`roundedTrapezoid-${doc.id}`} clipPathUnits="objectBoundingBox">
-                                {/* Rounded trapezoid: narrower at top (2% to 98%), wider at bottom (5% to 95%), with 3% corner radius */}
-                                <path d="M 0.02,0.03 
-                                        Q 0.02,0 0.05,0 
-                                        L 0.95,0 
-                                        Q 0.98,0 0.98,0.03 
-                                        L 0.95,0.97 
-                                        Q 0.95,1 0.92,1 
-                                        L 0.08,1 
-                                        Q 0.05,1 0.05,0.97 
-                                        Z" />
-                              </clipPath>
-                            ))}
-                          </defs>
-                        </svg>
+                            gridTemplateColumns: 'repeat(auto-fill, 160px)',
+                            justifyContent: 'flex-start'
+                          }}
+                        >
+                        {/* Add New Document Card */}
+                        <div
+                          className="group relative bg-white border border-gray-200 hover:border-gray-300 hover:shadow-lg cursor-pointer flex flex-col overflow-hidden"
+                          style={{
+                            width: '160px',
+                            height: '213px', // 3:4 aspect ratio (160 * 4/3)
+                            aspectRatio: '3/4',
+                          }}
+                          onClick={() => fileInputRef.current?.click()}
+                >
+                          {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
+                          <div className="flex items-center justify-center flex-[2] border-b border-gray-100 bg-gray-50">
+                            {uploading ? (
+                              <div className="w-6 h-6 border-2 border-gray-300 border-t-gray-900 rounded-full animate-spin" />
+                            ) : (
+                              <Plus className="w-8 h-8 text-gray-400 group-hover:text-gray-600 transition-colors" strokeWidth={2} />
+                            )}
+                          </div>
+                          {/* Lower Section - White with text (1/3 of card height) */}
+                          <div className="flex items-center justify-center flex-1 bg-white px-2">
+                            <span className="text-xs font-semibold text-gray-600 text-center">Add Document</span>
+                          </div>
+                        </div>
+
                         {filteredDocuments.map((doc, index) => {
                           const fileType = (doc as any).file_type || '';
                           const fileName = doc.original_filename.toLowerCase();
-                          const isPDF = fileType.includes('pdf');
-                          const isDOC = fileType.includes('word') || fileType.includes('document') || 
-                                        fileName.endsWith('.docx') || fileName.endsWith('.doc');
-                          // Match tabs/chat logic: only check file_type.includes('image')
-                          // Screenshots that don't have 'image' in file_type will fall through to grey Globe icon
-                          const isImage = fileType.includes('image');
-                          
-                          // Stack cards from bottom - newest on top
-                          // Position from bottom, ensuring files move down as more are added
-                          const reverseIndex = filteredDocuments.length - 1 - index;
-                          // Start from bottom padding (60px), and stack upward
-                          // As more files are added, all files move down because the container height increases
-                          const bottomPosition = 60 + (reverseIndex * 42);
-                          const zIndex = index + 1;
-                          const isHovered = hoveredCardIndex === index;
+                    const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+                    const isDOC = fileType.includes('word') || fileType.includes('document') || fileName.endsWith('.docx');
+                    const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    
+                    // Check if document is selected in either local (deletion) or chat (query) mode
+                    const isSelected = isLocalSelectionMode 
+                      ? localSelectedDocumentIds.has(doc.id)
+                      : selectedDocumentIds.has(doc.id);
+                    
+                    // Determine selection color based on mode
+                    const borderColor = isLocalSelectionMode ? 'border-red-500' : 'border-blue-500';
+                    const shadowColor = isLocalSelectionMode 
+                      ? 'shadow-[0_0_0_2px_rgba(239,68,68,0.3)]' 
+                      : 'shadow-[0_0_0_2px_rgba(59,130,246,0.3)]';
+                    const outlineColor = isLocalSelectionMode 
+                      ? 'rgba(239, 68, 68, 0.5)' 
+                      : 'rgba(59, 130, 246, 0.5)';
                           
                           return (
-                            <motion.div
+                            <div
                               key={doc.id}
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              transition={{ 
-                                duration: 0.3,
-                                delay: index * 0.05
-                              }}
-                              onMouseEnter={() => setHoveredCardIndex(index)}
-                              onMouseLeave={() => setHoveredCardIndex(null)}
+                        className={`group relative bg-white border cursor-pointer flex flex-col overflow-hidden ${
+                          isSelected 
+                            ? `border-2 ${borderColor} ${shadowColor}` 
+                            : 'border-gray-200 hover:border-gray-300 hover:shadow-lg'
+                        }`}
+                        style={{
+                          width: '160px',
+                          height: '213px', // 3:4 aspect ratio (160 * 4/3)
+                          aspectRatio: '3/4',
+                          ...(isSelected ? {
+                            outline: `2px solid ${outlineColor}`,
+                            outlineOffset: '2px',
+                            zIndex: 10
+                          } : {})
+                        }}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                // If clicking the same card that's already selected, don't do anything
-                                if (selectedCardIndex === index) {
-                                  return;
-                                }
+                                // Use ref to get the most current selection mode value
+                                const currentSelectionMode = isSelectionModeRef.current;
+                                console.log('📄 Document card clicked:', {
+                                  docId: doc.id,
+                                  isSelectionMode: isSelectionMode,
+                                  isSelectionModeRef: currentSelectionMode,
+                                  isChatSelectionMode: isChatSelectionMode,
+                                  isLocalSelectionMode: isLocalSelectionMode,
+                                  selectedDocumentIds: Array.from(selectedDocumentIds)
+                                });
+                                // Always check selection mode first - if active, toggle selection instead of opening
+                                // Use ref value to ensure we have the latest state
+                                if (currentSelectionMode) {
+                                  console.log('✅ Selection mode active - toggling selection');
+                                  // If local selection mode (for deletion), use local state
+                                  // If chat selection mode (for querying), use global context
+                                  if (isLocalSelectionMode) {
+                                    setLocalSelectedDocumentIds(prev => {
+                                      const newSet = new Set(prev);
+                                      if (newSet.has(doc.id)) {
+                                        newSet.delete(doc.id);
+                          } else {
+                                        newSet.add(doc.id);
+                                      }
+                                      return newSet;
+                                    });
+                                  } else {
+                                    // Chat selection mode - use global context
+                                    toggleDocumentSelection(doc.id);
+                                  }
+                          } else {
+                                  console.log('📖 Selection mode NOT active - opening preview');
                                 setSelectedCardIndex(index);
-                              }}
-                              className="absolute cursor-pointer"
-                              style={{
-                                left: '4%',
-                                width: '92%',
-                                height: '140px',
-                                minHeight: '140px',
-                                bottom: `${bottomPosition}px`,
-                                zIndex: zIndex,
-                                boxSizing: 'border-box',
-                                transform: `rotateX(-12deg) ${isHovered ? 'translateY(-8px)' : ''}`,
-                                transformOrigin: 'center bottom',
-                                transition: 'transform 0.2s ease, filter 0.2s ease',
-                                filter: isHovered 
-                                  ? 'drop-shadow(0 8px 16px rgba(0,0,0,0.15))' 
-                                  : 'drop-shadow(0 4px 12px rgba(0,0,0,0.12))'
-                              }}
-                            >
-                              {/* Inner card with content - drop shadow instead of outline */}
-                              <div
-                                className="w-full h-full"
+                          }
+                        }}
                                 draggable
-                                onDragStart={(e) => handleDocumentDragStart(e, doc)}
+                        onDragStart={(e) => handleDocumentDragStart(e as any, doc)}
                                 onDragEnd={handleDocumentDragEnd}
+                      >
+                                  
+                        {/* Top Preview Area - Full Card Preview */}
+                         <div
+                          className="flex-1 bg-gray-50 relative flex items-center justify-center overflow-hidden group-hover:bg-gray-100/50"
                                 style={{
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  overflow: 'hidden',
-                                  width: '100%',
-                                  height: '100%',
-                                  clipPath: `url(#roundedTrapezoid-${doc.id})`,
-                                  WebkitClipPath: `url(#roundedTrapezoid-${doc.id})`,
-                                  boxSizing: 'border-box',
-                                  backgroundColor: isHovered ? '#FFFEEC' : '#ffffff',
-                                  transition: 'background-color 0.2s ease'
-                                }}
-                              >
-                              {/* Title and File Type Section - Combined */}
-                              <div 
-                                className="pl-6 pr-6 pt-4 pb-3 border-b border-gray-200 flex items-center gap-2 flex-shrink-0"
-                                style={{
-                                  transform: 'translateZ(0)',
-                                  WebkitFontSmoothing: 'antialiased',
-                                  MozOsxFontSmoothing: 'grayscale',
-                                  textRendering: 'optimizeLegibility',
-                                  isolation: 'isolate'
-                                }}
-                              >
-                                <div className={`w-4 h-4 flex-shrink-0 ${isPDF ? 'bg-red-500' : isDOC ? 'bg-blue-600' : isImage ? 'bg-gray-500' : 'bg-gray-500'} rounded flex items-center justify-center`}>
-                                  {(() => {
-                                    const iconStyle = { width: '10px', height: '10px', minWidth: '10px', minHeight: '10px', maxWidth: '10px', maxHeight: '10px', flexShrink: 0, color: 'white' };
-                                    if (isPDF) {
-                                      return <FileText className="text-white" style={iconStyle} strokeWidth={2} />;
-                                    }
-                                    if (isImage) {
-                                      return <ImageIcon className="text-white" style={iconStyle} strokeWidth={2} />;
-                                    }
-                                    if (isDOC) {
-                                      return <FileText className="text-white" style={iconStyle} strokeWidth={2} />;
-                                    }
-                                    return <Globe className="text-white" style={iconStyle} strokeWidth={2} />;
-                                  })()}
+                            pointerEvents: isSelectionMode ? 'none' : 'auto'
+                          }}
+                        >
+                          {(() => {
+                            // Safety check - ensure doc exists
+                            if (!doc || !doc.id) {
+                              return (
+                                <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                                  <FileText className="w-8 h-8 text-gray-300" />
                                 </div>
-                                <h4 
-                                  className="text-sm font-medium truncate flex-1" 
-                                  style={{ 
-                                    fontSize: '12px',
-                                    fontWeight: isHovered ? 600 : 500,
-                                    color: isHovered ? '#000000' : '#1f2937',
-                                    transition: 'color 0.2s ease, font-weight 0.2s ease',
-                                    WebkitFontSmoothing: 'antialiased',
-                                    MozOsxFontSmoothing: 'grayscale',
-                                    textRendering: 'optimizeLegibility',
-                                    transform: 'translateZ(0)',
-                                    willChange: 'auto'
+                              );
+                            }
+                            
+                            // Get cached cover - check ONCE and use stored value
+                            const cachedCover = (window as any).__preloadedDocumentCovers?.[doc.id];
+                            
+                            // CRITICAL: Once a cover has been rendered, NEVER change its src
+                            // Check if we've already rendered this cover - if yes, use the stored src
+                            const previouslyRenderedSrc = renderedCoversRef.current.get(doc.id);
+                            
+                            let coverUrl: string;
+                            if (previouslyRenderedSrc) {
+                              // Already rendered - use the exact same src to prevent reload
+                              coverUrl = previouslyRenderedSrc;
+                            } else if (cachedCover?.url) {
+                              // Use cached URL - this is stable and won't change
+                              coverUrl = cachedCover.url;
+                              // Store it so we never change it
+                              renderedCoversRef.current.set(doc.id, coverUrl);
+                            } else {
+                              // Not cached yet - calculate and store it
+                              coverUrl = getDownloadUrl(doc);
+                              // Store in cache immediately to prevent recalculation
+                              if (!(window as any).__preloadedDocumentCovers) {
+                                (window as any).__preloadedDocumentCovers = {};
+                              }
+                              (window as any).__preloadedDocumentCovers[doc.id] = {
+                                url: coverUrl,
+                                type: (doc as any).file_type || '',
+                                timestamp: Date.now()
+                              };
+                              // Store the rendered src
+                              renderedCoversRef.current.set(doc.id, coverUrl);
+                            }
+                            
+                            const hasDocxPreview = cachedCover?.isDocx && cachedCover?.url;
+                            
+                            if (isImage) {
+                              // Use the stable src that never changes
+                              const imageSrc = coverUrl;
+                              // Once rendered, use stable props - never change loading/fetchPriority
+                              const wasCached = !!cachedCover || !!previouslyRenderedSrc;
+  return (
+                                <img 
+                                  key={`img-${doc.id}`}
+                                  src={imageSrc} 
+                                  className="w-full h-full object-cover opacity-90 group-hover:opacity-100"
+                                  alt={doc.original_filename}
+                                  loading={wasCached ? "lazy" : "eager"}
+                                  decoding="async"
+                                  fetchPriority={wasCached ? "auto" : "high"}
+                                  style={{
+                                    contentVisibility: 'auto',
+                                    containIntrinsicSize: '160px 213px',
+                                    pointerEvents: 'auto',
+                                    imageRendering: 'auto'
+                                  }}
+                                />
+                              );
+                            } else if (isPDF) {
+                              // Use stable src - once rendered, never change
+                              // CRITICAL: Use the stored src to prevent reloading
+                              const pdfSrc = `${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`;
+                              
+                              // Stable key ensures React reuses the same iframe
+                              const pdfIframeKey = `pdf-iframe-${doc.id}`;
+                              
+                              // Once rendered, use stable props - never change loading
+                              const wasCached = !!cachedCover || !!previouslyRenderedSrc;
+                              
+                              return (
+                                <div key={`pdf-${doc.id}`} className="w-full h-full relative bg-gray-50">
+                                  {/* Placeholder shown while PDF loads - only if not cached */}
+                                  {!wasCached && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-0">
+                                      <FileText className="w-8 h-8 text-gray-300" />
+                 </div>
+                                )}
+                                  <iframe
+                                    key={pdfIframeKey}
+                                    src={pdfSrc}
+                                    className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
+                                    title="preview"
+                                    loading={wasCached ? "lazy" : "eager"}
+                                    scrolling="no"
+                                    // Prevent iframe from reloading when parent re-renders
+                                    style={{
+                                      contain: 'layout style paint'
+                                    }}
+                                  />
+                                  {/* Transparent overlay to allow clicking the card */}
+                                  <div className="absolute inset-0 bg-transparent z-10" />
+              </div>
+        );
+                            } else if (isDOC && hasDocxPreview) {
+                              // DOCX with cached presigned URL - use Office Online Viewer
+                              // Check both ref and cache for loaded state (cache persists across re-renders)
+                              const isDocxLoadedInRef = docxLoadedRef.current.has(doc.id);
+                              const isDocxLoadedInCache = cachedCover.isDocxLoaded === true;
+                              const isDocxLoaded = isDocxLoadedInRef || isDocxLoadedInCache;
+                              
+                              // CRITICAL: Use stored presigned URL - once rendered, never change
+                              // Check if we've already rendered this DOCX
+                              const storedDocxUrl = renderedCoversRef.current.get(`docx-${doc.id}`);
+                              let docxUrl: string;
+                              if (storedDocxUrl) {
+                                // Already rendered - use exact same URL to prevent reload
+                                docxUrl = storedDocxUrl;
+                              } else {
+                                // First time rendering - create URL and store it
+                                docxUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(cachedCover.url)}&action=embedview&wdStartOn=1`;
+                                renderedCoversRef.current.set(`docx-${doc.id}`, docxUrl);
+                              }
+                              
+        return (
+                                <div 
+                                  key={`docx-container-${doc.id}`} 
+                                  className="w-full h-full relative bg-white overflow-hidden"
+                                  style={{
+                                    contain: 'layout style paint', // Prevent layout shifts
+                                    willChange: isDocxLoaded ? 'auto' : 'contents' // Optimize for loaded state
                                   }}
                                 >
-                                  {formatFileName(doc.original_filename)}
-                                </h4>
-                                <span 
-                                  className="text-gray-500 flex-shrink-0" 
-                                  style={{ 
-                                    fontSize: '10px',
-                                    lineHeight: '1.2',
-                                    WebkitFontSmoothing: 'antialiased',
-                                    MozOsxFontSmoothing: 'grayscale',
-                                    textRendering: 'optimizeLegibility',
-                                    transform: 'translateZ(0)',
-                                    willChange: 'auto'
-                                  }}
-                                >
-                                  {getFileTypeLabel((doc as any).file_type, doc.original_filename)}
-                                </span>
-                              </div>
-                              </div>
-                            </motion.div>
+                                  {/* Memoized DOCX card component - prevents iframe from reloading */}
+                                  <DocxCard
+                                    docId={doc.id}
+                                    docxUrl={docxUrl}
+                                    isLoaded={isDocxLoaded}
+                                    onLoad={() => {
+                                      // Only update if not already loaded - prevents re-renders
+                                      if (!docxLoadedRef.current.has(doc.id)) {
+                                        docxLoadedRef.current.add(doc.id);
+                                        // Persist loaded state in cache
+                                        if ((window as any).__preloadedDocumentCovers[doc.id]) {
+                                          (window as any).__preloadedDocumentCovers[doc.id].isDocxLoaded = true;
+                                        }
+                                        // Only trigger state update ONCE when first loaded
+                                        // After this, isDocxLoaded will be true and component won't re-render
+                                        setCachedCoversVersion(v => v + 1);
+                                      }
+                                    }}
+                                  />
+                                  {/* Transparent overlay to allow clicking the card */}
+                                  <div className="absolute inset-0 bg-transparent z-10" />
+                 </div>
+                              );
+                            } else {
+                              return (
+                                <div className="w-full h-full flex flex-col p-4 bg-white">
+                                {/* Document Header/Title Simulation */}
+                                <div className="w-1/3 h-1.5 bg-gray-800 mb-3 opacity-80 rounded-full"></div>
+                                
+                                {/* Text Content - Real or Simulated */}
+                                <div className="text-[6px] leading-[1.8] text-gray-500 font-serif text-justify select-none overflow-hidden opacity-70 h-full fade-bottom">
+                                  {doc.parsed_text ? (
+                                    doc.parsed_text
+                                  ) : (
+                                    /* High-fidelity text simulation */
+                                    Array(30).fill("The property valuation report indicates a substantial increase in market value over the last fiscal quarter. Comparable sales in the immediate vicinity support this assessment, with three recent transactions involving similar square footage and amenities. Environmental factors and zoning regulations remain favorable for continued appreciation. The structure appears sound with no immediate repairs required. Rental yield projections suggest a stable income stream for investors.").join(" ")
+                                  )}
+              </div>
+                                {/* Realistic Page Fade */}
+                                <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white via-white/90 to-transparent pointer-events-none" />
+          </div>
+        );
+                            }
+      
+                            // Fallback - should never reach here, but ensures we always return something
+        return (
+                              <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                                <FileText className="w-8 h-8 text-gray-300" />
+                  </div>
+                            );
+                          })()}
+                                
+                          {/* Hover Action Button - Only show for non-PDF/Image or if needed */}
+                          {/* <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200">
+                             <button className="bg-white/90 hover:bg-white text-gray-700 px-3 py-1.5 rounded-full text-xs font-medium shadow-sm backdrop-blur-sm transform translate-y-2 group-hover:translate-y-0 transition-all">
+                               Open
+                             </button>
+                          </div> */}
+                  </div>
+                                  
+                        {/* Bottom Metadata Area */}
+                        <div className="h-[72px] px-3 py-2.5 bg-white border-t border-gray-100 flex flex-col justify-center gap-0.5">
+                          <div className="flex items-start justify-between gap-2">
+                             <span className="text-xs font-semibold text-gray-700 truncate leading-tight" title={doc.original_filename}>
+                               {doc.original_filename}
+                      </span>
+                  </div>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">
+                              {isPDF ? 'PDF' : isDOC ? 'DOC' : isImage ? 'IMG' : 'FILE'}
+                            </span>
+                            <span className="text-[10px] text-gray-400">
+                              {new Date(doc.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+              </div>
                           );
                         })}
-                      </div>
-                    )}
+            </div>
+                      )}
+          </div>
+                                
+                    </div>
+                            
+            {/* Property Details Section - hidden when not active */}
+                <div className={`flex-1 overflow-hidden bg-white ${activeSection !== 'propertyDetails' ? 'hidden' : ''}`}>
+                  {(() => {
+                    // Use local property details if available (for optimistic updates), otherwise use prop
+                    const propertyDetails = localPropertyDetails || property?.propertyHub?.property_details || {};
+                    const propertyImages = property?.propertyHub?.property_details?.property_images || 
+                                         property?.property_images || [];
+                    const primaryImage = property?.propertyHub?.property_details?.primary_image_url || 
+                                       property?.primary_image_url || 
+                                       (propertyImages.length > 0 ? propertyImages[0]?.url : null);
+                    const address = property?.address || property?.propertyHub?.property?.formatted_address || 
+                                   property?.propertyHub?.property?.normalized_address || 'Address not available';
+                    
+        return (
+                      <div className="flex h-full">
+                        {/* Left: Images Gallery or Preview */}
+                        {propertyImages.length > 0 && (
+                          <div className="w-1/2 border-r border-gray-100 flex flex-col overflow-y-auto scrollbar-hide h-full"
+                            style={{
+                              scrollbarWidth: 'none',
+                              msOverflowStyle: 'none'
+                            }}
+                          >
+                            {selectedImageIndex !== null ? (
+                              /* Image Preview Mode */
+                              <div 
+                                className="flex-1 relative bg-gray-50 flex items-center justify-center"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'ArrowLeft' && propertyImages.length > 1) {
+                                    setSelectedImageIndex((selectedImageIndex - 1 + propertyImages.length) % propertyImages.length);
+                                  } else if (e.key === 'ArrowRight' && propertyImages.length > 1) {
+                                    setSelectedImageIndex((selectedImageIndex + 1) % propertyImages.length);
+                                  } else if (e.key === 'Escape') {
+                                    setSelectedImageIndex(null);
+                                  }
+                                }}
+                                tabIndex={0}
+                              >
+                                {/* Previous Button */}
+                                {propertyImages.length > 1 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedImageIndex((selectedImageIndex - 1 + propertyImages.length) % propertyImages.length);
+                                    }}
+                                    className="absolute left-4 z-10 p-2 bg-white/90 hover:bg-white rounded-full shadow-sm transition-all opacity-80 hover:opacity-100"
+                                    aria-label="Previous image"
+                                  >
+                                    <ChevronLeft className="w-5 h-5 text-gray-700" />
+                                  </button>
+                                )}
+                                
+                                {/* Main Preview Image */}
+                                <div className="flex-1 h-full flex items-center justify-center p-8">
+                                  <img
+                                    src={propertyImages[selectedImageIndex]?.url || propertyImages[selectedImageIndex]}
+                                    alt={`Property image ${selectedImageIndex + 1}`}
+                                    className="max-w-full max-h-full object-contain cursor-pointer"
+                                    onClick={() => setSelectedImageIndex(null)}
+                                  />
+                    </div>
+                                
+                                {/* Next Button */}
+                                {propertyImages.length > 1 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedImageIndex((selectedImageIndex + 1) % propertyImages.length);
+                                    }}
+                                    className="absolute right-4 z-10 p-2 bg-white/90 hover:bg-white rounded-full shadow-sm transition-all opacity-80 hover:opacity-100"
+                                    aria-label="Next image"
+                                  >
+                                    <ChevronRight className="w-5 h-5 text-gray-700" />
+                                  </button>
+                                )}
+                                
+                                {/* Close Button */}
+                                <button
+                                  onClick={() => setSelectedImageIndex(null)}
+                                  className="absolute top-2 right-2 z-10 p-2 bg-white/90 hover:bg-white rounded-full shadow-sm transition-all opacity-80 hover:opacity-100"
+                                  aria-label="Close preview"
+                                >
+                                  <X className="w-4 h-4 text-gray-700" />
+                                </button>
+                                
+                                {/* Image Counter */}
+                                {propertyImages.length > 1 && (
+                                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 bg-white/90 rounded-full text-xs text-gray-700 shadow-sm">
+                                    {selectedImageIndex + 1} / {propertyImages.length}
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-            
-            {/* Container 1: Image with Overlay */}
-            <div style={{ contain: 'layout style', height: `${Math.round(panelHeight * 0.7)}px`, minHeight: '280px' }}>
-              {/* Property Image Section - Full width, ~70% of card height, no top rounded corners */}
-              <div className="relative w-full h-full overflow-hidden">
-                <img
-                  src={getPropertyImage()}
-                        alt={displayProperty.address || 'Property'}
-                  className="w-full h-full object-cover"
-                  onError={(e) => {
-                    const img = e.target as HTMLImageElement;
-                    img.src = '/property-1.png';
-                  }}
-                />
-                
-                {/* Top Gradient Blur Overlay - For Profile Picture and Close Button */}
-                <div 
-                  className="absolute top-0 left-0 right-0 z-20 pointer-events-none"
-                  style={{
-                    height: '15%',
-                    minHeight: '80px',
-                    background: 'linear-gradient(to bottom, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.92) 15%, rgba(255, 255, 255, 0.85) 30%, rgba(255, 255, 255, 0.7) 50%, rgba(255, 255, 255, 0.45) 70%, rgba(255, 255, 255, 0.25) 85%, rgba(255, 255, 255, 0.1) 95%, transparent 100%)',
-                    backdropFilter: 'blur(12px)',
-                    WebkitBackdropFilter: 'blur(12px)',
-                    maskImage: 'linear-gradient(to bottom, black 0%, black 70%, rgba(0, 0, 0, 0.8) 85%, rgba(0, 0, 0, 0.4) 95%, transparent 100%)',
-                    WebkitMaskImage: 'linear-gradient(to bottom, black 0%, black 70%, rgba(0, 0, 0, 0.8) 85%, rgba(0, 0, 0, 0.4) 95%, transparent 100%)',
-                  }}
-                />
-                
-                {/* Profile Picture - Top Left */}
-                {(() => {
-                  // Get user name for profile picture
-                  const userName = property.agent_name || property.owner_name || property.uploaded_by || 'Agent';
-                  const userInitials = userName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2);
-                  
-                  // Try to get profile image from various sources
-                  const profileImage = property.user_avatar || 
-                                     property.profile_image || 
-                                     property.agent_avatar ||
-                                     property.propertyHub?.uploaded_by_user?.profile_image ||
-                                     property.propertyHub?.uploaded_by_user?.avatar_url ||
-                                     null;
-                  
-                  // Get contributors list from documents (people who uploaded/deleted files)
-                  // This will be called on hover to get fresh data
-                  
-                  return (
-                    <div 
-                      className="absolute top-4 left-5 z-[100]" 
-                      ref={contributorsPopupRef}
-                      onMouseEnter={(e) => {
-                        if (contributorsPopupRef.current) {
-                          const rect = contributorsPopupRef.current.getBoundingClientRect();
-                          setPopupPosition({
-                            top: rect.top - 10, // Position above the avatar
-                            left: rect.left
-                          });
-                        }
+                    )}
+                    </div>
+                            ) : (
+                              /* Thumbnail Grid Mode */
+                              <div 
+                                className="grid grid-cols-2 gap-0 bg-gray-50" 
+                                style={{ 
+                                  gridAutoRows: 'min-content'
+                                }}
+                              >
+                                {propertyImages.map((img: any, idx: number) => (
+                                  <div
+                                    key={idx}
+                                    className="aspect-[4/3] bg-gray-100 overflow-hidden relative group cursor-pointer focus:outline-none"
+                                    style={{ width: '100%', height: 'auto', outline: 'none', border: 'none', boxShadow: 'none' }}
+                                    onClick={() => {
+                                      setSelectedImageIndex(idx);
+                                    }}
+                                  >
+                                    <img
+                                      src={img.url || img}
+                                      alt={`Property image ${idx + 1}`}
+                                      className="w-full h-full object-cover focus:outline-none"
+                                      style={{ display: 'block', outline: 'none', border: 'none', boxShadow: 'none' }}
+                                      onError={(e) => {
+                                        (e.target as HTMLImageElement).style.display = 'none';
+                                      }}
+                                    />
+                    </div>
+                                ))}
+                  </div>
+                            )}
+                </div>
+                        )}
                         
-                        // Get contributors from documents on hover
-                        const getContributors = () => {
-                          const contributorsList: Array<{ name: string; image?: string; initials: string; role: string; date?: string }> = [];
-                          const contributorMap = new Map<string, { name: string; image?: string; initials: string; latestDate: Date }>();
-                          
-                          // Helper to format date
-                          const formatDate = (dateString?: string) => {
-                            if (!dateString) return null;
-                            const date = new Date(dateString);
-                            const now = new Date();
-                            const diffTime = Math.abs(now.getTime() - date.getTime());
-                            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                            if (diffDays === 0) return 'Today';
-                            if (diffDays === 1) return '1 day ago';
-                            if (diffDays < 7) return `${diffDays} days ago`;
-                            if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-                            if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
-                            return `${Math.floor(diffDays / 365)} years ago`;
-                          };
-                          
-                          // Get contributors from documents
-                          if (documents && documents.length > 0) {
-                            documents.forEach((doc: any) => {
-                              // Check for uploaded_by_user information in various formats
-                              const uploadedBy = doc.uploaded_by_user || doc.uploader || doc.user;
-                              let docUserName = uploadedBy?.name || uploadedBy?.full_name || uploadedBy?.username || 
-                                              uploadedBy?.first_name || 
-                                              doc.uploaded_by_name || doc.created_by_name || null;
+                        {/* Right: Content */}
+                        <div 
+                          className={`flex-1 overflow-y-auto scrollbar-hide h-full py-6 ${propertyImages.length > 0 ? '' : 'w-full'}`}
+                          style={{
+                            scrollbarWidth: 'none',
+                            msOverflowStyle: 'none'
+                          }}
+                        >
+                          <div className="px-6">
+                            {/* Address Header */}
+                            <div className="mb-10">
+                              <h2 className="text-sm font-semibold text-gray-900 mb-0 leading-tight truncate" title={address}>{address}</h2>
+                              {propertyDetails.property_type && (
+                                <p className="text-[10px] text-gray-500 font-medium uppercase tracking-wide mb-3">{propertyDetails.property_type}</p>
+                              )}
+                    </div>
+                            
+                            {/* Key Details Grid - Bedrooms, Bathrooms, Size */}
+                            {(() => {
+                              // Get size_unit from property details - use whatever unit is in the documents
+                              const sizeUnit = property?.propertyHub?.property_details?.size_unit || (propertyDetails as any).size_unit || 'sqft';
+                              const isInAcres = sizeUnit.toLowerCase() === 'acres' || sizeUnit.toLowerCase() === 'acre';
                               
-                              // If we have first_name and last_name, combine them
-                              if (!docUserName && uploadedBy?.first_name) {
-                                docUserName = uploadedBy.first_name + (uploadedBy.last_name ? ` ${uploadedBy.last_name}` : '');
-                              }
+                              // Check for plot/land size from property details
+                              let plotSize = property?.propertyHub?.property_details?.land_size || 
+                                           property?.propertyHub?.property_details?.plot_size ||
+                                           (propertyDetails as any).land_size || 
+                                           (propertyDetails as any).plot_size;
+                              let plotSizeUnit = property?.propertyHub?.property_details?.land_size_unit || 
+                                                property?.propertyHub?.property_details?.plot_size_unit ||
+                                                (propertyDetails as any).land_size_unit || 
+                                                (propertyDetails as any).plot_size_unit;
                               
-                              // If still no name but we have email, use email prefix
-                              if (!docUserName && (uploadedBy?.email || doc.uploaded_by_email)) {
-                                const email = uploadedBy?.email || doc.uploaded_by_email;
-                                const emailPrefix = email.split('@')[0];
-                                docUserName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-                              }
-                              
-                              const docUserId = uploadedBy?.id || doc.uploaded_by_user_id || doc.uploaded_by_id;
-                              const docUserEmail = uploadedBy?.email || doc.uploaded_by_email;
-                              
-                              // If still no name, try to use current user if document matches
-                              if (!docUserName && currentUser) {
-                                if (docUserId === currentUser.id || docUserEmail === currentUser.email) {
-                                  docUserName = currentUser.first_name 
-                                    ? `${currentUser.first_name}${currentUser.last_name ? ` ${currentUser.last_name}` : ''}`
-                                    : (currentUser.email ? currentUser.email.split('@')[0].charAt(0).toUpperCase() + currentUser.email.split('@')[0].slice(1) : 'User');
+                              // Fallback: Try to extract plot size from notes if not explicitly stored
+                              if (!plotSize && propertyDetails.notes) {
+                                const notesText = propertyDetails.notes.toLowerCase();
+                                // Look for patterns like "11 acres", "plot of approximately 11 acres", etc.
+                                const acreMatch = notesText.match(/(?:plot|land|site|grounds?|acreage).*?(\d+(?:\.\d+)?)\s*(?:acre|acres)/i);
+                                if (acreMatch) {
+                                  plotSize = parseFloat(acreMatch[1]);
+                                  plotSizeUnit = 'acres';
                                 }
                               }
                               
-                              const userImage = uploadedBy?.profile_image || uploadedBy?.avatar_url || 
-                                               doc.uploaded_by_avatar || doc.created_by_avatar ||
-                                               (currentUser && (docUserId === currentUser.id || docUserEmail === currentUser.email) 
-                                                 ? (currentUser.profile_image || currentUser.avatar_url) : null);
-                              const userId = docUserId || docUserName;
+                              const plotIsInAcres = plotSizeUnit && (plotSizeUnit.toLowerCase() === 'acres' || plotSizeUnit.toLowerCase() === 'acre');
                               
-                              if (docUserName) {
-                                // Use the most recent date: updated_at (for modifications/deletions) or created_at (for uploads)
-                                const updatedDate = doc.updated_at ? new Date(doc.updated_at) : null;
-                                const createdDate = doc.created_at ? new Date(doc.created_at) : null;
-                                // Use the most recent date available
-                                const docDate = updatedDate && createdDate 
-                                  ? (updatedDate > createdDate ? updatedDate : createdDate)
-                                  : (updatedDate || createdDate || new Date());
-                                
-                                const existing = contributorMap.get(userId);
-                                
-                                // Always update if this document is more recent
-                                if (!existing || docDate > existing.latestDate) {
-                                  contributorMap.set(userId, {
-                                    name: docUserName,
-                                    image: userImage,
-                                    initials: docUserName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2),
-                                    latestDate: docDate
-                                  });
-                                }
-                              }
-                            });
-                          }
-                          
-                          // Also add current user if they exist and have uploaded documents
-                          if (currentUser && documents && documents.length > 0) {
-                            const currentUserName = currentUser.first_name 
-                              ? `${currentUser.first_name}${currentUser.last_name ? ` ${currentUser.last_name}` : ''}`
-                              : (currentUser.email ? currentUser.email.split('@')[0].charAt(0).toUpperCase() + currentUser.email.split('@')[0].slice(1) : 'User');
-                            const currentUserImage = currentUser.profile_image || currentUser.avatar_url;
-                            const currentUserId = currentUser.id || currentUser.email || currentUserName;
-                            
-                            // Check if current user has uploaded any documents
-                            const userHasDocuments = documents.some((doc: any) => {
-                              const docUserId = doc.uploaded_by_user?.id || doc.uploaded_by_user_id || 
-                                               doc.uploader?.id || doc.user?.id;
-                              return docUserId === currentUser.id || 
-                                     doc.uploaded_by_email === currentUser.email ||
-                                     (doc.uploaded_by_user?.email === currentUser.email);
-                            });
-                            
-                            if (userHasDocuments) {
-                              // Find the most recent document by current user
-                              const userDocs = documents.filter((doc: any) => {
-                                const docUserId = doc.uploaded_by_user?.id || doc.uploaded_by_user_id || 
-                                                 doc.uploader?.id || doc.user?.id;
-                                return docUserId === currentUser.id || 
-                                       doc.uploaded_by_email === currentUser.email ||
-                                       (doc.uploaded_by_user?.email === currentUser.email);
+                              // Show plot size if it exists (regardless of house size unit)
+                              // Also check if plotSize is a valid number
+                              const showPlotSize = plotSize !== undefined && plotSize !== null && !isNaN(Number(plotSize)) && Number(plotSize) > 0;
+                              
+                              console.log('🔍 Size display check:', {
+                                sizeUnit,
+                                isInAcres,
+                                size_sqft: propertyDetails.size_sqft,
+                                plotSize,
+                                plotSizeType: typeof plotSize,
+                                plotSizeValue: plotSize,
+                                plotSizeUnit,
+                                plotIsInAcres,
+                                showPlotSize,
+                                propertyDetailsKeys: Object.keys(propertyDetails),
+                                propertyDetails: JSON.parse(JSON.stringify(propertyDetails)),
+                                propertyHubKeys: property?.propertyHub?.property_details ? Object.keys(property?.propertyHub?.property_details) : [],
+                                propertyHub: property?.propertyHub?.property_details ? JSON.parse(JSON.stringify(property?.propertyHub?.property_details)) : null
                               });
                               
-                              if (userDocs.length > 0) {
-                                const latestDoc = userDocs.reduce((latest: any, doc: any) => {
-                                  const latestUpdated = latest.updated_at ? new Date(latest.updated_at) : null;
-                                  const latestCreated = latest.created_at ? new Date(latest.created_at) : null;
-                                  const latestDate = latestUpdated && latestCreated 
-                                    ? (latestUpdated > latestCreated ? latestUpdated : latestCreated)
-                                    : (latestUpdated || latestCreated || new Date(0));
-                                  
-                                  const docUpdated = doc.updated_at ? new Date(doc.updated_at) : null;
-                                  const docCreated = doc.created_at ? new Date(doc.created_at) : null;
-                                  const docDate = docUpdated && docCreated 
-                                    ? (docUpdated > docCreated ? docUpdated : docCreated)
-                                    : (docUpdated || docCreated || new Date(0));
-                                  
-                                  return docDate > latestDate ? doc : latest;
-                                });
-                                
-                                const docUpdated = latestDoc.updated_at ? new Date(latestDoc.updated_at) : null;
-                                const docCreated = latestDoc.created_at ? new Date(latestDoc.created_at) : null;
-                                const docDate = docUpdated && docCreated 
-                                  ? (docUpdated > docCreated ? docUpdated : docCreated)
-                                  : (docUpdated || docCreated || new Date());
-                                
-                                const existing = contributorMap.get(currentUserId);
-                                
-                                if (!existing || docDate > existing.latestDate) {
-                                  contributorMap.set(currentUserId, {
-                                    name: currentUserName,
-                                    image: currentUserImage,
-                                    initials: currentUserName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2),
-                                    latestDate: docDate
-                                  });
-                                }
-                              }
-                            }
-                          }
-                          
-                          // Convert map to array with both formatted date and raw date for sorting
-                          const contributorsWithDates: Array<{ name: string; image?: string; initials: string; role: string; date?: string; rawDate: Date }> = [];
-                          contributorMap.forEach((contributor, userId) => {
-                            contributorsWithDates.push({
-                              name: contributor.name,
-                              image: contributor.image,
-                              initials: contributor.initials,
-                              role: 'Contributor',
-                              date: formatDate(contributor.latestDate.toISOString()),
-                              rawDate: contributor.latestDate // Store raw date for proper sorting
-                            });
-                          });
-                          
-                          // Sort by raw date (most recent first) - use actual Date objects, not formatted strings
-                          contributorsWithDates.sort((a, b) => {
-                            return b.rawDate.getTime() - a.rawDate.getTime(); // Most recent first
-                          });
-                          
-                          // Remove rawDate before returning (clean up)
-                          contributorsWithDates.forEach(item => {
-                            contributorsList.push({
-                              name: item.name,
-                              image: item.image,
-                              initials: item.initials,
-                              role: item.role,
-                              date: item.date
-                            });
-                          });
-                          
-                          // If no document contributors, show default
-                          if (contributorsList.length === 0) {
-                            return [{
-                              name: userName,
-                              image: profileImage,
-                              initials: userInitials,
-                              role: 'Contributor',
-                              date: formatDate(property.created_at || property.propertyHub?.created_at)
-                            }];
-                          }
-                          
-                          return contributorsList;
-                        };
-                        
-                        const contributorsList = getContributors();
-                        console.log('📊 Contributors list:', contributorsList);
-                        console.log('📄 Documents count:', documents?.length);
-                        console.log('📅 Current user:', currentUser);
-                        setContributors(contributorsList);
-                        setShowContributorsPopup(true);
-                      }}
-                      onMouseLeave={() => setShowContributorsPopup(false)}
-                    >
-                      <div className="cursor-pointer">
-                        <Avatar className="w-8 h-8 ring-2 ring-white shadow-lg">
-                        <AvatarImage 
-                          src={profileImage || "/default profile icon.png"} 
-                          alt={userName}
-                          className="object-cover"
-                        />
-                          <AvatarFallback className="bg-gradient-to-br from-blue-400 to-purple-500 text-white text-xs font-semibold">
-                          {userInitials}
-                        </AvatarFallback>
-                      </Avatar>
-                      </div>
+                              return (
+                                <div className={`grid ${showPlotSize ? 'grid-cols-4' : 'grid-cols-3'} gap-3 mb-4 pb-4 border-b border-gray-100`}>
+                                  {/* Bedrooms */}
+                                  <div className="text-center">
+                                    {editingField === 'number_bedrooms' ? (
+                                      <>
+                      <input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          value={editValues['number_bedrooms'] ?? ''}
+                                          onChange={(e) => handleFieldChange('number_bedrooms', e.target.value)}
+                                          onBlur={() => handleFieldBlur('number_bedrooms')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'number_bedrooms')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('number_bedrooms')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bedrooms</div>
+                                        {fieldErrors['number_bedrooms'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['number_bedrooms']}</div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <div
+                                        onClick={() => startEditing('number_bedrooms', propertyDetails.number_bedrooms)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.number_bedrooms ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bedrooms}</div>
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bedrooms</div>
+                          </>
+                        ) : (
+                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Bedrooms</div>
+                          </>
+                        )}
+                  </div>
+                                    )}
                     </div>
-                  );
-                })()}
                 
-                {/* Close Button - Top Right */}
-                <button
-                  onClick={onClose}
-                  className="absolute top-3 right-3 p-1.5 hover:bg-gray-100 rounded transition-colors z-30"
-                >
-                  <X className="w-4 h-4 text-gray-600" />
-                </button>
-
-                {/* Property Name Overlay - Bottom of Image */}
-                <div 
-                  className="absolute bottom-0 left-0 right-0 px-4 py-6 z-30"
-                  style={{
-                    height: '25%',
-                    minHeight: '100px',
-                    background: 'linear-gradient(to top, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.92) 15%, rgba(255, 255, 255, 0.85) 30%, rgba(255, 255, 255, 0.7) 50%, rgba(255, 255, 255, 0.45) 70%, rgba(255, 255, 255, 0.25) 85%, rgba(255, 255, 255, 0.1) 95%, transparent 100%)',
-                    backdropFilter: 'blur(12px)',
-                    WebkitBackdropFilter: 'blur(12px)',
-                    maskImage: 'linear-gradient(to top, black 0%, black 70%, rgba(0, 0, 0, 0.8) 85%, rgba(0, 0, 0, 0.4) 95%, transparent 100%)',
-                    WebkitMaskImage: 'linear-gradient(to top, black 0%, black 70%, rgba(0, 0, 0, 0.8) 85%, rgba(0, 0, 0, 0.4) 95%, transparent 100%)',
-                    display: 'flex',
-                    alignItems: 'flex-end',
-                    paddingBottom: '1rem',
-                  }}
-                >
-                  <div className="text-gray-700 font-medium" style={{ fontSize: '16px', fontWeight: 500, letterSpacing: '-0.01em', lineHeight: '1.4', textShadow: '0 2px 4px rgba(255, 255, 255, 0.5)', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-                        {getPropertyName(displayProperty.address || 'Unknown Address')}
-                      </div>
-                      </div>
+                                  {/* Bathrooms */}
+                                  <div className="text-center">
+                                    {editingField === 'number_bathrooms' ? (
+                                      <>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          value={editValues['number_bathrooms'] ?? ''}
+                                          onChange={(e) => handleFieldChange('number_bathrooms', e.target.value)}
+                                          onBlur={() => handleFieldBlur('number_bathrooms')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'number_bathrooms')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('number_bathrooms')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bathrooms</div>
+                                        {fieldErrors['number_bathrooms'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['number_bathrooms']}</div>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <div
+                                        onClick={() => startEditing('number_bathrooms', propertyDetails.number_bathrooms)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.number_bathrooms ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">{propertyDetails.number_bathrooms}</div>
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">Bathrooms</div>
+                          </>
+                        ) : (
+                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Bathrooms</div>
+                          </>
+                        )}
                     </div>
-
-            </div>
-
-            {/* Container 2: Additional Info and Action Buttons (below image) */}
-            <div className="pb-0" style={{ position: 'relative', transform: 'translateZ(0)', contain: 'layout style paint', isolation: 'isolate' }}>
-                {/* Secondary Property Details Section */}
-                {(() => {
-                  // Calculate document count
-                  let docCount = 0;
-                  if (documents.length > 0) {
-                    docCount = documents.length;
-                  } else if (displayProperty.propertyHub?.documents?.length) {
-                    docCount = displayProperty.propertyHub.documents.length;
-                  } else if (displayProperty.documentCount) {
-                    docCount = displayProperty.documentCount;
-                  }
-                  
-                  // Get property details with fallbacks
-                  const epcRating = displayProperty.epc_rating || displayProperty.propertyHub?.property_details?.epc_rating;
-                  const propertyType = displayProperty.property_type || displayProperty.propertyHub?.property_details?.property_type;
-                  const tenure = displayProperty.tenure || displayProperty.propertyHub?.property_details?.tenure;
-                  const bedrooms = displayProperty.bedrooms || displayProperty.propertyHub?.property_details?.number_bedrooms || 0;
-                  const bathrooms = displayProperty.bathrooms || displayProperty.propertyHub?.property_details?.number_bathrooms || 0;
-                  
-                  const hasSecondaryInfo = docCount > 0 || 
-                                          epcRating || 
-                                          propertyType || 
-                                          tenure || 
-                                          bedrooms > 0 || 
-                                          bathrooms > 0;
-                  
-                  return hasSecondaryInfo ? (
-                    <div className="border-t border-gray-100 px-5 pt-4 pb-4">
-                      <div className="flex flex-wrap items-center gap-4">
-                        {/* Document Count */}
-                        {docCount > 0 && (
-                          <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">{docCount} Docs</span>
-                          </div>
-                        )}
-                        
-                        {/* EPC Rating */}
-                        {epcRating && (
-                          <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">EPC {epcRating}</span>
-                          </div>
-                        )}
-                        
-                        {/* Property Type */}
-                        {propertyType && (
-                          <div className="flex items-center gap-2">
-                            <Home className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">{propertyType}</span>
-                          </div>
-                        )}
-                        
-                        {/* Tenure */}
-                        {tenure && (
-                          <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">{tenure}</span>
-                          </div>
-                        )}
-                        
-                        {/* Bedrooms */}
-                        {bedrooms > 0 && (
-                          <div className="flex items-center gap-2">
-                            <Bed className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">{bedrooms} Bed</span>
-                          </div>
-                        )}
-                        
-                        {/* Bathrooms */}
-                        {bathrooms > 0 && (
-                          <div className="flex items-center gap-2">
-                            <Bath className="w-4 h-4 text-gray-500" strokeWidth={2} />
-                            <span className="text-xs text-gray-600">{bathrooms} Bath</span>
-                          </div>
-                        )}
+                                    )}
                       </div>
-                    </div>
-                  ) : null;
-                })()}
-
-                {/* Property Summary/Description Section */}
-                {summaryText && (
-                  <div className="border-t border-gray-100 px-5 pt-4 pb-4">
-                    {renderSummary()}
+                                  
+                                  {/* Size */}
+                                  <div className="text-center">
+                                    {editingField === 'size_sqft' ? (
+                                      <>
+                                        <input
+                                          type="number"
+                                          min="0"
+                                          step="0.01"
+                                          value={editValues['size_sqft'] ?? ''}
+                                          onChange={(e) => handleFieldChange('size_sqft', e.target.value)}
+                                          onBlur={() => handleFieldBlur('size_sqft')}
+                                          onKeyDown={(e) => handleFieldKeyDown(e, 'size_sqft')}
+                                          className="text-sm font-semibold text-gray-900 mb-0.5 w-full text-center border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                          autoFocus
+                                          disabled={savingFields.has('size_sqft')}
+                                        />
+                                        <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
+                                          {isInAcres ? 'acres' : 'sq ft'}
+                                        </div>
+                                        {fieldErrors['size_sqft'] && (
+                                          <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['size_sqft']}</div>
+                                        )}
+                                      </>
+                    ) : (
+                      <div 
+                                        onClick={() => startEditing('size_sqft', propertyDetails.size_sqft)}
+                                        className="cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 -mx-1 -my-0.5"
+                                      >
+                                        {propertyDetails.size_sqft ? (
+                                          <>
+                                            <div className="text-sm font-semibold text-gray-900 mb-0.5">
+                                              {isInAcres 
+                                                ? (propertyDetails.size_sqft % 1 === 0 ? propertyDetails.size_sqft.toString() : propertyDetails.size_sqft.toFixed(2))
+                                                : propertyDetails.size_sqft.toLocaleString()}
                   </div>
-                )}
-
-                {/* Additional Info (Rent, Yield, Letting) - Full Width if Present */}
-                {(displayProperty.rentPcm > 0 || lettingInfo) && (
-                  <div className="border-t border-gray-100 px-5" style={{ 
-                    paddingTop: '20px', 
-                    paddingBottom: '20px',
-                    marginBottom: '0px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center'
-                  }}>
-                    {displayProperty.rentPcm > 0 && (
-                      <div className="text-sm text-gray-700 text-center" style={{ margin: '0' }}>
-                        <span className="font-medium">Rent:</span> £{displayProperty.rentPcm.toLocaleString()} pcm
-                        {yieldPercentage && (
-                          <span className="text-gray-500 ml-2">({yieldPercentage}% yield)</span>
-                        )}
-                      </div>
-                    )}
-                    {lettingInfo && (
-                      <div className="text-sm text-gray-700 text-center" style={{ margin: '0' }}>
-                        <span className="font-medium">Letting:</span> {lettingInfo}
-                      </div>
-                    )}
-                  </div>
-                )}
-            </div>
-          </div>
-          
-          {/* Upload Error Display */}
-          {uploadError && (
-            <div className="px-4 py-2 bg-red-50 border-t border-red-200 text-red-700 text-sm">
-              {uploadError}
-            </div>
-          )}
-          
-          {/* Action Buttons - Outside scrollable container, always visible at bottom */}
-          <div className="border-t border-gray-200 flex-shrink-0 flex gap-2.5" style={{ 
-            borderTopWidth: '1px', 
-            borderTopColor: '#e5e7eb', 
-            width: '100%', 
-            paddingTop: '16px', 
-            paddingBottom: '16px',
-            paddingLeft: '16px',
-            paddingRight: '16px',
-            marginTop: '0px',
-            marginBottom: '0px'
-          }}>
-                <button
-                  ref={viewFilesButtonRef}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Access native event for stopImmediatePropagation
-                    if (e.nativeEvent && 'stopImmediatePropagation' in e.nativeEvent) {
-                      (e.nativeEvent as any).stopImmediatePropagation();
-                    }
-                    
-                    // Prevent reopening if we're in the process of closing
-                    if (isClosingRef.current) {
-                      return;
-                    }
-                    
-                    // Use ref to check state to avoid race conditions
-                    const currentModalState = isFilesModalOpenRef.current;
-                    
-                    if (currentModalState) {
-                      // Close the modal if it's already open - just hide it, don't reset fetch state
-                      console.log('🔴 Closing files modal, isFilesModalOpen:', currentModalState);
-                      isClosingRef.current = true;
-                      
-                      // Close any open preview modal and reset preview state
-                      setIsPreviewOpen(false);
-                      setPreviewFiles([]);
-                      setActivePreviewTabIndex(0);
-                      
-              setIsFilesModalOpen(false);
-                      console.log('🔴 Set isFilesModalOpen to false');
-                      // Reset closing flag after a brief delay
-                      setTimeout(() => {
-                        isClosingRef.current = false;
-                      }, 200);
-                      // Don't reset hasFilesFetched - keep it true so we don't show loading animation again
-                      return; // Early return to prevent any other logic from running
-                    } else {
-                      // Collapse the summary when opening files modal
-                      setIsSummaryExpanded(false);
-                      
-                      // Ensure preview is closed when opening files modal
-                      setIsPreviewOpen(false);
-                      setPreviewFiles([]);
-                      setActivePreviewTabIndex(0);
-                      
-                      // Check if files are preloaded before opening modal
-                      const propertyId = property?.id;
-                      if (!propertyId) return;
-                      
-                      // First check for preloaded files
-                      const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
-                      if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
-                        // Files are ready - open overlay immediately
-                        setDocuments(preloadedFiles);
-                        setHasFilesFetched(true);
-                        setIsFilesModalOpen(true);
-                      } else {
-                        // Files not preloaded - load them first, then open overlay
-                        console.log('📄 Files not preloaded, loading documents for property:', propertyId);
-                        const loadAndOpen = async () => {
-                          try {
-                            const response = await backendApi.getPropertyHubDocuments(propertyId);
-                            console.log('📄 View Files - API response:', response);
-                            
-                            let documentsToUse = null;
-                            // Backend returns: { success: true, data: { documents: [...] } }
-                            // backendApi.fetchApi wraps it: { success: true, data: { success: true, data: { documents: [...] } } }
-                            // So we need to check response.data.data.documents
-                            if (response && response.success && response.data) {
-                              // Check for nested structure: response.data.data.documents
-                              if (response.data.data && response.data.data.documents && Array.isArray(response.data.data.documents)) {
-                                documentsToUse = response.data.data.documents;
-                                console.log('✅ Found documents in response.data.data.documents:', documentsToUse.length);
-                              } 
-                              // Check for direct documents in response.data
-                              else if (response.data.documents && Array.isArray(response.data.documents)) {
-                                documentsToUse = response.data.documents;
-                                console.log('✅ Found documents in response.data.documents:', documentsToUse.length);
-                              } 
-                              // Check if response.data is an array
-                              else if (Array.isArray(response.data)) {
-                                documentsToUse = response.data;
-                                console.log('✅ Found documents as array in response.data:', documentsToUse.length);
-                              }
-                            } else if (response && (response as any).documents && Array.isArray((response as any).documents)) {
-                              // Fallback: handle unwrapped format
-                              documentsToUse = (response as any).documents;
-                              console.log('✅ Found documents in response.documents (fallback):', documentsToUse.length);
-                            } else if (Array.isArray(response)) {
-                              // Fallback: handle direct array
-                              documentsToUse = response;
-                              console.log('✅ Found documents as direct array (fallback):', documentsToUse.length);
-                            }
-                            
-                            if (documentsToUse && documentsToUse.length > 0) {
-                              // Store in preloaded files
-                              if (!(window as any).__preloadedPropertyFiles) {
-                                (window as any).__preloadedPropertyFiles = {};
-                              }
-                              (window as any).__preloadedPropertyFiles[propertyId] = documentsToUse;
-                              console.log('✅ Loaded and stored documents:', documentsToUse.length, 'files');
-                              
-                              // Set documents and open overlay
-                              setDocuments(documentsToUse);
-                              setHasFilesFetched(true);
-                          setIsFilesModalOpen(true);
-                              console.log('✅ Files overlay opened after loading documents');
-                            } else {
-                              console.log('⚠️ No documents found for property:', propertyId);
-                            }
-                          } catch (error) {
-                            console.error('❌ Error loading files before opening overlay:', error);
-                          }
-                        };
-                        
-                        loadAndOpen();
-                      }
-                    }
-                  }}
-                  className="flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-all duration-150 rounded-lg flex-shrink-0 relative flex-1 justify-center border border-transparent hover:border-gray-300 hover:bg-gray-100/50"
-                  style={{
-                    minWidth: 'fit-content',
-                    maxWidth: 'none',
-                    width: 'auto',
-                    flexBasis: 'auto',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0,
-                    boxSizing: 'border-box',
-                    display: 'inline-flex',
-                    userSelect: 'none',
-                    WebkitUserSelect: 'none',
-                    touchAction: 'none',
-                  }}
-                >
-                  <FileText className="w-4 h-4 text-gray-600" />
-                  <span className="text-sm font-medium text-gray-700" style={{ fontSize: '13px', fontWeight: 500, lineHeight: '1.2', minWidth: '80px', textAlign: 'center' }}>
-                    {isFilesModalOpen && hasFilesFetched ? 'Close Files' : 'View Files'}
-                  </span>
-                </button>
-                
-                <button
-                  onClick={() => {
-                    fileInputRef.current?.click();
-                  }}
-                  disabled={uploading}
-                  className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-all duration-150 rounded-lg flex-shrink-0 relative flex-1 justify-center border border-transparent hover:border-gray-300 hover:bg-gray-100/50 disabled:cursor-not-allowed overflow-hidden ${uploading ? '' : 'disabled:opacity-50'}`}
-                  style={{
-                    minWidth: 'fit-content',
-                    maxWidth: 'none',
-                    width: 'auto',
-                    flexBasis: 'auto',
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0,
-                    boxSizing: 'border-box',
-                    display: 'inline-flex',
-                    userSelect: 'none',
-                    WebkitUserSelect: 'none',
-                    touchAction: 'none',
-                    position: 'relative',
-                  }}
-                >
-                  {/* Progress Bar - Overlay (Frogress-inspired) */}
-                  {uploading && (() => {
-                    const progressPercent = Math.max(0, Math.min(100, uploadProgress));
-                    return (
-                      <div
-                        className="absolute inset-0"
-                        style={{
-                          borderRadius: '0.5rem',
-                          overflow: 'hidden',
-                          pointerEvents: 'none',
-                          zIndex: 5,
-                          padding: '6px', // Padding to make progress bar thinner
-                        }}
-                      >
-                        {/* Track - Light gray background with rounded corners */}
-                        <div
-                          className="absolute inset-0"
-                          style={{
-                            backgroundColor: '#e5e7eb',
-                            borderRadius: '9999px',
-                            boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.1)',
-                          }}
-                        />
-                        {/* Fill - Gradient progress bar with coherent border rounding */}
-                        <div
-                          className="absolute"
-                          style={{
-                            left: '6px',
-                            top: '6px',
-                            bottom: '6px',
-                            right: progressPercent >= 100 ? '6px' : 'auto',
-                            width: progressPercent === 0 
-                              ? '0px' 
-                              : progressPercent >= 100
-                              ? 'calc(100% - 12px)'
-                              : `calc(${progressPercent}% - ${(12 * progressPercent) / 100}px)`,
-                            // Natural gradient: pink to light pink
-                            background: 'linear-gradient(90deg, #fce7f3 0%, #f9d4e8 50%, #f5c1dd 100%)',
-                            borderRadius: '9999px',
-                            // Smooth transition for gradual progress
-                            transition: 'width 0.15s cubic-bezier(0.4, 0, 0.2, 1)',
-                            boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.05)',
-                            // Ensure border radius is coherent (not shrunk with width)
-                            minWidth: progressPercent > 0 ? '2px' : '0px',
-                          }}
-                        />
-                      </div>
-                    );
-                  })()}
-                  {/* Button Content - Hidden when uploading, shown when not */}
-                  {!uploading && (
-                    <div className="relative z-20 flex items-center gap-2">
-                  <Upload className="w-4 h-4 text-gray-600" />
-                  <span className="text-sm font-medium text-gray-700" style={{ fontSize: '13px', fontWeight: 500, lineHeight: '1.2' }}>
-                    Upload
-                  </span>
-                    </div>
-                  )}
-                </button>
-          </div>
-        </motion.div>
-        </motion.div>
-      </AnimatePresence>
-      
-      {/* Contributors Popup - Rendered via Portal */}
-      {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {showContributorsPopup && contributors && (
-            <motion.div
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ duration: 0.2 }}
-              className="fixed bg-white rounded-lg shadow-xl border border-gray-200 p-2 min-w-[180px] max-w-[200px] z-[1000]"
-              style={{
-                top: `${popupPosition.top}px`,
-                left: `${popupPosition.left}px`,
-                transform: 'translateY(-100%)',
-                marginBottom: '8px'
-              }}
-              onMouseEnter={() => setShowContributorsPopup(true)}
-              onMouseLeave={() => setShowContributorsPopup(false)}
-            >
-              <div className="space-y-1.5">
-                {contributors.map((contributor, index) => (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-gray-50 hover:bg-gray-100 transition-colors"
-                  >
-                    <Avatar className="w-7 h-7 flex-shrink-0 ring-1 ring-white">
-                      <AvatarImage 
-                        src={contributor.image || "/default profile icon.png"} 
-                        alt={contributor.name}
-                        className="object-cover"
-                      />
-                      <AvatarFallback className="bg-gradient-to-br from-blue-400 to-purple-500 text-white text-[10px] font-semibold">
-                        {contributor.initials}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-gray-800 font-medium truncate">
-                          {contributor.name}
-                        </span>
-                        <span className="text-[10px] text-gray-500 font-normal">
-                          {contributor.role}
-                        </span>
-                      </div>
-                      {contributor.date && (
-                        <div className="text-[10px] text-gray-500 mt-0.5">
-                          {contributor.date}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                                            <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
+                                              {isInAcres ? 'acres' : 'sq ft'}
+                </div>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <div className="text-sm font-normal text-gray-400 mb-0.5">Input detail</div>
+                                            <div className="text-[9px] text-gray-400 font-medium uppercase tracking-wide">Size</div>
+                                          </>
+                                        )}
               </div>
-            </motion.div>
+                                    )}
+            </div>
+                  
+                                  {/* Plot Size */}
+                                  {showPlotSize && (
+                                    <div className="text-center">
+                                      <div className="text-sm font-semibold text-gray-900 mb-0.5">
+                                        {(() => {
+                                          const num = typeof plotSize === 'number' ? plotSize : Number(plotSize);
+                                          return num % 1 === 0 ? num.toString() : num.toFixed(2);
+                                        })()}
+                                      </div>
+                                      <div className="text-[9px] text-gray-500 font-medium uppercase tracking-wide">
+                                        {plotIsInAcres ? 'acres' : (plotSizeUnit || 'acres')}
+                                      </div>
+                                    </div>
+                                  )}
+          </div>
+        );
+                            })()}
+                            
+                            {/* Pricing & Details - Two Column Layout */}
+                            <div className="grid grid-cols-2 gap-x-6 gap-y-3 mb-4 pb-4 border-b border-gray-100">
+                              {/* Pricing Column */}
+                              <div className="space-y-2.5">
+                                {/* Asking Price */}
+                                {editingField === 'asking_price' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Asking Price</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                      <input
+                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['asking_price'] ?? ''}
+                                        onChange={(e) => handleFieldChange('asking_price', e.target.value)}
+                                        onBlur={() => handleFieldBlur('asking_price')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'asking_price')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('asking_price')}
+                                        placeholder="0"
+                  />
+                          </div>
+                                    {fieldErrors['asking_price'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['asking_price']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('asking_price', propertyDetails.asking_price)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Asking Price</div>
+                                    {propertyDetails.asking_price ? (
+                                      <div className="text-xs font-semibold text-gray-900">
+                                        £{propertyDetails.asking_price.toLocaleString()}
+                      </div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                
+                                {/* Sold Price */}
+                                {editingField === 'sold_price' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['sold_price'] ?? ''}
+                                        onChange={(e) => handleFieldChange('sold_price', e.target.value)}
+                                        onBlur={() => handleFieldBlur('sold_price')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'sold_price')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('sold_price')}
+                                        placeholder="0"
+                                      />
+                                    </div>
+                                    {fieldErrors['sold_price'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['sold_price']}</div>
+                                    )}
+                                  </div>
+                    ) : (
+                      <div 
+                                    onClick={() => startEditing('sold_price', propertyDetails.sold_price)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Sold Price</div>
+                                    {propertyDetails.sold_price ? (
+                                      <div className="text-xs font-semibold text-gray-900">
+                                        £{propertyDetails.sold_price.toLocaleString()}
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  
+                                {/* Rent */}
+                                {editingField === 'rent_pcm' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Rent (pcm)</div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-gray-500">£</span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={editValues['rent_pcm'] ?? ''}
+                                        onChange={(e) => handleFieldChange('rent_pcm', e.target.value)}
+                                        onBlur={() => handleFieldBlur('rent_pcm')}
+                                        onKeyDown={(e) => handleFieldKeyDown(e, 'rent_pcm')}
+                                        className="text-xs font-semibold text-gray-900 flex-1 border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                        autoFocus
+                                        disabled={savingFields.has('rent_pcm')}
+                                        placeholder="0"
+                                      />
+                                    </div>
+                                    {fieldErrors['rent_pcm'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['rent_pcm']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('rent_pcm', propertyDetails.rent_pcm)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Rent (pcm)</div>
+                                    {propertyDetails.rent_pcm ? (
+                                      <div className="text-xs font-semibold text-gray-900">
+                                        £{propertyDetails.rent_pcm.toLocaleString()}
+                        </div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                  </div>
+                  
+                              {/* Details Column */}
+                              <div className="space-y-2.5">
+                                {/* Tenure */}
+                                {editingField === 'tenure' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Tenure</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['tenure'] ?? ''}
+                                      onChange={(e) => handleFieldChange('tenure', e.target.value)}
+                                      onBlur={() => handleFieldBlur('tenure')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'tenure')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('tenure')}
+                                      placeholder="e.g. Freehold, Leasehold"
+                                    />
+                                    {fieldErrors['tenure'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['tenure']}</div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('tenure', propertyDetails.tenure)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Tenure</div>
+                                    {propertyDetails.tenure ? (
+                                      <div className="text-xs text-gray-900 font-medium">{propertyDetails.tenure}</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  
+                                {/* EPC Rating */}
+                                {editingField === 'epc_rating' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">EPC Rating</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['epc_rating'] ?? ''}
+                                      onChange={(e) => handleFieldChange('epc_rating', e.target.value)}
+                                      onBlur={() => handleFieldBlur('epc_rating')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'epc_rating')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('epc_rating')}
+                                      placeholder="e.g. A, B, C, D, E, F, G"
+                                    />
+                                    {fieldErrors['epc_rating'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['epc_rating']}</div>
+                                    )}
+                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => startEditing('epc_rating', propertyDetails.epc_rating)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">EPC Rating</div>
+                                    {propertyDetails.epc_rating ? (
+                                      <div className="text-xs text-gray-900 font-medium">{propertyDetails.epc_rating}</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                      </div>
+                                )}
+                                
+                                {/* Condition */}
+                                {editingField === 'condition' ? (
+                                  <div>
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Condition</div>
+                                    <input
+                                      type="text"
+                                      value={editValues['condition'] ?? ''}
+                                      onChange={(e) => handleFieldChange('condition', e.target.value)}
+                                      onBlur={() => handleFieldBlur('condition')}
+                                      onKeyDown={(e) => handleFieldKeyDown(e, 'condition')}
+                                      className="text-xs text-gray-900 font-medium w-full border-b border-gray-300 focus:border-blue-500 focus:outline-none bg-transparent"
+                                      autoFocus
+                                      disabled={savingFields.has('condition')}
+                                      placeholder="e.g. Excellent, Good, Fair"
+                                    />
+                                    {fieldErrors['condition'] && (
+                                      <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['condition']}</div>
+                                    )}
+                                    </div>
+                    ) : (
+                      <div 
+                                    onClick={() => startEditing('condition', propertyDetails.condition)}
+                                    className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1 -mx-2 -my-1"
+                                  >
+                                    <div className="text-[9px] text-gray-500 mb-0.5 font-medium uppercase tracking-wide">Condition</div>
+                                    {propertyDetails.condition ? (
+                                      <div className="text-xs text-gray-900 font-medium">{propertyDetails.condition}</div>
+                                    ) : (
+                                      <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                    )}
+                                  </div>
+                                )}
+                                  </div>
+                                </div>
+                                
+                            {/* Amenities */}
+                            <div className="mb-4 pb-4 border-b border-gray-100">
+                              <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Amenities</div>
+                              {editingField === 'other_amenities' ? (
+                                <>
+                                  <textarea
+                                    ref={amenitiesTextareaRef}
+                                    value={editValues['other_amenities'] ?? ''}
+                                    onChange={(e) => handleFieldChange('other_amenities', e.target.value)}
+                                    onBlur={() => handleFieldBlur('other_amenities')}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        setEditingField(null);
+                                        setEditValues(prev => {
+                                          const newValues = { ...prev };
+                                          delete newValues['other_amenities'];
+                                          return newValues;
+                                        });
+                                      }
+                                    }}
+                                    className="text-xs text-gray-900 leading-relaxed w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-none overflow-hidden"
+                                    autoFocus
+                                    disabled={savingFields.has('other_amenities')}
+                                    placeholder="Enter amenities..."
+                                  />
+                                  {fieldErrors['other_amenities'] && (
+                                    <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['other_amenities']}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <div
+                                  onClick={() => startEditing('other_amenities', propertyDetails.other_amenities)}
+                                  className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1.5 -mx-2 -my-1.5"
+                                >
+                                  {propertyDetails.other_amenities ? (
+                                    <div className="text-xs text-gray-900 leading-relaxed whitespace-pre-wrap">{propertyDetails.other_amenities}</div>
+                                  ) : (
+                                    <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                  )}
+                                  </div>
+                                )}
+                                </div>
+                                  
+                            {/* Notes/Bio */}
+                            <div>
+                              <div className="text-[9px] text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Notes</div>
+                              {editingField === 'notes' ? (
+                                <>
+                                  <textarea
+                                    ref={notesTextareaRef}
+                                    value={editValues['notes'] ?? ''}
+                                    onChange={(e) => handleFieldChange('notes', e.target.value)}
+                                    onBlur={() => handleFieldBlur('notes')}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        setEditingField(null);
+                                        setEditValues(prev => {
+                                          const newValues = { ...prev };
+                                          delete newValues['notes'];
+                                          return newValues;
+                                        });
+                                      }
+                                    }}
+                                    className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap w-full border border-gray-300 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 resize-none overflow-hidden"
+                                    autoFocus
+                                    disabled={savingFields.has('notes')}
+                                    placeholder="Enter notes..."
+                                  />
+                                  {fieldErrors['notes'] && (
+                                    <div className="text-[8px] text-red-500 mt-0.5">{fieldErrors['notes']}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <div
+                                  onClick={() => startEditing('notes', propertyDetails.notes)}
+                                  className="cursor-pointer hover:bg-gray-50 rounded px-2 py-1.5 -mx-2 -my-1.5"
+                                >
+                                  {propertyDetails.notes ? (
+                                    <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{propertyDetails.notes}</div>
+                                  ) : (
+                                    <div className="text-xs font-normal text-gray-400">Input detail</div>
+                                  )}
+                                    </div>
+                              )}
+                                </div>
+                                
+                            {/* Empty State */}
+                            {!propertyDetails.property_type && 
+                             !propertyDetails.number_bedrooms && 
+                             !propertyDetails.size_sqft && 
+                             !propertyDetails.asking_price && 
+                             !propertyDetails.notes && 
+                             propertyImages.length === 0 && (
+                              <div className="flex items-center justify-center h-64 text-center">
+                                <div>
+                                  <p className="text-gray-400 text-sm">No property details available</p>
+                                  <p className="text-gray-300 text-xs mt-1">Upload documents to extract property information</p>
+                                   </div>
+                                </div>
+                    )}
+                            </div>
+                              </div>
+                              </div>
+                          );
+                  })()}
+                    </div>
+            
+            {/* Hidden Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFileInputChange}
+            />
+            
+            {uploadError && (
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full shadow-xl flex items-center gap-3 z-50 animate-in fade-in slide-in-from-bottom-4">
+                <X size={18} />
+                <span className="font-medium text-sm">{uploadError}</span>
+              </div>
+            )}
+            
+             {/* Selection Floating Bar - Updated Style */}
+                {/* Only show when in local selection mode (for deletion), not chat selection mode */}
+                {isLocalSelectionMode && localSelectedDocumentIds.size > 0 && (
+                        <div
+                    className="absolute bottom-6 left-0 right-0 mx-auto w-fit bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50"
+                  >
+                    <span className="font-medium text-sm">{localSelectedDocumentIds.size} selected</span>
+                    <div className="h-4 w-px bg-gray-700"></div>
+                    <button 
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="text-red-400 hover:text-red-300 font-medium text-sm flex items-center gap-1.5 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                      Delete
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setLocalSelectedDocumentIds(new Set());
+                        setIsLocalSelectionMode(false);
+                      }}
+                      className="text-gray-400 hover:text-white text-sm transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+             
+             {/* Delete Confirmation Dialog */}
+             <AnimatePresence>
+                {showDeleteConfirm && (
+                  <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+                          <motion.div
+                      initial={{ scale: 0.96, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0.96, opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="bg-white w-full shadow-xl"
+                      style={{ borderRadius: 0, maxWidth: '340px' }}
+                    >
+                       <div className="px-5 py-4 border-b border-gray-100">
+                         <h3 className="text-base font-semibold text-gray-900">Delete Documents?</h3>
+                       </div>
+                       <div className="px-5 py-4">
+                         <p className="text-sm text-gray-600 leading-relaxed">
+                           Are you sure? This will permanently delete {localSelectedDocumentIds.size} {localSelectedDocumentIds.size === 1 ? 'document' : 'documents'}. This action cannot be undone.
+                       </p>
+                       </div>
+                       <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
+                              <button
+                                onClick={() => setShowDeleteConfirm(false)}
+                           className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  // Optimistically update UI immediately for instant feedback
+                                  const documentsToDelete = Array.from(localSelectedDocumentIds);
+                                  const previousDocuments = [...documents];
+                                  
+                                  // Remove documents from UI immediately
+                                  setDocuments(prev => prev.filter(doc => !localSelectedDocumentIds.has(doc.id)));
+                                  
+                                  // Close preview if deleted document was open
+                                  if (selectedCardIndex !== null) {
+                                    const selectedDoc = documents[selectedCardIndex];
+                                    if (selectedDoc && localSelectedDocumentIds.has(selectedDoc.id)) {
+                                      setSelectedCardIndex(null);
+                                }
+                                  }
+                                  
+                                  // Clear selection and close dialog immediately
+                                  setLocalSelectedDocumentIds(new Set());
+                                  setIsLocalSelectionMode(false);
+                                setShowDeleteConfirm(false);
+                                  
+                                  // Delete in parallel in the background (non-blocking)
+                                  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                                  Promise.all(
+                                    documentsToDelete.map(async (docId) => {
+                                      try {
+                                        const response = await fetch(`${backendUrl}/api/document/${docId}`, {
+                                          method: 'DELETE',
+                                          credentials: 'include',
+                                          headers: { 'Content-Type': 'application/json' },
+                                        });
+                                        if (!response.ok) throw new Error(`Failed to delete: ${response.status}`);
+                                        
+                                        // Update recent projects after successful deletion
+                                        if (property) {
+                                          const updatedCount = documents.length - documentsToDelete.length;
+                                          saveToRecentProjects({
+                                            ...property,
+                                            documentCount: updatedCount
+                                          });
+                                        }
+                              } catch (e) {
+                                        console.error('Error deleting document:', e);
+                                        // Revert on error
+                                        setDocuments(previousDocuments);
+                                      }
+                                    })
+                                  ).catch(e => {
+                                    console.error('Error in batch delete:', e);
+                                    setDocuments(previousDocuments);
+                                  });
+                                }}
+                           className="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-700 transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </motion.div>
+                  </div>
+              )}
+            </AnimatePresence>
+
+            {/* Document Preview - Covers entire panel including headers */}
+            {selectedCardIndex !== null && (
+              <div 
+                className="absolute inset-0 z-[200] bg-white"
+            style={{ 
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0
+                }}
+              >
+                <ExpandedCardView
+                  selectedDoc={selectedDocument}
+                  onClose={handleClosePreview}
+                  onDocumentClick={handleDocumentClick}
+                  isFullscreen={isFullscreen}
+                  onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+                />
+                      </div>
+            )}
+        </motion.div>
+                        </div>
           )}
         </AnimatePresence>,
         document.body
-      )}
-    </>
   );
 };
-
