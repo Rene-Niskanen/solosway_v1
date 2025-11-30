@@ -1022,8 +1022,60 @@ class BackendApiService {
 
   async checkAuth() {
     try {
+      // Use AbortController for proper timeout handling
+      // 15 second timeout to allow for slow database queries (Supabase + PostgreSQL)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      
+      console.log('🔍 checkAuth: Starting auth check request...');
       const response = await fetch(`${this.baseUrl}/api/dashboard`, {
         method: 'GET',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      console.log(`📊 checkAuth: Response status: ${response.status}`);
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ checkAuth: Authentication successful');
+        return {
+          success: true,
+          data: data
+        };
+      } else {
+        const errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+        console.log(`❌ checkAuth: Authentication failed - ${errorMsg}`);
+        return {
+          success: false,
+          error: errorMsg
+        };
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error('⏱️ checkAuth: Request timed out after 15 seconds');
+        return {
+          success: false,
+          error: 'Request timeout - backend server not responding (database queries may be slow)'
+        };
+      }
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error occurred';
+      console.error('❌ checkAuth: Request error:', errorMsg);
+      return {
+        success: false,
+        error: errorMsg
+      };
+    }
+  }
+
+  async logout() {
+    try {
+      const response = await fetch(`${this.baseUrl}/logout`, {
+        method: 'POST',
         credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
@@ -1031,10 +1083,9 @@ class BackendApiService {
       });
 
       if (response.ok) {
-        const data = await response.json();
         return {
           success: true,
-          data: data
+          message: 'Logged out successfully'
         };
       } else {
         return {
