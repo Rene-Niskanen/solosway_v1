@@ -1615,13 +1615,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         {/* Query bubble */}
                         <div
                           style={{
-                            backgroundColor: '#E6E6E6', // User-requested color
-                            borderRadius: '12px',
-                            padding: '5px 12px', // Adjusted padding for smaller font size
-                            boxShadow: 'none', // Removed drop shadow
+                            backgroundColor: '#F5F5F5', // Light grey background
+                            borderRadius: '8px',
+                            padding: '4px 10px', // Tighter horizontal padding
+                            border: '1px solid rgba(0, 0, 0, 0.08)', // Subtle border
+                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', // Very subtle shadow
                             width: 'fit-content', // Fit container tightly around content
                             wordWrap: 'break-word',
-                            display: 'inline-block' // Ensure container fits content
+                            display: 'inline-block', // Ensure container fits content
+                            maxWidth: '100%' // Prevent overflow
                           }}
                         >
                           {/* Display file attachments if any */}
@@ -1670,12 +1672,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               padding: 0,
                               textAlign: 'left',
                               fontFamily: 'system-ui, -apple-system, sans-serif',
-                              width: '100%',
+                              width: 'fit-content',
+                              maxWidth: '100%',
                               boxSizing: 'border-box'
                             }}>
                               <ReactMarkdown
                               components={{
-                                p: ({ children }) => <p style={{ margin: 0, padding: 0 }}>{children}</p>,
+                                p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
                                 h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
                                 h2: () => null, // Remove h2 titles from query responses
                                 h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
@@ -2087,10 +2090,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 onClick={handleStopQuery} 
                                 className="flex items-center justify-center relative focus:outline-none outline-none"
                                 style={{
-                                  width: '32px',
-                                  height: '32px',
-                                  minWidth: '32px',
-                                  minHeight: '32px',
+                                  width: '28px',
+                                  height: '28px',
+                                  minWidth: '28px',
+                                  minHeight: '28px',
                                   borderRadius: '50%',
                                   border: '1px solid #D1D5DB',
                                   backgroundColor: '#FFFFFF',
@@ -2110,7 +2113,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 }}
                                 title="Stop generating"
                               >
-                                <Square className="w-3 h-3" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
+                                <Square className="w-2.5 h-2.5" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
                               </motion.button>
                             );
                           }
