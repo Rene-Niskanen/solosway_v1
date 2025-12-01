@@ -27,7 +27,8 @@ class DocumentProcessingResult(TypedDict, total=False):
     doc_id: str
     property_id: Optional[str]  # Some documents may not be linked to a property
     output: str
-    source_chunks: list[str]
+    source_chunks: list[str]  # Keep for backward compatibility
+    source_chunks_metadata: Optional[list[dict[str, Any]]]  # NEW: Full metadata including bbox for citation/highlighting
     # Search source information
     search_source: Optional[str]  # "structured_query", "llm_sql_query", "bm25", "vector", "hybrid"
     similarity_score: Optional[float]  # Relevance score from search

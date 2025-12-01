@@ -213,7 +213,8 @@ class BackendApiService {
     onError: (error: string) => void,
     onStatus?: (message: string) => void,
     abortSignal?: AbortSignal,
-    documentIds?: string[]
+    documentIds?: string[],
+    onReasoningStep?: (step: { step: string; message: string; details: any }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -274,11 +275,29 @@ class BackendApiService {
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6));
+              const jsonStr = line.slice(6).trim();
+              // Log all data events for debugging
+              if (jsonStr.includes('reasoning_step') || jsonStr.includes('reasoning')) {
+                console.log('🔍 BackendApi: Raw SSE line with reasoning:', line);
+              }
+              const data = JSON.parse(jsonStr);
               
               switch (data.type) {
                 case 'status':
                   onStatus?.(data.message);
+                  break;
+                case 'reasoning_step':
+                  console.log('📊 BackendApi: Received reasoning_step event:', data);
+                  console.log('📊 BackendApi: Calling onReasoningStep callback');
+                  if (onReasoningStep) {
+                    onReasoningStep({
+                      step: data.step,
+                      message: data.message,
+                      details: data.details || {}
+                    });
+                  } else {
+                    console.warn('⚠️ BackendApi: onReasoningStep callback is not defined!');
+                  }
                   break;
                 case 'token':
                   accumulatedText += data.token;

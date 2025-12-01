@@ -243,6 +243,211 @@ class ReductoService:
             
             raise 
 
+    def parse_document_fast(
+        self, 
+        file_path: str,
+        use_sync_for_small: bool = True  # Use sync for files < 2MB (faster)
+    ) -> Dict[str, Any]:
+        """
+        Fast parse with section-based chunking, optimized for speed.
+        
+        Settings:
+        - Section-based chunking (maintains document structure by page titles/sections)
+        - Standard OCR (faster than enhanced)
+        - No image extraction (skip figure/table images for speed)
+        - Synchronous for small files (< 2MB) - faster than async polling
+        - Faster async polling for larger files (1s interval, 60s timeout)
+        
+        Target: 5-15 seconds for typical documents
+        
+        Args:
+            file_path: Path to the document file
+            use_sync_for_small: If True, use synchronous parsing for files < 2MB (faster)
+            
+        Returns:
+            Dict with keys: job_id, document_text, chunks (section-based), image_urls (empty)
+        """
+        try:
+            file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
+            
+            # Upload document
+            logger.info(f"⚡ FAST PARSE: Uploading document to Reducto: {file_path}")
+            upload = self.client.upload(file=file_path_obj)
+            
+            # Fast settings: section-based chunking, standard OCR, no images
+            fast_settings = {
+                "retrieval": {
+                    "chunking": {
+                        "chunk_mode": "section"  # Section-based chunking (by page titles/sections)
+                    }
+                },
+                "return_images": [],  # No images for speed
+                "ocr_system": "standard"  # Standard OCR (faster than enhanced)
+            }
+            
+            # Use synchronous parsing for small files (faster - no polling overhead)
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024)
+            
+            if use_sync_for_small and file_size_mb < 2.0:
+                # Synchronous - immediate response, faster for small files
+                logger.info(f"⚡ Using synchronous parsing (fast mode, {file_size_mb:.2f}MB)")
+                parse_result = self.client.parse.run(
+                    input=upload,
+                    settings=fast_settings
+                )
+            else:
+                # Async for larger files (but with faster polling)
+                logger.info(f"🔄 Using async parsing (file {file_size_mb:.2f}MB)")
+                import time
+                
+                submission = self.client.parse.run_job(
+                    input=upload,
+                    settings=fast_settings
+                )
+                
+                job_id = submission.job_id
+                logger.info(f"📋 Parse job submitted: {job_id}")
+                
+                # Faster polling: 1 second intervals, 60 second timeout (faster than main pipeline)
+                max_wait = 60  # 1 minute max (faster timeout)
+                wait_time = 0
+                poll_interval = 1  # Check every 1 second (faster than main pipeline's 2s)
+                
+                while wait_time < max_wait:
+                    job = self.client.job.get(job_id)
+                    
+                    if job.status == "Completed":
+                        parse_result = job.result if hasattr(job, 'result') and job.result else job
+                        logger.info(f"✅ Parse completed in {wait_time}s")
+                        break
+                    elif job.status == "Failed":
+                        error_msg = getattr(job, 'error', 'Unknown error')
+                        logger.error(f"❌ Parse job failed: {error_msg}")
+                        raise Exception(f"Reducto parse job failed: {error_msg}")
+                    elif job.status in ["Pending", "Processing"]:
+                        time.sleep(poll_interval)
+                        wait_time += poll_interval
+                    else:
+                        logger.warning(f"⚠️ Unknown job status: {job.status}")
+                        time.sleep(poll_interval)
+                        wait_time += poll_interval
+                
+                if wait_time >= max_wait:
+                    raise TimeoutError(f"Parse job {job_id} timed out after {max_wait}s")
+            
+            # Extract job_id
+            job_id = getattr(parse_result, 'job_id', None)
+            
+            # Extract text from chunks (reuse existing logic)
+            document_text = ""
+            chunks = []
+            
+            # Parse result structure can vary (same as parse_document)
+            result_obj = None
+            
+            if hasattr(parse_result, 'result') and parse_result.result:
+                result_obj = parse_result.result
+            elif hasattr(parse_result, 'chunks'):
+                result_obj = parse_result
+            else:
+                logger.warning(f"⚠️ Unexpected parse result structure. Attributes: {dir(parse_result)}")
+                if isinstance(parse_result, dict):
+                    result_obj = parse_result.get('result', parse_result)
+                elif hasattr(parse_result, '__dict__'):
+                    result_obj = parse_result.__dict__.get('result', parse_result)
+            
+            if result_obj:
+                if hasattr(result_obj, 'chunks') and result_obj.chunks:
+                    logger.info(f"📦 Fast parse: Found {len(result_obj.chunks)} section-based chunks")
+                    for chunk in result_obj.chunks:
+                        chunk_content = chunk.content if hasattr(chunk, 'content') else ''
+                        chunk_embed = chunk.embed if hasattr(chunk, 'embed') else ''
+                        chunk_enriched = getattr(chunk, 'enriched', None)
+                        
+                        # Extract ALL blocks with full metadata (reuse existing logic)
+                        chunk_blocks = []
+                        chunk_bbox_aggregate = None
+                        
+                        if hasattr(chunk, 'blocks') and chunk.blocks:
+                            for block in chunk.blocks:
+                                block_type = getattr(block, 'type', 'unknown')
+                                block_content = getattr(block, 'content', '')
+                                block_confidence = getattr(block, 'confidence', None)
+                                block_logprobs_confidence = getattr(block, 'logprobs_confidence', None)
+                                
+                                # Extract bbox for ALL block types (Text, Table, Figure)
+                                block_bbox = None
+                                if hasattr(block, 'bbox') and block.bbox:
+                                    bbox_obj = block.bbox
+                                    block_bbox = {
+                                        'left': getattr(bbox_obj, 'left', None),
+                                        'top': getattr(bbox_obj, 'top', None),
+                                        'width': getattr(bbox_obj, 'width', None),
+                                        'height': getattr(bbox_obj, 'height', None),
+                                        'page': getattr(bbox_obj, 'page', None),
+                                        'original_page': getattr(bbox_obj, 'original_page', None)
+                                    }
+                                    # Use first block's bbox as chunk-level bbox
+                                    if chunk_bbox_aggregate is None:
+                                        chunk_bbox_aggregate = block_bbox.copy()
+                                
+                                block_metadata = {
+                                    'type': block_type,
+                                    'content': block_content,
+                                    'bbox': block_bbox,
+                                    'confidence': block_confidence,
+                                    'logprobs_confidence': block_logprobs_confidence,
+                                    'image_url': None  # No images in fast mode
+                                }
+                                
+                                chunk_blocks.append(block_metadata)
+                        
+                        chunks.append({
+                            'content': chunk_content,
+                            'embed': chunk_embed,
+                            'enriched': chunk_enriched,
+                            'blocks': chunk_blocks,
+                            'bbox': chunk_bbox_aggregate
+                        })
+                        document_text += chunk_content + "\n"
+                
+                # Alternative if chunks are not available, try direct text extraction
+                elif hasattr(result_obj, 'text'):
+                    document_text = result_obj.text if result_obj.text else ''
+                    logger.info(f"📄 Fast parse: Extracted text directly (no chunks): {len(document_text)} chars")
+                else:
+                    logger.warning(f"⚠️ Fast parse: No chunks or text found in result_obj. Attributes: {dir(result_obj)}")
+            else:
+                logger.error(f"❌ Fast parse: Could not extract result object from parse_result")
+            
+            logger.info(f"✅ Fast parse completed: {len(chunks)} section-based chunks, {len(document_text)} chars")
+            
+            return {
+                'job_id': job_id,
+                'document_text': document_text,
+                'chunks': chunks,
+                'image_urls': [],  # No images in fast mode
+                'image_blocks_metadata': []  # No images in fast mode
+            }
+            
+        except TimeoutError as e:
+            logger.error(f"Fast parse timeout: {e}")
+            raise
+        except ConnectionError as e:
+            logger.error(f"Fast parse connection error: {e}")
+            raise Exception(f"Connection error with Reducto API: {str(e)}. Please check your network connection and try again.")
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Fast parse failed: {error_msg}")
+            
+            # Check for SSL errors
+            if "SSL" in error_msg or "EOF" in error_msg:
+                logger.error("SSL/EOF error detected. This may be due to network issues or large file size.")
+                raise Exception(f"Network error during fast parsing: {error_msg}")
+            
+            raise
+
     def get_parse_result_from_job_id(self, job_id: str, return_images: List[str] = None) -> Dict[str, Any]:
         """
         Retrieve parse results from an existing job_id

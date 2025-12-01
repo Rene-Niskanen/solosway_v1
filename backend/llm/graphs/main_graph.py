@@ -56,11 +56,25 @@ async def create_checkpointer_for_current_loop():
         # Create connection pool for THIS event loop with optimized settings
         # Reduced max_size to avoid connection exhaustion - each event loop gets 2 connections
         # This prevents authentication timeout issues when multiple checkpointers exist
+        # Disable prepared statements to avoid "prepared statement already exists" errors
+        # when multiple event loops create checkpointers concurrently
+        # prepare_threshold=0 disables prepared statements entirely
+        conn_params = db_url
+        if '?' not in db_url:
+            conn_params = f"{db_url}?prepare_threshold=0&connect_timeout=5"
+        else:
+            conn_params = f"{db_url}&prepare_threshold=0&connect_timeout=5"
+        
+        # Create pool with lazy connection opening to avoid immediate connection exhaustion
+        # With open=True, min_size connections are opened immediately
+        # With open=False, connections are opened on-demand (better for concurrent requests)
         pool = AsyncConnectionPool(
-            conninfo=db_url, 
+            conninfo=conn_params, 
             min_size=1,  # Minimum connections in the pool (required by psycopg_pool)
             max_size=2,  # Maximum connections per event loop
-            open=True  # Open connections immediately to catch errors early
+            open=True,  # Open pool immediately (connections opened on first use with min_size=1)
+            timeout=20  # Increased timeout when getting connection from pool (seconds)
+            # Increased from 5s to 20s to handle concurrent requests and Supabase pooler delays
         )
         
         # Create checkpointer instance for this event loop
@@ -72,10 +86,11 @@ async def create_checkpointer_for_current_loop():
         # "CREATE INDEX CONCURRENTLY cannot run inside transaction" error.
         # Since tables already exist from migration, we continue with checkpointer anyway.
         try:
-            await asyncio.wait_for(checkpointer.setup(), timeout=30.0)
+            # Reduced timeout to 10 seconds for faster startup - will fallback to stateless mode
+            await asyncio.wait_for(checkpointer.setup(), timeout=10.0)
             logger.info("Checkpointer setup completed successfully")
         except asyncio.TimeoutError:
-            logger.error("Checkpointer setup timed out after 30 seconds - possible connection issue")
+            logger.warning("Checkpointer setup timed out after 10 seconds - using stateless mode (this is OK)")
             return None
         except Exception as setup_error:
             error_msg = str(setup_error)

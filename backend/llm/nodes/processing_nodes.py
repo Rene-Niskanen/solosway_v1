@@ -17,13 +17,19 @@ from backend.llm.config import config
 logger = logging.getLogger(__name__)
 
 
-def _build_processing_result(output_state) -> DocumentProcessingResult:
-    return DocumentProcessingResult(
+def _build_processing_result(output_state, source_chunks_metadata=None) -> DocumentProcessingResult:
+    result = DocumentProcessingResult(
         doc_id=output_state.get("doc_id", ""),
         property_id=output_state.get("property_id", ""),
         output=output_state.get("answer", "Not found in this document."),
-        source_chunks=[output_state.get("doc_content", "")[:1500]],  # Increased for 1200-char chunks
+        source_chunks=[output_state.get("doc_content", "")[:1500]],  # Keep for backward compatibility
     )
+    
+    # NEW: Store source chunks metadata with bbox for citation/highlighting
+    if source_chunks_metadata:
+        result['source_chunks_metadata'] = source_chunks_metadata
+    
+    return result
 
 
 async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
@@ -60,6 +66,9 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             # Preserve search source information
             result['search_source'] = doc.get('source', 'unknown')
             result['similarity_score'] = doc.get('similarity_score', 0.0)
+            # NEW: Preserve source chunks metadata if available
+            if doc.get('source_chunks_metadata'):
+                result['source_chunks_metadata'] = doc.get('source_chunks_metadata')
             stubbed.append(result)
         return {"document_outputs": stubbed}
 
@@ -91,7 +100,11 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
 
         try:
             output_state = await qa_subgraph.ainvoke(subgraph_state)
-            result = _build_processing_result(output_state)
+            
+            # NEW: Extract source chunks metadata from doc (preserved from clarify_relevant_docs)
+            source_chunks_metadata = doc.get('source_chunks_metadata')
+            
+            result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
             
             # Add metadata from original doc (page numbers, classification, filename, address)
             result['classification_type'] = doc.get('classification_type', 'Unknown')

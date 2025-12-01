@@ -3,6 +3,18 @@
 import * as React from "react";
 import { FileAttachmentData } from "../components/FileAttachment";
 
+// Highlight metadata for citation-based document viewing
+export interface CitationHighlight {
+  fileId: string;  // Match file.id in previewFiles array
+  bbox: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page: number;
+  };
+}
+
 interface PreviewContextType {
   previewFiles: FileAttachmentData[];
   activePreviewTabIndex: number;
@@ -10,7 +22,10 @@ interface PreviewContextType {
   setPreviewFiles: React.Dispatch<React.SetStateAction<FileAttachmentData[]>>;
   setActivePreviewTabIndex: React.Dispatch<React.SetStateAction<number>>;
   setIsPreviewOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  addPreviewFile: (file: FileAttachmentData) => void;
+  addPreviewFile: (file: FileAttachmentData, highlight?: CitationHighlight) => void;
+  highlightCitation: CitationHighlight | null;
+  setHighlightCitation: React.Dispatch<React.SetStateAction<CitationHighlight | null>>;
+  clearHighlightCitation: () => void;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -21,8 +36,13 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [previewFiles, setPreviewFiles] = React.useState<FileAttachmentData[]>([]);
   const [activePreviewTabIndex, setActivePreviewTabIndex] = React.useState(0);
   const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
+  const [highlightCitation, setHighlightCitation] = React.useState<CitationHighlight | null>(null);
 
-  const addPreviewFile = React.useCallback((file: FileAttachmentData) => {
+  const clearHighlightCitation = React.useCallback(() => {
+    setHighlightCitation(null);
+  }, []);
+
+  const addPreviewFile = React.useCallback((file: FileAttachmentData, highlight?: CitationHighlight) => {
     setPreviewFiles(prev => {
       // Check if file is already in preview tabs
       const existingTabIndex = prev.findIndex(f => f.id === file.id);
@@ -34,20 +54,43 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         updatedFiles[existingTabIndex] = file; // Update with fresh File object
         setActivePreviewTabIndex(existingTabIndex);
         setIsPreviewOpen(true);
+        
+        // Set highlight if provided
+        if (highlight) {
+          setHighlightCitation({
+            ...highlight,
+            fileId: file.id
+          });
+        }
+        
         return updatedFiles;
       } else {
         // Add new tab (limit to MAX_PREVIEW_TABS)
+        let newFiles: FileAttachmentData[];
+        let newActiveIndex: number;
+        
         if (prev.length >= MAX_PREVIEW_TABS) {
           // Remove oldest tab (first one) and add new one
-          setActivePreviewTabIndex(MAX_PREVIEW_TABS - 1);
-          setIsPreviewOpen(true);
-          return [...prev.slice(1), file];
+          newActiveIndex = MAX_PREVIEW_TABS - 1;
+          newFiles = [...prev.slice(1), file];
         } else {
           // Add new tab
-          setActivePreviewTabIndex(prev.length);
-          setIsPreviewOpen(true);
-          return [...prev, file];
+          newActiveIndex = prev.length;
+          newFiles = [...prev, file];
         }
+        
+        setActivePreviewTabIndex(newActiveIndex);
+        setIsPreviewOpen(true);
+        
+        // Set highlight if provided
+        if (highlight) {
+          setHighlightCitation({
+            ...highlight,
+            fileId: file.id
+          });
+        }
+        
+        return newFiles;
       }
     });
   }, []);
@@ -60,8 +103,11 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setActivePreviewTabIndex,
     setIsPreviewOpen,
     addPreviewFile,
+    highlightCitation,
+    setHighlightCitation,
+    clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, highlightCitation, clearHighlightCitation]);
 
   return (
     <PreviewContext.Provider value={value}>
