@@ -3351,6 +3351,10 @@ export const MainContent = ({
             }}
             onPropertyDetailsVisibilityChange={(isOpen) => {
               setIsPropertyDetailsOpen(isOpen);
+              // Reset shouldExpandChat when property details panel closes to prevent chat from expanding more
+              if (!isOpen) {
+                setShouldExpandChat(false);
+              }
             }}
             containerStyle={{
               position: 'fixed',

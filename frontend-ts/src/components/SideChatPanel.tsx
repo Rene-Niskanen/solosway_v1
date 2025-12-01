@@ -353,21 +353,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  // Track locked width to prevent expansion when property details panel closes
+  const lockedWidthRef = React.useRef<string | null>(null);
   
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
     if (shouldExpand && !isExpanded) {
       setIsExpanded(true);
+      // When entering analyse mode (shouldExpand), lock the width to 35vw
+      if (isPropertyDetailsOpen) {
+        lockedWidthRef.current = '35vw';
+      }
     }
-  }, [shouldExpand, isExpanded]);
+  }, [shouldExpand, isExpanded, isPropertyDetailsOpen]);
+  
+  // Lock width when property details panel opens in expanded chat
+  React.useEffect(() => {
+    if (isExpanded && isPropertyDetailsOpen) {
+      lockedWidthRef.current = '35vw';
+    }
+  }, [isExpanded, isPropertyDetailsOpen]);
   
   // Calculate and notify parent of chat panel width changes
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
-      // When PropertyDetailsPanel is open, use narrower width (35vw instead of 50vw when expanded)
-      const chatWidth = isExpanded 
-        ? (isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5)
-        : 450; // Fixed 450px when collapsed
+      // Use locked width if available, otherwise calculate based on current state
+      let chatWidth: number;
+      if (isExpanded) {
+        if (lockedWidthRef.current) {
+          // Use locked width (convert vw to pixels)
+          const vwValue = parseFloat(lockedWidthRef.current);
+          chatWidth = window.innerWidth * (vwValue / 100);
+        } else {
+          // Normal calculation
+          chatWidth = isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5;
+        }
+      } else {
+        chatWidth = 450; // Fixed 450px when collapsed
+      }
       onChatWidthChange(chatWidth);
     } else if (onChatWidthChange && !isVisible) {
       // Chat is hidden, notify parent that width is 0
@@ -1472,7 +1495,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
             width: isExpanded 
-              ? (isPropertyDetailsOpen ? '35vw' : '50vw') // Narrower when PropertyDetailsPanel is open
+              ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
               : '450px', // Fixed width when collapsed
             backgroundColor: '#F9F9F9',
             boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
@@ -1551,6 +1574,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <button
                     type="button"
                     onClick={() => {
+                      // Clear locked width when user manually toggles expand/collapse
+                      lockedWidthRef.current = null;
                       setIsExpanded(!isExpanded);
                     }}
                     className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
