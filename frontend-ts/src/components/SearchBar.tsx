@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -30,6 +30,7 @@ export interface SearchBarProps {
   // MapChatBar functionality
   onPanelToggle?: () => void;
   hasPreviousSession?: boolean;
+  isPropertyDetailsOpen?: boolean;
   initialValue?: string; // undefined means no initial value, empty string means clear
   initialAttachedFiles?: FileAttachmentData[]; // Preserve file attachments when switching views
   onAttachmentsChange?: (attachments: FileAttachmentData[]) => void; // Callback when attachments change
@@ -49,6 +50,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   onFileDrop,
   onPanelToggle,
   hasPreviousSession = false,
+  isPropertyDetailsOpen = false,
   initialValue,
   initialAttachedFiles,
   onAttachmentsChange
@@ -964,10 +966,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 background: '#ffffff',
                 border: '1px solid #E5E7EB',
                 boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
-                paddingTop: '16px',
-                paddingBottom: '16px',
-                paddingRight: '16px',
-                paddingLeft: '16px',
+                paddingTop: '12px',
+                paddingBottom: '12px',
+                paddingRight: '12px',
+                paddingLeft: '12px',
                 overflow: 'visible',
                 width: '100%',
                 minWidth: '0',
@@ -1024,7 +1026,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               className="relative flex flex-col w-full" 
               style={{ 
                 height: 'auto', 
-                minHeight: '28.1px',
+                minHeight: '24px',
                 width: '100%',
                 minWidth: '0' // Prevent width constraints
               }}
@@ -1033,14 +1035,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               <div 
                 className="flex items-start w-full"
                 style={{ 
-                  minHeight: '28.1px',
+                  minHeight: '24px',
                   width: '100%',
+                  marginTop: '4px', // Additional padding above textarea
                   marginBottom: '12px' // Space between text and icons
                 }}
               >
                   <div className="flex-1 relative flex items-start w-full" style={{ 
                     overflow: 'visible', 
-                    minHeight: '28.1px',
+                    minHeight: '24px',
                     width: '100%',
                     minWidth: '0'
                   }}>
@@ -1074,16 +1077,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         }
                       }} 
                       placeholder={contextConfig.placeholder}
-                      className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
+                      className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
-                        minHeight: '28.1px',
+                        minHeight: '24px',
                         maxHeight: '350px',
-                        fontSize: fontSize,
-                        lineHeight: lineHeight,
+                        fontSize: '14px',
+                        lineHeight: '20px',
                         paddingTop: '0px',
                         paddingBottom: '0px',
-                        paddingRight: '0px', // No right padding in multi-line, icons are below
-                        paddingLeft: '8px', // Match MapChatBar padding
+                        paddingRight: '0px',
+                        paddingLeft: '8px',
                         scrollbarWidth: 'thin',
                         scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                         overflow: 'hidden',
@@ -1112,25 +1115,58 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               >
                 {/* Left group: Panel toggle and Map toggle */}
                 <div className="flex items-center flex-shrink-0">
-                  {/* Panel Toggle Button (only in map view with previous session) */}
-                  {isMapVisible && hasPreviousSession && onPanelToggle && (
-                    <button
-                      type="button"
-                      onClick={onPanelToggle}
-                      className="flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none text-slate-600 hover:text-green-500"
-                      style={{
-                        position: 'relative',
-                        flexShrink: 0,
-                        width: '28px',
-                        height: '28px',
-                        minWidth: '28px',
-                        minHeight: '28px',
-                        marginLeft: '4px' // Align with textarea text start
-                      }}
-                      title="Open chat history"
-                    >
-                      <PanelRightOpen className="w-5 h-5" strokeWidth={1.5} />
-                    </button>
+                  {/* Panel Toggle Button (show when property details is open OR when in map view with previous session) */}
+                  {((isPropertyDetailsOpen && onPanelToggle) || (isMapVisible && hasPreviousSession && onPanelToggle)) && (
+                    isPropertyDetailsOpen ? (
+                      <button
+                        type="button"
+                        onClick={onPanelToggle}
+                        className="flex items-center justify-center focus:outline-none outline-none"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '4px 8px',
+                          backgroundColor: '#ffffff',
+                          color: '#111827',
+                          border: '1px solid rgba(229, 231, 235, 0.8)',
+                          borderRadius: '6px',
+                          fontSize: '11px',
+                          fontWeight: 500,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                          whiteSpace: 'nowrap',
+                          marginLeft: '4px'
+                        }}
+                        title="Open analyse mode"
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = '#f9fafb';
+                          e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
+                          e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = '#ffffff';
+                          e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                          e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
+                        }}
+                      >
+                        <Brain className="w-3.5 h-3.5" strokeWidth={2} />
+                        <span>Analyse</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={onPanelToggle}
+                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
+                        style={{
+                          marginLeft: '4px'
+                        }}
+                        title="Expand chat"
+                      >
+                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      </button>
+                    )
                   )}
                   
                   {/* Map Toggle Button - Aligned with text start */}
@@ -1144,22 +1180,40 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         });
                         onMapToggle?.();
                       }}
-                        className="flex-shrink-0 flex items-center justify-center w-7 h-7 transition-colors duration-200 focus:outline-none outline-none text-slate-600 hover:text-green-500"
+                      className="flex items-center justify-center focus:outline-none outline-none"
                       style={{
-                        position: 'relative',
-                        flexShrink: 0,
-                        width: '28px',
-                        height: '28px',
-                        minWidth: '28px',
-                        minHeight: '28px',
-                        marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px' // Add spacing if panel toggle is present
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '4px 8px',
+                        backgroundColor: '#ffffff',
+                        color: '#111827',
+                        border: '1px solid rgba(229, 231, 235, 0.8)',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                        whiteSpace: 'nowrap',
+                        marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
                       }}
                       title={isMapVisible ? "Back to search mode" : "Go to map mode"}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f9fafb';
+                        e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
+                        e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#ffffff';
+                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
+                      }}
                     >
                         {isMapVisible ? (
-                          <LayoutDashboard className="w-[21px] h-[21px]" strokeWidth={1.5} />
+                          <LayoutDashboard className="w-3.5 h-3.5" strokeWidth={2} />
                         ) : (
-                          <Map className="w-[21px] h-[21px]" strokeWidth={1.5} />
+                          <Map className="w-3.5 h-3.5" strokeWidth={2} />
                         )}
                     </button>
                   )}

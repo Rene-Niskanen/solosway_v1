@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { Sidebar } from './Sidebar';
 import { MainContent } from './MainContent';
 import { ChatPanel } from './ChatPanel';
@@ -9,6 +10,7 @@ import { SearchBar } from './SearchBar';
 import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { ProfileDropdown } from './ProfileDropdown';
+import { backendApi } from '@/services/backendApi';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -17,6 +19,7 @@ export interface DashboardLayoutProps {
 const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
+  const navigate = useNavigate();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
 
   // Load saved background on mount - check for custom uploaded background first
@@ -372,9 +375,24 @@ const DashboardLayoutContent = ({
         onChatSelect={handleChatSelect}
         onNewChat={handleNewChat}
         isMapVisible={isMapVisible}
-        onSignOut={() => {
-          // Handle sign out
-          console.log('Sign out clicked');
+        onSignOut={async () => {
+          try {
+            const result = await backendApi.logout();
+            if (result.success) {
+              // Clear any local storage if needed
+              localStorage.clear();
+              // Redirect to login page
+              navigate('/auth');
+            } else {
+              console.error('Logout failed:', result.error);
+              // Still redirect even if logout API call fails
+              navigate('/auth');
+            }
+          } catch (error) {
+            console.error('Logout error:', error);
+            // Still redirect on error
+            navigate('/auth');
+          }
         }}
       />
       

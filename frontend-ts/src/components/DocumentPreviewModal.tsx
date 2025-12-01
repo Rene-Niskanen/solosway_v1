@@ -14,6 +14,7 @@ interface DocumentPreviewModalProps {
   onClose: () => void;
   onTabChange: (index: number) => void;
   onTabClose: (index: number) => void;
+  onTabReorder?: (newOrder: FileAttachmentData[]) => void;
   onAddAttachment?: () => void;
   isMapVisible?: boolean;
   isSidebarCollapsed?: boolean;
@@ -26,6 +27,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   onClose,
   onTabChange,
   onTabClose,
+  onTabReorder,
   onAddAttachment,
   isMapVisible = false,
   isSidebarCollapsed = false
@@ -103,6 +105,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const tabsContainerRef = React.useRef<HTMLDivElement>(null);
   const tabRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
   const currentBlobUrlRef = React.useRef<string | null>(null);
+  const [draggedTabIndex, setDraggedTabIndex] = React.useState<number | null>(null);
+  const [dragOverTabIndex, setDragOverTabIndex] = React.useState<number | null>(null);
 
   // Create URL when file changes - use preloaded blob URL if available
   React.useEffect(() => {
@@ -1152,6 +1156,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                     boxSizing: 'border-box', // Ensure padding/borders don't expand width
                     overflow: 'hidden', // Prevent content from expanding modal
                     zIndex: 50,
+                    border: 'none',
                     // Prevent any visual transitions on dimensions
                     transition: 'none',
                     // Transform handled by CSS class .modal-centered to override Framer Motion
@@ -1160,15 +1165,32 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   }
               )
             }}
-            className={`flex flex-col bg-white rounded-lg shadow-2xl overflow-hidden ${!isMapVisible ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
+            className={`flex flex-col bg-white rounded-lg shadow-2xl overflow-hidden relative ${!isMapVisible ? 'modal-centered' : ''} ${isResizing ? 'select-none' : ''}`}
             onClick={(e) => e.stopPropagation()}
             ref={modalRef}
           >
-            {/* Tabs Bar - File Tab Style - Fixed container */}
+            {/* Close Button - Always in top right corner */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              className="absolute top-4 right-4 z-50 p-1.5 hover:bg-gray-100 rounded transition-colors"
+              style={{
+                position: 'absolute',
+                top: '16px',
+                right: '16px',
+                zIndex: 50,
+              }}
+              title="Close"
+            >
+              <X className="w-4 h-4 text-gray-600" />
+            </button>
+            {/* Tabs Bar */}
             {files.length > 0 && (
               <div 
                 ref={tabsContainerRef}
-                className="flex items-end gap-1 pt-4 pb-0 overflow-x-auto overflow-y-visible tabs-scrollbar border-b border-gray-100" 
+                className="flex items-end gap-0 pt-3 pb-0 overflow-x-auto overflow-y-visible tabs-scrollbar" 
                 style={{ 
                   background: 'white', 
                   width: '100%',
@@ -1177,8 +1199,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   paddingLeft: '16px', 
                   paddingRight: '16px',
                   marginBottom: '0',
+                  paddingBottom: '0',
                   flexWrap: 'nowrap',
-                  alignItems: 'flex-end', // Align tabs at bottom
+                  alignItems: 'flex-end',
                   boxSizing: 'border-box',
                   overflowX: 'auto',
                   overflowY: 'hidden',
@@ -1186,6 +1209,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   flexGrow: 0,
                   position: 'relative',
                   zIndex: 1,
+                  borderBottom: 'none',
                 }}
               >
                 {files.map((tabFile, index) => {
@@ -1202,33 +1226,103 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       }}
                       role="button"
                       tabIndex={0}
-                      draggable={false}
-                      onMouseDown={(e) => {
-                        console.log('🖱️ Tab mousedown:', {
-                          index,
-                          fileName: tabFile.name,
-                          target: e.target,
-                          currentTarget: e.currentTarget,
-                          defaultPrevented: e.defaultPrevented,
-                          type: e.type
-                        });
+                      draggable={onTabReorder ? true : false}
+                      onDragStart={(e) => {
+                        if (!onTabReorder) return;
+                        setDraggedTabIndex(index);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', index.toString());
+                        // Add visual feedback
+                        if (e.currentTarget) {
+                          e.currentTarget.style.opacity = '0.5';
+                          e.currentTarget.style.cursor = 'grabbing';
+                        }
+                      }}
+                      onDragEnd={(e) => {
+                        setDraggedTabIndex(null);
+                        setDragOverTabIndex(null);
+                        // Reset visual feedback
+                        if (e.currentTarget) {
+                          e.currentTarget.style.opacity = '1';
+                          e.currentTarget.style.cursor = onTabReorder ? 'grab' : 'pointer';
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        if (!onTabReorder || draggedTabIndex === null) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverTabIndex !== index && draggedTabIndex !== index) {
+                          setDragOverTabIndex(index);
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        // Only clear dragOver if we're actually leaving the element
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = e.clientX;
+                        const y = e.clientY;
+                        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                          if (dragOverTabIndex === index) {
+                            setDragOverTabIndex(null);
+                          }
+                        }
+                      }}
+                      onDrop={(e) => {
+                        if (!onTabReorder || draggedTabIndex === null) return;
                         e.preventDefault();
                         e.stopPropagation();
+                        
+                        const dragIndex = draggedTabIndex;
+                        const dropIndex = index;
+                        
+                        if (dragIndex === dropIndex) {
+                          setDraggedTabIndex(null);
+                          setDragOverTabIndex(null);
+                          return;
+                        }
+                        
+                        // Create new array with reordered files
+                        const newFiles = [...files];
+                        const [draggedFile] = newFiles.splice(dragIndex, 1);
+                        newFiles.splice(dropIndex, 0, draggedFile);
+                        
+                        // Calculate new active tab index
+                        let newActiveIndex = activeTabIndex;
+                        if (dragIndex === activeTabIndex) {
+                          // If we dragged the active tab, it moves to dropIndex
+                          newActiveIndex = dropIndex;
+                        } else if (dragIndex < activeTabIndex && dropIndex >= activeTabIndex) {
+                          // Active tab moved left
+                          newActiveIndex = activeTabIndex - 1;
+                        } else if (dragIndex > activeTabIndex && dropIndex <= activeTabIndex) {
+                          // Active tab moved right
+                          newActiveIndex = activeTabIndex + 1;
+                        }
+                        
+                        // Call the reorder callback
+                        onTabReorder(newFiles);
+                        
+                        // Update active tab if needed
+                        if (newActiveIndex !== activeTabIndex) {
+                          onTabChange(newActiveIndex);
+                        }
+                        
+                        setDraggedTabIndex(null);
+                        setDragOverTabIndex(null);
+                      }}
+                      onMouseDown={(e) => {
+                        // Don't prevent default on drag start
+                        if (e.button !== 0) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                        }
                       }}
                       onClick={(e) => {
-                        console.log('🖱️ Tab click:', {
-                          index,
-                          fileName: tabFile.name,
-                          target: e.target,
-                          currentTarget: e.currentTarget,
-                          defaultPrevented: e.defaultPrevented,
-                          type: e.type,
-                          button: e.button,
-                          detail: e.detail,
-                          ctrlKey: e.ctrlKey,
-                          metaKey: e.metaKey,
-                          shiftKey: e.shiftKey
-                        });
+                        // Don't trigger click if we just finished dragging
+                        if (draggedTabIndex !== null) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          return;
+                        }
                         // Prevent all default behaviors that could trigger downloads
                         e.preventDefault();
                         e.stopPropagation();
@@ -1241,39 +1335,28 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         if (e.target instanceof HTMLAnchorElement) {
                           e.target.href = 'javascript:void(0)';
                         }
-                        console.log('✅ Calling onTabChange with index:', index);
                         onTabChange(index);
-                        console.log('✅ onTabChange called');
-                        // Return false to prevent any default behavior
                         return false;
                       }}
                       onContextMenu={(e) => {
-                        console.log('🖱️ Tab contextmenu:', {
-                          index,
-                          fileName: tabFile.name
-                        });
                         e.preventDefault();
                         e.stopPropagation();
                       }}
                       onAuxClick={(e) => {
-                        console.log('🖱️ Tab auxclick (middle mouse):', {
-                          index,
-                          fileName: tabFile.name,
-                          button: e.button
-                        });
                         e.preventDefault();
                         e.stopPropagation();
                       }}
                       className={`
                         flex items-center gap-2 px-3 py-2 text-sm font-medium cursor-pointer transition-all relative
                         ${isActive 
-                          ? 'bg-white text-gray-900 border-t border-l border-r border-gray-200 rounded-t-lg shadow-sm' 
-                          : 'text-gray-500 hover:text-gray-700 bg-gray-50 border-t border-l border-r border-gray-200 rounded-t-lg hover:bg-gray-100'
+                          ? 'bg-white text-gray-900 rounded-t-lg border-t border-l border-r border-gray-200 -mb-px' 
+                          : 'text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-t-lg border-t border-l border-r border-transparent hover:border-gray-200'
                         }
+                        ${draggedTabIndex === index ? 'opacity-50' : ''}
+                        ${dragOverTabIndex === index && draggedTabIndex !== index ? 'ring-2 ring-blue-400' : ''}
                         flex-shrink-0
                       `}
                       style={{
-                        marginBottom: isActive ? '-1px' : '0',
                         zIndex: isActive ? 10 : 1,
                         minWidth: 'fit-content',
                         maxWidth: 'none',
@@ -1286,8 +1369,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         display: 'inline-flex',
                         userSelect: 'none',
                         WebkitUserSelect: 'none',
-                        touchAction: 'none',
+                        touchAction: onTabReorder ? 'none' : 'none',
                         position: 'relative',
+                        cursor: onTabReorder ? 'grab' : 'pointer',
                       }}
                     >
                       {/* Icon */}
@@ -1346,27 +1430,35 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                     </div>
                   );
                 })}
-                {/* Plus button to add new attachment */}
+                {/* Plus button to add new attachment - Standalone icon */}
                 {files.length < 4 && onAddAttachment && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       onAddAttachment();
                     }}
-                    className="flex items-center justify-center w-7 h-7 rounded-t-lg hover:bg-gray-100/50 transition-all duration-150 focus:outline-none outline-none border-t border-l border-r border-gray-200 bg-gray-50"
+                    className="flex items-center justify-center focus:outline-none outline-none transition-opacity duration-150 hover:opacity-70"
                     style={{
-                      marginBottom: '0',
+                      flexShrink: 0,
+                      marginLeft: '16px',
+                      background: 'transparent',
+                      border: 'none',
+                      padding: '0',
+                      width: 'auto',
+                      height: 'auto',
+                      alignSelf: 'center',
+                      marginTop: '2px',
                     }}
                     title="Add attachment"
                   >
-                    <Plus className="w-4 h-4 text-gray-600" />
+                    <Plus className="w-4 h-4 text-gray-500" />
                   </button>
                 )}
               </div>
             )}
             
             {/* Top Bar - File Name and Controls (Browser-like) */}
-            <div ref={headerRef} className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-white">
+            <div ref={headerRef} className="flex items-center justify-between px-4 py-2.5 bg-white">
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 <h2 className="text-sm font-medium text-gray-900 truncate">
                   {file.name}
@@ -1438,18 +1530,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   title="Download"
                 >
                   <Download className="w-4 h-4 text-gray-600" />
-                </button>
-                
-                {/* Close */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onClose();
-                  }}
-                  className="p-1.5 hover:bg-gray-100 rounded transition-colors ml-1"
-                  title="Close"
-                >
-                  <X className="w-4 h-4 text-gray-600" />
                 </button>
               </div>
             </div>
