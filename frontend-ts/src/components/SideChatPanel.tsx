@@ -796,6 +796,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }
   
   // Store messages (both queries and responses)
+  interface ReasoningStep {
+    step: string;
+    message: string;
+    details: any;
+    timestamp: number;
+  }
+
+  interface CitationData {
+    doc_id: string;
+    original_filename: string;
+    property_address: string;
+    page_range: string;
+    classification_type: string;
+    source_chunks_metadata: Array<{
+      content: string;
+      chunk_index: number;
+      page_number?: number;
+      bbox?: {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+        page: number;
+      };
+      vector_id?: string;
+      similarity?: number;
+    }>;
+  }
+
   interface ChatMessage {
     id: string;
     type: 'query' | 'response';
@@ -805,6 +834,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     selectedDocumentIds?: string[]; // Document IDs selected when query was sent
     selectedDocumentNames?: string[]; // Document names for display
     isLoading?: boolean;
+    reasoningSteps?: ReasoningStep[]; // Reasoning steps for this message
+    citations?: Record<string, CitationData>; // NEW: Citations with bbox metadata
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -821,6 +852,85 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       onMessagesUpdate(chatMessages);
     }
   }, [chatMessages, onMessagesUpdate]);
+
+  // NEW: Function to parse citations from text and replace with styled components
+  const parseCitations = (text: string, citations?: Record<string, CitationData>): React.ReactNode[] => {
+    if (!citations || Object.keys(citations).length === 0) {
+      return [text];
+    }
+
+    // Pattern to match [1], [2], etc.
+    const citationPattern = /\[(\d+)\]/g;
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = citationPattern.exec(text)) !== null) {
+      // Add text before citation
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
+      }
+
+      const citationNum = match[1];
+      const citationData = citations[citationNum];
+
+      // Render citation as styled component
+      parts.push(
+        <span
+          key={`citation-${match.index}-${citationNum}`}
+          style={{
+            display: 'inline-block',
+            backgroundColor: '#E5E7EB', // Light grey
+            color: '#6B7280', // Dark grey text
+            borderRadius: '4px',
+            padding: '2px 6px',
+            fontSize: '11px',
+            fontWeight: 500,
+            lineHeight: '1.2',
+            marginLeft: '2px',
+            marginRight: '2px',
+            verticalAlign: 'baseline',
+            cursor: citationData ? 'pointer' : 'default',
+            transition: 'background-color 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            if (citationData) {
+              e.currentTarget.style.backgroundColor = '#D1D5DB';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (citationData) {
+              e.currentTarget.style.backgroundColor = '#E5E7EB';
+            }
+          }}
+          onClick={(e) => {
+            if (citationData) {
+              e.stopPropagation();
+              console.log('📎 Citation clicked:', citationNum, citationData);
+              // Phase 1: Open document in viewer
+              handleCitationClick(citationData);
+            }
+          }}
+          title={citationData ? `${citationData.original_filename} - ${citationData.property_address}` : undefined}
+        >
+          {citationNum}
+        </span>
+      );
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Add remaining text
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : [text];
+  };
+  
+  // Track which reasoning blocks are expanded (message ID -> boolean)
+  const [expandedReasoningBlocks, setExpandedReasoningBlocks] = React.useState<Record<string, boolean>>({});
+  const currentQueryIdRef = React.useRef<string | null>(null); // Track which query is currently processing
   
   // Use property selection context
   const { 
@@ -917,7 +1027,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           id: loadingResponseId,
           type: 'response',
           text: '',
-          isLoading: true
+          isLoading: true,
+          reasoningSteps: [], // Initialize empty array for reasoning steps
+          citations: {} // Initialize empty object for citations
         };
         setChatMessages(prev => {
           const updated = [...prev, loadingMessage];
@@ -981,7 +1093,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false
+                  isLoading: false,
+                  citations: data.citations || {} // NEW: Store citations
                 };
                 
                 setChatMessages(prev => {
@@ -1017,7 +1130,41 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               undefined, // onStatus (optional)
               abortController.signal, // abortSignal
-              documentIdsArray // documentIds
+              documentIdsArray, // documentIds
+              // onReasoningStep: Handle reasoning step events
+              (step: { step: string; message: string; details: any }) => {
+                console.log('🟡 SideChatPanel: Received reasoning step:', step);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      const newStep: ReasoningStep = {
+                        ...step,
+                        timestamp: Date.now()
+                      };
+                      
+                      if (existingIndex >= 0) {
+                        // Update existing step
+                        const updatedSteps = [...existingSteps];
+                        updatedSteps[existingIndex] = newStep;
+                        return { ...msg, reasoningSteps: updatedSteps };
+                      } else {
+                        // Add new step - keep reasoning block expanded while adding steps
+                        setExpandedReasoningBlocks(prev => ({
+                          ...prev,
+                          [loadingResponseId]: true
+                        }));
+                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                      }
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              }
             );
           } catch (error: any) {
             if (error.name === 'AbortError') {
@@ -1051,7 +1198,93 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const {
     addPreviewFile
   } = usePreview();
-  
+
+  // Phase 1: Handle citation click - fetch document and open in viewer
+  const handleCitationClick = React.useCallback(async (citationData: CitationData) => {
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      const docId = citationData.doc_id;
+      
+      if (!docId) {
+        console.error('❌ Citation missing doc_id:', citationData);
+        toast({
+          title: "Error",
+          description: "Document ID not found in citation",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      console.log('📎 Opening document from citation:', citationData.original_filename, 'doc_id:', docId);
+
+      // Fetch document using document_id
+      const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+      
+      const response = await fetch(downloadUrl, {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to download document: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      
+      // Determine file type from blob or citation data
+      const fileType = blob.type || 'application/pdf';
+      
+      // Create File object from blob
+      const file = new File([blob], citationData.original_filename || 'document.pdf', {
+        type: fileType
+      });
+
+      // Convert to FileAttachmentData format for DocumentPreviewModal
+      const fileData: FileAttachmentData = {
+        id: docId, // Use doc_id as the file ID
+        file: file,
+        name: citationData.original_filename || 'document.pdf',
+        type: fileType,
+        size: blob.size
+      };
+
+      // Extract highlight metadata from citation (first chunk with bbox)
+      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
+      
+      if (citationData.source_chunks_metadata && citationData.source_chunks_metadata.length > 0) {
+        // Find first chunk with valid bbox
+        const chunkWithBbox = citationData.source_chunks_metadata.find(
+          (chunk) => chunk.bbox && chunk.bbox.page && chunk.bbox.left !== undefined
+        );
+        
+        if (chunkWithBbox && chunkWithBbox.bbox) {
+          highlightData = {
+            fileId: docId,
+            bbox: {
+              left: chunkWithBbox.bbox.left,
+              top: chunkWithBbox.bbox.top,
+              width: chunkWithBbox.bbox.width,
+              height: chunkWithBbox.bbox.height,
+              page: chunkWithBbox.bbox.page || chunkWithBbox.page_number || 1
+            }
+          };
+          console.log('📎 Highlight data extracted:', highlightData);
+        }
+      }
+
+      // Open document in preview modal with highlight
+      addPreviewFile(fileData, highlightData);
+      
+      console.log('✅ Document opened in viewer:', citationData.original_filename, highlightData ? 'with highlight' : 'without highlight');
+    } catch (error: any) {
+      console.error('❌ Error opening citation document:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to open document",
+        variant: "destructive",
+      });
+    }
+  }, [addPreviewFile, toast]);
+
   // Initialize textarea height on mount
   React.useEffect(() => {
     if (inputRef.current) {
@@ -1251,7 +1484,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           id: loadingResponseId,
           type: 'response',
           text: '',
-          isLoading: true
+          isLoading: true,
+          reasoningSteps: [], // Initialize empty array for reasoning steps
+          citations: {} // Initialize empty object for citations
         };
         setChatMessages(prev => {
           const updated = [...prev, loadingMessage];
@@ -1320,14 +1555,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
-                  documentsFound: data.relevant_documents?.length || 0
+                  documentsFound: data.relevant_documents?.length || 0,
+                  citations: data.citations ? Object.keys(data.citations).length : 0
                 });
                 
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false
+                  isLoading: false,
+                  citations: data.citations || {} // NEW: Store citations
                 };
                 
                 setChatMessages(prev => {
@@ -1374,7 +1611,41 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // abortSignal: Pass abort signal for cancellation
               abortController.signal,
               // documentIds: Pass selected document IDs to filter search
-              initialDocumentIds
+              initialDocumentIds,
+              // onReasoningStep: Handle reasoning step events
+              (step: { step: string; message: string; details: any }) => {
+                console.log('🟡 SideChatPanel: Received reasoning step:', step);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      const newStep: ReasoningStep = {
+                        ...step,
+                        timestamp: Date.now()
+                      };
+                      
+                      if (existingIndex >= 0) {
+                        // Update existing step
+                        const updatedSteps = [...existingSteps];
+                        updatedSteps[existingIndex] = newStep;
+                        return { ...msg, reasoningSteps: updatedSteps };
+                      } else {
+                        // Add new step - keep reasoning block expanded while adding steps
+                        setExpandedReasoningBlocks(prev => ({
+                          ...prev,
+                          [loadingResponseId]: true
+                        }));
+                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                      }
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              }
             );
             
             // Clear abort controller on completion
@@ -1604,13 +1875,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         id: loadingResponseId,
         type: 'response',
         text: '',
-        isLoading: true
+        isLoading: true,
+        reasoningSteps: [] // Initialize empty array for reasoning steps
       };
       setChatMessages(prev => {
         const updated = [...prev, loadingMessage];
         persistedChatMessagesRef.current = updated;
         return updated;
       });
+      
+      // Initialize reasoning steps tracking for this query
+      currentQueryIdRef.current = loadingResponseId;
+      // Expand reasoning block by default for new queries
+      setExpandedReasoningBlocks(prev => ({
+        ...prev,
+        [loadingResponseId]: true
+      }));
       
       // Call LLM API to query documents
       (async () => {
@@ -1658,14 +1938,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onToken: Stream each token as it arrives
             (token: string) => {
               accumulatedText += token;
-              const responseMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: accumulatedText,
-                isLoading: true  // Still loading while streaming
-              };
-              
               setChatMessages(prev => {
+                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: accumulatedText,
+                  isLoading: true,  // Still loading while streaming
+                  reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                };
+                
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? responseMessage
@@ -1681,17 +1963,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
-                documentsFound: data.relevant_documents?.length || 0
+                documentsFound: data.relevant_documents?.length || 0,
+                citations: data.citations ? Object.keys(data.citations).length : 0
               });
               
-              const responseMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: finalText,
-                isLoading: false
-              };
-              
               setChatMessages(prev => {
+                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                const responseMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: finalText,
+                  isLoading: false,
+                  reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                  citations: data.citations || {} // NEW: Store citations with bbox metadata
+                };
+                
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? responseMessage
@@ -1700,19 +1986,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 persistedChatMessagesRef.current = updated;
                 return updated;
               });
+              
+              // Keep reasoning steps in the message - don't clear them
+              currentQueryIdRef.current = null;
             },
             // onError: Handle errors
             (error: string) => {
               console.error('❌ SideChatPanel: Streaming error:', error);
               
-              const errorMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
-                isLoading: false
-              };
-              
               setChatMessages(prev => {
+                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                const errorMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                  isLoading: false,
+                  reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                };
+                
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? errorMessage
@@ -1736,7 +2027,49 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // abortSignal: Pass abort signal for cancellation
             abortController.signal,
             // documentIds: Pass selected document IDs to filter search
-            documentIdsArray
+            documentIdsArray,
+            // onReasoningStep: Handle reasoning step events
+            (step: { step: string; message: string; details: any }) => {
+              console.log('🟡 SideChatPanel: Received reasoning step:', step);
+              console.log('🟡 SideChatPanel: Looking for message with ID:', loadingResponseId);
+              
+              // Store reasoning steps in the message itself
+              setChatMessages(prev => {
+                console.log('🟡 SideChatPanel: Current messages:', prev.map(m => ({ id: m.id, hasReasoning: !!m.reasoningSteps })));
+                
+                const updated = prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    console.log('🟡 SideChatPanel: Found matching message, updating reasoning steps');
+                    const existingSteps = msg.reasoningSteps || [];
+                    const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                    const newStep: ReasoningStep = {
+                      ...step,
+                      timestamp: Date.now()
+                    };
+                    
+                    if (existingIndex >= 0) {
+                      // Update existing step
+                      const updatedSteps = [...existingSteps];
+                      updatedSteps[existingIndex] = newStep;
+                      console.log('🟡 SideChatPanel: Updated existing reasoning step:', step.step);
+                      return { ...msg, reasoningSteps: updatedSteps };
+                    } else {
+                      // Add new step - keep reasoning block expanded while adding steps
+                      setExpandedReasoningBlocks(prev => ({
+                        ...prev,
+                        [loadingResponseId]: true
+                      }));
+                      console.log('🟡 SideChatPanel: Added new reasoning step:', step.step, 'Total steps:', existingSteps.length + 1);
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                    }
+                  }
+                  return msg;
+                });
+                
+                console.log('🟡 SideChatPanel: Updated messages with reasoning steps');
+                return updated;
+              });
+            }
           );
           
           // Clear abort controller on completion
@@ -2099,6 +2432,87 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           wordWrap: 'break-word'
                         }}
                       >
+                        {/* Display reasoning steps in expandable block (persists after completion) */}
+                        {message.reasoningSteps && message.reasoningSteps.length > 0 && (
+                          <div style={{
+                            marginBottom: '12px',
+                            padding: '8px 12px',
+                            backgroundColor: '#F3F4F6',
+                            borderRadius: '8px',
+                            border: '1px solid #E5E7EB',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => {
+                            setExpandedReasoningBlocks(prev => ({
+                              ...prev,
+                              [message.id]: !prev[message.id]
+                            }));
+                          }}
+                          >
+                            <div style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '11px',
+                              fontWeight: 500,
+                              color: '#6B7280',
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.5px',
+                              userSelect: 'none'
+                            }}>
+                              <span>Velora Reasoning ({message.reasoningSteps.length} steps)</span>
+                              <span style={{
+                                fontSize: '14px',
+                                transition: 'transform 0.2s',
+                                transform: expandedReasoningBlocks[message.id] ? 'rotate(180deg)' : 'rotate(0deg)'
+                              }}>
+                                ▼
+                              </span>
+                            </div>
+                            {expandedReasoningBlocks[message.id] && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                transition={{ duration: 0.2 }}
+                                style={{
+                                  marginTop: '8px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '4px',
+                                  overflow: 'hidden'
+                                }}
+                              >
+                                {message.reasoningSteps.map((step, idx) => (
+                                  <motion.div
+                                    key={`${step.step}-${idx}`}
+                                    initial={{ opacity: 0, x: -8 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    transition={{ duration: 0.2, delay: idx * 0.05 }}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '8px',
+                                      fontSize: '12px',
+                                      color: '#374151',
+                                      padding: '4px 0'
+                                    }}
+                                  >
+                                    <div style={{
+                                      width: '6px',
+                                      height: '6px',
+                                      borderRadius: '50%',
+                                      backgroundColor: '#3B82F6',
+                                      flexShrink: 0
+                                    }} />
+                                    <span style={{ fontStyle: 'italic' }}>{step.message}</span>
+                                  </motion.div>
+                                ))}
+                              </motion.div>
+                            )}
+                          </div>
+                        )}
+                        
                         {/* Display loading state for responses - Globe with rotating ring (atom-like) */}
                         {message.isLoading && (
                           <div style={{ 
@@ -2154,53 +2568,215 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           </div>
                         )}
                         
-                        {/* Display response text - rendered markdown */}
-                        {message.text && (
-                          <div style={{
-                            color: '#374151',
-                            fontSize: '13px',
-                            lineHeight: '19px',
-                            margin: 0,
-                            padding: '4px 0',
-                            paddingLeft: 0,
-                            paddingRight: 0,
-                            textAlign: 'left',
-                            fontFamily: 'system-ui, -apple-system, sans-serif',
-                            fontWeight: 400,
-                            textIndent: 0
-                          }}>
-                            <ReactMarkdown
-                              components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
-                                h2: () => null, // Remove h2 titles from query responses
-                                h3: () => null, // Remove h3 titles from query responses
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                table: ({ children }) => (
-                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                      {children}
-                                    </table>
-                                  </div>
-                                ),
-                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                tbody: ({ children }) => <tbody>{children}</tbody>,
-                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                              }}
-                            >
-                              {message.text}
-                            </ReactMarkdown>
-                          </div>
-                        )}
+                        {/* Display response text - rendered markdown with citations */}
+                        {message.text && (() => {
+                          // NEW: Custom component to render citations
+                          const CitationComponent: React.FC<{ citationNum: string }> = ({ citationNum }) => {
+                            const citationData = message.citations?.[citationNum];
+                            return (
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  backgroundColor: '#E5E7EB', // Light grey background
+                                  color: '#374151', // Darker text color for better visibility
+                                  borderRadius: '4px',
+                                  padding: '2px 6px',
+                                  fontSize: '11px',
+                                  fontWeight: 500,
+                                  lineHeight: '1.2',
+                                  marginLeft: '2px',
+                                  marginRight: '2px',
+                                  verticalAlign: 'baseline',
+                                  cursor: citationData ? 'pointer' : 'default',
+                                  transition: 'background-color 0.2s',
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (citationData) {
+                                    e.currentTarget.style.backgroundColor = '#D1D5DB';
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (citationData) {
+                                    e.currentTarget.style.backgroundColor = '#E5E7EB';
+                                  }
+                                }}
+                                onClick={(e) => {
+                                  if (citationData) {
+                                    e.stopPropagation();
+                                    console.log('📎 Citation clicked:', citationNum, citationData);
+                                    // Phase 1: Open document in viewer
+                                    handleCitationClick(citationData);
+                                  }
+                                }}
+                                title={citationData ? `${citationData.original_filename} - ${citationData.property_address}` : undefined}
+                              >
+                                {citationNum}
+                              </span>
+                            );
+                          };
+
+                          // Parse text into parts (text segments and citations)
+                          // Also deduplicate consecutive or nearby identical citations
+                          const citationPattern = /\[(\d+)\]/g;
+                          const parts: Array<{ type: 'text' | 'citation'; content: string; citationNum?: string }> = [];
+                          let lastIndex = 0;
+                          let match;
+                          const citationMatches: Array<{ index: number; num: string; fullMatch: string }> = [];
+                          
+                          // First, collect all citation matches
+                          while ((match = citationPattern.exec(message.text)) !== null) {
+                            citationMatches.push({
+                              index: match.index,
+                              num: match[1],
+                              fullMatch: match[0]
+                            });
+                          }
+                          
+                          // Deduplicate citations that appear too close together (within 50 characters or same sentence)
+                          const deduplicatedCitations = citationMatches.filter((citation, idx) => {
+                            if (idx === 0) return true; // Always keep first
+                            
+                            const prevCitation = citationMatches[idx - 1];
+                            const distance = citation.index - (prevCitation.index + prevCitation.fullMatch.length);
+                            
+                            // Keep citation if:
+                            // 1. It's a different citation number, OR
+                            // 2. It's the same citation but far enough apart (>50 chars) and separated by sentence boundary
+                            if (citation.num !== prevCitation.num) {
+                              return true; // Different citation, keep it
+                            }
+                            
+                            // Same citation - only keep if far apart (>50 chars) or sentence boundary
+                            const textBetween = message.text.substring(
+                              prevCitation.index + prevCitation.fullMatch.length,
+                              citation.index
+                            );
+                            
+                            // Check if there's a sentence boundary (period, exclamation, question mark)
+                            const hasSentenceBoundary = /[.!?]\s/.test(textBetween);
+                            
+                            // Keep if distance > 50 chars OR has sentence boundary
+                            return distance > 50 || hasSentenceBoundary;
+                          });
+                          
+                          // Build parts array with deduplicated citations
+                          for (let i = 0; i < deduplicatedCitations.length; i++) {
+                            const citation = deduplicatedCitations[i];
+                            
+                            // Add text before citation
+                            if (citation.index > lastIndex) {
+                              parts.push({
+                                type: 'text',
+                                content: message.text.substring(lastIndex, citation.index)
+                              });
+                            }
+                            
+                            // Add citation
+                            parts.push({
+                              type: 'citation',
+                              content: citation.fullMatch,
+                              citationNum: citation.num
+                            });
+                            
+                            lastIndex = citation.index + citation.fullMatch.length;
+                          }
+                          
+                          // Add remaining text
+                          if (lastIndex < message.text.length) {
+                            parts.push({
+                              type: 'text',
+                              content: message.text.substring(lastIndex)
+                            });
+                          }
+
+                          // If no citations found, render normally
+                          if (parts.length === 1 && parts[0].type === 'text') {
+                            return (
+                              <div style={{
+                                color: '#374151',
+                                fontSize: '13px',
+                                lineHeight: '19px',
+                                margin: 0,
+                                padding: '4px 0',
+                                paddingLeft: 0,
+                                paddingRight: 0,
+                                textAlign: 'left',
+                                fontFamily: 'system-ui, -apple-system, sans-serif',
+                                fontWeight: 400,
+                                textIndent: 0
+                              }}>
+                                <ReactMarkdown
+                                  components={{
+                                    p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
+                                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
+                                    h2: () => null, // Remove h2 titles from query responses
+                                    h3: () => null, // Remove h3 titles from query responses
+                                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
+                                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
+                                    li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
+                                    strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
+                                    em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
+                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                    table: ({ children }) => (
+                                      <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                          {children}
+                                        </table>
+                                      </div>
+                                    ),
+                                    thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                    tbody: ({ children }) => <tbody>{children}</tbody>,
+                                    tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                    th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                    td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                                  }}
+                                >
+                                  {message.text}
+                                </ReactMarkdown>
+                              </div>
+                            );
+                          }
+
+                          // Render with citations - split text and render markdown for each segment
+                          return (
+                            <div style={{
+                              color: '#374151',
+                              fontSize: '13px',
+                              lineHeight: '19px',
+                              margin: 0,
+                              padding: '4px 0',
+                              paddingLeft: 0,
+                              paddingRight: 0,
+                              textAlign: 'left',
+                              fontFamily: 'system-ui, -apple-system, sans-serif',
+                              fontWeight: 400,
+                              textIndent: 0
+                            }}>
+                              {parts.map((part, idx) => {
+                                if (part.type === 'citation') {
+                                  return <CitationComponent key={`citation-${idx}-${part.citationNum}`} citationNum={part.citationNum!} />;
+                                } else {
+                                  // Render text segment with ReactMarkdown
+                                  return (
+                                    <ReactMarkdown
+                                      key={`text-${idx}`}
+                                      components={{
+                                        p: ({ children }) => <span style={{ display: 'inline' }}>{children}</span>,
+                                        strong: ({ children }) => <strong>{children}</strong>,
+                                        em: ({ children }) => <em>{children}</em>,
+                                        code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                                      }}
+                                    >
+                                      {part.content}
+                                    </ReactMarkdown>
+                                  );
+                                }
+                              })}
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}

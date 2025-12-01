@@ -36,9 +36,16 @@ def get_supabase_db_url() -> str:
     2. Construct from SUPABASE_URL + SUPABASE_DB_PASSWORD (if SUPABASE_URL available)
     
     Connection string formats:
-    - Direct: postgresql://postgres:[PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres
-    - Session pooler: postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
-    - Production: postgresql://user:password@host:port/database
+    - Transaction mode pooler (RECOMMENDED): postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+      • ~200 connections (free tier) or ~500+ (Pro tier)
+      • Best for production workloads
+      • Works with IPv4 and IPv6
+    - Session mode pooler: postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+      • ~15 connections (free tier) or ~100-200 (Pro tier)
+      • Good for environments without IPv6 support
+    - Direct connection: postgresql://postgres:[PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres
+      • ~60 connections (free tier) or ~200+ (Pro tier)
+      • Bypasses pooler entirely
     
     Returns:
         PostgreSQL connection string (postgresql://user:pass@host:port/dbname)

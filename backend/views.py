@@ -15,7 +15,7 @@ import logging
 import boto3
 import time
 import re
-from .tasks import process_document_task
+from .tasks import process_document_task, process_document_fast_task
 from .services.deletion_service import DeletionService
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
@@ -419,12 +419,23 @@ def query_documents_stream():
                 }
                 logger.info(f"🟢 [STREAM] Initial state built: query='{query[:30]}...', business_id={business_id}")
                 
-                # Send initial status
+                # Send initial status and FIRST reasoning step immediately
                 logger.info("🟢 [STREAM] Yielding initial status message")
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
+                # Emit initial reasoning step IMMEDIATELY when query is received
+                initial_reasoning = {
+                    'type': 'reasoning_step',
+                    'step': 'initial',
+                    'message': 'Starting document search...',
+                    'details': {}
+                }
+                initial_reasoning_json = json.dumps(initial_reasoning)
+                yield f"data: {initial_reasoning_json}\n\n"
+                logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
+                
                 async def run_and_stream():
-                    """Run LangGraph and stream the final summary"""
+                    """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
                         
@@ -432,8 +443,20 @@ def query_documents_stream():
                         # This avoids "bound to different event loop" errors
                         from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                         
-                        logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
-                        checkpointer = await create_checkpointer_for_current_loop()
+                        checkpointer = None
+                        try:
+                            logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
+                            checkpointer = await create_checkpointer_for_current_loop()
+                        except Exception as checkpointer_error:
+                            error_msg = str(checkpointer_error)
+                            # Handle connection timeout errors gracefully
+                            if "couldn't get a connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                                logger.warning(f"🟡 [STREAM] Connection pool timeout creating checkpointer: {checkpointer_error}")
+                                logger.info("🟡 [STREAM] Falling back to stateless mode (no conversation memory)")
+                                checkpointer = None
+                            else:
+                                # Re-raise unexpected errors
+                                raise
                         
                         if checkpointer:
                             # Build graph with checkpointer for this event loop
@@ -441,18 +464,212 @@ def query_documents_stream():
                             logger.info("🟡 [STREAM] Building graph with checkpointer for this event loop")
                             graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                         else:
-                            logger.warning("🟡 [STREAM] Failed to create checkpointer - using stateless mode")
+                            logger.warning("🟡 [STREAM] Using stateless mode (no checkpointer)")
                             graph, _ = await build_main_graph(use_checkpointer=False)
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
-                        # Run graph to get document outputs
-                        logger.info("🟡 [STREAM] Invoking graph with initial state...")
-                        result = await graph.ainvoke(initial_state, config_dict)
-                        logger.info("🟡 [STREAM] Graph invocation completed")
+                        # Use astream_events to capture node execution and emit reasoning steps
+                        logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
                         
-                        doc_outputs = result.get('document_outputs', [])
-                        relevant_docs = result.get('relevant_documents', [])
+                        # Track which nodes have been processed to avoid duplicate reasoning steps
+                        processed_nodes = set()
+                        
+                        # Node name to user-friendly message mapping
+                        node_messages = {
+                            'rewrite_query': {
+                                'message': 'Analyzing query and conversation context...',
+                                'details': {}
+                            },
+                            'expand_query': {
+                                'message': 'Generating query variations for better search...',
+                                'details': {}
+                            },
+                            'query_vector_documents': {
+                                'message': 'Searching documents...',
+                                'details': {}
+                            },
+                            'clarify_relevant_docs': {
+                                'message': 'Ranking and organizing results...',
+                                'details': {}
+                            },
+                            'process_documents': {
+                                'message': 'Analyzing document content...',
+                                'details': {}
+                            },
+                            'summarize_results': {
+                                'message': 'Synthesizing findings...',
+                                'details': {}
+                            }
+                        }
+                        
+                        # Stream events from graph execution and track state
+                        # IMPORTANT: astream_events executes the graph and emits events as nodes run
+                        # We MUST emit reasoning steps immediately when nodes start
+                        logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
+                        final_result = None
+                        
+                        # Execute graph with error handling for connection timeouts during execution
+                        try:
+                            event_stream = graph.astream_events(initial_state, config_dict, version="v2")
+                            async for event in event_stream:
+                                event_type = event.get('event')
+                                node_name = event.get("name", "")
+                                
+                                # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                if event_type == "on_chain_start":
+                                    if node_name in node_messages and node_name not in processed_nodes:
+                                        processed_nodes.add(node_name)
+                                        reasoning_data = {
+                                            'type': 'reasoning_step',
+                                            'step': node_name,
+                                            'message': node_messages[node_name]['message'],
+                                            'details': node_messages[node_name]['details']
+                                        }
+                                        reasoning_json = json.dumps(reasoning_data)
+                                        yield f"data: {reasoning_json}\n\n"
+                                        logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
+                                        logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
+                                
+                                # Capture node end events to update details and track state
+                                elif event.get("event") == "on_chain_end":
+                                    node_name = event.get("name", "")
+                                    
+                                    # Try to extract state from the event
+                                    event_data = event.get("data", {})
+                                    state_update = event_data.get("data", {})  # Full state update
+                                    output = event_data.get("output", {})  # Node output only
+                                    
+                                    # Update details based on node output
+                                    if node_name == "query_vector_documents":
+                                        state_data = state_update if state_update else output
+                                        doc_count = len(state_data.get("relevant_documents", []))
+                                        if doc_count > 0:
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': node_name,
+                                                'message': f'Found {doc_count} relevant document(s)',
+                                                'details': {'documents_found': doc_count}
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                    
+                                    elif node_name == "process_documents":
+                                        state_data = state_update if state_update else output
+                                        doc_outputs_count = len(state_data.get("document_outputs", []))
+                                        if doc_outputs_count > 0:
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': node_name,
+                                                'message': f'Processed {doc_outputs_count} document(s)',
+                                                'details': {'documents_processed': doc_outputs_count}
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                    
+                                    # Store the state from the last event (should be final state after summarize_results)
+                                    if state_update:
+                                        final_result = state_update
+                        except Exception as exec_error:
+                            error_msg = str(exec_error)
+                            # Handle connection timeout errors during graph execution
+                            if "couldn't get a connection" in error_msg.lower() or "timeout" in error_msg.lower():
+                                logger.warning(f"🟡 [STREAM] Connection timeout during graph execution: {exec_error}")
+                                logger.info("🟡 [STREAM] Retrying without checkpointer (stateless mode)")
+                                # Retry without checkpointer
+                                graph, _ = await build_main_graph(use_checkpointer=False)
+                                config_dict = {}  # No thread_id needed for stateless mode
+                                event_stream = graph.astream_events(initial_state, config_dict, version="v2")
+                                async for event in event_stream:
+                                    event_type = event.get('event')
+                                    node_name = event.get("name", "")
+                                    
+                                    # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                    if event_type == "on_chain_start":
+                                        if node_name in node_messages and node_name not in processed_nodes:
+                                            processed_nodes.add(node_name)
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': node_name,
+                                                'message': node_messages[node_name]['message'],
+                                                'details': node_messages[node_name]['details']
+                                            }
+                                            reasoning_json = json.dumps(reasoning_data)
+                                            yield f"data: {reasoning_json}\n\n"
+                                    
+                                    # Capture node end events to track state
+                                    elif event.get("event") == "on_chain_end":
+                                        node_name = event.get("name", "")
+                                        event_data = event.get("data", {})
+                                        state_update = event_data.get("data", {})
+                                        
+                                        if node_name == "query_vector_documents":
+                                            state_data = state_update if state_update else event_data.get("output", {})
+                                            doc_count = len(state_data.get("relevant_documents", []))
+                                            if doc_count > 0:
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': node_name,
+                                                    'message': f'Found {doc_count} relevant document(s)',
+                                                    'details': {'documents_found': doc_count}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        
+                                        elif node_name == "process_documents":
+                                            state_data = state_update if state_update else event_data.get("output", {})
+                                            doc_outputs_count = len(state_data.get("document_outputs", []))
+                                            if doc_outputs_count > 0:
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': node_name,
+                                                    'message': f'Processed {doc_outputs_count} document(s)',
+                                                    'details': {'documents_processed': doc_outputs_count}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        
+                                        # Store the state from the last event
+                                        if state_update:
+                                            final_result = state_update
+                            else:
+                                # Re-raise unexpected errors
+                                raise
+                        
+                        # After astream_events completes, the graph has finished executing
+                        # Get the final state from checkpointer (fast - graph already executed)
+                        if final_result is None:
+                            logger.warning("🟡 [STREAM] No final state from events, reading from checkpointer...")
+                            try:
+                                # Read the latest checkpoint which contains the final state
+                                from langgraph.checkpoint.base import Checkpoint
+                                latest_checkpoint = None
+                                async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
+                                    if isinstance(checkpoint_tuple, tuple):
+                                        checkpoint, checkpoint_id = checkpoint_tuple
+                                    else:
+                                        checkpoint = checkpoint_tuple
+                                    
+                                    if hasattr(checkpoint, 'channel_values'):
+                                        latest_checkpoint = checkpoint.channel_values
+                                    elif isinstance(checkpoint, dict):
+                                        latest_checkpoint = checkpoint.get('channel_values', checkpoint)
+                                    break
+                                
+                                if latest_checkpoint:
+                                    final_result = latest_checkpoint
+                                    logger.info("🟡 [STREAM] Retrieved final state from checkpointer")
+                                else:
+                                    # Fallback: use ainvoke (will be fast since graph already executed)
+                                    logger.warning("🟡 [STREAM] No checkpoint found, using ainvoke...")
+                                    final_result = await graph.ainvoke(initial_state, config_dict)
+                            except Exception as e:
+                                logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using ainvoke...")
+                                final_result = await graph.ainvoke(initial_state, config_dict)
+                        else:
+                            logger.info("🟡 [STREAM] Using final state captured from events")
+                        
+                        # Extract data from final result
+                        doc_outputs = final_result.get('document_outputs', []) if final_result else []
+                        relevant_docs = final_result.get('relevant_documents', []) if final_result else []
+                        
+                        logger.info(f"🟡 [STREAM] Final state: {len(doc_outputs)} doc outputs, {len(relevant_docs)} relevant docs")
                         
                         # Send document count
                         yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"
@@ -468,14 +685,40 @@ def query_documents_stream():
                         from backend.llm.nodes.summary_nodes import summarize_results
                         # Get the prompt from the summarize function logic
                         formatted_outputs = []
-                        for idx, output in enumerate(doc_outputs):
+                        citation_map = {}  # NEW: Map citation number to doc_id and metadata
+                        for idx, output in enumerate(doc_outputs, start=1):  # Start at 1 for citations
+                            citation_number = idx  # [1], [2], [3], etc.
+                            
+                            # FIX: Get doc_id with fallback - check output, then source_chunks_metadata
+                            doc_id = output.get('doc_id') or ''
+                            if not doc_id:
+                                # Try to get doc_id from first chunk's metadata
+                                source_chunks = output.get('source_chunks_metadata', [])
+                                if source_chunks and isinstance(source_chunks, list) and len(source_chunks) > 0:
+                                    doc_id = source_chunks[0].get('doc_id') or ''
+                            
+                            if not doc_id:
+                                logger.warning(f"🟡 [CITATIONS] No doc_id found in doc_output[{idx}], skipping citation mapping")
+                                continue  # Skip documents without doc_id
+                            
                             doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
-                            filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
+                            filename = output.get('original_filename', f"Document {doc_id[:8]}")
                             prop_id = output.get('property_id') or 'Unknown'
                             address = output.get('property_address', f"Property {prop_id[:8]}")
                             page_info = output.get('page_range', 'multiple pages')
                             
-                            header = f"\n### {doc_type}: {filename}\n"
+                            # NEW: Store citation mapping for later use (includes bbox metadata)
+                            citation_map[str(citation_number)] = {
+                                'doc_id': doc_id,
+                                'source_chunks_metadata': output.get('source_chunks_metadata', []),
+                                'original_filename': filename,
+                                'property_address': address,
+                                'page_range': page_info,
+                                'classification_type': doc_type
+                            }
+                            
+                            # NEW: Number documents for citation reference
+                            header = f"\n[Document {citation_number}] {doc_type}: {filename}\n"
                             header += f"Property: {address}\n"
                             header += f"Pages: {page_info}\n"
                             header += f"---------------------------------------------\n"
@@ -503,22 +746,24 @@ GUIDELINES FOR YOUR RESPONSE
 
 Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
 
+**CITATION REQUIREMENTS:**
+- Each document is labeled with [Document 1], [Document 2], etc. at the top
+- When you use information from a document, cite it immediately after the relevant sentence using the format [1], [2], [3], etc.
+- Place citations right after the sentence that contains information from that document
+- Example: "The property is approximately 2.5 acres[1]. The valuation was completed by John Smith[2]."
+- If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
+- Citations should appear inline, naturally within your response
+- Always cite your sources - use [1], [2], etc. after each fact that comes from a document
+
 Focus on what matters in real estate:
 - Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
-
-When referencing a document, keep it light and natural:
-→ "One of the valuation reports mentions…"
-→ "In the lease document, there's a note that…"
-→ "The report highlights…"
-→ "Page 7 shows that…"
-
-Only cite pages if the information is clearly page-specific. Otherwise keep it general.
 
 CRITICAL RULES:
 1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
 2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
 3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
 4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
+5. **Always cite your sources** - Use [1], [2], etc. after each fact that comes from a document.
 
 Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
 
@@ -526,7 +771,7 @@ TONE
 
 Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
 
-Now provide your response (answer directly, no heading, no additional context):"""
+Now provide your response (answer directly, no heading, no additional context, with citations):"""
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -552,6 +797,197 @@ Now provide your response (answer directly, no heading, no additional context):"
                                 full_summary += token
                                 yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
                         
+                        # NEW: Parse citations from LLM response and map to bbox metadata
+                        # Strategy: Number citations per unique chunk/bbox, not per document
+                        # Each unique chunk gets its own sequential number (1, 2, 3...)
+                        citations_data = {}  # Initialize to empty dict
+                        try:
+                            citation_pattern = r'\[(\d+)\]'
+                            citations_found = re.findall(citation_pattern, full_summary)
+                            
+                            # If no documents, skip citation processing
+                            if not citation_map:
+                                logger.info("🟡 [CITATIONS] No documents found, skipping citation processing")
+                            else:
+                                # Step 1: Build a map of ALL unique chunks from ALL documents
+                                # Key: (doc_id, chunk_index, page_number) -> unique chunk identifier
+                                # Value: sequential citation number
+                                all_chunks_map = {}  # Map chunk_signature to citation number
+                                sequential_num = 1
+                                chunk_to_citation = {}  # Map chunk_signature to citation number
+                                citation_to_chunks = {}  # Map citation number to chunk metadata
+                                
+                                # First, collect ALL chunks from ALL documents in citation_map
+                                for doc_num_str, doc_citation in citation_map.items():
+                                    doc_id = doc_citation['doc_id']
+                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
+                                    
+                                    if isinstance(source_chunks_metadata, list):
+                                        for chunk in source_chunks_metadata:
+                                            if isinstance(chunk, dict):
+                                                chunk_index = chunk.get('chunk_index')
+                                                page_number = chunk.get('page_number')
+                                                bbox = chunk.get('bbox')
+                                                
+                                                # Create unique chunk signature: (doc_id, chunk_index, page_number)
+                                                # This uniquely identifies a chunk regardless of document
+                                                chunk_signature = (doc_id, chunk_index, page_number)
+                                                
+                                                # If this is a new unique chunk, assign it a citation number
+                                                if chunk_signature not in chunk_to_citation:
+                                                    chunk_to_citation[chunk_signature] = sequential_num
+                                                    citation_to_chunks[str(sequential_num)] = {
+                                                        'doc_id': doc_id,
+                                                        'chunk_index': chunk_index,
+                                                        'page_number': page_number,
+                                                        'chunk_metadata': chunk,  # Full chunk metadata including bbox
+                                                        'original_filename': doc_citation.get('original_filename'),
+                                                        'property_address': doc_citation.get('property_address'),
+                                                        'page_range': doc_citation.get('page_range'),
+                                                        'classification_type': doc_citation.get('classification_type')
+                                                    }
+                                                    logger.info(f"🟡 [CITATIONS] Assigned citation [{sequential_num}] to chunk: doc {doc_id[:8]}, chunk_idx {chunk_index}, page {page_number}")
+                                                    sequential_num += 1
+                                
+                                # Step 2: Map LLM's document citations to chunk citations
+                                # When LLM cites [1] (Document 1), we need to map it to all chunks from Document 1
+                                citation_renumber_map = {}  # Map old doc citation -> new chunk citations
+                                doc_to_chunk_citations = {}  # Map doc_num -> list of chunk citation numbers
+                                
+                                for doc_num_str, doc_citation in citation_map.items():
+                                    doc_id = doc_citation['doc_id']
+                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
+                                    
+                                    # Get all chunk citation numbers for this document
+                                    chunk_citations = []
+                                    if isinstance(source_chunks_metadata, list):
+                                        for chunk in source_chunks_metadata:
+                                            if isinstance(chunk, dict):
+                                                chunk_index = chunk.get('chunk_index')
+                                                page_number = chunk.get('page_number')
+                                                chunk_signature = (doc_id, chunk_index, page_number)
+                                                
+                                                if chunk_signature in chunk_to_citation:
+                                                    chunk_cit_num = str(chunk_to_citation[chunk_signature])
+                                                    if chunk_cit_num not in chunk_citations:
+                                                        chunk_citations.append(chunk_cit_num)
+                                    
+                                    doc_to_chunk_citations[doc_num_str] = chunk_citations
+                                
+                                # Step 3: Replace document citations with chunk citations in the text
+                                # When we see [1], replace it with [1], [2], [3] etc. based on chunks
+                                # But actually, we should just use the first chunk citation number
+                                # and let the frontend handle multiple chunks per document
+                                
+                                # For now, map each document citation to its first chunk citation
+                                # (We can enhance this later to handle multiple chunks per document citation)
+                                for doc_num_str in citations_found:
+                                    if doc_num_str in doc_to_chunk_citations:
+                                        chunk_citations = doc_to_chunk_citations[doc_num_str]
+                                        if chunk_citations:
+                                            # Use the first chunk citation number for this document
+                                            citation_renumber_map[doc_num_str] = chunk_citations[0]
+                                            logger.info(f"🟡 [CITATIONS] Mapped document citation [{doc_num_str}] to chunk citation [{chunk_citations[0]}] (from {len(chunk_citations)} chunks)")
+                                
+                                # Get unique chunk citation numbers that were actually used
+                                unique_citations = sorted(set(citation_renumber_map.values()), key=int) if citation_renumber_map else []
+                                
+                                logger.info(f"🟡 [CITATIONS] Found {len(citations_found)} document citation(s), mapped to {len(unique_citations)} unique chunk citation(s): {unique_citations}")
+                                
+                                # Renumber citations in the text: replace document citations with chunk citations
+                                if citation_renumber_map:
+                                    def replace_citation(match):
+                                        old_num = match.group(1)
+                                        new_num = citation_renumber_map.get(old_num, old_num)
+                                        return f'[{new_num}]'
+                                    
+                                    full_summary = re.sub(citation_pattern, replace_citation, full_summary)
+                                    logger.debug(f"🟡 [CITATIONS] After renumbering to chunk citations, full_summary has {len(re.findall(citation_pattern, full_summary))} citations")
+                                
+                                # Deduplicate citations: same citation number in same sentence -> keep only first
+                                def deduplicate_citations(text):
+                                    sentences = re.split(r'([.!?]+\s+)', text)
+                                    deduped_sentences = []
+                                    
+                                    for i in range(0, len(sentences), 2):
+                                        sentence = sentences[i]
+                                        delimiter = sentences[i + 1] if i + 1 < len(sentences) else ''
+                                        
+                                        if not sentence:
+                                            deduped_sentences.append(sentence + delimiter)
+                                            continue
+                                        
+                                        citation_pattern_local = r'\[(\d+)\]'
+                                        citations = list(re.finditer(citation_pattern_local, sentence))
+                                        
+                                        if len(citations) <= 1:
+                                            deduped_sentences.append(sentence + delimiter)
+                                            continue
+                                        
+                                        seen_nums = set()
+                                        parts = []
+                                        last_end = 0
+                                        
+                                        for match in citations:
+                                            citation_num = match.group(1)
+                                            
+                                            if match.start() > last_end:
+                                                parts.append(sentence[last_end:match.start()])
+                                            
+                                            if citation_num not in seen_nums:
+                                                parts.append(match.group(0))
+                                                seen_nums.add(citation_num)
+                                            
+                                            last_end = match.end()
+                                        
+                                        if last_end < len(sentence):
+                                            parts.append(sentence[last_end:])
+                                        
+                                        deduped_sentences.append(''.join(parts) + delimiter)
+                                    
+                                    return ''.join(deduped_sentences)
+                                
+                                # Deduplicate citations in the text
+                                full_summary = deduplicate_citations(full_summary)
+                                
+                                # Build citations_data mapping: chunk citation number -> chunk metadata with bbox
+                                citations_data = {}
+                                for citation_num_str, chunk_info in citation_to_chunks.items():
+                                    # Only include citations that were actually used in the response
+                                    if citation_num_str in unique_citations:
+                                        chunk_metadata = chunk_info.get('chunk_metadata', {})
+                                        
+                                        # FIX: Get doc_id from chunk_info or fallback to chunk_metadata
+                                        # This handles cases where doc_id might be empty in citation_map
+                                        doc_id = chunk_info.get('doc_id') or chunk_metadata.get('doc_id') or ''
+                                        
+                                        if not doc_id:
+                                            logger.warning(f"🟡 [CITATIONS] No doc_id found for citation [{citation_num_str}], chunk_idx {chunk_info.get('chunk_index')}")
+                                        
+                                        # Ensure doc_id is in chunk_metadata for frontend
+                                        if chunk_metadata and not chunk_metadata.get('doc_id'):
+                                            chunk_metadata = {**chunk_metadata, 'doc_id': doc_id}
+                                        
+                                        # Build source_chunks_metadata array with just this chunk
+                                        source_chunks_metadata = [chunk_metadata] if chunk_metadata else []
+                                        
+                                        citations_data[citation_num_str] = {
+                                            'doc_id': doc_id,  # Use recovered doc_id
+                                            'original_filename': chunk_info.get('original_filename'),
+                                            'property_address': chunk_info.get('property_address'),
+                                            'page_range': chunk_info.get('page_range'),
+                                            'classification_type': chunk_info.get('classification_type'),
+                                            'source_chunks_metadata': source_chunks_metadata  # Single chunk with bbox!
+                                        }
+                                        logger.info(
+                                            f"🟡 [CITATIONS] Mapped chunk citation [{citation_num_str}] to doc {doc_id[:8] if doc_id else 'MISSING'}, "
+                                            f"chunk_idx {chunk_info.get('chunk_index')}, page {chunk_info.get('page_number')}, "
+                                            f"bbox: {bool(chunk_metadata.get('bbox'))}"
+                                        )
+                        except Exception as citation_error:
+                            logger.error(f"🟡 [CITATIONS] Error parsing citations: {citation_error}", exc_info=True)
+                            citations_data = {}  # Fallback to empty citations
+                        
                         # Send complete message with metadata
                         complete_data = {
                             'type': 'complete',
@@ -559,6 +995,7 @@ Now provide your response (answer directly, no heading, no additional context):"
                                 'summary': full_summary.strip(),
                                 'relevant_documents': relevant_docs,
                                 'document_outputs': doc_outputs,
+                                'citations': citations_data,  # Citation mapping with bbox
                                 'session_id': session_id
                             }
                         }
@@ -601,6 +1038,14 @@ Now provide your response (answer directly, no heading, no additional context):"
                                     chunk_count += 1
                                     if chunk_count == 1:
                                         logger.info("🟠 [STREAM] First chunk received from async generator")
+                                    # Log reasoning step chunks for debugging
+                                    try:
+                                        if chunk.startswith('data: '):
+                                            chunk_data = json.loads(chunk[6:])
+                                            if chunk_data.get('type') == 'reasoning_step':
+                                                logger.info(f"🟡 [STREAM] Queueing reasoning_step: {chunk_data.get('step')} - {chunk_data.get('message')}")
+                                    except:
+                                        pass
                                     chunk_queue.put(('chunk', chunk))
                                 logger.info(f"🟠 [STREAM] Async generator completed, received {chunk_count} chunks")
                                 chunk_queue.put(('done', None))
@@ -645,6 +1090,14 @@ Now provide your response (answer directly, no heading, no additional context):"
                             continue
                         
                         if item_type == 'chunk':
+                            # Log reasoning step chunks being yielded for debugging
+                            try:
+                                if item_data.startswith('data: '):
+                                    chunk_data = json.loads(item_data[6:])
+                                    if chunk_data.get('type') == 'reasoning_step':
+                                        logger.info(f"🟡 [STREAM] Yielding reasoning_step to client: {chunk_data.get('step')} - {chunk_data.get('message')}")
+                            except:
+                                pass
                             yield item_data
                         elif item_type == 'done':
                             break
@@ -1458,9 +1911,13 @@ def proxy_upload():
     """
     Proxy upload to S3 (alternative to presigned URLs if CORS issues)
     
-    NOTE: This endpoint is disconnected from the main processing pipeline.
-    Documents uploaded here will remain in 'UPLOADED' status and will be
-    processed via the new fast pipeline (chunk + embed) once implemented.
+    Fast Pipeline: If property_id is provided, automatically triggers fast processing:
+    - Section-based chunking with Reducto
+    - Document-level context generation
+    - Immediate embedding and vector storage
+    - Target: <30 seconds processing time
+    
+    Documents uploaded without property_id will remain in 'UPLOADED' status.
     """
     try:
         if 'file' not in request.files:
@@ -1490,12 +1947,15 @@ def proxy_upload():
                 region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
             )
             
-            # Upload file to S3
+            # Read file content once (will be reused for fast processing task)
             file.seek(0)  # Reset file pointer
+            file_content = file.read()
+            
+            # Upload file to S3
             s3_client.put_object(
                 Bucket=os.environ['S3_UPLOAD_BUCKET'],
                 Key=s3_key,
-                Body=file.read(),
+                Body=file_content,
                 ContentType=file.content_type
             )
             
@@ -1598,13 +2058,31 @@ def proxy_upload():
                 except Exception as rel_error:
                     logger.warning(f"Failed to create document relationship (non-fatal): {rel_error}")
             
+            # Trigger fast processing if property_id is provided
+            if property_id:
+                try:
+                    # Queue fast processing task (property_id already known - no extraction needed)
+                    task = process_document_fast_task.delay(
+                        document_id=doc_id,
+                        file_content=file_content,
+                        original_filename=filename,
+                        business_id=str(business_uuid_str),
+                        property_id=str(property_id)
+                    )
+                    
+                    logger.info(f"⚡ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
+                except Exception as e:
+                    logger.warning(f"Failed to queue fast processing task: {e}")
+                    # Don't fail the upload - document is already created and uploaded
+            
             # Success - document created in Supabase and linked to property if provided
             return jsonify({
                 'success': True,
                 'document_id': doc_id,
                 'message': 'Document uploaded and created in Supabase successfully.',
                 'status': 'uploaded',
-                'property_linked': property_id is not None
+                'property_linked': property_id is not None,
+                'processing_queued': property_id is not None  # Indicate if fast processing was queued
             }), 200
             
         except Exception as e:
