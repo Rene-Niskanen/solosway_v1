@@ -1870,7 +1870,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             {/* Section Picker - File Tab Style (Fixed) - Draggable */}
-            <div className="px-6 pt-4 pb-2 bg-white border-b border-gray-100 relative" style={{ zIndex: 1 }}>
+            <div className="px-6 pt-4 pb-3 bg-white relative" style={{ zIndex: 1, borderBottom: 'none' }}>
               <div className="flex items-end justify-between gap-1">
                 <div className="flex items-end gap-1" style={{ maxWidth: 'fit-content' }}>
                 {displayOrder.map((section, index) => {
@@ -2061,7 +2061,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               </div>
 
             {/* Header Area - Clean & Minimal */}
-            <div className="px-6 bg-white">
+            <div className="px-6 bg-white" style={{ borderTop: 'none' }}>
               <div className="flex items-center gap-3">
                 {activeSection === 'documents' && (
                   <div className="flex items-center gap-2 text-xs text-gray-400">

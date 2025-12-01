@@ -29,6 +29,8 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
 }) => {
   const [imagePreviewUrl, setImagePreviewUrl] = React.useState<string | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
+  const imageDragRef = React.useRef<HTMLDivElement>(null);
+  const fileDragRef = React.useRef<HTMLDivElement>(null);
   const isImage = attachment.type.startsWith('image/');
   const isPDF = attachment.type === 'application/pdf';
   const isDOCX = attachment.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
@@ -127,10 +129,55 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
     }, 100);
   };
 
+  // Attach native drag event handlers for image preview
+  React.useEffect(() => {
+    const element = imageDragRef.current;
+    if (!element || !isImage || !imagePreviewUrl) return;
+
+    const handleNativeDragStart = (e: DragEvent) => {
+      handleDragStart(e as unknown as React.DragEvent);
+    };
+
+    const handleNativeDragEnd = (e: DragEvent) => {
+      handleDragEnd(e as unknown as React.DragEvent);
+    };
+
+    element.addEventListener('dragstart', handleNativeDragStart);
+    element.addEventListener('dragend', handleNativeDragEnd);
+
+    return () => {
+      element.removeEventListener('dragstart', handleNativeDragStart);
+      element.removeEventListener('dragend', handleNativeDragEnd);
+    };
+  }, [isImage, imagePreviewUrl, handleDragStart, handleDragEnd]);
+
+  // Attach native drag event handlers for file attachment
+  React.useEffect(() => {
+    const element = fileDragRef.current;
+    if (!element || isImage) return;
+
+    const handleNativeDragStart = (e: DragEvent) => {
+      handleDragStart(e as unknown as React.DragEvent);
+    };
+
+    const handleNativeDragEnd = (e: DragEvent) => {
+      handleDragEnd(e as unknown as React.DragEvent);
+    };
+
+    element.addEventListener('dragstart', handleNativeDragStart);
+    element.addEventListener('dragend', handleNativeDragEnd);
+
+    return () => {
+      element.removeEventListener('dragstart', handleNativeDragStart);
+      element.removeEventListener('dragend', handleNativeDragEnd);
+    };
+  }, [isImage, handleDragStart, handleDragEnd]);
+
   // For images, show a small rectangular preview
   if (isImage && imagePreviewUrl) {
     return (
       <motion.div
+        ref={imageDragRef}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -147,8 +194,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
         }}
         layout={false}
         draggable
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
         onClick={handleFileClick}
         title={`Drag to delete or click to open ${attachment.name}`}
       >
@@ -185,6 +230,7 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
   // For non-image files, show the original file attachment UI
   return (
     <motion.div
+      ref={fileDragRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -203,8 +249,6 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
       }}
       layout={false}
       draggable
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
       onClick={handleFileClick}
       title={`Drag to delete or click to open ${attachment.name}`}
     >
