@@ -26,13 +26,44 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
         if (result.success && result.data) {
           setUserInfo(result.data.user || result.data);
           setIsAuthenticated(true);
+          setIsLoading(false);
+        } else {
+          // Only treat as auth failure if it's an actual authentication error (401/403)
+          // For timeouts or network errors, keep user logged in (might be temporary)
+          const statusCode = (result as any).statusCode;
+          const isAuthError = statusCode === 401 || statusCode === 403 || 
+                             result.error?.includes('401') || result.error?.includes('403') || 
+                             result.error?.includes('Unauthorized') || result.error?.includes('Forbidden');
+          
+          if (isAuthError) {
+            console.log('🔒 AuthGuard: Authentication failed - redirecting to login');
+            localStorage.removeItem('isAuthenticated');
+            setIsAuthenticated(false);
+            setIsLoading(false);
+          } else {
+            // Network error or timeout - keep user logged in, just log the error
+            console.warn('⚠️ AuthGuard: Auth check failed but keeping user logged in (might be temporary):', result.error);
+            // Assume authenticated if we have previous auth state, otherwise check localStorage
+            const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
+            if (hasPreviousAuth) {
+              setIsAuthenticated(true);
+            } else {
+              // First time check failed - treat as not authenticated
+              setIsAuthenticated(false);
+            }
+            setIsLoading(false);
+          }
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+        // On error, check if we have previous auth state
+        const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
+        if (hasPreviousAuth) {
+          console.warn('⚠️ AuthGuard: Auth check error but keeping user logged in (might be temporary)');
+          setIsAuthenticated(true);
         } else {
           setIsAuthenticated(false);
         }
-      } catch (error) {
-        console.error('Auth check failed:', error);
-        setIsAuthenticated(false);
-      } finally {
         setIsLoading(false);
       }
     };
@@ -41,6 +72,7 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
     const justLoggedIn = sessionStorage.getItem('justLoggedIn');
     if (justLoggedIn === 'true') {
       sessionStorage.removeItem('justLoggedIn');
+      localStorage.setItem('isAuthenticated', 'true');
       // Trust login but verify in background
       setIsAuthenticated(true);
       setIsLoading(false);
@@ -83,6 +115,10 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
 
   // User is authenticated, render children
   console.log('✅ AuthGuard: Rendering protected content for user:', userInfo?.email);
+  // Update localStorage to track auth state
+  if (isAuthenticated) {
+    localStorage.setItem('isAuthenticated', 'true');
+  }
   return <>{children}</>;
 };
 

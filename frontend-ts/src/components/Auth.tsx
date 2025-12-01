@@ -400,6 +400,7 @@ const Auth: React.FC = () => {
           setLoading(false);
           // Mark that we just logged in so AuthGuard trusts it
           sessionStorage.setItem('justLoggedIn', 'true');
+          localStorage.setItem('isAuthenticated', 'true');
           navigate('/dashboard', { replace: true });
         } else {
           setError(data.message || 'Invalid credentials');
@@ -429,6 +430,8 @@ const Auth: React.FC = () => {
 
         if (result.success) {
           console.log('✅ Signup successful! Redirecting to dashboard...');
+          sessionStorage.setItem('justLoggedIn', 'true');
+          localStorage.setItem('isAuthenticated', 'true');
           navigate('/dashboard');
         } else {
           setError(result.error || 'Failed to create account');

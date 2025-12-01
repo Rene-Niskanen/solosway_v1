@@ -1052,7 +1052,8 @@ class BackendApiService {
         console.log(`❌ checkAuth: Authentication failed - ${errorMsg}`);
         return {
           success: false,
-          error: errorMsg
+          error: errorMsg,
+          statusCode: response.status // Include status code for AuthGuard to check
         };
       }
     } catch (error) {

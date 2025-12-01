@@ -28,6 +28,7 @@ import { usePreview } from '../contexts/PreviewContext';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
+import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
@@ -1573,6 +1574,9 @@ export const MainContent = ({
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
   const [chatPanelWidth, setChatPanelWidth] = React.useState<number>(0); // Track chat panel width for property pin centering
   const [isPropertyDetailsOpen, setIsPropertyDetailsOpen] = React.useState<boolean>(false); // Track PropertyDetailsPanel visibility
+  const [isChatBubbleVisible, setIsChatBubbleVisible] = React.useState<boolean>(false); // Track bubble visibility
+  const [minimizedChatMessages, setMinimizedChatMessages] = React.useState<any[]>([]); // Store chat messages when minimized
+  const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
   
   // Reset chat panel width when map view is closed or chat is hidden
   React.useEffect(() => {
@@ -1581,6 +1585,25 @@ export const MainContent = ({
       setChatPanelWidth(0);
     }
   }, [isMapVisible, hasPerformedSearch]);
+
+  // Hide bubble when chat panel is opened (hasPerformedSearch becomes true)
+  React.useEffect(() => {
+    if (hasPerformedSearch && isChatBubbleVisible) {
+      console.log('💬 MainContent: Chat panel opened, hiding bubble');
+      setIsChatBubbleVisible(false);
+    }
+  }, [hasPerformedSearch, isChatBubbleVisible]);
+  
+  // Reset shouldExpandChat flag after chat has been opened and expanded
+  React.useEffect(() => {
+    if (shouldExpandChat && hasPerformedSearch && isMapVisible) {
+      // Chat is now open, reset the flag after a short delay to allow expansion
+      const timer = setTimeout(() => {
+        setShouldExpandChat(false);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
   
   // Calculate sidebar width for property pin centering
   const sidebarWidthValue = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
@@ -2750,8 +2773,8 @@ export const MainContent = ({
                             right: shouldPositionAtBottom ? '0' : 'auto',
                             transform: isMapVisible ? 'translateX(-50%)' : 'none',
                             zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
-                            width: isMapVisible ? 'clamp(450px, 90vw, 700px)' : '100%', // Full width in dashboard, constrained in map view
-                            maxWidth: isMapVisible ? 'clamp(450px, 90vw, 700px)' : 'none', // No max width constraint in dashboard (handled by padding)
+                            width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
+                            maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
                             boxSizing: 'border-box', // Include padding in width calculation
                             backgroundColor: shouldPositionAtBottom ? 'rgba(255, 255, 255, 0.95)' : 'transparent', // Subtle background when fixed at bottom
                             backdropFilter: shouldPositionAtBottom ? 'blur(10px)' : 'none' // Blur effect when fixed at bottom (ChatGPT-style)
@@ -3402,8 +3425,8 @@ export const MainContent = ({
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 10000, // VERY HIGH z-index to ensure it's on top
-            width: 'clamp(450px, 90vw, 700px)',
-            maxWidth: 'clamp(450px, 90vw, 700px)',
+            width: 'clamp(400px, 85vw, 650px)',
+            maxWidth: 'clamp(400px, 85vw, 650px)',
             boxSizing: 'border-box',
             pointerEvents: 'auto', // Ensure it's clickable
             // Remove flex from container - let SearchBar determine its own size
@@ -3428,7 +3451,26 @@ export const MainContent = ({
               setPendingMapAttachments(attachments);
             } : undefined}
             onPanelToggle={() => {
-              if (previousSessionQuery) {
+              // Close sidebar when opening analyse mode
+              onCloseSidebar?.();
+              
+              // If property details is open, open chat panel in expanded view
+              if (isPropertyDetailsOpen) {
+                // Open chat panel in expanded view - this will automatically expand property details
+                setShouldExpandChat(true); // Set flag to expand chat
+                if (previousSessionQuery) {
+                  setMapSearchQuery(previousSessionQuery);
+                  setHasPerformedSearch(true);
+                  pendingMapQueryRef.current = ""; // Clear ref
+                  setPendingMapQuery(""); // Clear pending query when opening panel
+                } else {
+                  // No previous session, but still open chat panel
+                  setHasPerformedSearch(true);
+                }
+                // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                // Property details will automatically expand when chatPanelWidth > 0
+              } else if (previousSessionQuery) {
+                // Normal behavior when property details is not open
                 setMapSearchQuery(previousSessionQuery);
                 setHasPerformedSearch(true);
                 pendingMapQueryRef.current = ""; // Clear ref
@@ -3437,6 +3479,7 @@ export const MainContent = ({
               }
             }}
             hasPreviousSession={!!previousSessionQuery}
+            isPropertyDetailsOpen={isPropertyDetailsOpen}
             initialValue={(() => {
               const value = pendingMapQueryRef.current || pendingMapQuery;
               return value;
@@ -3466,16 +3509,33 @@ export const MainContent = ({
             return attachments;
           })()}
           isPropertyDetailsOpen={isPropertyDetailsOpen}
+          shouldExpand={shouldExpandChat}
           onQuerySubmit={(newQuery) => {
             // Handle new query from panel
             setMapSearchQuery(newQuery);
             // Keep hasPerformedSearch true
+          }}
+          onMinimize={(chatMessages) => {
+            // Show bubble and hide full panel
+            setMinimizedChatMessages(chatMessages);
+            setIsChatBubbleVisible(true);
+            setHasPerformedSearch(false);
+            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+          }}
+          onMessagesUpdate={(chatMessages) => {
+            // Update bubble messages in real-time when chat is minimized
+            if (isChatBubbleVisible) {
+              setMinimizedChatMessages(chatMessages);
+            }
           }}
           onMapToggle={() => {
             // Close panel and show MapChatBar by resetting hasPerformedSearch
             setMapSearchQuery("");
             setHasPerformedSearch(false);
             setRestoreChatId(null);
+            setIsChatBubbleVisible(false);
+            setMinimizedChatMessages([]);
             // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
             // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
           }}
@@ -3524,6 +3584,25 @@ export const MainContent = ({
                 }
               }, 100);
             }
+          }}
+        />
+      )}
+
+      {/* Floating Chat Bubble */}
+      {isChatBubbleVisible && (
+        <FloatingChatBubble
+          chatMessages={minimizedChatMessages}
+          onOpenChat={() => {
+            // Restore full panel from bubble
+            setIsChatBubbleVisible(false);
+            setHasPerformedSearch(true);
+            // Chat messages are already stored, panel will restore them
+          }}
+          onClose={() => {
+            // Close bubble entirely
+            setIsChatBubbleVisible(false);
+            setMinimizedChatMessages([]);
+            setHasPerformedSearch(false);
           }}
         />
       )}
@@ -3602,6 +3681,9 @@ export const MainContent = ({
             }
             return newFiles;
           });
+        }}
+        onTabReorder={(newOrder) => {
+          setPreviewFiles(newOrder);
         }}
         onAddAttachment={() => {
           // Trigger file input click to add new attachment to preview

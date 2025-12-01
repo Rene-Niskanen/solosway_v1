@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -167,9 +167,9 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
       <div
         onClick={handleImageClick}
         style={{
-          width: '40px',
-          height: '40px',
-          borderRadius: '4px',
+          width: '56px',
+          height: '56px',
+          borderRadius: '6px',
           overflow: 'hidden',
           backgroundColor: '#F3F4F6',
           border: '1px solid #E5E7EB',
@@ -313,6 +313,8 @@ interface SideChatPanelProps {
   sidebarWidth?: number; // Width of the sidebar to offset the panel
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
   onMapToggle?: () => void; // Callback for toggling map view
+  onMinimize?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for minimizing to bubble with chat messages
+  onMessagesUpdate?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for real-time message updates
   restoreChatId?: string | null; // Chat ID to restore from history
   onNewChat?: () => void; // Callback when new chat is clicked (to clear query in parent)
   onSidebarToggle?: () => void; // Callback for toggling sidebar
@@ -320,6 +322,7 @@ interface SideChatPanelProps {
   initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
   onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
   isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
+  shouldExpand?: boolean; // Whether chat should be expanded (for Analyse mode)
 }
 
 export interface SideChatPanelRef {
@@ -332,13 +335,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
   onQuerySubmit,
   onMapToggle,
+  onMinimize,
+  onMessagesUpdate,
   restoreChatId,
   onNewChat,
   onSidebarToggle,
   onOpenProperty,
   initialAttachedFiles,
   onChatWidthChange,
-  isPropertyDetailsOpen = false // Default to false
+  isPropertyDetailsOpen = false, // Default to false
+  shouldExpand = false // Default to false
 }, ref) => {
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
@@ -347,6 +353,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  
+  // Sync expanded state with shouldExpand prop
+  React.useEffect(() => {
+    if (shouldExpand && !isExpanded) {
+      setIsExpanded(true);
+    }
+  }, [shouldExpand, isExpanded]);
   
   // Calculate and notify parent of chat panel width changes
   React.useEffect(() => {
@@ -466,6 +479,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
+
+  // Sync messages to bubble in real-time
+  React.useEffect(() => {
+    if (onMessagesUpdate && chatMessages.length > 0) {
+      onMessagesUpdate(chatMessages);
+    }
+  }, [chatMessages, onMessagesUpdate]);
   
   // Use property selection context
   const { 
@@ -1465,7 +1485,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Panel content will go here */}
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="p-4 border-b border-gray-200 relative" style={{ backgroundColor: '#F9F9F9' }}>
+            <div className="p-4 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
                 <button
                   onClick={onSidebarToggle}
@@ -1528,23 +1548,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       New chat
                     </span>
                   </motion.button>
-                  <motion.button
+                  <button
+                    type="button"
                     onClick={() => {
                       setIsExpanded(!isExpanded);
                     }}
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.99 }}
-                    className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group ${
-                      isExpanded 
-                        ? 'border-slate-300/80 bg-slate-100/80 hover:bg-slate-150/80' 
-                        : 'border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80'
-                    }`}
+                    className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
+                    style={{
+                      marginLeft: '4px'
+                    }}
                     title={isExpanded ? "Collapse chat" : "Expand chat"}
                   >
-                    <MoveDiagonal className={`w-3.5 h-3.5 group-hover:text-slate-700 transition-colors ${
-                      isExpanded ? 'text-slate-700' : 'text-slate-600'
-                    }`} strokeWidth={1.5} />
-                  </motion.button>
+                    {isExpanded ? (
+                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                    ) : (
+                      <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                    )}
+                  </button>
                   <button
                     onClick={onMapToggle}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
@@ -1562,7 +1582,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               className="flex-1 overflow-y-auto sidechat-scroll" 
               style={{ 
                 backgroundColor: '#F9F9F9',
-                padding: '16px 20px 16px 12px', // Reduced left padding to move container right
+                padding: isExpanded 
+                  ? '16px calc(36px + 7.5%) 16px calc(36px + 7.5%)' // Align with centered chat bar when expanded (36px container padding + 7.5% offset on both sides for centered 85% width)
+                  : '16px 20px 16px 12px', // Normal padding when collapsed
                 scrollbarWidth: 'thin',
                 scrollbarColor: 'rgba(0, 0, 0, 0.1) transparent'
               }}
@@ -1584,7 +1606,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           maxWidth: '85%',
                           width: 'fit-content',
                           marginTop: '8px',
-                          marginLeft: '12px',
+                          marginLeft: isExpanded ? '0' : '12px', // Align with chat bar when expanded
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '6px'
@@ -1719,8 +1741,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           padding: '0',
                           margin: '0',
                           marginTop: '8px',
-                          paddingLeft: '20px', // Matches query bubble left padding
-                          paddingRight: '20px', // Matches query bubble right padding
+                          paddingLeft: isExpanded ? '0' : '20px', // Align with chat bar when expanded
+                          paddingRight: isExpanded ? '0' : '20px', // Align with chat bar when expanded
                           wordWrap: 'break-word'
                         }}
                       >
@@ -1835,7 +1857,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             {/* Chat Input at Bottom - Condensed SearchBar design */}
             <div style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px' }}>
-              <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
+              <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%', display: 'flex', justifyContent: 'center' }}>
                 <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                   style={{
@@ -1847,7 +1869,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    width: '100%',
+                    width: isExpanded ? '85%' : '100%', // Narrower when expanded
                     minWidth: '0',
                     height: 'auto',
                     minHeight: 'fit-content',
@@ -1993,15 +2015,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         minHeight: '32px'
                       }}
                     >
-                      {/* Left Icons: Dashboard */}
+                      {/* Left Icons: Minimize Chat Button */}
                       <div className="flex items-center space-x-3">
                         <button
                           type="button"
-                          onClick={onMapToggle}
-                          className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-1"
-                          title="Back to search mode"
+                          onClick={() => {
+                            // If onMinimize is provided, use it; otherwise fall back to onMapToggle
+                            if (onMinimize && chatMessages.length > 0) {
+                              onMinimize(chatMessages);
+                            } else if (onMapToggle) {
+                              onMapToggle();
+                            }
+                          }}
+                          className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-2"
+                          title="Minimize chat to bubble"
                         >
-                          <CreditCard className="w-5 h-5" strokeWidth={1.5} style={{ transform: 'rotate(180deg)' }} />
+                          <Minimize2 className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                       </div>
 
@@ -2069,13 +2098,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="p-1 text-slate-600 hover:text-green-500 transition-colors"
                           title="Attach file"
                         >
-                          <Paperclip className="w-5 h-5" strokeWidth={1.5} />
+                          <Paperclip className="w-[18px] h-[18px]" strokeWidth={1.5} />
                         </button>
                         <button
                           type="button"
                           className="p-1 text-slate-600 hover:text-green-500 transition-colors"
                         >
-                          <Mic className="w-5 h-5" strokeWidth={1.5} />
+                          <Mic className="w-[18px] h-[18px]" strokeWidth={1.5} />
                         </button>
                         
                         {/* Send button or Stop button (when streaming) */}
