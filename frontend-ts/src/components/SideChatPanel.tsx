@@ -852,88 +852,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       onMessagesUpdate(chatMessages);
     }
   }, [chatMessages, onMessagesUpdate]);
-<<<<<<< HEAD
-=======
-
-  // NEW: Function to parse citations from text and replace with styled components
-  const parseCitations = (text: string, citations?: Record<string, CitationData>): React.ReactNode[] => {
-    if (!citations || Object.keys(citations).length === 0) {
-      return [text];
-    }
-
-    // Pattern to match [1], [2], etc.
-    const citationPattern = /\[(\d+)\]/g;
-    const parts: React.ReactNode[] = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = citationPattern.exec(text)) !== null) {
-      // Add text before citation
-      if (match.index > lastIndex) {
-        parts.push(text.substring(lastIndex, match.index));
-      }
-
-      const citationNum = match[1];
-      const citationData = citations[citationNum];
-
-      // Render citation as styled component
-      parts.push(
-        <span
-          key={`citation-${match.index}-${citationNum}`}
-          style={{
-            display: 'inline-block',
-            backgroundColor: '#E5E7EB', // Light grey
-            color: '#6B7280', // Dark grey text
-            borderRadius: '4px',
-            padding: '2px 6px',
-            fontSize: '11px',
-            fontWeight: 500,
-            lineHeight: '1.2',
-            marginLeft: '2px',
-            marginRight: '2px',
-            verticalAlign: 'baseline',
-            cursor: citationData ? 'pointer' : 'default',
-            transition: 'background-color 0.2s',
-          }}
-          onMouseEnter={(e) => {
-            if (citationData) {
-              e.currentTarget.style.backgroundColor = '#D1D5DB';
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (citationData) {
-              e.currentTarget.style.backgroundColor = '#E5E7EB';
-            }
-          }}
-          onClick={(e) => {
-            if (citationData) {
-              e.stopPropagation();
-              console.log('📎 Citation clicked:', citationNum, citationData);
-              // Phase 1: Open document in viewer
-              handleCitationClick(citationData);
-            }
-          }}
-          title={citationData ? `${citationData.original_filename} - ${citationData.property_address}` : undefined}
-        >
-          {citationNum}
-        </span>
-      );
-
-      lastIndex = match.index + match[0].length;
-    }
-
-    // Add remaining text
-    if (lastIndex < text.length) {
-      parts.push(text.substring(lastIndex));
-    }
-
-    return parts.length > 0 ? parts : [text];
-  };
   
   // Track which reasoning blocks are expanded (message ID -> boolean)
   const [expandedReasoningBlocks, setExpandedReasoningBlocks] = React.useState<Record<string, boolean>>({});
   const currentQueryIdRef = React.useRef<string | null>(null); // Track which query is currently processing
->>>>>>> a3cbb5aadc488055d8e24b7201947282c33829dd
   
   // Use property selection context
   const { 
