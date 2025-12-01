@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -34,6 +34,8 @@ export interface SearchBarProps {
   initialValue?: string; // undefined means no initial value, empty string means clear
   initialAttachedFiles?: FileAttachmentData[]; // Preserve file attachments when switching views
   onAttachmentsChange?: (attachments: FileAttachmentData[]) => void; // Callback when attachments change
+  onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
+  isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
 }
 
 export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] }, SearchBarProps>(({
@@ -53,7 +55,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   isPropertyDetailsOpen = false,
   initialValue,
   initialAttachedFiles,
-  onAttachmentsChange
+  onAttachmentsChange,
+  onQuickStartToggle,
+  isQuickStartBarVisible = false
 }, ref) => {
   console.log('🎯 SearchBar component rendering/mounting', {
     initialValue,
@@ -1118,11 +1122,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   {/* Panel Toggle Button (show when property details is open OR when in map view with previous session) */}
                   {((isPropertyDetailsOpen && onPanelToggle) || (isMapVisible && hasPreviousSession && onPanelToggle)) && (
                     isPropertyDetailsOpen ? (
-                      <button
-                        type="button"
-                        onClick={onPanelToggle}
+                    <button
+                      type="button"
+                      onClick={onPanelToggle}
                         className="flex items-center justify-center focus:outline-none outline-none"
-                        style={{
+                      style={{
                           display: 'flex',
                           alignItems: 'center',
                           gap: '4px',
@@ -1150,10 +1154,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
                           e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                         }}
-                      >
+                    >
                         <Brain className="w-3.5 h-3.5" strokeWidth={2} />
                         <span>Analyse</span>
-                      </button>
+                    </button>
                     ) : (
                       <button
                         type="button"
@@ -1277,6 +1281,21 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   </button>
                 )}
                   </div>
+                
+                {onQuickStartToggle && (
+                  <button
+                    type="button"
+                    onClick={onQuickStartToggle}
+                    className={`flex items-center justify-center w-7 h-7 transition-colors focus:outline-none outline-none ${
+                      isQuickStartBarVisible 
+                        ? 'text-green-500 bg-green-50 rounded' 
+                        : 'text-slate-600 hover:text-green-500'
+                    }`}
+                    title="Link document to property"
+                  >
+                    <Workflow className="w-5 h-5" strokeWidth={1.5} />
+                  </button>
+                )}
                 
                 {contextConfig.showMic && (
                   <ImageUploadButton
