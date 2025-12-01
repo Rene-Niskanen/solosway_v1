@@ -1577,6 +1577,14 @@ export const MainContent = ({
   const [isChatBubbleVisible, setIsChatBubbleVisible] = React.useState<boolean>(false); // Track bubble visibility
   const [minimizedChatMessages, setMinimizedChatMessages] = React.useState<any[]>([]); // Store chat messages when minimized
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
+  const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
+  
+  // Hide QuickStartBar when switching away from map view
+  React.useEffect(() => {
+    if (!isMapVisible && isQuickStartBarVisible) {
+      setIsQuickStartBarVisible(false);
+    }
+  }, [isMapVisible, isQuickStartBarVisible]);
   
   // Reset chat panel width when map view is closed or chat is hidden
   React.useEffect(() => {
@@ -2623,7 +2631,7 @@ export const MainContent = ({
                 </div>
                 
                 {/* Quick Start Bar - between welcome message and recent projects */}
-                {!isVerySmall && !shouldHideProjectsForSearchBar && (
+                {!isVerySmall && !shouldHideProjectsForSearchBar && !isQuickStartBarVisible && (
                   <QuickStartBar
                     onDocumentLinked={(propertyId, documentId) => {
                       console.log('Document linked:', { propertyId, documentId });
@@ -3462,7 +3470,7 @@ export const MainContent = ({
               if (isPropertyDetailsOpen) {
                 // Open chat panel in expanded view - this will automatically expand property details
                 setShouldExpandChat(true); // Set flag to expand chat
-                if (previousSessionQuery) {
+              if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
                   setHasPerformedSearch(true);
                   pendingMapQueryRef.current = ""; // Clear ref
@@ -3482,6 +3490,10 @@ export const MainContent = ({
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
               }
             }}
+            onQuickStartToggle={() => {
+              setIsQuickStartBarVisible(!isQuickStartBarVisible);
+            }}
+            isQuickStartBarVisible={isQuickStartBarVisible}
             hasPreviousSession={!!previousSessionQuery}
             isPropertyDetailsOpen={isPropertyDetailsOpen}
             initialValue={(() => {
@@ -3514,6 +3526,10 @@ export const MainContent = ({
           })()}
           isPropertyDetailsOpen={isPropertyDetailsOpen}
           shouldExpand={shouldExpandChat}
+          onQuickStartToggle={() => {
+            setIsQuickStartBarVisible(!isQuickStartBarVisible);
+          }}
+          isQuickStartBarVisible={isQuickStartBarVisible}
           onQuerySubmit={(newQuery) => {
             // Handle new query from panel
             setMapSearchQuery(newQuery);
@@ -3609,6 +3625,30 @@ export const MainContent = ({
             setHasPerformedSearch(false);
           }}
         />
+      )}
+
+      {/* QuickStartBar as Island above Search Bar - only show when chat panel is NOT open */}
+      {isQuickStartBarVisible && !hasPerformedSearch && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '80px', // Position slightly lower, closer to search bar
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10001,
+            width: 'fit-content',
+            maxWidth: 'clamp(400px, 85vw, 650px)' // Match search bar width
+          }}
+        >
+            <QuickStartBar
+              onDocumentLinked={(propertyId, documentId) => {
+                console.log('Document linked:', { propertyId, documentId });
+                // Optionally refresh recent projects or show success
+                setIsQuickStartBarVisible(false); // Close after successful link
+              }}
+              onPopupVisibilityChange={setIsQuickStartPopupVisible}
+            />
+        </div>
       )}
 
       {/* Content container - transparent to show map background */}

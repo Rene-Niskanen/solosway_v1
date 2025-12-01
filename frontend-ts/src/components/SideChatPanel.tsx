@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2 } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -13,6 +13,53 @@ import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
+import { QuickStartBar } from './QuickStartBar';
+
+// Component for displaying property thumbnail in search results
+const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
+  const [imageError, setImageError] = React.useState(false);
+  const imageUrl = property.image || property.primary_image_url;
+
+  return (
+    <div style={{
+      width: '40px',
+      height: '40px',
+      borderRadius: '4px',
+      overflow: 'hidden',
+      backgroundColor: '#f3f4f6',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+      border: '1px solid rgba(0, 0, 0, 0.08)'
+    }}>
+      {imageUrl && !imageError ? (
+        <img
+          src={imageUrl}
+          alt={property.address}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: 'block'
+          }}
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div style={{
+          width: '100%',
+          height: '100%',
+          backgroundColor: '#10b981',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          <Home className="w-5 h-5 text-white" strokeWidth={2.5} />
+        </div>
+      )}
+    </div>
+  );
+};
 
 // Component for displaying property attachment in query bubble
 const QueryPropertyAttachment: React.FC<{ 
@@ -323,6 +370,8 @@ interface SideChatPanelProps {
   onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
   isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
   shouldExpand?: boolean; // Whether chat should be expanded (for Analyse mode)
+  onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
+  isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
 }
 
 export interface SideChatPanelRef {
@@ -344,11 +393,164 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   initialAttachedFiles,
   onChatWidthChange,
   isPropertyDetailsOpen = false, // Default to false
-  shouldExpand = false // Default to false
+  shouldExpand = false, // Default to false
+  onQuickStartToggle,
+  isQuickStartBarVisible = false // Default to false
 }, ref) => {
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
+  // Property search state
+  const [propertySearchQuery, setPropertySearchQuery] = React.useState<string>("");
+  const [propertySearchResults, setPropertySearchResults] = React.useState<PropertyData[]>([]);
+  const [showPropertySearchPopup, setShowPropertySearchPopup] = React.useState<boolean>(false);
+  const propertySearchPopupRef = React.useRef<HTMLDivElement>(null);
+  const propertySearchDebounceRef = React.useRef<NodeJS.Timeout | null>(null);
+  
+  // QuickStartBar positioning refs and state
+  const chatFormRef = React.useRef<HTMLFormElement>(null);
+  const quickStartBarWrapperRef = React.useRef<HTMLDivElement>(null);
+  const chatInputContainerRef = React.useRef<HTMLDivElement>(null);
+  const [quickStartBarBottom, setQuickStartBarBottom] = React.useState<string>('calc(75% - 16px)');
+  const [quickStartBarTransform, setQuickStartBarTransform] = React.useState<string>('translateX(-50%)');
+  
+  // Property search logic - detect when user types property-related queries
+  React.useEffect(() => {
+    if (propertySearchDebounceRef.current) {
+      clearTimeout(propertySearchDebounceRef.current);
+    }
+
+    // Extract property search query from input (look for @property or location keywords)
+    const extractPropertyQuery = (text: string): string | null => {
+      // Check for @property pattern
+      const atPropertyMatch = text.match(/@property\s+(.+)/i);
+      if (atPropertyMatch) {
+        return atPropertyMatch[1].trim();
+      }
+      
+      // Check if text ends with location-like patterns (could be property search)
+      // Only search if text is at least 2 characters and looks like a location/property query
+      const trimmed = text.trim();
+      if (trimmed.length >= 2) {
+        // Check for common property/location keywords
+        const propertyKeywords = ['property', 'house', 'home', 'address', 'location', 'in', 'at', 'near'];
+        const hasPropertyKeyword = propertyKeywords.some(keyword => 
+          trimmed.toLowerCase().includes(keyword.toLowerCase())
+        );
+        
+        // If it contains property keywords or looks like an address, treat as property search
+        if (hasPropertyKeyword || /^[A-Za-z0-9\s,.-]+$/.test(trimmed)) {
+          return trimmed;
+        }
+      }
+      
+      return null;
+    };
+
+    const query = extractPropertyQuery(inputValue);
+    
+    if (query && query.length >= 1) {
+      const debounceTime = query.length === 1 ? 0 : 50;
+      propertySearchDebounceRef.current = setTimeout(async () => {
+        try {
+          const response = await backendApi.searchPropertyHubs(query, {});
+          
+          let results: any[] = [];
+          
+          if (response.success && response.data) {
+            const data = response.data as any;
+            if (Array.isArray(data)) {
+              results = data;
+            } else if (data && typeof data === 'object' && data.data && Array.isArray(data.data)) {
+              results = data.data;
+            } else if (data && typeof data === 'object' && data.success && Array.isArray(data.data)) {
+              results = data.data;
+            }
+          }
+          
+          if (results.length > 0) {
+            const queryLower = query.toLowerCase().trim();
+            const sortedResults = results
+              .map((hub: any) => {
+                const property = hub.property || hub;
+                const propertyDetails = hub.property_details || {};
+                
+                const address = (property.formatted_address || property.normalized_address || property.address || '').toLowerCase();
+                const customName = (property.custom_name || '').toLowerCase();
+                
+                let score = 0;
+                if (customName && customName.startsWith(queryLower)) score += 100;
+                else if (customName && customName.includes(queryLower)) score += 50;
+                if (address.startsWith(queryLower)) score += 80;
+                else if (address.includes(queryLower)) {
+                  const index = address.indexOf(queryLower);
+                  score += Math.max(0, 60 - index);
+                }
+                
+                return {
+                  id: property.id || hub.id,
+                  address: property.formatted_address || property.normalized_address || property.address || 'Unknown Address',
+                  property_type: propertyDetails.property_type || property.property_type,
+                  custom_name: property.custom_name,
+                  image: property.image,
+                  primary_image_url: property.primary_image_url,
+                  ...property,
+                  ...propertyDetails,
+                  _relevanceScore: score
+                };
+              })
+              .sort((a, b) => (b._relevanceScore || 0) - (a._relevanceScore || 0))
+              .slice(0, 10);
+            
+            setPropertySearchResults(sortedResults);
+            setShowPropertySearchPopup(true);
+            setPropertySearchQuery(query);
+          } else {
+            setPropertySearchResults([]);
+            setShowPropertySearchPopup(false);
+          }
+        } catch (error) {
+          console.error('Error searching properties:', error);
+          setPropertySearchResults([]);
+          setShowPropertySearchPopup(false);
+        }
+      }, debounceTime);
+    } else {
+      setPropertySearchResults([]);
+      setShowPropertySearchPopup(false);
+      setPropertySearchQuery("");
+    }
+
+    return () => {
+      if (propertySearchDebounceRef.current) {
+        clearTimeout(propertySearchDebounceRef.current);
+      }
+    };
+  }, [inputValue]);
+
+  // Close popup when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        propertySearchPopupRef.current &&
+        !propertySearchPopupRef.current.contains(event.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(event.target as Node)
+      ) {
+        setShowPropertySearchPopup(false);
+      }
+    };
+
+    if (showPropertySearchPopup) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showPropertySearchPopup]);
+
+  // Handle property selection - will be defined after usePropertySelection hook
+  
   // Always start in multi-line mode for the requested layout (textarea above icons)
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
@@ -366,6 +568,116 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
     }
   }, [shouldExpand, isExpanded, isPropertyDetailsOpen]);
+  
+  // Calculate QuickStartBar position dynamically based on chat bar position
+  React.useLayoutEffect(() => {
+    if (!isQuickStartBarVisible || !chatFormRef.current || !chatInputContainerRef.current || !quickStartBarWrapperRef.current) {
+      return;
+    }
+
+    const calculatePosition = () => {
+      const chatForm = chatFormRef.current;
+      const container = chatInputContainerRef.current;
+      const quickStartWrapper = quickStartBarWrapperRef.current;
+      
+      if (!chatForm || !container || !quickStartWrapper) {
+        return;
+      }
+
+      // Get the form's inner div (the white chat bar container with the actual width)
+      const formInnerDiv = chatForm.querySelector('div') as HTMLElement;
+      if (!formInnerDiv) {
+        return;
+      }
+
+      // Get positions - use offsetTop for more reliable relative positioning
+      const containerHeight = container.offsetHeight;
+      const formTopRelative = formInnerDiv.offsetTop;
+      
+      // Calculate spacing (negative value to bring QuickStartBar down closer to chat bar)
+      const spacing = -55;
+      
+      // Position QuickStartBar above the form with spacing
+      // bottom = container height - (form top relative to container) + spacing
+      const bottomPosition = containerHeight - formTopRelative + spacing;
+      
+      // Set the bottom position
+      setQuickStartBarBottom(`${bottomPosition}px`);
+      
+      // Set maxWidth to match chat bar width, but let content be fit-content
+      // This allows the QuickStartBar to size naturally while preventing overflow
+      const formWidth = formInnerDiv.offsetWidth;
+      const containerWidth = container.offsetWidth;
+      
+      if (formWidth > 0 && containerWidth > 0) {
+        // Calculate the percentage width the form uses relative to container
+        const formWidthPercentage = (formWidth / containerWidth) * 100;
+        
+        // Set maxWidth to prevent overflow beyond chat bar width
+        // But don't set width - let it be fit-content so content can be its natural size
+        quickStartWrapper.style.width = 'fit-content';
+        // Use pixel-based buffer for more reliable overhang prevention
+        const bufferPixels = 2; // 20px buffer to prevent overhang
+        const formWidthPixels = (formWidthPercentage / 100) * containerWidth;
+        const maxWidthPixels = formWidthPixels - bufferPixels;
+        quickStartWrapper.style.maxWidth = `${maxWidthPixels}px`; // Pixel-based buffer to prevent overhang0
+        
+        // Check if items are selected by looking for property/file pills or white background container
+        // Only apply wrapper transform when items are selected (to avoid conflict with search bar positioning)
+        const hasPropertyPill = quickStartWrapper.querySelector('[class*="bg-white"][class*="border"]') !== null;
+        const hasSelectedItems = hasPropertyPill || 
+          (quickStartWrapper.querySelector('div')?.style.backgroundColor === 'white' ||
+           quickStartWrapper.querySelector('div')?.style.backgroundColor === 'rgb(255, 255, 255)');
+        
+        // Only apply transform positioning when items are selected
+        // When nothing is selected, the inner container transform handles positioning
+        if (hasSelectedItems) {
+          // Detect smallest chat view (when not expanded, typically 450px fixed width)
+          const isSmallestView = !isExpanded && formWidth <= 460; // 450px + small buffer
+          
+          if (isSmallestView) {
+            // Shift left to prevent right overhang
+            setQuickStartBarTransform('translateX(-58%)');
+          } else {
+            // Shift left slightly for all views to prevent right overhang
+            setQuickStartBarTransform('translateX(-82%)');
+          }
+        } else {
+          // No items selected - use default centering, let inner container handle positioning
+          setQuickStartBarTransform('translateX(-58%)');
+        }
+        
+        // This allows the QuickStartBar content to be as large as it needs to be
+        // while still staying within the chat bar's width boundaries
+      }
+    };
+
+    // Initial calculation with a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(calculatePosition, 0);
+
+    // Use ResizeObserver to recalculate when dimensions change
+    const resizeObserver = new ResizeObserver(() => {
+      // Debounce resize updates
+      setTimeout(calculatePosition, 10);
+    });
+
+    // Observe the container, form, and form's inner div
+    if (chatInputContainerRef.current) {
+      resizeObserver.observe(chatInputContainerRef.current);
+    }
+    if (chatFormRef.current) {
+      resizeObserver.observe(chatFormRef.current);
+      const formInnerDiv = chatFormRef.current.querySelector('div');
+      if (formInnerDiv) {
+        resizeObserver.observe(formInnerDiv);
+      }
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      resizeObserver.disconnect();
+    };
+  }, [isQuickStartBarVisible, isExpanded]); // Recalculate when visibility or expanded state changes
   
   // Lock width when property details panel opens in expanded chat
   React.useEffect(() => {
@@ -517,8 +829,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setSelectionModeActive,
     propertyAttachments, 
     removePropertyAttachment,
-    clearPropertyAttachments 
+    clearPropertyAttachments,
+    addPropertyAttachment
   } = usePropertySelection();
+  
+  // Handle property selection
+  const handlePropertySelect = React.useCallback((property: PropertyData) => {
+    // Use the property selection context to add the property attachment
+    addPropertyAttachment(property);
+    
+    // Close popup and clear search
+    setShowPropertySearchPopup(false);
+    setPropertySearchResults([]);
+    setPropertySearchQuery("");
+    
+    // Remove the @property prefix from input if present
+    const newInput = inputValue.replace(/@property\s+/i, '').trim();
+    setInputValue(newInput);
+  }, [inputValue, addPropertyAttachment]);
   
   // Use chat history context
   const { addChatToHistory, getChatById } = useChatHistory();
@@ -1881,14 +2209,52 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
             
             {/* Chat Input at Bottom - Condensed SearchBar design */}
-            <div style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px' }}>
-              <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%', display: 'flex', justifyContent: 'center' }}>
+            <div 
+              ref={chatInputContainerRef}
+              style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px', position: 'relative', overflow: 'visible' }}
+            >
+              {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
+              {isQuickStartBarVisible && (
+                <div
+                  ref={quickStartBarWrapperRef}
+                  style={{
+                    position: 'absolute',
+                    bottom: quickStartBarBottom, // Dynamically calculated position
+                    left: '58%',
+                    transform: quickStartBarTransform, // Dynamically adjusted for smallest view
+                    zIndex: 10000,
+                    width: 'fit-content', // Let content determine width naturally
+                    maxWidth: isExpanded ? '85%' : '100%', // Initial maxWidth, will be updated by layout effect
+                    display: 'flex',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <QuickStartBar
+                    onDocumentLinked={(propertyId, documentId) => {
+                      console.log('Document linked:', { propertyId, documentId });
+                      // Optionally close QuickStartBar after successful link
+                      if (onQuickStartToggle) {
+                        onQuickStartToggle();
+                      }
+                    }}
+                    onPopupVisibilityChange={() => {}}
+                    isInChatPanel={true}
+                  />
+                </div>
+              )}
+              <form 
+                ref={chatFormRef}
+                onSubmit={handleSubmit} 
+                className="relative" 
+                style={{ overflow: 'visible', height: 'auto', width: '100%', display: 'flex', justifyContent: 'center', position: 'relative' }}
+              >
                 <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                   style={{
                     background: '#ffffff',
                     border: '1px solid #E5E7EB',
                     boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                    position: 'relative',
                     paddingTop: '12px', // More padding top
                     paddingBottom: '12px', // More padding bottom
                     paddingRight: '12px',
@@ -2028,6 +2394,77 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           disabled={isSubmitted}
                           rows={1}
                         />
+                        
+                        {/* Property Search Results Popup - positioned ABOVE the textarea */}
+                        {showPropertySearchPopup && propertySearchResults.length > 0 && (
+                          <div
+                            ref={propertySearchPopupRef}
+                            style={{
+                              position: 'absolute',
+                              bottom: 'calc(100% + 8px)',
+                              left: 0,
+                              right: 0,
+                              background: 'white',
+                              borderRadius: '8px',
+                              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08)',
+                              maxHeight: '280px',
+                              overflowY: 'auto',
+                              zIndex: 10000,
+                              width: '100%'
+                            }}
+                          >
+                            {propertySearchResults.map((property, index) => (
+                              <div
+                                key={property.id}
+                                onClick={() => handlePropertySelect(property)}
+                                style={{
+                                  padding: '10px 14px',
+                                  cursor: 'pointer',
+                                  borderBottom: index < propertySearchResults.length - 1 ? '1px solid rgba(0, 0, 0, 0.06)' : 'none',
+                                  backgroundColor: 'transparent',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '12px'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#f9fafb';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'transparent';
+                                }}
+                              >
+                                {/* Property Image Thumbnail */}
+                                <PropertyImageThumbnail property={property} />
+                                
+                                {/* Property Info */}
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ 
+                                    fontWeight: 500, 
+                                    fontSize: '14px', 
+                                    color: '#111827', 
+                                    marginBottom: '3px',
+                                    lineHeight: '1.4',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}>
+                                    {property.address}
+                                  </div>
+                                  {property.property_type && (
+                                    <div style={{ 
+                                      fontSize: '12px', 
+                                      color: '#6b7280',
+                                      lineHeight: '1.4',
+                                      fontWeight: 400
+                                    }}>
+                                      {property.property_type}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                     
@@ -2117,6 +2554,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </button>
                           )}
                         </div>
+                        {onQuickStartToggle && (
+                          <button
+                            type="button"
+                            onClick={onQuickStartToggle}
+                            className={`p-1 transition-colors ${
+                              isQuickStartBarVisible 
+                                ? 'text-green-500 bg-green-50 rounded' 
+                                : 'text-slate-600 hover:text-green-500'
+                            }`}
+                            title="Link document to property"
+                          >
+                            <Workflow className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
