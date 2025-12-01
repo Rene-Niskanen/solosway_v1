@@ -984,12 +984,14 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 'property_address': doc.get('property_address'),
             }
         
-        # Append chunk content
+        # Append chunk content WITH bbox metadata
         doc_groups[doc_id]['chunks'].append({
             'content': doc.get('content', ''),
             'chunk_index': doc.get('chunk_index', 0),
             'page_number': doc.get('page_number', 0),
             'similarity': doc.get('similarity_score', 0.0),
+            'bbox': doc.get('bbox'),  # NEW: Preserve bbox for citation/highlighting
+            'vector_id': doc.get('vector_id'),  # NEW: Preserve vector_id for lookup
         })
         
         # Track highest similarity score across all chunks
@@ -1037,6 +1039,19 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             # NEW: Pass through filename and address
             'original_filename': group.get('original_filename'),
             'property_address': group.get('property_address'),
+            # NEW: Store source chunks with full metadata for citation/highlighting
+            'source_chunks_metadata': [
+                {
+                    'content': chunk['content'],
+                    'chunk_index': chunk['chunk_index'],
+                    'page_number': chunk['page_number'],
+                    'bbox': chunk.get('bbox'),
+                    'vector_id': chunk.get('vector_id'),
+                    'similarity': chunk['similarity'],
+                    'doc_id': doc_id  # NEW: Include doc_id in each chunk for citation recovery
+                }
+                for chunk in top_chunks  # Only top chunks used in summary
+            ]
         })
     
     logger.info(

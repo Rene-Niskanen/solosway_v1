@@ -5,6 +5,7 @@ import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Globe, Plus } from "lucide-react";
 import { FileAttachmentData } from './FileAttachment';
+import { usePreview, CitationHighlight } from '../contexts/PreviewContext';
 
 interface DocumentPreviewModalProps {
   files: FileAttachmentData[];
@@ -37,6 +38,18 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [rotation, setRotation] = React.useState(0);
   const [currentPage, setCurrentPage] = React.useState(1);
   const [totalPages, setTotalPages] = React.useState(1);
+  
+  // Get highlight citation from context
+  const { highlightCitation, clearHighlightCitation } = usePreview();
+  
+  // Check if current file has a highlight
+  const fileHighlight = React.useMemo(() => {
+    if (!highlightCitation || !file) return null;
+    if (highlightCitation.fileId === file.id) {
+      return highlightCitation;
+    }
+    return null;
+  }, [highlightCitation, file]);
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
   const [imageNaturalWidth, setImageNaturalWidth] = React.useState<number | null>(null);
   const [imageRenderedHeight, setImageRenderedHeight] = React.useState<number | null>(null);
@@ -217,12 +230,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
   }, [file, isOpen, isMapVisible, activeTabIndex]);
 
-  // Determine file types
+  // Determine file types (must be before useEffects that use them)
   const isPDF = file?.type === 'application/pdf';
   const isImage = file?.type.startsWith('image/');
   const isDOCX = file?.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
                  file?.type === 'application/msword' ||
                  (file?.name && (file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.doc')));
+
+  // Navigate to correct page when highlight is set (for PDFs)
+  React.useEffect(() => {
+    if (fileHighlight && isPDF && fileHighlight.bbox.page) {
+      const targetPage = fileHighlight.bbox.page;
+      if (targetPage !== currentPage) {
+        console.log('📄 Navigating to page', targetPage, 'for highlight');
+        setCurrentPage(targetPage);
+      }
+    }
+  }, [fileHighlight, isPDF, currentPage]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -1029,6 +1053,29 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     return `${truncated}...${extension ? '.' + extension : ''}`;
   };
 
+  // Add CSS for highlight animation
+  React.useEffect(() => {
+    const styleId = 'document-preview-highlight-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        @keyframes fadeInHighlight {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    return () => {
+      // Don't remove style on unmount - it's shared
+    };
+  }, []);
+
   // Use portal to render outside of parent container to avoid transform issues
   const modalContent = (
     <AnimatePresence>
@@ -1573,6 +1620,47 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                       >
                           <p>PDF cannot be displayed. <a href={blobUrl || undefined} download={file.name}>Download PDF</a></p>
                         </object>
+                        
+                        {/* Highlight overlay for citations */}
+                        {fileHighlight && fileHighlight.bbox && (() => {
+                          // Calculate highlight position from normalized bbox coordinates (0-1) to pixels
+                          const container = pdfWrapperRef.current;
+                          if (!container) return null;
+                          
+                          const containerWidth = container.clientWidth;
+                          const containerHeight = container.clientHeight;
+                          
+                          // Bbox coordinates are normalized (0-1), convert to pixels
+                          const highlightLeft = containerWidth * fileHighlight.bbox.left;
+                          const highlightTop = containerHeight * fileHighlight.bbox.top;
+                          const highlightWidth = containerWidth * fileHighlight.bbox.width;
+                          const highlightHeight = containerHeight * fileHighlight.bbox.height;
+                          
+                          return (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                left: `${highlightLeft}px`,
+                                top: `${highlightTop}px`,
+                                width: `${highlightWidth}px`,
+                                height: `${highlightHeight}px`,
+                                backgroundColor: 'rgba(255, 235, 59, 0.3)', // Yellow highlight, 30% opacity
+                                border: '2px solid rgba(255, 193, 7, 0.8)', // Darker yellow border
+                                borderRadius: '2px',
+                                pointerEvents: 'none', // Don't block interactions
+                                zIndex: 10, // Above PDF, below UI controls
+                                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+                                opacity: 0,
+                                animation: 'fadeInHighlight 0.3s ease-in forwards',
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                // Clear highlight on click
+                                clearHighlightCitation();
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
                     </div>
                   ) : isImage ? (

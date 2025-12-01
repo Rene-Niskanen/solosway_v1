@@ -28,8 +28,16 @@ def create_app():
     
     # Use Supabase PostgreSQL connection (via Config class)
     # Uses SUPABASE_DB_URL environment variable (same as LangGraph checkpointer)
+    # Recommended connection modes:
+    # - Transaction mode (port 6543): ~200 connections free tier, ~500+ Pro tier - BEST for production
+    # - Session mode (port 5432): ~15 connections free tier, ~100-200 Pro tier
+    # - Direct connection: ~60 connections free tier, ~200+ Pro tier
     app.config['SQLALCHEMY_DATABASE_URI'] = Config.SQLALCHEMY_DATABASE_URI
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # Apply SQLAlchemy pool size limits to prevent connection exhaustion
+    if hasattr(Config, 'SQLALCHEMY_ENGINE_OPTIONS'):
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = Config.SQLALCHEMY_ENGINE_OPTIONS
     
     # Session cookie configuration for cross-origin requests
     # For localhost (HTTP), use Lax instead of None to avoid Secure requirement
