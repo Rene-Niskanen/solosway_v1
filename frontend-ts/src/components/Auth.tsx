@@ -478,15 +478,15 @@ const Auth: React.FC = () => {
       <div className="relative z-10 w-full max-w-md px-6 sm:px-8">
         {/* Velora Logo */}
         <div className="flex justify-center mb-12">
-          <img 
+            <img 
             src="/velora-dash-logo.png" 
             alt="Velora Logo"
             className="w-20 h-20 sm:w-24 sm:h-24 object-contain"
             style={{ filter: 'brightness(0) invert(1)' }}
-          />
-        </div>
+            />
+          </div>
 
-        {/* Form */}
+          {/* Form */}
           <form 
           onSubmit={handleSubmit} 
           className="space-y-6" 
@@ -523,24 +523,24 @@ const Auth: React.FC = () => {
               color: rgba(243, 244, 246, 0.85) !important;
             }
           `}</style>
-          {/* Error Message */}
-          {error && (
+            {/* Error Message */}
+            {error && (
             <div className="text-red-300 px-4 py-3 rounded text-sm text-center" style={{ fontFamily: '"Inter", sans-serif' }}>
-              {error}
-            </div>
-          )}
+                {error}
+              </div>
+            )}
 
-          {/* Email Field */}
+            {/* Email Field */}
           <div style={{ pointerEvents: 'auto' }}>
-            <input
+                <input
               ref={emailInputRefCallback}
-              type="email"
-              id="email"
-              name="email"
-              required
-              value={formData.email}
-              onChange={handleChange}
-              onInput={handleInput}
+                  type="email"
+                  id="email"
+                  name="email"
+                  required
+                  value={formData.email}
+                  onChange={handleChange}
+                  onInput={handleInput}
               className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
               style={{ 
                 transition: 'none !important', 
@@ -562,12 +562,12 @@ const Auth: React.FC = () => {
                 paddingTop: '12px',
                 paddingBottom: '12px'
               }}
-              placeholder="Email"
-              disabled={loading}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck="false"
+                  placeholder="Email"
+                  disabled={loading}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck="false"
               tabIndex={0}
               data-no-delay="true"
               onFocus={(e) => {
@@ -577,19 +577,19 @@ const Auth: React.FC = () => {
                 e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
               }}
             />
-          </div>
+            </div>
 
-          {/* Password Field */}
+            {/* Password Field */}
           <div style={{ pointerEvents: 'auto' }}>
-            <input
+                <input
               ref={passwordInputRefCallback}
-              type="password"
-              id="password"
-              name="password"
-              required
-              value={formData.password}
-              onChange={handleChange}
-              onInput={handleInput}
+                  type="password"
+                  id="password"
+                  name="password"
+                  required
+                  value={formData.password}
+                  onChange={handleChange}
+                  onInput={handleInput}
               className="w-full py-3 bg-transparent border-0 border-b outline-none focus:outline-none relative z-20"
               style={{ 
                 transition: 'none !important', 
@@ -611,14 +611,14 @@ const Auth: React.FC = () => {
                 paddingTop: '12px',
                 paddingBottom: '12px'
               }}
-              placeholder="Password"
-              disabled={loading}
+                  placeholder="Password"
+                  disabled={loading}
               autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck="false"
-              data-form-type="other"
-              data-lpignore="true"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                  data-form-type="other"
+                  data-lpignore="true"
               data-1p-ignore="true"
               data-bwignore="true"
               tabIndex={0}
@@ -630,12 +630,12 @@ const Auth: React.FC = () => {
                 e.target.style.borderBottomColor = 'rgba(229, 231, 235, 0.7)';
               }}
             />
-          </div>
+            </div>
 
           {/* Login Button */}
-          <button
-            type="submit"
-            disabled={loading}
+            <button
+              type="submit"
+              disabled={loading}
             className="w-full py-3 px-4 rounded-md font-medium focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed mt-8"
             style={{ 
               transition: 'none',
@@ -653,13 +653,13 @@ const Auth: React.FC = () => {
             }}
           >
             {loading ? (isLoginMode ? 'Signing in...' : 'Creating Account...') : 'Login'}
-          </button>
+                </button>
 
-          {/* Toggle Link */}
+            {/* Toggle Link */}
           <div className="text-center pt-6">
-            <button
-              type="button"
-              onClick={toggleMode}
+                <button
+                  type="button"
+                  onClick={toggleMode}
               style={{ 
                 fontFamily: '"Inter", sans-serif',
                 fontSize: '14px',
@@ -675,9 +675,9 @@ const Auth: React.FC = () => {
               onMouseLeave={(e) => {
                 e.currentTarget.style.color = 'rgba(229, 231, 235, 0.7)';
               }}
-            >
+                >
               {isLoginMode ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
-            </button>
+                </button>
           </div>
         </form>
       </div>

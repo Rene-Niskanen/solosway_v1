@@ -19,10 +19,10 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   const [userInfo, setUserInfo] = useState<any>(null);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const result = await backendApi.checkAuth();
-        
+  const checkAuth = async () => {
+    try {
+      const result = await backendApi.checkAuth();
+      
         if (result.success && result.data) {
           setUserInfo(result.data.user || result.data);
           setIsAuthenticated(true);
@@ -46,15 +46,15 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
             // Assume authenticated if we have previous auth state, otherwise check localStorage
             const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
             if (hasPreviousAuth) {
-              setIsAuthenticated(true);
-            } else {
+        setIsAuthenticated(true);
+      } else {
               // First time check failed - treat as not authenticated
-              setIsAuthenticated(false);
+        setIsAuthenticated(false);
             }
             setIsLoading(false);
           }
-        }
-      } catch (error) {
+      }
+    } catch (error) {
         console.error('Auth check error:', error);
         // On error, check if we have previous auth state
         const hasPreviousAuth = localStorage.getItem('isAuthenticated') === 'true';
@@ -62,11 +62,11 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
           console.warn('⚠️ AuthGuard: Auth check error but keeping user logged in (might be temporary)');
           setIsAuthenticated(true);
         } else {
-          setIsAuthenticated(false);
+      setIsAuthenticated(false);
         }
-        setIsLoading(false);
-      }
-    };
+      setIsLoading(false);
+    }
+  };
 
     // If we just logged in, do a quick non-blocking check
     const justLoggedIn = sessionStorage.getItem('justLoggedIn');
@@ -107,9 +107,9 @@ export const AuthGuard: React.FC<AuthGuardProps> = ({ children }) => {
   // Show loading while redirecting or checking auth
   if (!isAuthenticated) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
+          <div className="flex h-screen items-center justify-center bg-background">
         <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-solid border-primary border-r-transparent"></div>
-      </div>
+          </div>
     );
   }
 
