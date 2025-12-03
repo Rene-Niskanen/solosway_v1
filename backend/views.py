@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
+from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
@@ -423,12 +423,144 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Yielding initial status message")
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
-                # Emit initial reasoning step IMMEDIATELY when query is received
+                # Extract intent from query for contextual reasoning step
+                # Simple heuristic: identify what user is looking for and where
+                def extract_query_intent(q: str) -> str:
+                    """Extract a human-readable intent from the query."""
+                    q_lower = q.lower().strip()
+                    words_in_query = q_lower.split()
+                    
+                    # Common search targets
+                    targets = []
+                    
+                    # Check for "who" questions first - these ask about people/companies
+                    is_who_question = 'who' in words_in_query
+                    
+                    if is_who_question:
+                        # "Who valued/surveyed/wrote/prepared" etc.
+                        if any(word in q_lower for word in ['valued', 'valuation', 'value ']):
+                            targets.append('valuer')
+                        elif any(word in q_lower for word in ['surveyed', 'survey', 'inspected']):
+                            targets.append('surveyor')
+                        elif any(word in q_lower for word in ['wrote', 'write', 'prepared', 'created', 'authored']):
+                            targets.append('author')
+                        elif any(word in q_lower for word in ['sold', 'sell', 'sale']):
+                            targets.append('seller')
+                        elif any(word in q_lower for word in ['bought', 'buy', 'purchase']):
+                            targets.append('buyer')
+                        elif any(word in q_lower for word in ['owns', 'own', 'owner']):
+                            targets.append('owner')
+                        else:
+                            targets.append('person/company')
+                    else:
+                        # Standard value/price checks - but not if asking about who valued
+                        if any(word in words_in_query for word in ['price', 'cost', 'worth', 'sale']):
+                            targets.append('price')
+                        elif 'value' in words_in_query and 'valued' not in q_lower:
+                            targets.append('value')
+                        elif 'valuation' in q_lower and 'who' not in q_lower:
+                            targets.append('valuation details')
+                    
+                    # Other common targets
+                    if any(word in q_lower for word in ['bedroom', 'bed', 'beds']):
+                        targets.append('bedrooms')
+                    if any(word in q_lower for word in ['bathroom', 'bath', 'baths']):
+                        targets.append('bathrooms')
+                    if any(word in q_lower for word in ['epc', 'energy']):
+                        targets.append('EPC rating')
+                    if any(word in q_lower for word in ['survey', 'report']) and 'surveyor' not in targets:
+                        targets.append('report details')
+                    if any(word in q_lower for word in ['issue', 'problem', 'defect', 'damage']):
+                        targets.append('issues')
+                    if any(word in q_lower for word in ['amenity', 'amenities', 'feature', 'features']):
+                        targets.append('amenities')
+                    if any(word in q_lower for word in ['date', 'when', 'dated']):
+                        targets.append('date')
+                    if any(word in q_lower for word in ['size', 'sqft', 'square', 'area', 'footage']):
+                        targets.append('size')
+                    if any(word in q_lower for word in ['address', 'location', 'where']):
+                        targets.append('location')
+                    
+                    # Extract potential document/property names (capitalized words)
+                    import re
+                    # Look for capitalized words that might be names (excluding common words)
+                    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where'}
+                    words = q.split()
+                    potential_names = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in common_words]
+                    
+                    # Build the intent message
+                    target_str = ', '.join(targets) if targets else 'information'
+                    if potential_names:
+                        name_str = ' '.join(potential_names[:2])  # Max 2 names
+                        return f"Searching for {target_str} in {name_str} documents"
+                    else:
+                        return f"Searching for {target_str}"
+                
+                intent_message = extract_query_intent(query)
+                
+                # Helper function to generate contextual narration using fast LLM
+                async def generate_context_narration(moment: str, context_data: dict) -> str:
+                    """Generate a short contextual sentence explaining what's happening."""
+                    try:
+                        from openai import AsyncOpenAI
+                        
+                        client = AsyncOpenAI()
+                        
+                        # Build prompt based on moment
+                        if moment == 'documents_found':
+                            doc_count = context_data.get('doc_count', 0)
+                            doc_names = context_data.get('doc_names', [])
+                            doc_types = context_data.get('doc_types', [])
+                            user_query = context_data.get('user_query', '')
+                            
+                            prompt = f"""Based on this user query: "{user_query}"
+I found {doc_count} document(s): {', '.join(doc_names[:3])}.
+Document types: {', '.join(set(doc_types[:3])) if doc_types else 'various'}.
+
+Generate a single, natural sentence (max 20 words) explaining what I found and why it might be relevant. 
+Start with "I found" or "Looking at". Be specific about the document types if relevant.
+Do not use quotes around the response."""
+                        
+                        elif moment == 'documents_processed':
+                            doc_count = context_data.get('doc_count', 0)
+                            user_query = context_data.get('user_query', '')
+                            
+                            prompt = f"""User asked: "{user_query}"
+I just finished reading {doc_count} document(s).
+
+Generate a single, natural sentence (max 15 words) saying I extracted the relevant information.
+Start with "Extracted" or "Found". Be brief and confident.
+Do not use quotes around the response."""
+                        
+                        else:
+                            return ""
+                        
+                        # Use gpt-4o-mini for speed
+                        response = await client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": "You are a helpful assistant that generates brief, natural explanations. Be concise and conversational."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            max_tokens=50,
+                            temperature=0.7
+                        )
+                        
+                        result = response.choices[0].message.content.strip()
+                        # Remove any quotes that might have been added
+                        result = result.strip('"\'')
+                        return result
+                    except Exception as e:
+                        logger.warning(f"Failed to generate context narration: {e}")
+                        return ""
+                
+                # Emit initial reasoning step with extracted intent
                 initial_reasoning = {
                     'type': 'reasoning_step',
                     'step': 'initial',
-                    'message': 'Starting document search...',
-                    'details': {}
+                    'action_type': 'searching',
+                    'message': intent_message,
+                    'details': {'original_query': query}
                 }
                 initial_reasoning_json = json.dumps(initial_reasoning)
                 yield f"data: {initial_reasoning_json}\n\n"
@@ -469,36 +601,47 @@ def query_documents_stream():
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
+                        # Check for existing session state (follow-up detection)
+                        is_followup = False
+                        existing_doc_count = 0
+                        try:
+                            if checkpointer:
+                                existing_state = await graph.aget_state(config_dict)
+                                if existing_state and existing_state.values:
+                                    conv_history = existing_state.values.get('conversation_history', [])
+                                    prev_docs = existing_state.values.get('relevant_documents', [])
+                                    if conv_history and len(conv_history) > 0:
+                                        is_followup = True
+                                        existing_doc_count = len(prev_docs) if prev_docs else 0
+                                        logger.info(f"🟡 [STREAM] Follow-up query detected! Previous docs: {existing_doc_count}")
+                        except Exception as state_err:
+                            logger.warning(f"Could not check existing state: {state_err}")
+                        
                         # Use astream_events to capture node execution and emit reasoning steps
                         logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
                         
-                        # Node name to user-friendly message mapping
+                        # Track if this is a follow-up for dynamic step generation
+                        followup_context = {
+                            'is_followup': is_followup,
+                            'existing_doc_count': existing_doc_count,
+                            'docs_already_shown': False  # Track if we've shown "Using cached" message
+                        }
+                        
+                        # Node name to user-friendly message mapping with action types for Cursor-style UI
+                        # These are minimal - most steps are dynamically generated from on_chain_end events
                         node_messages = {
-                            'rewrite_query': {
-                                'message': 'Analyzing query and conversation context...',
-                                'details': {}
-                            },
-                            'expand_query': {
-                                'message': 'Generating query variations for better search...',
-                                'details': {}
-                            },
-                            'query_vector_documents': {
-                                'message': 'Searching documents...',
-                                'details': {}
-                            },
+                            # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
-                                'message': 'Ranking and organizing results...',
-                                'details': {}
-                            },
-                            'process_documents': {
-                                'message': 'Analyzing document content...',
+                                'action_type': 'analyzing',
+                                'message': 'Ranking results',
                                 'details': {}
                             },
                             'summarize_results': {
-                                'message': 'Synthesizing findings...',
+                                'action_type': 'planning',
+                                'message': 'Preparing response',
                                 'details': {}
                             }
                         }
@@ -523,6 +666,7 @@ def query_documents_stream():
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': node_name,
+                                            'action_type': node_messages[node_name]['action_type'],
                                             'message': node_messages[node_name]['message'],
                                             'details': node_messages[node_name]['details']
                                         }
@@ -543,27 +687,154 @@ def query_documents_stream():
                                     # Update details based on node output
                                     if node_name == "query_vector_documents":
                                         state_data = state_update if state_update else output
-                                        doc_count = len(state_data.get("relevant_documents", []))
+                                        relevant_docs = state_data.get("relevant_documents", [])
+                                        doc_count = len(relevant_docs)
                                         if doc_count > 0:
+                                            # Extract document names and metadata for display and preview cards
+                                            doc_names = []
+                                            doc_previews = []  # Full metadata for preview cards
+                                            for doc in relevant_docs[:5]:  # Max 5 documents
+                                                filename = doc.get('original_filename', '')
+                                                classification_type = doc.get('classification_type', 'Document')
+                                                doc_id = doc.get('doc_id', '')
+                                                
+                                                if filename:
+                                                    # Truncate long filenames for the message
+                                                    display_name = filename
+                                                    if len(display_name) > 30:
+                                                        display_name = display_name[:27] + '...'
+                                                    doc_names.append(display_name)
+                                                    
+                                                    # Full metadata for preview card (include download URL for frontend)
+                                                    doc_previews.append({
+                                                        'doc_id': doc_id,
+                                                        'original_filename': filename,
+                                                        'classification_type': classification_type,
+                                                        'page_range': doc.get('page_range', ''),
+                                                        'page_numbers': doc.get('page_numbers', []),
+                                                        's3_path': doc.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                    })
+                                            
+                                            # Build message - different for follow-ups vs first query
+                                            if followup_context['is_followup'] and not followup_context['docs_already_shown']:
+                                                # For follow-up queries, show a more contextual message
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names[:3])  # Show fewer names for cleaner display
+                                                    message = f'Using documents: {names_str}'
+                                                else:
+                                                    message = f'Using {doc_count} existing documents'
+                                                followup_context['docs_already_shown'] = True
+                                            else:
+                                                # First query - show full "Found X documents" message
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names)
+                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                else:
+                                                    message = f'Found {doc_count} documents'
+                                            
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
-                                                'step': node_name,
-                                                'message': f'Found {doc_count} relevant document(s)',
-                                                'details': {'documents_found': doc_count}
+                                                'step': 'found_documents',
+                                                'action_type': 'exploring',
+                                                'message': message,
+                                                'count': doc_count,
+                                                'details': {
+                                                    'documents_found': doc_count, 
+                                                    'document_names': doc_names,
+                                                    'doc_previews': doc_previews  # Full metadata for preview cards
+                                                }
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # Generate contextual narration for documents found
+                                            try:
+                                                doc_types = [doc.get('classification_type', 'Document') for doc in relevant_docs[:5]]
+                                                context_message = await generate_context_narration('documents_found', {
+                                                    'doc_count': doc_count,
+                                                    'doc_names': doc_names,
+                                                    'doc_types': doc_types,
+                                                    'user_query': query
+                                                })
+                                                if context_message:
+                                                    context_data = {
+                                                        'type': 'reasoning_context',
+                                                        'message': context_message,
+                                                        'moment': 'documents_found'
+                                                    }
+                                                    yield f"data: {json.dumps(context_data)}\n\n"
+                                            except Exception as ctx_err:
+                                                logger.warning(f"Failed to generate context narration: {ctx_err}")
                                     
                                     elif node_name == "process_documents":
                                         state_data = state_update if state_update else output
-                                        doc_outputs_count = len(state_data.get("document_outputs", []))
+                                        doc_outputs = state_data.get("document_outputs", [])
+                                        doc_outputs_count = len(doc_outputs)
                                         if doc_outputs_count > 0:
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': node_name,
-                                                'message': f'Processed {doc_outputs_count} document(s)',
-                                                'details': {'documents_processed': doc_outputs_count}
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            # For follow-ups, show a single "Analyzing documents" step
+                                            # For first queries, show individual "Read [filename]" steps with preview cards
+                                            if followup_context['is_followup']:
+                                                # Single step for follow-up - documents already read before
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'analyzing_for_followup',
+                                                    'action_type': 'analyzing',
+                                                    'message': f'Analyzing {doc_outputs_count} documents for your question',
+                                                    'details': {'documents_analyzed': doc_outputs_count}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            else:
+                                                # First query - show individual read steps with preview cards
+                                                for i, doc_output in enumerate(doc_outputs):
+                                                    filename = doc_output.get('original_filename', '')
+                                                    display_filename = filename
+                                                    if not display_filename:
+                                                        display_filename = f'Document {i + 1}'
+                                                    else:
+                                                        # Truncate long filenames for display
+                                                        if len(display_filename) > 35:
+                                                            display_filename = display_filename[:32] + '...'
+                                                    
+                                                    # Extract document metadata for preview card (include download URL)
+                                                    doc_id_for_meta = doc_output.get('doc_id', '')
+                                                    doc_metadata = {
+                                                        'doc_id': doc_id_for_meta,
+                                                        'original_filename': filename,
+                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
+                                                    }
+                                                    
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': f'read_doc_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'details': {
+                                                            'document_index': i, 
+                                                            'filename': filename,
+                                                            'doc_metadata': doc_metadata
+                                                        }
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # Generate contextual narration after all documents processed
+                                            try:
+                                                context_message = await generate_context_narration('documents_processed', {
+                                                    'doc_count': doc_outputs_count,
+                                                    'user_query': query
+                                                })
+                                                if context_message:
+                                                    context_data = {
+                                                        'type': 'reasoning_context',
+                                                        'message': context_message,
+                                                        'moment': 'documents_processed'
+                                                    }
+                                                    yield f"data: {json.dumps(context_data)}\n\n"
+                                            except Exception as ctx_err:
+                                                logger.warning(f"Failed to generate context narration: {ctx_err}")
                                     
                                     # Store the state from the last event (should be final state after summarize_results)
                                     if state_update:
@@ -589,6 +860,7 @@ def query_documents_stream():
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': node_name,
+                                                'action_type': node_messages[node_name]['action_type'],
                                                 'message': node_messages[node_name]['message'],
                                                 'details': node_messages[node_name]['details']
                                             }
@@ -600,28 +872,75 @@ def query_documents_stream():
                                         node_name = event.get("name", "")
                                         event_data = event.get("data", {})
                                         state_update = event_data.get("data", {})
+                                        output = event_data.get("output", {})
                                         
                                         if node_name == "query_vector_documents":
-                                            state_data = state_update if state_update else event_data.get("output", {})
-                                            doc_count = len(state_data.get("relevant_documents", []))
+                                            state_data = state_update if state_update else output
+                                            relevant_docs = state_data.get("relevant_documents", [])
+                                            doc_count = len(relevant_docs)
                                             if doc_count > 0:
+                                                # Extract document names
+                                                doc_names = []
+                                                for doc in relevant_docs[:5]:
+                                                    filename = doc.get('original_filename', '')
+                                                    if filename:
+                                                        if len(filename) > 30:
+                                                            filename = filename[:27] + '...'
+                                                        doc_names.append(filename)
+                                                
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names)
+                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                else:
+                                                    message = f'Found {doc_count} documents'
+                                                
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': node_name,
-                                                    'message': f'Found {doc_count} relevant document(s)',
-                                                    'details': {'documents_found': doc_count}
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_count,
+                                                    'details': {'documents_found': doc_count, 'document_names': doc_names}
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
                                         elif node_name == "process_documents":
-                                            state_data = state_update if state_update else event_data.get("output", {})
-                                            doc_outputs_count = len(state_data.get("document_outputs", []))
+                                            state_data = state_update if state_update else output
+                                            doc_outputs = state_data.get("document_outputs", [])
+                                            doc_outputs_count = len(doc_outputs)
                                             if doc_outputs_count > 0:
+                                                # Emit individual "Read [filename]" steps with metadata
+                                                for i, doc_output in enumerate(doc_outputs):
+                                                    filename = doc_output.get('original_filename', '')
+                                                    display_filename = filename
+                                                    if not display_filename:
+                                                        display_filename = f'Document {i + 1}'
+                                                    else:
+                                                        if len(display_filename) > 35:
+                                                            display_filename = display_filename[:32] + '...'
+                                                    
+                                                    # Extract document metadata for preview card (include download URL)
+                                                    doc_id_for_meta = doc_output.get('doc_id', '')
+                                                    doc_metadata = {
+                                                        'doc_id': doc_id_for_meta,
+                                                        'original_filename': filename,
+                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
+                                                    }
+                                                    
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': node_name,
-                                                    'message': f'Processed {doc_outputs_count} document(s)',
-                                                    'details': {'documents_processed': doc_outputs_count}
+                                                        'step': f'read_doc_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'details': {
+                                                            'document_index': i, 
+                                                            'filename': filename,
+                                                            'doc_metadata': doc_metadata
+                                                        }
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
@@ -2238,7 +2557,7 @@ def confirm_upload(document_id):
     try:
         document = Document.query.get_or_404(document_id)
         
-        if str(document.get('business_id')) != str(current_user.business_id):
+        if str(document.business_id) != str(current_user.business_id):
             return jsonify({'error': 'Unauthorized'}), 403
         
         data = request.get_json()
@@ -2267,10 +2586,10 @@ def confirm_upload(document_id):
             
             # Trigger processing task
             task = process_document_task.delay(
-                document_id=new_document.id,
+                document_id=document.id,
                 file_content=file_content,
-                original_filename=filename,
-                business_id=new_document.business_id
+                original_filename=document.original_filename,
+                business_id=document.business_id
             )
             
             return jsonify({
@@ -2480,7 +2799,7 @@ def api_dashboard():
         try:
             properties = (
                 Property.query
-                .filter_by(business_id=business_uuid)
+                .filter_by(business_id=business_uuid_str)
                 .order_by(Property.created_at.desc())
                 .limit(10)
                 .all()
@@ -2543,141 +2862,22 @@ def api_dashboard():
 @views.route('/api/appraisal', methods=['POST'])
 @login_required
 def api_create_appraisal():
-    data = request.get_json()
-    
-    address = data.get('address')
-    if not address: 
-        return jsonify({'error': 'Address is required'}), 400
-    
-    try:
-        new_appraisal = Appraisal(
-                address=address,
-            bedrooms=data.get('bedrooms'),
-            bathrooms=data.get('bathrooms'),
-            property_type=data.get('property_type'),
-            land_size=float(data.get('land_size')) if data.get('land_size') else None,
-            floor_area=float(data.get('floor_area')) if data.get('floor_area') else None,
-            condition=int(data.get('condition')) if data.get('condition') else None,
-            features=','.join(data.get('features', [])) if data.get('features') else None,
-                user_id=current_user.id,
-                status='In Progress'
-            )
-        db.session.add(new_appraisal)
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'appraisal_id': new_appraisal.id,
-            'message': 'Appraisal created successfully'
-        })
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 # API endpoint for React frontend
 @views.route('/api/appraisal/<int:id>', methods=['GET'])
 @login_required
 def api_appraisal(id):
-    appraisal = Appraisal.query.get_or_404(id)
-    if appraisal.user_id != current_user.id:
-        return jsonify({'error': 'You do not have permission to view this appraisal.'}), 403
-
-    comparable_properties = ComparableProperty.query.filter_by(appraisal_id=id).all()
-    chat_messages = ChatMessage.query.filter_by(appraisal_id=id).order_by(ChatMessage.timestamp).all()
-
-    # Convert to JSON-serializable format
-    appraisal_data = {
-        'id': appraisal.id,
-        'address': appraisal.address,
-        'bedrooms': appraisal.bedrooms,
-        'bathrooms': appraisal.bathrooms,
-        'property_type': appraisal.property_type,
-        'land_size': appraisal.land_size,
-        'floor_area': appraisal.floor_area,
-        'condition': appraisal.condition,
-        'features': appraisal.features,
-        'status': appraisal.status,
-        'date_created': appraisal.date_created.isoformat() if appraisal.date_created else None,
-        'user_id': appraisal.user_id
-    }
-
-    comparable_data = []
-    for prop in comparable_properties:
-        comparable_data.append({
-            'id': prop.id,
-            'address': prop.address,
-            'postcode': prop.postcode,
-            'bedrooms': prop.bedrooms,
-            'bathrooms': prop.bathrooms,
-            'floor_area': prop.floor_area,
-            'image_url': prop.image_url,
-            'price': prop.price,
-            'square_feet': prop.square_feet,
-            'days_on_market': prop.days_on_market,
-            'distance_to': prop.distance_to,
-            'location_adjustment': prop.location_adjustment,
-            'size_adjustment': prop.size_adjustment,
-            'market_adjustment': prop.market_adjustment,
-            'adjusted_value': prop.adjusted_value,
-            'appraisal_id': prop.appraisal_id
-        })
-
-    chat_data = []
-    for msg in chat_messages:
-        chat_data.append({
-            'id': msg.id,
-            'content': msg.content,
-            'is_user': msg.is_user,
-            'timestamp': msg.timestamp.isoformat() if msg.timestamp else None,
-            'appraisal_id': msg.appraisal_id
-        })
-
-    return jsonify({
-        'appraisal': appraisal_data,
-        'comparable_properties': comparable_data,
-        'chat_messages': chat_data
-    })
-
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 # API endpoint for chat messages
 @views.route('/api/appraisal/<int:id>/chat', methods=['POST'])
 @login_required
 def api_chat(id):
-    appraisal = Appraisal.query.get_or_404(id)
-    if appraisal.user_id != current_user.id:
-        return jsonify({'error': 'You do not have permission to access this appraisal.'}), 403
-
-    data = request.get_json()
-    message_content = data.get('message')
-
-    if not message_content:
-        return jsonify({'error': 'Message content is required.'}), 400
-
-    # Save user message
-    new_message = ChatMessage(
-        content=message_content,
-        is_user=True,
-        appraisal_id=appraisal.id,
-        timestamp=datetime.utcnow()
-    )
-    db.session.add(new_message)
-    db.session.commit()
-    
-    # Generate AI response (placeholder for now)
-    ai_response = ChatMessage(
-        content="I've received your message and will analyze the property details. Please give me a moment to process this information.",
-        is_user=False,
-        appraisal_id=appraisal.id,
-        timestamp=datetime.utcnow()
-    )
-    db.session.add(ai_response)
-    db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'ai_response': ai_response.content,
-        'message_id': new_message.id
-    })
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 @views.route('/dashboard')
 @login_required
@@ -2696,7 +2896,7 @@ def get_documents():
 
     documents = (
         Document.query
-        .filter_by(business_id=UUID(business_uuid_str))
+        .filter_by(business_id=business_uuid_str)
         .order_by(Document.created_at.desc())
         .all()
     )

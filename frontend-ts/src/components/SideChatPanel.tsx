@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
 import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
@@ -14,6 +16,7 @@ import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
+import { ReasoningSteps } from './ReasoningSteps';
 
 // Component for displaying property thumbnail in search results
 const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
@@ -58,6 +61,220 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
         </div>
       )}
     </div>
+  );
+};
+
+// Document Preview Overlay - Shows document preview when clicking reasoning step cards
+const DocumentPreviewOverlay: React.FC<{
+  document: {
+    doc_id: string;
+    original_filename: string;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  };
+  isFullscreen: boolean;
+  onClose: () => void;
+  onToggleFullscreen: () => void;
+}> = ({ document, isFullscreen, onClose, onToggleFullscreen }) => {
+  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [blobType, setBlobType] = React.useState<string | null>(null);
+  
+  // Determine file type from filename
+  const fileName = document.original_filename || '';
+  const isPDF = fileName.toLowerCase().endsWith('.pdf');
+  const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i.test(fileName);
+  const isDOCX = /\.(doc|docx)$/i.test(fileName);
+  
+  React.useEffect(() => {
+    const fetchDocument = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        let fetchUrl: string;
+        
+        if (document.download_url) {
+          fetchUrl = document.download_url.startsWith('http') 
+            ? document.download_url 
+            : `${backendUrl}${document.download_url}`;
+        } else if (document.s3_path) {
+          fetchUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(document.s3_path)}`;
+        } else {
+          fetchUrl = `${backendUrl}/api/files/download?document_id=${document.doc_id}`;
+        }
+        
+        console.log('📄 Fetching document for preview:', fileName, fetchUrl);
+        
+        const response = await fetch(fetchUrl, { credentials: 'include' });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to load document: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setBlobType(blob.type);
+        setPreviewUrl(url);
+        setLoading(false);
+        
+        console.log('✅ Document loaded for preview:', fileName, 'Type:', blob.type);
+      } catch (err: any) {
+        console.error('❌ Error loading document:', err);
+        setError(err.message || 'Failed to load document');
+        setLoading(false);
+      }
+    };
+    
+    fetchDocument();
+    
+    // Cleanup blob URL on unmount
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [document.doc_id]);
+  
+  // Handle escape key to close
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isFullscreen) {
+          onToggleFullscreen();
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen, onClose, onToggleFullscreen]);
+  
+  const containerClass = isFullscreen 
+    ? "fixed inset-0 bg-white flex flex-col z-[10000]" 
+    : "fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4";
+  
+  const contentClass = isFullscreen
+    ? "w-full h-full flex flex-col"
+    : "bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-w-4xl w-full max-h-[90vh]";
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className={containerClass}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isFullscreen) {
+          onClose();
+        }
+      }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        className={contentClass}
+      >
+        {/* Header */}
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
+              {isPDF ? <FileText size={16} className="text-slate-700" /> : 
+               isImage ? <ImageIcon size={16} className="text-purple-500" /> : 
+               isDOCX ? <FileText size={16} className="text-blue-600" /> :
+               <FileIcon size={16} className="text-gray-400" />}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <h3 className="text-sm font-medium text-gray-900 truncate">{fileName}</h3>
+              <span className="text-xs text-gray-500">{document.classification_type || 'Document'}</span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {/* Fullscreen Toggle */}
+            <button
+              onClick={onToggleFullscreen}
+              className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+              title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4" />
+              ) : (
+                <Fullscreen className="w-4 h-4" />
+              )}
+            </button>
+            
+            <div className="w-px h-4 bg-gray-200 mx-1" />
+            
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-red-50 hover:text-red-500 rounded-lg text-gray-400 transition-colors"
+              title="Close Preview"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        
+        {/* Content Area */}
+        <div className="flex-1 overflow-hidden bg-gray-50 relative">
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white">
+              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+            </div>
+          )}
+          
+          {error && (
+            <div className="flex items-center justify-center h-full text-red-500 gap-2">
+              <span className="text-sm">{error}</span>
+            </div>
+          )}
+          
+          {previewUrl && !loading && !error && (
+            <div className="w-full h-full flex items-center justify-center">
+              {isPDF ? (
+                <iframe
+                  src={previewUrl}
+                  className="w-full h-full border-0"
+                  title={fileName}
+                />
+              ) : isImage ? (
+                <img
+                  src={previewUrl}
+                  alt={fileName}
+                  className="max-w-full max-h-full object-contain p-4"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                  <div className="w-20 h-20 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center mb-4">
+                    <FileText className="w-8 h-8 text-gray-400" />
+                  </div>
+                  <p className="text-sm font-medium text-gray-900 mb-1">{fileName}</p>
+                  <p className="text-xs text-gray-500 mb-6">Preview not available for this file type</p>
+                  <a
+                    href={previewUrl}
+                    download={fileName}
+                    className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-xs font-medium shadow-sm"
+                  >
+                    Download File
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
   );
 };
 
@@ -558,6 +775,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
   
+  // State for reasoning trace toggle - persisted to localStorage
+  const [showReasoningTrace, setShowReasoningTrace] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showReasoningTrace');
+      if (saved === null) return true; // Default ON
+      const parsed = JSON.parse(saved);
+      return parsed === true; // Ensure it's exactly boolean true
+    } catch {
+      return true; // Default ON if parsing fails
+    }
+  });
+  
+  // Persist reasoning trace toggle to localStorage when changed
+  React.useEffect(() => {
+    localStorage.setItem('showReasoningTrace', JSON.stringify(showReasoningTrace));
+  }, [showReasoningTrace]);
+  
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
     if (shouldExpand && !isExpanded) {
@@ -732,11 +966,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       
-      // Mark the current loading message as stopped
+      // Mark the current loading message as stopped (preserve reasoning steps)
       setChatMessages(prev => {
         const updated = prev.map(msg => 
           msg.isLoading 
-            ? { ...msg, isLoading: false }
+            ? { ...msg, isLoading: false, reasoningSteps: msg.reasoningSteps || [] }
             : msg
         );
         persistedChatMessagesRef.current = updated;
@@ -798,7 +1032,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Store messages (both queries and responses)
   interface ReasoningStep {
     step: string;
+    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'complete' | 'context';
     message: string;
+    count?: number;
+    target?: string;
+    line_range?: string;
     details: any;
     timestamp: number;
   }
@@ -840,6 +1078,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  
+  // Document preview state for reasoning step card clicks
+  const [previewDocument, setPreviewDocument] = React.useState<{
+    doc_id: string;
+    original_filename: string;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  } | null>(null);
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = React.useState(false);
+  
   // Persist chat messages across panel open/close
   const persistedChatMessagesRef = React.useRef<ChatMessage[]>([]);
   // Track message IDs that existed when panel was last opened (for animation control)
@@ -853,9 +1104,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [chatMessages, onMessagesUpdate]);
   
-  // Track which reasoning blocks are expanded (message ID -> boolean)
-  const [expandedReasoningBlocks, setExpandedReasoningBlocks] = React.useState<Record<string, boolean>>({});
-  const currentQueryIdRef = React.useRef<string | null>(null); // Track which query is currently processing
+  // Track which query is currently processing (for reasoning steps)
+  const currentQueryIdRef = React.useRef<string | null>(null);
   
   // Use property selection context
   const { 
@@ -929,7 +1179,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
         
         // Add query message to chat (similar to handleSubmit)
-        const queryId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness
+        const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
@@ -947,7 +1198,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
         
         // Add loading response message
-        const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const loadingMessage: ChatMessage = {
           id: loadingResponseId,
           type: 'response',
@@ -993,14 +1245,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onToken: Stream each token as it arrives
               (token: string) => {
                 accumulatedText += token;
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: accumulatedText,
-                  isLoading: true  // Still loading while streaming
+                    isLoading: true,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
-                
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1014,15 +1267,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (data: any) => {
                 const finalText = data.summary || accumulatedText || "I found some information for you.";
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false,
-                  citations: data.citations || {} // NEW: Store citations
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                    citations: data.citations || {} // NEW: Store citations
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1036,14 +1291,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error:', error);
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: error || 'Sorry, I encountered an error processing your query.',
-                  isLoading: false
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? errorMessage
@@ -1057,32 +1314,60 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               abortController.signal, // abortSignal
               documentIdsArray, // documentIds
               // onReasoningStep: Handle reasoning step events
-              (step: { step: string; message: string; details: any }) => {
+              (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
                 console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      // Use step + message as unique key to allow different messages for same step type
+                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                      const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
+                      const existingIndex = existingSteps.findIndex(s => 
+                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                      );
+                      
+                      // Skip if this exact step was added very recently (deduplication)
+                      if (existingIndex >= 0) {
+                        return msg;
+                      }
+                      
                       const newStep: ReasoningStep = {
-                        ...step,
-                        timestamp: Date.now()
+                        step: step.step,
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        message: step.message,
+                        count: step.count,
+                        details: step.details,
+                        timestamp: now
                       };
                       
-                      if (existingIndex >= 0) {
-                        // Update existing step
-                        const updatedSteps = [...existingSteps];
-                        updatedSteps[existingIndex] = newStep;
-                        return { ...msg, reasoningSteps: updatedSteps };
-                      } else {
-                        // Add new step - keep reasoning block expanded while adding steps
-                        setExpandedReasoningBlocks(prev => ({
-                          ...prev,
-                          [loadingResponseId]: true
-                        }));
-                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                      }
+                      // Add new step
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onReasoningContext: Handle LLM-generated contextual narration
+              (context: { message: string; moment: string }) => {
+                console.log('🟢 SideChatPanel: Received reasoning context:', context);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const contextStep: ReasoningStep = {
+                        step: `context_${context.moment}`,
+                        action_type: 'context',
+                        message: context.message,
+                        details: { moment: context.moment },
+                        timestamp: Date.now()
+                      };
+                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
                     }
                     return msg;
                   });
@@ -1100,7 +1385,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             setChatMessages(prev => {
               const updated = prev.map(msg => 
                 msg.id === loadingResponseId
-                  ? { ...msg, text: 'Sorry, I encountered an error processing your query.', isLoading: false }
+                  ? { ...msg, text: 'Sorry, I encountered an error processing your query.', isLoading: false, reasoningSteps: msg.reasoningSteps || [] }
                   : msg
               );
               persistedChatMessagesRef.current = updated;
@@ -1209,7 +1494,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
     }
   }, [addPreviewFile, toast]);
-
+  
+  // Handle document preview click from reasoning step cards
+  const handleDocumentPreviewClick = React.useCallback((metadata: {
+    doc_id: string;
+    original_filename: string;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  }) => {
+    console.log('📄 Opening document preview from reasoning step:', metadata.original_filename);
+    setPreviewDocument(metadata);
+  }, []);
+  
   // Initialize textarea height on mount
   React.useEffect(() => {
     if (inputRef.current) {
@@ -1295,14 +1594,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         const chat = getChatById(restoreChatId);
         if (chat && chat.messages) {
           // Convert history messages to ChatMessage format
-          const restoredMessages: ChatMessage[] = chat.messages.map((msg: any) => ({
-            id: `restored-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            type: msg.role === 'user' ? 'query' : 'response',
-            text: msg.content || '',
-            attachments: msg.attachments || [],
-            propertyAttachments: msg.propertyAttachments || [],
-            isLoading: false
-          }));
+          // CRITICAL: Use index in map to ensure unique IDs even if Date.now() is the same
+          const restoredMessages: ChatMessage[] = chat.messages.map((msg: any, idx: number) => {
+            // Use index + timestamp + random to guarantee uniqueness
+            const uniqueId = `restored-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+            return {
+              id: uniqueId,
+              type: msg.role === 'user' ? 'query' : 'response',
+              text: msg.content || '',
+              attachments: msg.attachments || [],
+              propertyAttachments: msg.propertyAttachments || [],
+              isLoading: false
+            };
+          });
           
           setChatMessages(restoredMessages);
           persistedChatMessagesRef.current = restoredMessages;
@@ -1342,7 +1646,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Initialize with new query if provided
       if (query && query.trim()) {
         const queryText = query.trim();
-        const queryId = `query-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness
+        const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         // Include property attachments from context if they exist
         // Create a deep copy to ensure they persist even if context is cleared
@@ -1404,7 +1709,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
         
         // Add loading response message
-        const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const loadingMessage: ChatMessage = {
           id: loadingResponseId,
           type: 'response',
@@ -1457,14 +1763,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onToken: Stream each token as it arrives
               (token: string) => {
                 accumulatedText += token;
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: accumulatedText,
-                  isLoading: true  // Still loading while streaming
+                    isLoading: true,
+                    reasoningSteps: existingMessage?.reasoningSteps || []
                 };
-                
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1484,15 +1791,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   citations: data.citations ? Object.keys(data.citations).length : 0
                 });
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false,
-                  citations: data.citations || {} // NEW: Store citations
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                    citations: data.citations || {} // NEW: Store citations
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1506,14 +1815,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error for initial query:', error);
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
-                  isLoading: false
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? errorMessage
@@ -1538,32 +1849,60 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // documentIds: Pass selected document IDs to filter search
               initialDocumentIds,
               // onReasoningStep: Handle reasoning step events
-              (step: { step: string; message: string; details: any }) => {
+              (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
                 console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      // Use step + message as unique key to allow different messages for same step type
+                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                      const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
+                      const existingIndex = existingSteps.findIndex(s => 
+                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                      );
+                      
+                      // Skip if this exact step was added very recently (deduplication)
+                      if (existingIndex >= 0) {
+                        return msg;
+                      }
+                      
                       const newStep: ReasoningStep = {
-                        ...step,
-                        timestamp: Date.now()
+                        step: step.step,
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        message: step.message,
+                        count: step.count,
+                        details: step.details,
+                        timestamp: now
                       };
                       
-                      if (existingIndex >= 0) {
-                        // Update existing step
-                        const updatedSteps = [...existingSteps];
-                        updatedSteps[existingIndex] = newStep;
-                        return { ...msg, reasoningSteps: updatedSteps };
-                      } else {
-                        // Add new step - keep reasoning block expanded while adding steps
-                        setExpandedReasoningBlocks(prev => ({
-                          ...prev,
-                          [loadingResponseId]: true
-                        }));
-                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                      }
+                      // Add new step
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onReasoningContext: Handle LLM-generated contextual narration
+              (context: { message: string; moment: string }) => {
+                console.log('🟢 SideChatPanel: Received reasoning context:', context);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const contextStep: ReasoningStep = {
+                        step: `context_${context.moment}`,
+                        action_type: 'context',
+                        message: context.message,
+                        details: { moment: context.moment },
+                        timestamp: Date.now()
+                      };
+                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
                     }
                     return msg;
                   });
@@ -1583,14 +1922,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }
             
             // Show error message instead of mock response
+            setChatMessages(prev => {
+              const existingMessage = prev.find(msg => msg.id === loadingResponseId);
             const errorMessage: ChatMessage = {
               id: `response-${Date.now()}`,
               type: 'response',
               text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              isLoading: false
+                isLoading: false,
+                reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
             };
             
-            setChatMessages(prev => {
               const updated = prev.map(msg => 
                 msg.id === loadingResponseId 
                   ? errorMessage
@@ -1795,7 +2136,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
       
       // Add loading response message
-      const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const loadingMessage: ChatMessage = {
         id: loadingResponseId,
         type: 'response',
@@ -1811,11 +2153,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // Initialize reasoning steps tracking for this query
       currentQueryIdRef.current = loadingResponseId;
-      // Expand reasoning block by default for new queries
-      setExpandedReasoningBlocks(prev => ({
-        ...prev,
-        [loadingResponseId]: true
-      }));
       
       // Call LLM API to query documents
       (async () => {
@@ -1865,14 +2202,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               accumulatedText += token;
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: accumulatedText,
+              const responseMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: accumulatedText,
                   isLoading: true,  // Still loading while streaming
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                
+              };
+              
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? responseMessage
@@ -1894,15 +2231,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: finalText,
+              const responseMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: finalText,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   citations: data.citations || {} // NEW: Store citations with bbox metadata
-                };
-                
+              };
+              
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? responseMessage
@@ -1921,14 +2258,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const errorMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+              const errorMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                
+              };
+              
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? errorMessage
@@ -1954,44 +2291,64 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // documentIds: Pass selected document IDs to filter search
             documentIdsArray,
             // onReasoningStep: Handle reasoning step events
-            (step: { step: string; message: string; details: any }) => {
+            (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
               console.log('🟡 SideChatPanel: Received reasoning step:', step);
-              console.log('🟡 SideChatPanel: Looking for message with ID:', loadingResponseId);
               
               // Store reasoning steps in the message itself
               setChatMessages(prev => {
-                console.log('🟡 SideChatPanel: Current messages:', prev.map(m => ({ id: m.id, hasReasoning: !!m.reasoningSteps })));
-                
                 const updated = prev.map(msg => {
                   if (msg.id === loadingResponseId) {
-                    console.log('🟡 SideChatPanel: Found matching message, updating reasoning steps');
                     const existingSteps = msg.reasoningSteps || [];
-                    const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                    // Use step + message as unique key to allow different messages for same step type
+                    // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                    const stepKey = `${step.step}:${step.message}`;
+                    const now = Date.now();
+                    const existingIndex = existingSteps.findIndex(s => 
+                      `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                    );
+                    
+                    // Skip if this exact step was added very recently (deduplication)
+                    if (existingIndex >= 0) {
+                      return msg;
+                    }
+                    
                     const newStep: ReasoningStep = {
-                      ...step,
-                      timestamp: Date.now()
+                      step: step.step,
+                      action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                      message: step.message,
+                      count: step.count,
+                      details: step.details,
+                      timestamp: now
                     };
                     
-                    if (existingIndex >= 0) {
-                      // Update existing step
-                      const updatedSteps = [...existingSteps];
-                      updatedSteps[existingIndex] = newStep;
-                      console.log('🟡 SideChatPanel: Updated existing reasoning step:', step.step);
-                      return { ...msg, reasoningSteps: updatedSteps };
-                    } else {
-                      // Add new step - keep reasoning block expanded while adding steps
-                      setExpandedReasoningBlocks(prev => ({
-                        ...prev,
-                        [loadingResponseId]: true
-                      }));
-                      console.log('🟡 SideChatPanel: Added new reasoning step:', step.step, 'Total steps:', existingSteps.length + 1);
-                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                    }
+                    // Add new step
+                    return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                   }
                   return msg;
                 });
                 
-                console.log('🟡 SideChatPanel: Updated messages with reasoning steps');
+                return updated;
+              });
+            },
+            // onReasoningContext: Handle LLM-generated contextual narration
+            (context: { message: string; moment: string }) => {
+              console.log('🟢 SideChatPanel: Received reasoning context:', context);
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    const existingSteps = msg.reasoningSteps || [];
+                    const contextStep: ReasoningStep = {
+                      step: `context_${context.moment}`,
+                      action_type: 'context',
+                      message: context.message,
+                      details: { moment: context.moment },
+                      timestamp: Date.now()
+                    };
+                    return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
+                  }
+                  return msg;
+                });
                 return updated;
               });
             }
@@ -2007,14 +2364,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }
           
           // Show error message instead of mock response
+          setChatMessages(prev => {
+            const existingMessage = prev.find(msg => msg.id === loadingResponseId);
           const errorMessage: ChatMessage = {
             id: `response-${Date.now()}`,
             type: 'response',
             text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            isLoading: false
+              isLoading: false,
+              reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
           };
           
-          setChatMessages(prev => {
             const updated = prev.map(msg => 
               msg.id === loadingResponseId 
                 ? errorMessage
@@ -2157,6 +2516,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       New chat
                     </span>
                   </motion.button>
+                  
+                  {/* Reasoning trace toggle */}
+                  <div 
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 bg-white/70 rounded-md"
+                    title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
+                  >
+                    <span className="text-slate-600 text-xs">Trace</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowReasoningTrace(!showReasoningTrace)}
+                      className={`relative w-7 h-4 rounded-full transition-colors ${
+                        showReasoningTrace ? 'bg-emerald-500' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                        showReasoningTrace ? 'translate-x-3.5' : 'translate-x-0.5'
+                      }`} />
+                    </button>
+                  </div>
+                  
                   <button
                     type="button"
                     onClick={() => {
@@ -2202,16 +2581,113 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             >
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
                 <AnimatePresence>
-                  {chatMessages.map((message) => {
-                    // Check if this is a restored message (existed when panel was opened)
-                    // For restored messages, don't animate - they should appear instantly
-                    const isRestored = restoredMessageIdsRef.current.has(message.id);
-                    const shouldAnimate = !isRestored;
+                  {useMemo(() => {
+                    // DEBUG: Log the entire chatMessages array
+                    console.log('🔍 [DEBUG] chatMessages array:', {
+                      length: chatMessages?.length || 0,
+                      isArray: Array.isArray(chatMessages),
+                      messages: chatMessages
+                    });
+                    
+                    const validMessages = (Array.isArray(chatMessages) ? chatMessages : [])
+                      .map((message, idx) => ({ message, idx }))
+                      .filter(({ message, idx }) => {
+                        if (!message || typeof message !== 'object') {
+                          console.warn('⚠️ Filtering out invalid message at index', idx);
+                          return false;
+                        }
+                        // Pre-validate key generation to filter out messages that would produce empty keys
+                        const testKey = generateAnimatePresenceKey(
+                          'SideChatPanel',
+                          idx,
+                          message.id,
+                          message.type || 'message'
+                        );
+                        if (!testKey || typeof testKey !== 'string' || testKey.trim().length === 0 || testKey === '') {
+                          console.error('❌ CRITICAL: Would generate empty key!', { idx, message, messageId: message.id, testKey });
+                          return false;
+                        }
+                        return true;
+                      });
+                    
+                    console.log('🔍 [DEBUG] Valid messages after filter:', {
+                      count: validMessages.length,
+                      messages: validMessages.map(({ message, idx }) => ({
+                        idx,
+                        id: message.id,
+                        type: message.type,
+                        hasId: !!message.id
+                      }))
+                    });
+                    
+                    // CRITICAL: If no valid messages, return empty array (not null or undefined)
+                    if (validMessages.length === 0) {
+                      console.log('🔍 [DEBUG] No valid messages to render');
+                      return [];
+                    }
+                    
+                    return validMessages.map(({ message, idx }) => {
+                      // CRITICAL: Validate message.id before using it - empty string causes empty keys
+                      // If message.id is empty string, treat it as missing and use index
+                      const messageIdForKey = (message.id && typeof message.id === 'string' && message.id.trim().length > 0)
+                        ? message.id
+                        : (message.id && typeof message.id === 'number')
+                          ? message.id
+                          : null; // Use null so keyGenerator uses index fallback
+                      
+                      // Use centralized key generation utility - guarantees uniqueness
+                      const messageKey = generateAnimatePresenceKey(
+                        'SideChatPanel',
+                        idx,
+                        messageIdForKey,
+                        message.type || 'message'
+                      );
+                      
+                      // CRITICAL: Double-check key is valid before proceeding
+                      if (!messageKey || typeof messageKey !== 'string' || messageKey.trim().length === 0) {
+                        console.error('❌ FATAL: messageKey is invalid after generation!', {
+                          idx,
+                          message,
+                          messageId: message.id,
+                          messageIdForKey,
+                          messageType: message.type,
+                          generatedKey: messageKey,
+                          keyType: typeof messageKey
+                        });
+                        // This should never happen, but if it does, skip this message
+                        return null;
+                      }
+                      
+                      // Check if this is a restored message (existed when panel was opened)
+                      // For restored messages, don't animate - they should appear instantly
+                      const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
+                      const shouldAnimate = !isRestored;
+                    
+                    // CRITICAL: Final safety check - ensure key is never empty
+                    // Use stable fallback based on index if messageKey is somehow invalid
+                    let finalKey = messageKey && typeof messageKey === 'string' && messageKey.trim().length > 0
+                      ? messageKey.trim()
+                      : `emergency-msg-key-${idx}-${messageIdForKey || 'no-id'}`;
+                    
+                    // ABSOLUTE FINAL CHECK - if somehow finalKey is still empty, use index
+                    if (!finalKey || finalKey.length === 0 || finalKey.trim().length === 0) {
+                      console.error('❌ CRITICAL: finalKey is still empty after all checks!', {
+                        idx,
+                        message,
+                        messageKey,
+                        messageIdForKey,
+                        finalKey
+                      });
+                      finalKey = `fallback-msg-key-${idx}`;
+                    }
+                      
+                      // Log the key being used
+                      console.log('🔍 [DEBUG] Rendering message with key:', finalKey, 'idx:', idx, 'messageId:', message.id);
                     
                     return message.type === 'query' ? (
                       // Query message container - ChatGPT style with attachments above
                       <div
-                        key={message.id}
+                        key={finalKey}
                         style={{
                           alignSelf: 'flex-start',
                           maxWidth: '85%',
@@ -2262,8 +2738,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           {/* Display file attachments if any */}
                           {message.attachments && message.attachments.length > 0 && (
                             <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                              {message.attachments.map((attachment) => (
-                                <QueryAttachment key={attachment.id} attachment={attachment} />
+                              {message.attachments.map((attachment, attachmentIdx) => (
+                                <QueryAttachment 
+                                  key={generateAnimatePresenceKey(
+                                    'QueryAttachment',
+                                    attachmentIdx,
+                                    attachment.id || attachment.name,
+                                    'attachment'
+                                  )} 
+                                  attachment={attachment} 
+                                />
                               ))}
                             </div>
                           )}
@@ -2271,9 +2755,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           {/* Display property attachments if any */}
                           {message.propertyAttachments && message.propertyAttachments.length > 0 ? (
                               <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                {message.propertyAttachments.map((property) => (
+                                {message.propertyAttachments.map((property, propertyIdx) => {
+                                    const primaryId = property.id ?? property.property?.id;
+                                    const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                                    return (
                                     <QueryPropertyAttachment 
-                                      key={property.id} 
+                                      key={generateAnimatePresenceKey(
+                                        'QueryPropertyAttachment',
+                                        propertyIdx,
+                                        primaryKey || property.address,
+                                        'property'
+                                      )} 
                                       attachment={property}
                                       onOpenProperty={(attachment) => {
                                         console.log('🔍 QueryPropertyAttachment onOpenProperty called:', attachment);
@@ -2291,7 +2783,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                         }
                                       }}
                                     />
-                                  ))}
+                                    );
+                                  })}
                               </div>
                             ) : null}
                           
@@ -2346,7 +2839,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     ) : (
                       // Response message - full width, no bubble (Cursor AI style)
                       <div
-                        key={message.id}
+                        key={finalKey}
                         style={{
                           width: '100%',
                           padding: '0',
@@ -2357,90 +2850,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           wordWrap: 'break-word'
                         }}
                       >
-                        {/* Display reasoning steps in expandable block (persists after completion) */}
-                        {message.reasoningSteps && message.reasoningSteps.length > 0 && (
-                          <div style={{
-                            marginBottom: '12px',
-                            padding: '8px 12px',
-                            backgroundColor: '#F3F4F6',
-                            borderRadius: '8px',
-                            border: '1px solid #E5E7EB',
-                            cursor: 'pointer'
-                          }}
-                          onClick={() => {
-                            setExpandedReasoningBlocks(prev => ({
-                              ...prev,
-                              [message.id]: !prev[message.id]
-                            }));
-                          }}
-                          >
-                            <div style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              fontSize: '11px',
-                              fontWeight: 500,
-                              color: '#6B7280',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.5px',
-                              userSelect: 'none'
-                            }}>
-                              <span>Velora Reasoning ({message.reasoningSteps.length} steps)</span>
-                              <span style={{
-                                fontSize: '14px',
-                                transition: 'transform 0.2s',
-                                transform: expandedReasoningBlocks[message.id] ? 'rotate(180deg)' : 'rotate(0deg)'
-                              }}>
-                                ▼
-                              </span>
-                            </div>
-                            {expandedReasoningBlocks[message.id] && (
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                exit={{ opacity: 0, height: 0 }}
-                                transition={{ duration: 0.2 }}
-                                style={{
-                                  marginTop: '8px',
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '4px',
-                                  overflow: 'hidden'
-                                }}
-                              >
-                                {message.reasoningSteps.map((step, idx) => (
-                                  <motion.div
-                                    key={`${step.step}-${idx}`}
-                                    initial={{ opacity: 0, x: -8 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ duration: 0.2, delay: idx * 0.05 }}
-                                    style={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '8px',
-                                      fontSize: '12px',
-                                      color: '#374151',
-                                      padding: '4px 0'
-                                    }}
-                                  >
-                                    <div style={{
-                                      width: '6px',
-                                      height: '6px',
-                                      borderRadius: '50%',
-                                      backgroundColor: '#3B82F6',
-                                      flexShrink: 0
-                                    }} />
-                                    <span style={{ fontStyle: 'italic' }}>{step.message}</span>
-                                  </motion.div>
-                                ))}
-                              </motion.div>
-                            )}
-                          </div>
-                        )}
+                        {/* Display reasoning steps based on toggle setting */}
+                        {/* ON: Steps visible during loading AND after response (static, no animation) */}
+                        {/* OFF: Steps visible only during loading, hidden after response completes */}
+                        {/* ReasoningSteps - conditionally rendered based on toggle */}
+                        {/* ReasoningSteps - only render if conditions are met, otherwise render nothing (not null) */}
+                        {(message.reasoningSteps && message.reasoningSteps.length > 0) && 
+                         (showReasoningTrace || message.isLoading) && (
+                            <ReasoningSteps 
+                              key={generateConditionalKey(
+                                'ReasoningSteps',
+                                finalKey,
+                                message.isLoading ? 'loading' : 'complete'
+                              )}
+                              steps={message.reasoningSteps || []}
+                              isLoading={message.isLoading}
+                              onDocumentClick={handleDocumentPreviewClick}
+                            />
+                          )}
                         
                         {/* Display loading state for responses - Globe with rotating ring (atom-like) */}
                         {message.isLoading && (
-                          <div style={{ 
+                          <div 
+                            key={generateConditionalKey('LoadingIndicator', finalKey, 'loading')}
+                            style={{ 
                             display: 'flex', 
                             alignItems: 'center', 
                             justifyContent: 'center',
@@ -2617,51 +3050,51 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           // If no citations found, render normally
                           if (parts.length === 1 && parts[0].type === 'text') {
                             return (
-                              <div style={{
-                                color: '#374151',
-                                fontSize: '13px',
-                                lineHeight: '19px',
-                                margin: 0,
-                                padding: '4px 0',
-                                paddingLeft: 0,
-                                paddingRight: 0,
-                                textAlign: 'left',
-                                fontFamily: 'system-ui, -apple-system, sans-serif',
-                                fontWeight: 400,
-                                textIndent: 0
-                              }}>
-                                <ReactMarkdown
-                                  components={{
-                                    p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
-                                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
-                                    h2: () => null, // Remove h2 titles from query responses
-                                    h3: () => null, // Remove h3 titles from query responses
-                                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
-                                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
-                                    li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
-                                    strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
-                                    em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
-                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                    table: ({ children }) => (
-                                      <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                          {children}
-                                        </table>
-                                      </div>
-                                    ),
-                                    thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                    tbody: ({ children }) => <tbody>{children}</tbody>,
-                                    tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                    th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                    td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                                  }}
-                                >
-                                  {message.text}
-                                </ReactMarkdown>
-                              </div>
-                            );
+                          <div style={{
+                            color: '#374151',
+                            fontSize: '13px',
+                            lineHeight: '19px',
+                            margin: 0,
+                            padding: '4px 0',
+                            paddingLeft: 0,
+                            paddingRight: 0,
+                            textAlign: 'left',
+                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                            fontWeight: 400,
+                            textIndent: 0
+                          }}>
+                            <ReactMarkdown
+                              components={{
+                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
+                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
+                                h2: () => null, // Remove h2 titles from query responses
+                                h3: () => null, // Remove h3 titles from query responses
+                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
+                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
+                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
+                                strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
+                                em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
+                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                                table: ({ children }) => (
+                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                      {children}
+                                    </table>
+                                  </div>
+                                ),
+                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
+                                tbody: ({ children }) => <tbody>{children}</tbody>,
+                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
+                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
+                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
+                              }}
+                            >
+                              {message.text}
+                            </ReactMarkdown>
+                      </div>
+                    );
                           }
 
                           // Render with citations - split text and render markdown for each segment
@@ -2679,14 +3112,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               fontWeight: 400,
                               textIndent: 0
                             }}>
-                              {parts.map((part, idx) => {
+                              {parts.map((part, partIdx) => {
                                 if (part.type === 'citation') {
-                                  return <CitationComponent key={`citation-${idx}-${part.citationNum}`} citationNum={part.citationNum!} />;
+                                  // Ensure citationNum is never empty/undefined in key
+                                  const citationKey = part.citationNum && String(part.citationNum).trim().length > 0
+                                    ? String(part.citationNum).trim()
+                                    : `unknown-${partIdx}`;
+                                  // Use finalKey instead of messageKey to ensure it's never empty
+                                  const citationFinalKey = `citation-${partIdx}-${citationKey}-${finalKey}`;
+                                  return <CitationComponent key={citationFinalKey} citationNum={part.citationNum!} />;
                                 } else {
                                   // Render text segment with ReactMarkdown
+                                  // Include finalKey in text key to ensure uniqueness across messages
+                                  const textFinalKey = `text-${partIdx}-${finalKey}`;
                                   return (
                                     <ReactMarkdown
-                                      key={`text-${idx}`}
+                                      key={textFinalKey}
                                       components={{
                                         p: ({ children }) => <span style={{ display: 'inline' }}>{children}</span>,
                                         strong: ({ children }) => <strong>{children}</strong>,
@@ -2704,7 +3145,37 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         })()}
                       </div>
                     );
-                  })}
+                    })
+                    .filter((item) => {
+                      // CRITICAL: Filter out null/undefined AND verify all items have valid keys
+                      if (item === null || item === undefined) {
+                        console.warn('⚠️ Filtering out null/undefined item');
+                        return false;
+                      }
+                      // Additional safety: Check if item is a React element with a key
+                      if (React.isValidElement(item)) {
+                        const key = item.key;
+                        if (key === null || key === undefined || key === '' || (typeof key === 'string' && key.trim().length === 0)) {
+                          console.error('❌ FATAL: Found React element with empty/invalid key in AnimatePresence!', {
+                            element: item,
+                            key,
+                            keyType: typeof key,
+                            props: item.props,
+                            type: item.type
+                          });
+                          return false; // Don't render items without keys
+                        }
+                        // Log all keys being rendered for debugging (only in dev)
+                        if (process.env.NODE_ENV === 'development') {
+                          console.log('✅ Rendering message with key:', key, 'type:', item.type);
+                        }
+                      } else {
+                        console.error('❌ FATAL: Item is not a valid React element!', { item, itemType: typeof item });
+                        return false;
+                      }
+                      return true;
+                    });
+                  }, [chatMessages, isExpanded, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, handlePropertySelect, handleRemoveFile, removePropertyAttachment, onOpenProperty, addPreviewFile, setIsDraggingFile, setDraggedFileId, setIsOverBin])}
                 </AnimatePresence>
               </div>
             </div>
@@ -2713,36 +3184,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div 
               ref={chatInputContainerRef}
               style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px', position: 'relative', overflow: 'visible' }}
-            >
-              {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
-              {isQuickStartBarVisible && (
-                <div
+                >
+                  {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
+                  {isQuickStartBarVisible && (
+                    <div
                   ref={quickStartBarWrapperRef}
-                  style={{
-                    position: 'absolute',
+                      style={{
+                        position: 'absolute',
                     bottom: quickStartBarBottom, // Dynamically calculated position
                     left: '58%',
                     transform: quickStartBarTransform, // Dynamically adjusted for smallest view
-                    zIndex: 10000,
+                        zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
                     maxWidth: isExpanded ? '85%' : '100%', // Initial maxWidth, will be updated by layout effect
                     display: 'flex',
                     justifyContent: 'center'
-                  }}
-                >
-                  <QuickStartBar
-                    onDocumentLinked={(propertyId, documentId) => {
-                      console.log('Document linked:', { propertyId, documentId });
-                      // Optionally close QuickStartBar after successful link
-                      if (onQuickStartToggle) {
-                        onQuickStartToggle();
-                      }
-                    }}
-                    onPopupVisibilityChange={() => {}}
-                    isInChatPanel={true}
-                  />
-                </div>
-              )}
+                      }}
+                    >
+                      <QuickStartBar
+                        onDocumentLinked={(propertyId, documentId) => {
+                          console.log('Document linked:', { propertyId, documentId });
+                          // Optionally close QuickStartBar after successful link
+                          if (onQuickStartToggle) {
+                            onQuickStartToggle();
+                          }
+                        }}
+                        onPopupVisibilityChange={() => {}}
+                        isInChatPanel={true}
+                      />
+                    </div>
+                  )}
               <form 
                 ref={chatFormRef}
                 onSubmit={handleSubmit} 
@@ -2783,6 +3254,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <AnimatePresence mode="wait">
                       {attachedFiles.length > 0 && (
                         <motion.div 
+                          key="file-attachments"
                           initial={false}
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
@@ -2794,9 +3266,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
                         >
-                          {attachedFiles.map((file) => (
+                          {attachedFiles.map((file, attachmentIdx) => (
                             <FileAttachment
-                              key={file.id}
+                              key={generateAnimatePresenceKey(
+                                'FileAttachment',
+                                attachmentIdx,
+                                file.id || file.name,
+                                'file'
+                              )}
                               attachment={file}
                               onRemove={handleRemoveFile}
                               onPreview={(file) => {
@@ -2817,20 +3294,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </motion.div>
                       )}
                       
-                      {/* Property Attachments Display */}
+                      {/* Property Attachments Display - Must be motion.div for AnimatePresence */}
                       {propertyAttachments.length > 0 && (
-                        <div 
+                        <motion.div 
+                          key={generateUniqueKey('PropertyAttachmentsContainer', 'main', propertyAttachments.length)}
+                          initial={false}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ 
+                            duration: 0.1,
+                            ease: "easeOut"
+                          }}
                           style={{ height: 'auto', marginBottom: '12px' }}
                           className="flex flex-wrap gap-2 justify-start"
+                          layout={false}
                         >
-                          {propertyAttachments.map((property) => (
+                          {propertyAttachments.map((property, propertyIdx) => {
+                            const primaryId = property.id ?? property.property?.id;
+                            const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                            return (
                             <PropertyAttachment
-                              key={property.id}
+                              key={generateAnimatePresenceKey(
+                                'PropertyAttachment',
+                                propertyIdx,
+                                primaryKey || property.address,
+                                'property'
+                              )}
                               attachment={property}
                               onRemove={removePropertyAttachment}
                             />
-                          ))}
-                        </div>
+                          );
+                          })}
+                        </motion.div>
                       )}
                     </AnimatePresence>
                     
@@ -2914,9 +3409,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               width: '100%'
                             }}
                           >
-                            {propertySearchResults.map((property, index) => (
+                            {propertySearchResults.map((property, index) => {
+                              const primaryId = property.id;
+                              const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                              return (
                               <div
-                                key={property.id}
+                                key={
+                                  primaryKey && primaryKey.length > 0
+                                    ? `search-result-${primaryKey}`
+                                    : property.address && property.address.length > 0
+                                      ? `search-result-${property.address}-${index}`
+                                      : `search-result-${index}`
+                                }
                                 onClick={() => handlePropertySelect(property)}
                                 style={{
                                   padding: '10px 14px',
@@ -2963,7 +3467,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   )}
                                 </div>
                               </div>
-                            ))}
+                            );
+                            })}
                           </div>
                         )}
                       </div>
@@ -3180,7 +3685,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       )}
       
       {/* Delete Bin Icon - Bottom Right Corner */}
-      <AnimatePresence>
+      <AnimatePresence key="delete-bin-presence">
         {isDraggingFile && (
           <motion.div
             key="delete-bin"
@@ -3277,6 +3782,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               />
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {/* Document Preview Overlay - Opens when clicking on reasoning step document cards */}
+      <AnimatePresence key="document-preview-presence">
+        {previewDocument && (
+          <DocumentPreviewOverlay
+            key="document-preview-overlay"
+            document={previewDocument}
+            isFullscreen={isPreviewFullscreen}
+            onClose={() => setPreviewDocument(null)}
+            onToggleFullscreen={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
+          />
         )}
       </AnimatePresence>
     </AnimatePresence>

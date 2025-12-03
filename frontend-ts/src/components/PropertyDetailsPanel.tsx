@@ -832,13 +832,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
     
     // CRITICAL: Save property pin location (user-set final coordinates from Create Property Card), not document-extracted coordinates
-    // This is where the user placed/confirmed the pin. Only use coordinates if geocoding_status === 'manual'
-    const geocodingStatus = propertyToSave.geocoding_status;
-    const isPinLocation = geocodingStatus === 'manual';
-    const pinLatitude = isPinLocation ? (propertyToSave.latitude || originalPinCoordsRef.current?.lat) : originalPinCoordsRef.current?.lat;
-    const pinLongitude = isPinLocation ? (propertyToSave.longitude || originalPinCoordsRef.current?.lng) : originalPinCoordsRef.current?.lng;
+    // This is where the user placed/confirmed the pin. Prioritize explicitly provided coordinates
+    const pinLatitude = originalPinCoordsRef.current?.lat || propertyToSave.latitude;
+    const pinLongitude = originalPinCoordsRef.current?.lng || propertyToSave.longitude;
     
-    const lastProperty = {
+    // Use the utility function to save to array
+    import('../utils/recentProjects').then((module) => {
+      module.saveToRecentProjects({
       id: propertyToSave.id,
       address: propertyToSave.address,
       latitude: pinLatitude, // Property pin location (user-set), not document-extracted coordinates
@@ -846,12 +846,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       primary_image_url: propertyToSave.primary_image_url || propertyToSave.image,
       documentCount: docCount,
       timestamp: new Date().toISOString()
-    };
-    
-    localStorage.setItem('lastInteractedProperty', JSON.stringify(lastProperty));
-    // Dispatch custom event to update RecentProjectsSection in the same tab
-    window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
-    console.log('💾 Saved property to recent projects after interaction:', lastProperty.address, `(${docCount} docs)`);
+      });
+    }).catch((error) => {
+      console.error('Error saving to recent projects:', error);
+    });
   }, [documents.length]);
   
   // State for cached property card data
@@ -1828,16 +1826,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           {/* Main Window - Compact Grid Layout (Artboard Style) */}
           <motion.div
             layout={selectedCardIndex === null} // Only enable layout animations when preview is NOT open
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            initial={{ opacity: 0, scale: 0.99, y: 5 }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
               y: 0
             }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            exit={{ opacity: 0, scale: 0.99, y: 5 }}
             transition={{ 
-              duration: selectedCardIndex === null ? 0.4 : 0.2, // Faster transition when preview is open
-              ease: [0.25, 0.8, 0.25, 1],
+              duration: selectedCardIndex === null ? 0.5 : 0.2, // Slower, more gradual transition
+              ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: { duration: 0.3 } // Smooth layout transitions
             }}
             className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
@@ -2630,7 +2628,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               >
                                 {propertyImages.map((img: any, idx: number) => (
                                   <div
-                                    key={idx}
+                                    key={`img-${idx}-${img.url || img.id || img}`}
                                     className="aspect-[4/3] bg-gray-100 overflow-hidden relative group cursor-pointer focus:outline-none"
                                     style={{ width: '100%', height: 'auto', outline: 'none', border: 'none', boxShadow: 'none' }}
                                     onClick={() => {

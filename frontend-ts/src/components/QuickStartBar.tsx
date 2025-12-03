@@ -1018,12 +1018,12 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
               }}
             >
               {isUploading ? (
-                <div 
-                  className="rounded-full h-3 w-3 border-2 border-gray-400 border-t-transparent"
-                  style={{
-                    animation: 'spin 0.6s linear infinite'
-                  }}
-                />
+                  <div 
+                    className="rounded-full h-3 w-3 border-2 border-gray-400 border-t-transparent"
+                    style={{
+                      animation: 'spin 0.6s linear infinite'
+                    }}
+                  />
               ) : (
                 <>
                   {!isInChatPanel && <span style={{ whiteSpace: 'nowrap' }}>Link Document</span>}

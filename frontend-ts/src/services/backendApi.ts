@@ -214,7 +214,8 @@ class BackendApiService {
     onStatus?: (message: string) => void,
     abortSignal?: AbortSignal,
     documentIds?: string[],
-    onReasoningStep?: (step: { step: string; message: string; details: any }) => void
+    onReasoningStep?: (step: { step: string; message: string; details: any }) => void,
+    onReasoningContext?: (context: { message: string; moment: string }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -292,11 +293,22 @@ class BackendApiService {
                   if (onReasoningStep) {
                     onReasoningStep({
                       step: data.step,
+                      action_type: data.action_type || 'analyzing',
                       message: data.message,
+                      count: data.count,
                       details: data.details || {}
                     });
                   } else {
                     console.warn('⚠️ BackendApi: onReasoningStep callback is not defined!');
+                  }
+                  break;
+                case 'reasoning_context':
+                  console.log('📊 BackendApi: Received reasoning_context event:', data);
+                  if (onReasoningContext) {
+                    onReasoningContext({
+                      message: data.message,
+                      moment: data.moment
+                    });
                   }
                   break;
                 case 'token':

@@ -82,20 +82,27 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
   }, []);
 
   React.useEffect(() => {
-    // Load last property from localStorage
-    const loadLastProperty = () => {
+    // Load recent properties from localStorage (array of up to 3 properties)
+    const loadRecentProperties = async () => {
       try {
-        const saved = localStorage.getItem('lastInteractedProperty');
-        if (saved) {
-          const property = JSON.parse(saved);
-          // Use the documentCount from localStorage (already calculated using correct logic in saveToRecentProjects)
+        // Use the utility function to load the array
+        const { loadRecentProperties: loadRecent } = await import('../utils/recentProjects');
+        const recentProperties = loadRecent();
+        
+        if (recentProperties && recentProperties.length > 0) {
+          // Set the first property as lastProperty for backward compatibility
+          // But we'll use the full array in the projects builder
           setLastProperty({
-            ...property,
-            documentCount: property.documentCount || 0
+            ...recentProperties[0],
+            documentCount: recentProperties[0].documentCount || 0
           });
           
-          // OPTIMIZATION: Preload card summary for recent project
+          // Store the full array for use in projects builder
+          (window as any).__recentPropertiesArray = recentProperties;
+          
+          // OPTIMIZATION: Preload card summaries for all recent projects
           // This ensures card data is ready before user clicks
+          recentProperties.forEach((property) => {
           if (property && property.id) {
             const cacheKey = `propertyCardCache_${property.id}`;
             const cached = localStorage.getItem(cacheKey);
@@ -125,12 +132,8 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
                 ]).then(([summaryResponse, documentsResponse]) => {
                   if (summaryResponse.success && summaryResponse.data) {
                     // Calculate document count using same logic as PropertyDetailsPanel
-                    // Priority: 1. documents.length, 2. propertyHub?.documents?.length, 3. document_count
                     let docCount = 0;
                     if (documentsResponse.success && documentsResponse.data) {
-                      // Parse documents response - same logic as PropertyDetailsPanel
-                      // Backend returns: { success: true, data: { documents: [...] } }
-                      // backendApi.fetchApi wraps it: { success: true, data: { success: true, data: { documents: [...] } } }
                       let documentsToUse = null;
                       if ((documentsResponse.data as any)?.data?.documents && Array.isArray((documentsResponse.data as any).data.documents)) {
                         documentsToUse = (documentsResponse.data as any).data.documents;
@@ -151,20 +154,15 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
                     }
                     
                     // Transform and cache the data
-                    // CRITICAL: Recent projects use property pin location (final user-selected coordinates from Create Property Card), NOT backend document-extracted coordinates
-                    // The property pin location is where the user placed/confirmed the pin, not where documents say the property is
-                    // Only use coordinates if they represent user-set pin location (geocoding_status: 'manual')
                     const geocodingStatus = summaryResponse.data.geocoding_status;
                     const isPinLocation = geocodingStatus === 'manual';
                     
                     const transformedData = {
                       id: property.id,
                       address: summaryResponse.data.address || property.address,
-                      // Use pin coordinates from localStorage (property.latitude/longitude) - these are the user-set pin location
-                      // Only use backend coordinates if geocoding_status is 'manual' (pin location), never document-extracted coordinates
                       latitude: property.latitude || (isPinLocation ? summaryResponse.data.latitude : null),
                       longitude: property.longitude || (isPinLocation ? summaryResponse.data.longitude : null),
-                      geocoding_status: geocodingStatus, // Store geocoding_status to identify pin locations
+                        geocoding_status: geocodingStatus,
                       primary_image_url: summaryResponse.data.primary_image_url,
                       image: summaryResponse.data.primary_image_url || property.primary_image_url,
                       property_type: summaryResponse.data.property_type,
@@ -188,12 +186,6 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
                       cacheVersion: (summaryResponse as any).cache_version || 1
                     }));
                     
-                    // Update lastProperty state with accurate count
-                    setLastProperty({
-                      ...property,
-                      documentCount: docCount
-                    });
-                    
                     console.log('✅ Preloaded card summary for recent project:', property.address, `(${docCount} docs)`);
                   }
                 })
@@ -203,18 +195,19 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
               });
             }
           }
+          });
         }
       } catch (error) {
-        console.error('Error loading last property:', error);
+        console.error('Error loading recent properties:', error);
       }
     };
 
-    loadLastProperty();
+    loadRecentProperties();
 
     // Listen for storage changes (when property is saved from another tab/component)
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'lastInteractedProperty') {
-        loadLastProperty();
+      if (e.key === 'recentProperties' || e.key === 'lastInteractedProperty') {
+        loadRecentProperties();
       }
     };
 
@@ -222,7 +215,7 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     
     // Also listen for custom event in case it's from the same tab
     const handlePropertyUpdate = () => {
-      loadLastProperty();
+      loadRecentProperties();
     };
     window.addEventListener('lastPropertyUpdated', handlePropertyUpdate);
 
@@ -232,7 +225,7 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     };
   }, []);
 
-  // Build projects array - always show "New Project" first, then last property if it exists
+  // Build projects array - always show "New Project" first, then up to 3 recent properties
   const projects = React.useMemo(() => {
     const allProjects: ProjectData[] = [
       {
@@ -240,30 +233,33 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
       }
     ];
 
-    // Add last property if it exists
-    // CRITICAL: Include property pin location coordinates (user-set) from lastProperty
-    // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-    if (lastProperty && lastProperty.address) {
+    // Load recent properties array (up to 3 properties)
+    const recentPropertiesArray = (window as any).__recentPropertiesArray || [];
+    
+    // Add all recent properties (up to 3)
+    recentPropertiesArray.forEach((property: any) => {
+      if (property && property.address) {
       allProjects.push({
         type: 'existing',
         projectType: 'Property', // Simple default
-        propertyAddress: lastProperty.address,
-        propertyId: lastProperty.id,
+          propertyAddress: property.address,
+          propertyId: property.id,
         // Property pin location coordinates (user-set) - where the user placed/confirmed the pin
-        propertyCoordinates: (lastProperty.latitude && lastProperty.longitude) ? {
-          lat: lastProperty.latitude,
-          lng: lastProperty.longitude
+          propertyCoordinates: (property.latitude && property.longitude) ? {
+            lat: property.latitude,
+            lng: property.longitude
         } : undefined,
-        documentCount: lastProperty.documentCount || 0,
-        lastOpened: lastProperty.timestamp ? getTimeAgo(lastProperty.timestamp) : 'Recently',
-        lastFile: lastProperty.primary_image_url ? {
+          documentCount: property.documentCount || 0,
+          lastOpened: property.timestamp ? getTimeAgo(property.timestamp) : 'Recently',
+          lastFile: property.primary_image_url ? {
           type: 'image',
-          thumbnail: lastProperty.primary_image_url
+            thumbnail: property.primary_image_url
         } : undefined
       });
     }
+    });
 
-    // Fill remaining slots with blank placeholder cards (up to 4 total cards)
+    // Fill remaining slots with blank placeholder cards (up to 4 total cards: 1 new + 3 recent)
     while (allProjects.length < 4) {
       allProjects.push({
         type: 'existing' // Use existing type but mark as blank
@@ -381,9 +377,17 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
             // Check if this is a blank placeholder card
             const isBlank = project.type === 'existing' && !project.propertyAddress;
             
+            // ALWAYS include index to guarantee uniqueness, even when we have other IDs
+            // This prevents duplicate key warnings if propertyId is missing or duplicated
+            const uniqueKey = project.type === 'new' 
+              ? `new-project-card-${index}` 
+              : project.propertyId 
+                ? `project-${project.propertyId}-${index}` 
+                : `project-${project.propertyAddress || 'blank'}-${index}`;
+            
             return (
               <div
-                key={index}
+                key={uniqueKey}
                 onClick={project.type === 'new'
                   ? () => onNewProjectClick?.()
                   : project.type === 'existing' && project.propertyAddress

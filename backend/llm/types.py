@@ -55,7 +55,7 @@ class MainWorkflowState(TypedDict, total=False):
 
 class DocumentQAState(TypedDict):
     """State for per-document Q&A subgraph"""
-    doc_type: str
+    doc_id: str  # Document ID for the document being processed
     property_id: Optional[str]  # Some documents may not be linked to a property
     doc_content: str
     user_query: str
