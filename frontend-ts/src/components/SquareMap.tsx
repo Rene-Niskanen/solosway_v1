@@ -2797,12 +2797,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           const cacheAge = Date.now() - cacheData.timestamp;
           
           if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
-            // We have cached data - show card NOW, update map later
-            console.log('🚀 INSTANT: Map not ready but showing card from cache immediately');
+            // We have cached data - show title card NOW, update map later
+            // Don't open property details panel directly - show title card first, user can click to open panel
+            console.log('🚀 INSTANT: Map not ready but showing title card from cache immediately');
             const cachedProperty = cacheData.data;
             setSelectedProperty(cachedProperty);
-            setShowPropertyCard(true);
-            setShowPropertyDetailsPanel(true);
+            // Show title card, but don't open property details panel - let user click title card to open it
+            setShowPropertyCard(false);
+            setShowPropertyDetailsPanel(false);
             setIsExpanded(false);
             setShowFullDescription(false);
             
@@ -2889,11 +2891,25 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               backendApiService.preloadPropertyDocuments(String(finalProperty.id)).catch(() => {});
             }
             // ONLY use provided coordinates - never use property coordinates
+            console.log('📍 Cached data path - checking coordinates:', { 
+              coordinates, 
+              hasCoordinates: !!(coordinates && coordinates.lat && coordinates.lng),
+              propertyLat: finalProperty?.latitude,
+              propertyLng: finalProperty?.longitude
+            });
+            
             if (coordinates && coordinates.lat && coordinates.lng) {
               finalLat = coordinates.lat;
               finalLng = coordinates.lng;
+              console.log('✅ Using coordinates from recent projects:', { lat: finalLat, lng: finalLng });
+            } else if (finalProperty && finalProperty.latitude && finalProperty.longitude) {
+              // Fallback: Use property coordinates if coordinates weren't provided
+              finalLat = finalProperty.latitude;
+              finalLng = finalProperty.longitude;
+              console.log('⚠️ No coordinates from recent projects, using property coordinates:', { lat: finalLat, lng: finalLng });
             } else {
-              // No coordinates provided - don't center map
+              // No coordinates available
+              console.log('❌ No coordinates available - cannot zoom');
               finalLat = null;
               finalLng = null;
             }
@@ -2903,24 +2919,62 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               // Proceed directly to showing the card - skip all retry logic
               console.log('🚀 Showing property card immediately from cache - no backend wait!');
               
-              // Show card IMMEDIATELY - don't wait for map to be ready
+              // Show title card IMMEDIATELY - don't wait for map to be ready
               // This ensures <1s response time when clicking recent project
               // Store pin coordinates for marker positioning
               if (finalLat !== null && finalLng !== null) {
                 selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
               }
-              // Store pin coordinates for marker positioning
-              if (finalLat !== null && finalLng !== null) {
-                selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
-              }
               setSelectedProperty(finalProperty);
+              // Open property details panel directly after zooming to pin
+              // This provides immediate access to property information
               setShowPropertyCard(true);
               setShowPropertyDetailsPanel(true);
               setIsExpanded(false);
               setShowFullDescription(false);
               
-              // If map is ready, also update map markers and fly to location
-              if (map.current) {
+              // If map is ready, also update map markers, create title card, and ZOOM to location
+              if (map.current && finalLat !== null && finalLng !== null) {
+                // CRITICAL: Zoom to property location FIRST (same as pin click)
+                // This ensures the map opens zoomed in when clicking recent projects
+                const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
+                const cardHeight = 360;
+                const verticalOffset = (cardHeight / 2) - 40;
+                const leftEdge = chatPanelWidth + sidebarWidth;
+                const visibleWidth = window.innerWidth - leftEdge;
+                const visibleCenterX = leftEdge + (visibleWidth / 2);
+                const viewportCenterX = window.innerWidth / 2;
+                const horizontalOffset = visibleCenterX - viewportCenterX;
+                
+                console.log('📍 Recent project: Zooming to property pin location:', { lat: finalLat, lng: finalLng });
+                
+                // Stop any existing animations to prevent jitter from conflicting animations
+                if (map.current.isMoving()) {
+                  map.current.stop();
+                }
+                
+                // Single smooth flyTo animation - combines center and zoom for buttery smooth motion
+                // This prevents jitter from multiple animations conflicting
+                const targetZoom = 17.5;
+                
+                // Use a single smooth animation that combines centering and zooming
+                // This is much smoother than two separate animations
+                map.current.flyTo({
+                  center: propertyPinCoordinates,
+                  zoom: targetZoom, // Zoom directly to target level
+                  duration: 1500, // Longer duration for smoother, less jittery animation
+                  essential: true,
+                  offset: [horizontalOffset, verticalOffset], // Center horizontally in visible area
+                  easing: (t) => {
+                    // Very smooth easing function - ease-in-out-cubic for buttery smooth animation
+                    // This creates a much smoother feel than the previous easing
+                    // Using cubic easing for smoother acceleration and deceleration
+                    return t < 0.5
+                      ? 4 * t * t * t
+                      : 1 - Math.pow(-2 * t + 2, 3) / 2;
+                  }
+                });
+                
                 // Hide the base marker for this property
                 if (map.current.getLayer('property-markers')) {
                   map.current.setFilter('property-markers', [
@@ -2988,7 +3042,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     pointer-events: auto;
                   `;
                   
-                  // Handle card click - opens PropertyDetailsPanel
+                  // Handle card click - opens PropertyDetailsPanel (if not already open)
                   const handleCardClick = () => {
                     console.log('📍 Property title card clicked (from selectPropertyByAddress) - opening PropertyDetailsPanel');
                     if (finalProperty) {
@@ -3036,7 +3090,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   setTitleCardPropertyId(finalProperty?.id?.toString() || null);
     }
     
-                // REMOVED: Map centering logic - no longer centering on recent project click
+                // CRITICAL: Set hasCentered flag to prevent duplicate zoom in main flow
+                // This prevents the main zoom logic from running again and causing jitter
+                hasCenteredMapRef.current = { lat: finalLat, lng: finalLng };
+                hasJumpedToPropertyPinRef.current = true;
+                
+                // Return early to skip the main zoom logic below
+                // We've already zoomed and created the title card, so no need to run the main flow
+                return;
               } else {
                 // Map not ready - set position from coordinates (will update when map loads)
                 // Calculate center of visible area (between chat panel edge and screen edge)
@@ -3114,16 +3175,41 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       if (coordinates && coordinates.lat && coordinates.lng) {
         finalLat = coordinates.lat;
         finalLng = coordinates.lng;
-        console.log('✅ Using property pin location coordinates:', { lat: finalLat, lng: finalLng });
+        console.log('✅ Using property pin location coordinates from recent projects:', { lat: finalLat, lng: finalLng });
+        
+        // CRITICAL: Set coordinates on the property object so it works like a pin click
+        // This ensures the property has latitude/longitude set, which is needed for title card creation and zoom
+        if (property) {
+          property.latitude = coordinates.lat;
+          property.longitude = coordinates.lng;
+        }
+      } else if (property && property.latitude && property.longitude) {
+        // Fallback: Use property coordinates if coordinates weren't provided from recent projects
+        // This handles cases where coordinates weren't saved to recent projects
+        finalLat = property.latitude;
+        finalLng = property.longitude;
+        console.log('⚠️ No coordinates from recent projects, using property coordinates as fallback:', { lat: finalLat, lng: finalLng });
       } else {
-        // No coordinates provided - don't center map
-        console.log('⚠️ No property pin location coordinates provided');
-        finalLat = null;
-        finalLng = null;
+        // No coordinates available - try to get from property if it exists
+        if (property && (property.latitude || property.longitude)) {
+          finalLat = property.latitude || null;
+          finalLng = property.longitude || null;
+          console.log('⚠️ Using property coordinates (may be incomplete):', { lat: finalLat, lng: finalLng });
+        } else {
+          // No coordinates available at all
+          console.log('⚠️ No property pin location coordinates available - cannot zoom');
+          finalLat = null;
+          finalLng = null;
+        }
       }
       
       if (property) {
         finalProperty = property;
+        // Ensure property has coordinates set for title card creation
+        if (finalLat !== null && finalLng !== null) {
+          finalProperty.latitude = finalLat;
+          finalProperty.longitude = finalLng;
+        }
       }
     }
     
@@ -3135,8 +3221,29 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         hasCenteredMapRef.current.lat === currentCoords.lat && 
         hasCenteredMapRef.current.lng === currentCoords.lng;
       
-      if (!hasCentered) {
-        console.log('📍 Jumping directly to property pin location (just above pin):', { lat: finalLat, lng: finalLng });
+      console.log('📍 Zoom check:', { 
+        finalLat, 
+        finalLng, 
+        hasMap: !!map.current, 
+        hasCentered, 
+        coordinates,
+        hasCoordinatesFromRecentProjects: coordinates !== undefined && coordinates !== null,
+        currentZoom: map.current?.getZoom()
+      });
+      
+      // If coordinates are provided from recent projects, check if we've already handled it in cached path
+      // The cached data path (lines 2918-3100) handles zoom for recent projects and returns early
+      // So if hasJumpedToPropertyPinRef is already set, we've already zoomed - don't zoom again!
+      const hasCoordinatesFromRecentProjects = coordinates !== undefined && coordinates !== null;
+      const alreadyHandledInCachedPath = hasCoordinatesFromRecentProjects && hasJumpedToPropertyPinRef.current;
+      const shouldZoom = !hasCentered && !alreadyHandledInCachedPath;
+      
+      if (alreadyHandledInCachedPath) {
+        console.log('⏭️ Skipping main zoom logic - already handled in cached data path');
+      }
+      
+      if (shouldZoom) {
+        console.log('📍 Jumping directly to property pin location (just above pin):', { lat: finalLat, lng: finalLng, reason: hasCoordinatesFromRecentProjects ? 'recent-project-click' : 'not-centered-yet' });
         hasCenteredMapRef.current = currentCoords;
         const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
         
@@ -3162,8 +3269,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           horizontalOffset
         });
         
+        // Use the SAME zoom logic as pin clicks - ensures consistent behavior
         // First, center the property (with correct offset for chat panel) at current zoom
         const currentZoom = map.current.getZoom();
+        
+        // When opening from recent projects (coordinates provided), always zoom in like pin clicks do
+        // This ensures the map opens close to the pin, matching pin click behavior
         map.current.flyTo({
           center: propertyPinCoordinates,
           zoom: currentZoom, // Keep current zoom level for centering
@@ -3178,12 +3289,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           }
         });
         
-        // Then, after centering completes, zoom in smoothly
+        // Then, after centering completes, zoom in smoothly (same as pin click)
         setTimeout(() => {
           if (map.current) {
             map.current.flyTo({
               center: propertyPinCoordinates,
-              zoom: 17.5, // Zoom in to property
+              zoom: 17.5, // Zoom in to property (same as pin click)
               duration: 1000, // Smooth zoom animation
               essential: true,
               offset: [horizontalOffset, verticalOffset], // Maintain offset during zoom
@@ -3293,11 +3404,25 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             }, retryDelay);
             return; // Don't show card until property is found
           } else {
-            // After retries, don't show card - user wants full data only
-            console.log('❌ Property not found after retries - not showing card (full data required):', address);
-            // Keep pending selection for when properties finish loading - CRITICAL: Preserve coordinates!
-            (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-            return; // Don't show card without full property data
+            // After retries, if we have coordinates from recent projects, create minimal property to show title card and zoom
+            // This ensures recent project clicks work even if property isn't in loaded list yet
+            if (coordinates && coordinates.lat && coordinates.lng) {
+              console.log('📍 Property not found but have coordinates from recent projects - creating minimal property for title card');
+              finalProperty = {
+                id: propertyId || `temp-${Date.now()}`,
+                address: address,
+                latitude: coordinates.lat,
+                longitude: coordinates.lng,
+                image: "/property-1.png"
+              };
+              // Continue to show title card and zoom even without full property data
+            } else {
+              // No coordinates - can't show card without full data
+              console.log('❌ Property not found after retries - not showing card (full data required):', address);
+              // Keep pending selection for when properties finish loading - CRITICAL: Preserve coordinates!
+              (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+              return; // Don't show card without full property data
+            }
           }
         }
       

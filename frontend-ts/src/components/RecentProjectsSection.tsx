@@ -40,8 +40,8 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
   onOpenProperty,
   onNewProjectClick
 }) => {
-  // Get the last interacted property from localStorage
-  const [lastProperty, setLastProperty] = React.useState<any>(null);
+  // Get recent properties from localStorage
+  const [recentProperties, setRecentProperties] = React.useState<any[]>([]);
   
   // Track viewport dimensions for responsive card display
   const [viewportWidth, setViewportWidth] = React.useState<number>(
@@ -82,20 +82,41 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
   }, []);
 
   React.useEffect(() => {
-    // Load last property from localStorage
-    const loadLastProperty = () => {
+    // Load recent properties from localStorage
+    const loadRecentProperties = () => {
       try {
-        const saved = localStorage.getItem('lastInteractedProperty');
+        // Try to load from new recentProperties array first
+        const saved = localStorage.getItem('recentProperties');
+        let properties: any[] = [];
+        
         if (saved) {
-          const property = JSON.parse(saved);
-          // Use the documentCount from localStorage (already calculated using correct logic in saveToRecentProjects)
-          setLastProperty({
-            ...property,
-            documentCount: property.documentCount || 0
-          });
-          
-          // OPTIMIZATION: Preload card summary for recent project
-          // This ensures card data is ready before user clicks
+          properties = JSON.parse(saved);
+        } else {
+          // Fallback: migrate from old lastInteractedProperty format
+          const oldProperty = localStorage.getItem('lastInteractedProperty');
+          if (oldProperty) {
+            try {
+              const property = JSON.parse(oldProperty);
+              properties = [property];
+              // Migrate to new format
+              localStorage.setItem('recentProperties', JSON.stringify(properties));
+            } catch (e) {
+              console.error('Error parsing old property:', e);
+            }
+          }
+        }
+        
+        // Use the documentCount from localStorage (already calculated using correct logic in saveToRecentProjects)
+        const propertiesWithCounts = properties.map(property => ({
+          ...property,
+          documentCount: property.documentCount || 0
+        }));
+        
+        setRecentProperties(propertiesWithCounts);
+        
+        // OPTIMIZATION: Preload card summaries for recent projects
+        // This ensures card data is ready before user clicks
+        propertiesWithCounts.forEach((property) => {
           if (property && property.id) {
             const cacheKey = `propertyCardCache_${property.id}`;
             const cached = localStorage.getItem(cacheKey);
@@ -188,10 +209,13 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
                       cacheVersion: (summaryResponse as any).cache_version || 1
                     }));
                     
-                    // Update lastProperty state with accurate count
-                    setLastProperty({
-                      ...property,
-                      documentCount: docCount
+                    // Update recentProperties state with accurate count
+                    setRecentProperties(prev => {
+                      return prev.map(p => 
+                        p.id === property.id 
+                          ? { ...p, documentCount: docCount }
+                          : p
+                      );
                     });
                     
                     console.log('✅ Preloaded card summary for recent project:', property.address, `(${docCount} docs)`);
@@ -203,18 +227,18 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
               });
             }
           }
-        }
+        });
       } catch (error) {
-        console.error('Error loading last property:', error);
+        console.error('Error loading recent properties:', error);
       }
     };
 
-    loadLastProperty();
+    loadRecentProperties();
 
     // Listen for storage changes (when property is saved from another tab/component)
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'lastInteractedProperty') {
-        loadLastProperty();
+      if (e.key === 'recentProperties' || e.key === 'lastInteractedProperty') {
+        loadRecentProperties();
       }
     };
 
@@ -222,7 +246,7 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     
     // Also listen for custom event in case it's from the same tab
     const handlePropertyUpdate = () => {
-      loadLastProperty();
+      loadRecentProperties();
     };
     window.addEventListener('lastPropertyUpdated', handlePropertyUpdate);
 
@@ -232,7 +256,7 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     };
   }, []);
 
-  // Build projects array - always show "New Project" first, then last property if it exists
+  // Build projects array - always show "New Project" first, then recent properties
   const projects = React.useMemo(() => {
     const allProjects: ProjectData[] = [
       {
@@ -240,28 +264,39 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
       }
     ];
 
-    // Add last property if it exists
-    // CRITICAL: Include property pin location coordinates (user-set) from lastProperty
+    // Add recent properties (up to 3)
+    // CRITICAL: Include property pin location coordinates (user-set) from recentProperties
     // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-    if (lastProperty && lastProperty.address) {
-      allProjects.push({
-        type: 'existing',
-        projectType: 'Property', // Simple default
-        propertyAddress: lastProperty.address,
-        propertyId: lastProperty.id,
-        // Property pin location coordinates (user-set) - where the user placed/confirmed the pin
-        propertyCoordinates: (lastProperty.latitude && lastProperty.longitude) ? {
-          lat: lastProperty.latitude,
-          lng: lastProperty.longitude
-        } : undefined,
-        documentCount: lastProperty.documentCount || 0,
-        lastOpened: lastProperty.timestamp ? getTimeAgo(lastProperty.timestamp) : 'Recently',
-        lastFile: lastProperty.primary_image_url ? {
-          type: 'image',
-          thumbnail: lastProperty.primary_image_url
-        } : undefined
-      });
-    }
+    recentProperties.forEach((property) => {
+      if (property && property.address) {
+        // Debug: Log coordinates to see if they're being stored
+        console.log('📍 Recent project coordinates:', { 
+          address: property.address, 
+          latitude: property.latitude, 
+          longitude: property.longitude,
+          hasCoordinates: !!(property.latitude && property.longitude),
+          property: property // Log full property to debug
+        });
+        
+        allProjects.push({
+          type: 'existing',
+          projectType: 'Property', // Simple default
+          propertyAddress: property.address,
+          propertyId: property.id,
+          // Property pin location coordinates (user-set) - where the user placed/confirmed the pin
+          propertyCoordinates: (property.latitude && property.longitude) ? {
+            lat: property.latitude,
+            lng: property.longitude
+          } : undefined,
+          documentCount: property.documentCount || 0,
+          lastOpened: property.timestamp ? getTimeAgo(property.timestamp) : 'Recently',
+          lastFile: property.primary_image_url ? {
+            type: 'image',
+            thumbnail: property.primary_image_url
+          } : undefined
+        });
+      }
+    });
 
     // Fill remaining slots with blank placeholder cards (up to 4 total cards)
     while (allProjects.length < 4) {
@@ -271,7 +306,7 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
     }
 
     return allProjects;
-  }, [lastProperty]);
+  }, [recentProperties]);
 
   // Calculate how many cards can fit in the available space with proper padding
   const maxVisibleCards = React.useMemo(() => {

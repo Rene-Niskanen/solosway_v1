@@ -11,6 +11,7 @@ import { FileAttachmentData } from './FileAttachment';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
+import { saveToRecentProjects as saveToRecentProjectsUtil } from '../utils/recentProjects';
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -814,11 +815,6 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
     
-    // Only save real properties (not temp ones)
-    if (propertyToSave.id.startsWith('temp-')) {
-      return;
-    }
-    
     // Calculate document count using the same logic as PropertyDetailsPanel display
     let docCount = 0;
     if (documents.length > 0) {
@@ -838,20 +834,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     const pinLatitude = isPinLocation ? (propertyToSave.latitude || originalPinCoordsRef.current?.lat) : originalPinCoordsRef.current?.lat;
     const pinLongitude = isPinLocation ? (propertyToSave.longitude || originalPinCoordsRef.current?.lng) : originalPinCoordsRef.current?.lng;
     
-    const lastProperty = {
-      id: propertyToSave.id,
-      address: propertyToSave.address,
-      latitude: pinLatitude, // Property pin location (user-set), not document-extracted coordinates
-      longitude: pinLongitude, // Property pin location (user-set), not document-extracted coordinates
-      primary_image_url: propertyToSave.primary_image_url || propertyToSave.image,
-      documentCount: docCount,
-      timestamp: new Date().toISOString()
+    // Create property object with pin coordinates
+    const propertyWithPinCoords = {
+      ...propertyToSave,
+      latitude: pinLatitude,
+      longitude: pinLongitude
     };
     
-    localStorage.setItem('lastInteractedProperty', JSON.stringify(lastProperty));
-    // Dispatch custom event to update RecentProjectsSection in the same tab
-    window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
-    console.log('💾 Saved property to recent projects after interaction:', lastProperty.address, `(${docCount} docs)`);
+    // Use utility function to save
+    saveToRecentProjectsUtil(propertyWithPinCoords, docCount);
   }, [documents.length]);
   
   // State for cached property card data
@@ -1726,6 +1717,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         const propertyId = currentProperty.id;
         try {
           await loadPropertyDocuments(); // Reload documents
+          
+          // Save to recent projects after successful upload (with updated document count)
+          // The loadPropertyDocuments will update the documents state, which will trigger saveToRecentProjects
+          // But we also call it explicitly here to ensure it happens
+          saveToRecentProjects(currentProperty);
             
             // Wait for React to render the file, then set progress to 100%
             requestAnimationFrame(() => {
