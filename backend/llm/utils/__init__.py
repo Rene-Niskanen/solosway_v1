@@ -4,6 +4,20 @@ Utility functions for LLM pipeline.
 
 from typing import List, Dict
 
+# Import chunk expansion utilities
+from .chunk_expansion import (
+    expand_chunk_with_adjacency,
+    batch_expand_chunks,
+    merge_expanded_chunks
+)
+
+__all__ = [
+    'reciprocal_rank_fusion',
+    'expand_chunk_with_adjacency',
+    'batch_expand_chunks',
+    'merge_expanded_chunks'
+]
+
 
 def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[dict]:
     """

@@ -204,6 +204,8 @@ def create_app():
     
     # Import tasks to register them with Celery
     from . import tasks
+    # Import celery tasks to register context generation tasks
+    from . import celery_tasks
     
     with app.app_context():
         # Database schema managed by Supabase

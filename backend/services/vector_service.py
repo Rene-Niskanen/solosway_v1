@@ -22,14 +22,35 @@ class SupabaseVectorService:
     def __init__(self):
         self.supabase: Client = get_supabase_client()
         
-        # Initialize OpenAI for embeddings
-        self.openai_api_key = os.environ.get('OPENAI_API_KEY')
-        if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
+        # Check if using Voyage AI or OpenAI
+        use_voyage = os.environ.get('USE_VOYAGE_EMBEDDINGS', 'true').lower() == 'true'
         
-        openai.api_key = self.openai_api_key
-        # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
-        self.embedding_model = "text-embedding-3-small"
+        if use_voyage:
+            # Initialize Voyage AI for embeddings
+            self.voyage_api_key = os.environ.get('VOYAGE_API_KEY')
+            if not self.voyage_api_key:
+                raise ValueError("VOYAGE_API_KEY environment variable is required when USE_VOYAGE_EMBEDDINGS=true")
+            
+            try:
+                from voyageai import Client
+                self.voyage_client = Client(api_key=self.voyage_api_key)
+                self.embedding_model = os.environ.get('VOYAGE_EMBEDDING_MODEL', 'voyage-law-2')
+                self.use_voyage = True
+                self.embedding_dimension = 1024  # Voyage-law-2 produces 1024-dim vectors
+                logger.info(f"Using Voyage AI embeddings: {self.embedding_model} ({self.embedding_dimension} dimensions)")
+            except ImportError:
+                raise ImportError("voyageai package not installed. Run: pip install voyageai")
+        else:
+            # Initialize OpenAI for embeddings (fallback)
+            self.openai_api_key = os.environ.get('OPENAI_API_KEY')
+            if not self.openai_api_key:
+                raise ValueError("OPENAI_API_KEY environment variable is required")
+            
+            openai.api_key = self.openai_api_key
+            self.embedding_model = "text-embedding-3-small"
+            self.use_voyage = False
+            self.embedding_dimension = 1536  # OpenAI text-embedding-3-small produces 1536-dim vectors
+            logger.info(f"Using OpenAI embeddings: {self.embedding_model} ({self.embedding_dimension} dimensions)")
         
         # Initialize Anthropic for contextual retrieval (async client for parallel processing)
         self.anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
@@ -48,7 +69,7 @@ class SupabaseVectorService:
     
     def create_embeddings(self, text_chunks: List[str]) -> List[List[float]]:
         """
-        Generate embeddings using OpenAI
+        Generate embeddings using Voyage AI or OpenAI
         
         Args:
             text_chunks: List of text chunks to embed
@@ -60,37 +81,156 @@ class SupabaseVectorService:
             if not text_chunks:
                 return []
             
-            # OpenAI has a limit of 8192 tokens per request
-            # We'll process in batches of 100 chunks to be safe
-            batch_size = 100
-            all_embeddings = []
-            
-            for i in range(0, len(text_chunks), batch_size):
-                batch = text_chunks[i:i + batch_size]
+            if self.use_voyage:
+                # Use Voyage AI
+                # Voyage AI can handle larger batches, but we'll use 100 to be safe
+                # For free accounts: 3 RPM limit, so we need to space out batches
+                batch_size = 100
+                all_embeddings = []
+                import time
                 
-                response = openai.embeddings.create(
-                    model=self.embedding_model,
-                    input=batch
-                )
+                for i in range(0, len(text_chunks), batch_size):
+                    batch = text_chunks[i:i + batch_size]
+                    
+                    # Rate limiting: Wait 20 seconds between batches to stay under 3 RPM limit
+                    # (3 requests per minute = 1 request every 20 seconds)
+                    if i > 0:  # Don't delay first batch
+                        wait_time = 20
+                        logger.info(f"⏳ Rate limiting: waiting {wait_time}s before batch {i//batch_size + 1} ({len(batch)} chunks)")
+                        time.sleep(wait_time)
+                    
+                    max_retries = 2
+                    retry_delay = 60  # Wait 1 minute on rate limit error
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            response = self.voyage_client.embed(
+                                texts=batch,
+                                model=self.embedding_model,
+                                input_type='document'  # Use 'document' for chunk embeddings
+                            )
+                            
+                            # Voyage AI returns embeddings directly in response.embeddings
+                            batch_embeddings = response.embeddings
+                            all_embeddings.extend(batch_embeddings)
+                            break  # Success, exit retry loop
+                            
+                        except Exception as e:
+                            error_msg = str(e)
+                            # Check if it's a rate limit error
+                            if "rate limit" in error_msg.lower() or "RPM" in error_msg or "TPM" in error_msg or "payment method" in error_msg.lower():
+                                if attempt < max_retries - 1:
+                                    logger.warning(f"⚠️ Voyage API rate limit hit (attempt {attempt + 1}/{max_retries}): {error_msg[:200]}")
+                                    logger.info(f"⏳ Waiting {retry_delay}s before retry...")
+                                    time.sleep(retry_delay)
+                                else:
+                                    logger.error(f"❌ Voyage API rate limit error after {max_retries} attempts: {error_msg[:200]}")
+                                    raise
+                            else:
+                                # Not a rate limit error, re-raise immediately
+                                raise
                 
-                batch_embeddings = [item.embedding for item in response.data]
-                all_embeddings.extend(batch_embeddings)
-            
-            return all_embeddings
+                logger.debug(f"Generated {len(all_embeddings)} embeddings using Voyage AI ({self.embedding_model})")
+                return all_embeddings
+            else:
+                # Use OpenAI (existing code)
+                # OpenAI has a limit of 8192 tokens per request
+                # We'll process in batches of 100 chunks to be safe
+                batch_size = 100
+                all_embeddings = []
+                
+                for i in range(0, len(text_chunks), batch_size):
+                    batch = text_chunks[i:i + batch_size]
+                    
+                    response = openai.embeddings.create(
+                        model=self.embedding_model,
+                        input=batch
+                    )
+                    
+                    batch_embeddings = [item.embedding for item in response.data]
+                    all_embeddings.extend(batch_embeddings)
+                
+                logger.debug(f"Generated {len(all_embeddings)} embeddings using OpenAI ({self.embedding_model})")
+                return all_embeddings
             
         except Exception as e:
             logger.error(f"Error creating embeddings: {e}")
             raise
     
-    def chunk_text(self, text: str, chunk_size: int = 1200, overlap: int = 180) -> List[str]:
+    def _calculate_dynamic_overlap(self, text: str, chunk_size: int = 1200) -> int:
+        """
+        Calculate optimal overlap based on content density.
+        
+        Dynamic overlap strategy:
+        - Dense content (technical, legal, long sentences): 25% overlap
+          → More context needed to preserve meaning across boundaries
+        - Normal content (average sentence length): 20% overlap
+          → Balanced context preservation
+        - Simple content (short sentences, lists): 15% overlap
+          → Less context needed, can be more efficient
+        
+        This improves accuracy by ensuring critical information isn't lost
+        when chunks are split, especially for complex documents.
+        
+        Args:
+            text: Text to analyze
+            chunk_size: Target chunk size in characters
+            
+        Returns:
+            Optimal overlap in characters
+        """
+        if not text or len(text) < 100:
+            # Too short to analyze, use default
+            return int(chunk_size * 0.15)
+        
+        import re
+        
+        # Analyze content density by sentence length
+        # Split by sentence endings (period, exclamation, question mark)
+        sentences = re.split(r'[.!?]+\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        
+        if not sentences:
+            # No sentence boundaries found, use default
+            return int(chunk_size * 0.15)
+        
+        # Calculate average sentence length
+        avg_sentence_length = sum(len(s) for s in sentences) / len(sentences) if sentences else 0
+        
+        # Determine content density and calculate overlap
+        # Dense content: long sentences (>100 chars avg) - technical, legal documents
+        if avg_sentence_length > 100:
+            overlap_percent = 0.25  # 25% overlap for maximum context preservation
+            logger.debug(f"📊 Dense content detected (avg sentence: {avg_sentence_length:.1f} chars) → 25% overlap")
+        # Normal content: average sentence length (60-100 chars)
+        elif avg_sentence_length > 60:
+            overlap_percent = 0.20  # 20% overlap for balanced preservation
+            logger.debug(f"📊 Normal content detected (avg sentence: {avg_sentence_length:.1f} chars) → 20% overlap")
+        # Simple content: short sentences (<60 chars) - lists, bullet points, simple text
+        else:
+            overlap_percent = 0.15  # 15% overlap for efficiency
+            logger.debug(f"📊 Simple content detected (avg sentence: {avg_sentence_length:.1f} chars) → 15% overlap")
+        
+        overlap = int(chunk_size * overlap_percent)
+        return overlap
+    
+    def chunk_text(self, text: str, chunk_size: int = 1200, overlap: int = None) -> List[str]:
         """
         Split text into overlapping chunks with intelligent boundary detection.
-        Improved overlap (180 chars, 15% of chunk size) prevents context loss at boundaries.
+        
+        NEW: Dynamic overlap calculation based on content density.
+        - Dense content (technical, legal): 25% overlap
+        - Normal content: 20% overlap  
+        - Simple content (lists, bullet points): 15% overlap
+        
+        This adaptive approach improves accuracy by preserving more context
+        for complex documents while remaining efficient for simple content.
         
         Args:
             text: Text to chunk
             chunk_size: Target chunk size in characters (default 1200)
-            overlap: Character overlap between chunks (default 180, 15% of chunk size)
+            overlap: Character overlap between chunks. If None, calculated dynamically
+                     based on content density. If provided, uses that value.
             
         Returns:
             List of text chunks
@@ -103,6 +243,12 @@ class SupabaseVectorService:
         
         if len(text) <= chunk_size:
             return [text]
+        
+        # Calculate dynamic overlap if not provided
+        if overlap is None:
+            overlap = self._calculate_dynamic_overlap(text, chunk_size)
+            overlap_percent = (overlap / chunk_size * 100) if chunk_size > 0 else 0
+            logger.debug(f"📊 Dynamic overlap calculated: {overlap} chars ({overlap_percent:.1f}% of chunk size)")
         
         chunks = []
         start = 0
@@ -675,7 +821,8 @@ class SupabaseVectorService:
                 if len(chunk) > MAX_CHUNK_SIZE:
                     # Split large chunk into smaller chunks BEFORE embedding
                     logger.info(f"⚠️ Large chunk detected ({len(chunk)} chars), splitting before embedding...")
-                    sub_chunks = self.chunk_text(chunk, chunk_size=1200, overlap=180)
+                    # Use dynamic overlap (None = auto-calculate based on content density)
+                    sub_chunks = self.chunk_text(chunk, chunk_size=1200, overlap=None)
                     
                     # Get original blocks from metadata
                     original_blocks = chunk_meta.get('blocks', []) if chunk_meta else []
@@ -719,10 +866,13 @@ class SupabaseVectorService:
             # STEP 1: DOCUMENT-LEVEL CONTEXTUALIZATION (NEW - Replaces per-chunk)
             # Generate ONE document-level summary instead of per-chunk contexts
             # This reduces costs by 99.7% (1 API call vs 307 per document)
+            # NOTE: If lazy_embedding=True, context generation happens in background tasks
+            #       (see backend/celery_tasks.py), so we skip it here
             document_summary = None
             chunk_contexts = []  # Will be empty for document-level approach
             
-            if self.use_contextual_retrieval:
+            # Skip synchronous context generation if lazy_embedding=True (handled by background tasks)
+            if self.use_contextual_retrieval and not lazy_embedding:
                 try:
                     from .document_context_service import DocumentContextService
                     context_service = DocumentContextService()
@@ -740,16 +890,34 @@ class SupabaseVectorService:
                     )
                     
                     # Store document summary in documents table (if exists)
-                    # Pass dict directly - Supabase will convert to JSONB automatically
+                    # CRITICAL FIX: Use DocumentStorageService to MERGE instead of REPLACE
+                    # This preserves existing Reducto data (reducto_chunks, reducto_job_id, bbox metadata)
                     try:
-                        self.supabase.table('documents').update({
-                            'document_summary': document_summary,  # Pass dict directly, not json.dumps()
-                            'document_entities': document_summary.get('top_entities', []),
-                            'document_tags': document_summary.get('document_tags', [])
-                        }).eq('id', document_id).execute()
-                        logger.info(f"✅ Stored document-level summary for {document_id}")
+                        from .document_storage_service import DocumentStorageService
+                        doc_storage = DocumentStorageService()
+                        
+                        # Merge AI-generated summary with existing Reducto data
+                        # This preserves all reducto_* fields (chunks, job_id, bbox metadata)
+                        success, error = doc_storage.update_document_summary(
+                            document_id=document_id,
+                            business_id=business_uuid,  # Use business_uuid from metadata
+                            updates={
+                                **document_summary,  # AI-generated summary fields
+                                'document_entities': document_summary.get('top_entities', []),
+                                'document_tags': document_summary.get('document_tags', [])
+                            },
+                            merge=True  # CRITICAL: Merge with existing reducto_* fields
+                        )
+                        
+                        if success:
+                            logger.info(f"✅ Stored document-level summary for {document_id} (merged with existing Reducto data)")
+                        else:
+                            logger.warning(f"Could not store document summary: {error}")
+                            # Continue anyway - summary will be prepended to chunks at query-time
                     except Exception as e:
                         logger.warning(f"Could not store document summary in documents table: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
                         # Continue anyway - summary will be prepended to chunks at query-time
                     
                     # Create empty contexts list (we'll prepend document summary at query-time)
@@ -836,16 +1004,31 @@ class SupabaseVectorService:
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
                 
-                # Extract bbox for the insertion 
+                # Extract bbox following Reducto's bbox format specification:
+                # {left, top, width, height, page, original_page}
+                # JSONB columns expect dict directly, NOT json string
                 chunk_bbox = chunk_meta.get('bbox')
-                # Handle both dict and already-extracted page number
-                if chunk_bbox:
-                    if isinstance(chunk_bbox, dict):
-                        chunk_page = chunk_bbox.get('page')
-                    else:
-                        chunk_page = chunk_meta.get('page')
-                else:
+                
+                # Extract page number - prefer original_page per Reducto recommendation
+                # Reducto recommends using original_page for referencing source document pages
+                chunk_page = None
+                if chunk_bbox and isinstance(chunk_bbox, dict):
+                    # Prefer original_page (recommended by Reducto for source references)
+                    chunk_page = chunk_bbox.get('original_page') or chunk_bbox.get('page')
+                    if chunk_page is not None:
+                        try:
+                            chunk_page = int(chunk_page)
+                        except (ValueError, TypeError):
+                            chunk_page = None
+                
+                # Fallback to extracted page from chunk_meta if bbox doesn't have it
+                if chunk_page is None:
                     chunk_page = chunk_meta.get('page')
+                    if chunk_page is not None:
+                        try:
+                            chunk_page = int(chunk_page)
+                        except (ValueError, TypeError):
+                            chunk_page = None
                 
                 chunk_blocks = chunk_meta.get('blocks', [])
                 
@@ -864,6 +1047,32 @@ class SupabaseVectorService:
                     embedding_completed_at = datetime.utcnow().isoformat()
                     embedding_error = None
                 
+                # CRITICAL FIX: Store bbox as JSONB dict (not JSON string)
+                # JSONB columns in Supabase expect Python dict directly
+                # Reducto bbox format: {left, top, width, height, page, original_page}
+                bbox_for_storage = None
+                if chunk_bbox:
+                    if isinstance(chunk_bbox, dict):
+                        # Ensure bbox follows Reducto format and is clean dict
+                        bbox_for_storage = {
+                            'left': chunk_bbox.get('left'),
+                            'top': chunk_bbox.get('top'),
+                            'width': chunk_bbox.get('width'),
+                            'height': chunk_bbox.get('height'),
+                            'page': chunk_bbox.get('page'),
+                            'original_page': chunk_bbox.get('original_page')
+                        }
+                        # Remove None values to keep bbox clean
+                        bbox_for_storage = {k: v for k, v in bbox_for_storage.items() if v is not None}
+                        # If all values were None, set to None instead of empty dict
+                        if not bbox_for_storage:
+                            bbox_for_storage = None
+                    else:
+                        logger.warning(f"⚠️ Chunk {i} bbox is not a dict: {type(chunk_bbox)}")
+                
+                # Log bbox extraction for debugging (only in verbose mode)
+                # Removed verbose bbox logging to reduce terminal noise
+                
                 record = {
                     'id': str(uuid.uuid4()),
                     'document_id': document_id,
@@ -876,8 +1085,8 @@ class SupabaseVectorService:
                     'address_hash': metadata.get('address_hash'),
                     'business_uuid': business_uuid,
                     'business_id': business_uuid,
-                    'page_number': chunk_page,
-                    'bbox': json.dumps(chunk_bbox) if chunk_bbox else None,
+                    'page_number': chunk_page,  # Prefer original_page per Reducto recommendation
+                    'bbox': bbox_for_storage,  # ✅ FIXED: Store as JSONB dict (not JSON string)
                     'block_count': len(chunk_blocks),
                     'embedding_status': embedding_status,  # NEW: Track embedding status
                     'embedding_queued_at': embedding_queued_at,  # NEW: When embedding was queued
@@ -888,11 +1097,22 @@ class SupabaseVectorService:
                 }
                 records.append(record)
             
+            # Count bbox and page_number statistics before insertion
+            bbox_count = sum(1 for r in records if r.get('bbox') is not None)
+            page_count = sum(1 for r in records if r.get('page_number') is not None)
+            both_count = sum(1 for r in records if r.get('bbox') is not None and r.get('page_number') is not None)
+            
+            logger.info(f"📊 Vector storage summary for {document_id}:")
+            logger.info(f"   Total vectors: {len(records)}")
+            logger.info(f"   Vectors with bbox: {bbox_count} ({bbox_count/len(records)*100:.1f}%)")
+            logger.info(f"   Vectors with page_number: {page_count} ({page_count/len(records)*100:.1f}%)")
+            logger.info(f"   Vectors with both: {both_count} ({both_count/len(records)*100:.1f}%)")
+            
             # Insert into Supabase
             result = self.supabase.table(self.document_vectors_table).insert(records).execute()
             
             if result.data:
-                logger.info(f"Stored {len(records)} document vectors with bbox metadata")
+                logger.info(f"✅ Stored {len(records)} document vectors (bbox: {bbox_count}, page: {page_count}, both: {both_count})")
                 return True
             else:
                 logger.error(f"Failed to store document vectors: {result}")
@@ -900,6 +1120,69 @@ class SupabaseVectorService:
                 
         except Exception as e:
             logger.error(f"Error storing document vectors: {e}")
+            return False
+    
+    def update_chunk_contexts(
+        self,
+        document_id: str,
+        chunk_contexts: Dict[int, str]  # {chunk_index: context_string}
+    ) -> bool:
+        """
+        Update chunk_context for specific chunks after background generation.
+        
+        This method is called by background tasks to update chunk contexts
+        that were generated asynchronously.
+        
+        Args:
+            document_id: Document UUID
+            chunk_contexts: Dict mapping chunk_index to context string
+            
+        Returns:
+            Success status
+        """
+        try:
+            if not chunk_contexts:
+                logger.warning(f"No chunk contexts provided for document {document_id}")
+                return True  # Not an error, just nothing to update
+            
+            updated_count = 0
+            failed_count = 0
+            
+            # Update each chunk's context
+            for chunk_index, context in chunk_contexts.items():
+                try:
+                    result = self.supabase.table(self.document_vectors_table)\
+                        .update({'chunk_context': context})\
+                        .eq('document_id', document_id)\
+                        .eq('chunk_index', chunk_index)\
+                        .execute()
+                    
+                    if result.data and len(result.data) > 0:
+                        updated_count += 1
+                    else:
+                        logger.warning(
+                            f"⚠️ No chunk found with document_id={document_id}, chunk_index={chunk_index} "
+                            f"(chunk may not exist yet or index mismatch)"
+                        )
+                        failed_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error updating context for chunk {chunk_index} of document {document_id}: {e}")
+                    failed_count += 1
+            
+            if updated_count > 0:
+                logger.info(
+                    f"✅ Updated {updated_count}/{len(chunk_contexts)} chunk contexts for document {document_id}"
+                )
+                if failed_count > 0:
+                    logger.warning(f"⚠️ Failed to update {failed_count} chunk contexts")
+            
+            return updated_count > 0
+            
+        except Exception as e:
+            logger.error(f"Error updating chunk contexts for document {document_id}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return False
     
     def store_property_vectors(self, property_id: str, property_text: str, metadata: Dict[str, Any]) -> bool:

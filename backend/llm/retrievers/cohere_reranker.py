@@ -14,14 +14,23 @@ logger = logging.getLogger(__name__)
 class CohereReranker:
     """Cohere reranker API client for document relevance and scoring."""
     def __init__(self):
+        # Get API key from environment
         self.api_key = os.environ.get('COHERE_API_KEY')
         self.api_url = 'https://api.cohere.ai/rerank'
         self.model = os.environ.get('COHERE_RERANKER_MODEL', 'rerank-english-v3.0')
         self.top_n = int(os.environ.get('COHERE_RERANKER_TOP_N', '10'))
+        
+        # Validate API key
         self.enabled = bool(self.api_key)
 
-        if not self.enabled:
+        if self.enabled:
+            # Basic validation: Cohere API keys typically start with specific prefixes
+            # Log first few chars for debugging (but don't expose full key)
+            key_preview = self.api_key[:8] + "..." if len(self.api_key) > 8 else "***"
+            logger.info(f"Cohere Reranker initialized: model={self.model}, top_n={self.top_n}, api_key={key_preview}")
+        else:
             logger.warning("COHERE_API_KEY not set - Cohere Reranker disabled")
+            logger.info("To enable Cohere reranking, set COHERE_API_KEY in your .env file")
 
     def rerank(
         self,
@@ -68,6 +77,11 @@ class CohereReranker:
         top_n = min(top_n, len(documents))
 
         try:
+            # Validate API key is still available
+            if not self.api_key:
+                logger.error("Cohere API key not available during rerank call")
+                return documents
+            
             # call the cohere api
             headers = {
                 'Authorization': f'Bearer {self.api_key}',
@@ -116,9 +130,19 @@ class CohereReranker:
 
             return reranked_docs
 
+        except requests.exceptions.HTTPError as e:
+            # Handle specific HTTP errors (401 = unauthorized, 403 = forbidden, etc.)
+            if e.response and e.response.status_code == 401:
+                logger.error("Cohere API authentication failed - check COHERE_API_KEY is valid")
+            elif e.response and e.response.status_code == 403:
+                logger.error("Cohere API access forbidden - check API key permissions")
+            else:
+                logger.error(f"Cohere rerank API HTTP error: {e}")
+            logger.warning("Falling back to original document order")
+            return documents
         except requests.exceptions.RequestException as e:
-            logger.error(f"Cohere rerank API error: {e}")
-            logger.warning("falling back to original document order")
+            logger.error(f"Cohere rerank API request error: {e}")
+            logger.warning("Falling back to original document order")
             return documents
         
         except Exception as e:

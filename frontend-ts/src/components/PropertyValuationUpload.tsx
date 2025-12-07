@@ -115,9 +115,10 @@ export default function PropertyValuationUpload({
         status: 'uploading' as const
       } : f));
 
-      // Use proxy upload directly (more reliable than presigned URLs)
-      console.log(`🔄 Using proxy upload for: ${file.name}`);
-      const response = await backendApi.uploadPropertyDocumentViaProxy(file);
+      // Use general document upload (triggers FULL processing pipeline)
+      console.log(`🔄 Using general document upload for: ${file.name}`);
+      console.log(`📋 This will trigger FULL processing pipeline (classification → extraction → embedding)`);
+      const response = await backendApi.uploadDocument(file);
       
       if (response.success) {
         console.log(`✅ File uploaded successfully: ${file.name}`, response.data);

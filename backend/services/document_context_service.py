@@ -2,6 +2,8 @@
 Document-Level Contextualization Service.
 
 Generates ONE document-level summary instead of per-chunk contexts.
+Uses local embedding service for fast, cheap context generation.
+Falls back to Anthropic if local service unavailable.
 Reduces costs by 99.7% (1 API call vs 307 per document).
 """
 
@@ -15,16 +17,36 @@ import logging
 logger = logging.getLogger(__name__)
 
 class DocumentContextService:
-    """Generate document-level context instead of per-chunk."""
+    """Generate document-level context using local service or Anthropic fallback."""
     
     def __init__(self):
+        # Check if we should use local context generation
+        self.use_local_context = os.environ.get('USE_LOCAL_CONTEXT', 'true').lower() == 'true'
+        
+        # Initialize local embedding service if enabled (using singleton for scalability)
+        self.local_service = None
+        if self.use_local_context:
+            try:
+                from .local_embedding_service import get_default_service
+                self.local_service = get_default_service()
+                if self.local_service.is_local_available():
+                    logger.info("Document Context Service enabled (Local Embedding Service)")
+                else:
+                    logger.warning("Local embedding service not available, will try Anthropic fallback")
+                    self.local_service = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize local embedding service: {e}")
+                self.local_service = None
+        
+        # Initialize Anthropic as fallback
         self.anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
         if self.anthropic_api_key:
             self.client = anthropic.Anthropic(api_key=self.anthropic_api_key)
-            logger.info("Document Context Service enabled (Anthropic)")
+            logger.info("Anthropic fallback available for document context")
         else:
             self.client = None
-            logger.warning("ANTHROPIC_API_KEY not set - using simple extraction")
+            if not self.local_service:
+                logger.warning("Neither local service nor Anthropic available - using simple extraction")
     
     def generate_document_summary(
         self, 
@@ -33,6 +55,8 @@ class DocumentContextService:
     ) -> Dict[str, Any]:
         """
         Generate ONE document-level summary with entities.
+        
+        Uses local embedding service if available, falls back to Anthropic or simple extraction.
         
         Returns:
             {
@@ -50,8 +74,28 @@ class DocumentContextService:
                 }
             }
         """
-        if not self.client:
+        # Try local service first (fast, cheap)
+        if self.local_service and self.local_service.is_local_available():
+            try:
+                logger.debug("Using local embedding service for document context")
+                return self.local_service.generate_document_context(document_text, metadata)
+            except Exception as e:
+                logger.warning(f"Local context generation failed: {e}, trying Anthropic fallback")
+                # Fall through to Anthropic
+        
+        # Fallback to Anthropic if available
+        if self.client:
+            return self._generate_with_anthropic(document_text, metadata)
+        
+        # Last resort: simple extraction
             return self._generate_simple_summary(document_text, metadata)
+    
+    def _generate_with_anthropic(
+        self, 
+        document_text: str, 
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate document summary using Anthropic Claude (fallback)."""
         
         # Limit document text to avoid token limits
         max_chars = 50000
@@ -106,7 +150,7 @@ Return ONLY valid JSON, no markdown formatting:"""
             logger.warning(f"Failed to parse JSON response: {e}, using simple extraction")
             return self._generate_simple_summary(document_text, metadata)
         except Exception as e:
-            logger.error(f"Context generation failed: {e}")
+            logger.error(f"Anthropic context generation failed: {e}")
             return self._generate_simple_summary(document_text, metadata)
     
     def _generate_simple_summary(self, text: str, metadata: Dict) -> Dict:

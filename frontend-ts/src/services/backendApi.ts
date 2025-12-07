@@ -762,8 +762,161 @@ class BackendApiService {
   }
 
   /**
+   * Upload document for general file uploads (NOT property-specific)
+   * Triggers FULL processing pipeline: classification → extraction → embedding
+   * Used by: FileManager, general document upload areas
+   */
+  async uploadDocument(
+    file: File,
+    onProgress?: (percent: number) => void
+  ) {
+    return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
+    try {
+      console.log(`🚀 Starting general document upload for: ${file.name}`);
+      console.log(`📋 This will trigger FULL processing pipeline (classification → extraction → embedding)`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      // NO metadata - general uploads don't have property_id
+
+        const xhr = new XMLHttpRequest();
+        const url = `${this.baseUrl}/api/documents/upload`;
+
+        // Track upload progress - ensure events fire frequently
+        let lastReportedProgress = -1; // Start at -1 to allow 0% to be reported
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && onProgress && e.total > 0) {
+            // Calculate progress as a percentage, using more precision for smoother updates
+            const rawPercent = (e.loaded / e.total) * 100;
+            // Cap at 90% during upload - the remaining 10% will be when file appears in UI
+            const cappedPercent = Math.min(rawPercent, 90);
+            const percent = Math.min(Math.max(Math.round(cappedPercent), 0), 90);
+            
+            // Report progress if it has increased (allow 0% to be reported)
+            if (percent > lastReportedProgress || (percent === 0 && lastReportedProgress === -1)) {
+              console.log(`📊 Upload progress: ${percent}% (${e.loaded}/${e.total} bytes, raw: ${rawPercent.toFixed(2)}%, capped at 90%)`);
+              lastReportedProgress = percent;
+              // Call progress callback immediately for real-time updates
+              onProgress(percent);
+            } else {
+              console.log(`📊 Upload progress skipped (duplicate): ${percent}% (last: ${lastReportedProgress}%)`);
+            }
+          } else {
+            console.log(`📊 Upload progress event: lengthComputable=${e.lengthComputable}, onProgress=${!!onProgress}, total=${e.total}, loaded=${e.loaded}`);
+            // If length not computable, try to estimate progress
+            if (onProgress && e.loaded > 0) {
+              // Estimate based on loaded bytes (rough estimate), cap at 90%
+              const estimatedPercent = Math.min(Math.round((e.loaded / (e.loaded * 10)) * 100), 90);
+              if (estimatedPercent > lastReportedProgress) {
+                console.log(`📊 Estimated progress: ${estimatedPercent}% (${e.loaded} bytes, capped at 90%)`);
+                lastReportedProgress = estimatedPercent;
+                onProgress(estimatedPercent);
+              }
+            }
+          }
+        };
+        
+        // Track onloadstart to ensure we start at 0%
+        xhr.upload.onloadstart = () => {
+          console.log('📊 Upload started - setting progress to 0%');
+          if (onProgress) {
+            lastReportedProgress = 0;
+            onProgress(0);
+          }
+        };
+
+        // Handle completion
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const response = JSON.parse(xhr.responseText);
+      if (response.success) {
+        console.log(`✅ General document upload successful: ${file.name}`);
+                console.log(`🔄 Full processing pipeline queued (classification → extraction → embedding)`);
+                // Don't set to 100% here - let frontend handle it when file appears in UI
+                // Backend returns {success: true, document_id: ...} directly, not wrapped in data
+                resolve({
+          success: true,
+          data: response.data || response // Use response.data if exists, otherwise use response itself
+                });
+      } else {
+        throw new Error(response.error || 'Upload failed');
+      }
+            } catch (parseError) {
+              console.error(`❌ Failed to parse response: ${parseError}`);
+              resolve({
+                success: false,
+                error: 'Failed to parse server response'
+              });
+            }
+          } else {
+            console.error(`❌ Upload failed with status: ${xhr.status}`);
+            // Try to parse error response for more details
+            let errorMessage = `Upload failed with status ${xhr.status}`;
+            try {
+              const errorResponse = JSON.parse(xhr.responseText);
+              if (errorResponse.error) {
+                errorMessage = errorResponse.error;
+              }
+              if (errorResponse.details) {
+                errorMessage += ` (${errorResponse.details})`;
+              }
+            } catch (e) {
+              // If response isn't JSON, use status text
+              errorMessage = xhr.statusText || errorMessage;
+            }
+            resolve({
+              success: false,
+              error: errorMessage
+            });
+          }
+        };
+
+        // Handle errors
+        xhr.onerror = () => {
+          console.error(`❌ General document upload failed for ${file.name}: Network error`);
+          resolve({
+            success: false,
+            error: 'Network error during upload'
+          });
+        };
+
+        // Handle abort
+        xhr.onabort = () => {
+          console.log(`⚠️ Upload aborted for ${file.name}`);
+          resolve({
+            success: false,
+            error: 'Upload was aborted'
+          });
+        };
+
+        // Set up request to include credentials (matching fetchApi behavior)
+        xhr.withCredentials = true;
+        
+        // Set up request headers (get auth token if available)
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+
+        // Send request
+        xhr.open('POST', url);
+        xhr.send(formData);
+
+    } catch (error) {
+      console.error(`❌ General document upload failed for ${file.name}:`, error);
+        resolve({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        });
+    }
+    });
+  }
+
+  /**
    * Upload file via backend proxy (fallback for CORS issues)
    * Supports progress tracking via onProgress callback
+   * Used for PROPERTY CARD uploads (fast pipeline with property_id)
    */
   async uploadPropertyDocumentViaProxy(
     file: File, 
@@ -1162,7 +1315,7 @@ class BackendApiService {
    * Delete a document
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
-    return this.fetchApi(`/api/document/${documentId}`, {
+    return this.fetchApi(`/api/documents/${documentId}`, {
       method: 'DELETE'
     });
   }

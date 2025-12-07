@@ -120,17 +120,32 @@ export const FileManager: React.FC = () => {
       const response = await backendApi.deleteFile(fileId);
       
       if (response.success) {
+        // Deletion successful - remove from UI
         setFiles(files.filter(f => f.id !== fileId));
         if (selectedFile?.id === fileId) {
           setIsDetailsModalOpen(false);
           setSelectedFile(null);
         }
       } else {
-        alert('Failed to delete file');
+        // Check if it's a 404 "Document not found" error
+        // This means the file was already deleted, so treat it as success
+        const errorMessage = response.error || '';
+        if (errorMessage.includes('Document not found') || errorMessage.includes('not found')) {
+          // File was already deleted - remove from UI
+          setFiles(files.filter(f => f.id !== fileId));
+          if (selectedFile?.id === fileId) {
+            setIsDetailsModalOpen(false);
+            setSelectedFile(null);
+          }
+          console.info(`File "${filename}" was already deleted, removing from UI`);
+        } else {
+          alert(`Failed to delete file: ${errorMessage || 'Unknown error'}`);
+        }
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error deleting file:', err);
-      alert('Error deleting file. Please try again.');
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      alert(`Error deleting file: ${errorMessage}`);
     } finally {
       setDeletingFileId(null);
     }

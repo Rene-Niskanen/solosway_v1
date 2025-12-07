@@ -16,7 +16,8 @@ import boto3
 import time
 import re
 from .tasks import process_document_task, process_document_fast_task
-from .services.deletion_service import DeletionService
+# NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
+# from .services.deletion_service import DeletionService
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
@@ -65,61 +66,16 @@ def _normalize_uuid_str(value):
         return None
 
 
-def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
-    """
-    Remove Supabase property hub records when no documents remain linked to a property.
-    Returns list of property IDs that were fully removed from Supabase.
-    """
-    cleaned_properties = []
-    if not property_ids:
-        return cleaned_properties
-
-    supabase = None
-    for property_id in property_ids:
-        if not property_id:
-            continue
-
-        # Check if any local document relationships still reference this property
-        remaining_relationships = DocumentRelationship.query.filter_by(property_id=property_id).count()
-        if remaining_relationships > 0:
-            continue
-
-        try:
-            if supabase is None:
-                supabase = get_supabase_client()
-
-            pid_str = str(property_id)
-
-            # Delete property vectors first
-            try:
-                supabase.table('property_vectors').delete().eq('property_id', pid_str).execute()
-            except Exception as e:
-                logger.warning(f"Failed to delete property vectors for property {pid_str}: {e}")
-
-            # Delete property details rows
-            try:
-                supabase.table('property_details').delete().eq('property_id', pid_str).execute()
-            except Exception as e:
-                logger.warning(f"Failed to delete property details for property {pid_str}: {e}")
-
-            # Delete supabase document_relationships (if any remain)
-            try:
-                supabase.table('document_relationships').delete().eq('property_id', pid_str).execute()
-            except Exception as e:
-                logger.warning(f"Failed to delete Supabase document relationships for property {pid_str}: {e}")
-
-            # Finally delete the property record itself
-            try:
-                supabase.table('properties').delete().eq('id', pid_str).execute()
-            except Exception as e:
-                logger.warning(f"Failed to delete property {pid_str} from Supabase properties table: {e}")
-
-            cleaned_properties.append(pid_str)
-            logger.info(f"Cleaned Supabase property hub data for property {pid_str}")
-        except Exception as e:
-            logger.warning(f"Could not clean Supabase property {property_id}: {e}")
-
-    return cleaned_properties
+# DEPRECATED: This function has been moved to UnifiedDeletionService._cleanup_orphan_properties()
+# Kept here for reference during migration. Can be removed after testing.
+# def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
+#     """
+#     Remove Supabase property hub records when no documents remain linked to a property.
+#     Returns list of property IDs that were fully removed from Supabase.
+#     
+#     NOTE: This functionality is now handled by UnifiedDeletionService._cleanup_orphan_properties()
+#     """
+#     pass
 
 views = Blueprint('views', __name__)
 
@@ -1824,13 +1780,6 @@ def extract_text_from_image():
             'error': str(e)
         }), 500
 
-@views.route('/api/documents/upload', methods=['POST'])
-@login_required
-def upload_property_document():
-    """Upload property document (wrapper for existing upload-file)"""
-    # Redirect to existing upload-file endpoint
-    return upload_file_to_gateway()
-
 @views.route('/api/simple-test', methods=['GET'])
 def simple_test():
     """Simple test endpoint without database or auth"""
@@ -1905,7 +1854,7 @@ def get_presigned_url():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@views.route('/api/documents/proxy-upload', methods=['POST'])
+@views.route('/api/documents/proxy-upload', methods=['POST', 'OPTIONS'])
 @login_required
 def proxy_upload():
     """
@@ -1919,6 +1868,20 @@ def proxy_upload():
     
     Documents uploaded without property_id will remain in 'UPLOADED' status.
     """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"📤 [PROXY-UPLOAD] POST request received from {current_user.email}")
+    logger.info(f"📤 [PROXY-UPLOAD] Form data keys: {list(request.form.keys())}")
+    logger.info(f"📤 [PROXY-UPLOAD] Files keys: {list(request.files.keys())}")
+    
     try:
         if 'file' not in request.files:
             logger.error("No 'file' key in request.files")
@@ -1970,6 +1933,7 @@ def proxy_upload():
             
             # Get property_id from form data if provided
             property_id_raw = request.form.get('property_id')
+            logger.info(f"📤 [PROXY-UPLOAD] Raw property_id from form: {property_id_raw} (type: {type(property_id_raw).__name__})")
             property_id = None
             
             # Normalize property_id: handle "null", "", None, or invalid UUIDs
@@ -2000,7 +1964,7 @@ def proxy_upload():
                 'file_type': file.content_type,
                 'file_size': file.content_length or 0,
                 'uploaded_by_user_id': str(current_user.id),
-                'business_id': str(business_uuid),  # Supabase documents.business_id is varchar
+                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
                 'business_uuid': business_uuid_str,  # Also store as UUID type
                 'status': 'uploaded',
                 'property_id': property_id  # Already normalized to None or valid UUID string
@@ -2016,6 +1980,7 @@ def proxy_upload():
                 return jsonify({'error': f'Failed to create document in Supabase: {error}'}), 500
             
             logger.info(f"✅ Document {doc_id} created in Supabase documents table")
+            logger.info(f"📤 [PROXY-UPLOAD] Normalized property_id: {property_id} (will trigger fast pipeline: {property_id is not None})")
             
             # If property_id was provided, create document_relationships entry in Supabase
             if property_id:
@@ -2061,6 +2026,7 @@ def proxy_upload():
             # Trigger fast processing if property_id is provided
             if property_id:
                 try:
+                    logger.info(f"⚡ [PROXY-UPLOAD] Property ID provided ({property_id}), queuing fast processing task...")
                     # Queue fast processing task (property_id already known - no extraction needed)
                     task = process_document_fast_task.delay(
                         document_id=doc_id,
@@ -2069,11 +2035,12 @@ def proxy_upload():
                         business_id=str(business_uuid_str),
                         property_id=str(property_id)
                     )
-                    
-                    logger.info(f"⚡ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
+                    logger.info(f"⚡ [PROXY-UPLOAD] ✅ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
                 except Exception as e:
-                    logger.warning(f"Failed to queue fast processing task: {e}")
+                    logger.error(f"❌ [PROXY-UPLOAD] Failed to queue fast processing task: {e}", exc_info=True)
                     # Don't fail the upload - document is already created and uploaded
+            else:
+                logger.warning(f"⚠️ [PROXY-UPLOAD] No property_id provided - document {doc_id} will remain in 'UPLOADED' status (no processing pipeline activated)")
             
             # Success - document created in Supabase and linked to property if provided
             return jsonify({
@@ -2097,6 +2064,161 @@ def proxy_upload():
     except Exception as e:
         logger.error(f"Proxy upload failed: {e}")
         return jsonify({'error': str(e)}), 500
+
+@views.route('/api/documents/upload', methods=['POST', 'OPTIONS'])
+@login_required
+def upload_document():
+    """
+    General document upload endpoint for files NOT associated with a property.
+    
+    Full Pipeline: Always triggers full processing:
+    - Document classification
+    - Property extraction (if applicable)
+    - Full schema extraction
+    - Image processing
+    - Section-based chunking
+    - Document-level context generation
+    - Embedding and vector storage
+    
+    This endpoint is for general file uploads (e.g., from FileManager) that need
+    full processing, unlike proxy-upload which is optimized for property card uploads.
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"📤 [UPLOAD] POST request received from {current_user.email}")
+    logger.info(f"📤 [UPLOAD] Form data keys: {list(request.form.keys())}")
+    logger.info(f"📤 [UPLOAD] Files keys: {list(request.files.keys())}")
+    
+    try:
+        if 'file' not in request.files:
+            logger.error("No 'file' key in request.files")
+            return jsonify({'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            logger.error("Empty filename")
+            return jsonify({'error': 'No file selected'}), 400
+
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User is not associated with a business'}), 400
+        business_uuid = UUID(business_uuid_str)
+        
+        # Generate unique S3 key
+        filename = secure_filename(file.filename)
+        s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
+        
+        # Upload to S3 FIRST (before creating database record)
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            )
+            
+            # Read file content once (will be reused for full processing task)
+            file.seek(0)  # Reset file pointer
+            file_content = file.read()
+            
+            # Upload file to S3
+            s3_client.put_object(
+                Bucket=os.environ['S3_UPLOAD_BUCKET'],
+                Key=s3_key,
+                Body=file_content,
+                ContentType=file.content_type
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to upload to S3: {e}")
+            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
+        
+        # Create document record in Supabase
+        try:
+            from .services.document_storage_service import DocumentStorageService
+            
+            # Generate document ID
+            document_id = str(uuid.uuid4())
+            
+            # Create document directly in Supabase (NO property_id for general uploads)
+            doc_storage = DocumentStorageService()
+            success, doc_id, error = doc_storage.create_document({
+                'id': document_id,
+                'original_filename': filename,
+                's3_path': s3_key,
+                'file_type': file.content_type,
+                'file_size': file.content_length or 0,
+                'uploaded_by_user_id': str(current_user.id),
+                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
+                'business_uuid': business_uuid_str,  # Also store as UUID type
+                'status': 'uploaded',
+                'property_id': None  # General uploads are not linked to properties initially
+            })
+            
+            if not success:
+                logger.error(f"Failed to create document in Supabase: {error}")
+                # Try to clean up S3 file
+                try:
+                    s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
+                except:
+                    pass
+                return jsonify({'error': f'Failed to create document in Supabase: {error}'}), 500
+            
+            logger.info(f"✅ Document {doc_id} created in Supabase documents table")
+            logger.info(f"🔄 [UPLOAD] Queuing FULL processing pipeline for document {doc_id}")
+            
+            # ALWAYS trigger full processing pipeline (classification → extraction → embedding)
+            try:
+                # Queue full processing task (process_document_task → process_document_classification → full extraction)
+                task = process_document_task.delay(
+                    document_id=doc_id,
+                    file_content=file_content,
+                    original_filename=filename,
+                    business_id=str(business_uuid_str)
+                )
+                logger.info(f"🔄 [UPLOAD] ✅ Queued full processing task {task.id} for document {doc_id}")
+                logger.info(f"   Pipeline: classification → extraction → embedding")
+            except Exception as e:
+                logger.error(f"❌ [UPLOAD] Failed to queue full processing task: {e}", exc_info=True)
+                # Don't fail the upload - document is already created and uploaded
+                # But log this as a critical error since processing won't happen
+            
+            # Success - document created in Supabase and full processing queued
+            return jsonify({
+                'success': True,
+                'document_id': doc_id,
+                'message': 'Document uploaded and full processing pipeline queued.',
+                'status': 'uploaded',
+                'processing_queued': True,  # Always true for this endpoint
+                'pipeline': 'full'  # Indicate this uses the full pipeline
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Failed to create document record in Supabase: {e}", exc_info=True)
+            # Try to clean up S3 file if database record creation fails
+            try:
+                s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
+            except:
+                pass
+            response = jsonify({'error': f'Failed to create document record: {str(e)}'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
+            
+    except Exception as e:
+        logger.error(f"Document upload failed: {e}")
+        response = jsonify({'error': str(e)})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
 
 @views.route('/api/documents/temp-preview', methods=['POST'])
 @login_required
@@ -2158,6 +2280,71 @@ def test_s3_upload():
         
     except Exception as e:
         return jsonify({'error': f'S3 upload failed: {str(e)}'}), 500
+
+@views.route('/api/documents', methods=['GET'])
+@login_required
+def get_documents():
+    """
+    Fetches all documents associated with the current user's business.
+    """
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+
+    documents = (
+        Document.query
+        .filter_by(business_id=UUID(business_uuid_str))
+        .order_by(Document.created_at.desc())
+        .all()
+    )
+    
+    return jsonify([doc.serialize() for doc in documents])
+
+@views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
+def delete_document_standard(document_id):
+    """
+    Standardized deletion endpoint for documents.
+    Matches RESTful pattern: /api/documents/<id> (DELETE)
+    Deletes a document from S3, Supabase stores, and its metadata record from the database.
+    """
+    # Handle CORS preflight - MUST be first, before authentication check
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Require login for actual DELETE request
+    if not current_user.is_authenticated:
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 401
+    
+    logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
+    result = _perform_document_deletion(document_id)
+    
+    # Ensure CORS headers are present in the response
+    if isinstance(result, tuple):
+        response_obj, status_code = result
+    else:
+        response_obj = result
+        status_code = 200
+    
+    if hasattr(response_obj, 'headers'):
+        response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
+        response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    
+    return result
 
 @views.route('/api/documents/<uuid:document_id>/processing-history', methods=['GET'])
 @login_required
@@ -2684,25 +2871,6 @@ def api_chat(id):
 def dashboard():
     return render_template("dashboard.html", user=current_user)
 
-@views.route('/api/documents', methods=['GET'])
-@login_required
-def get_documents():
-    """
-    Fetches all documents associated with the current user's business.
-    """
-    business_uuid_str = _ensure_business_uuid()
-    if not business_uuid_str:
-        return jsonify({'error': 'User is not associated with a business'}), 400
-
-    documents = (
-        Document.query
-        .filter_by(business_id=UUID(business_uuid_str))
-        .order_by(Document.created_at.desc())
-        .all()
-    )
-    
-    return jsonify([doc.serialize() for doc in documents])
-
 @views.route('/api/files', methods=['GET'])
 @login_required
 def get_files():
@@ -2727,10 +2895,19 @@ def get_files():
         logger.error(f"Error fetching documents from Supabase: {e}")
         return jsonify({'error': str(e)}), 500
 
+@views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
+@login_required
+def delete_document(document_id):
+    """
+    Legacy deletion endpoint (backward compatibility).
+    Use /api/documents/<uuid:document_id> instead for consistency.
+    """
+    return _perform_document_deletion(document_id)
+
 @views.route('/api/files/<uuid:file_id>', methods=['DELETE', 'OPTIONS'])
 def delete_file(file_id):
     """
-    Alias for /api/document/<uuid:document_id> DELETE - TypeScript frontend compatibility.
+    Alias for /api/documents/<uuid:document_id> DELETE - TypeScript frontend compatibility.
     Deletes a document from S3, Supabase stores, and its metadata record from the database.
     """
     if request.method == 'OPTIONS':
@@ -2741,237 +2918,78 @@ def delete_file(file_id):
     if not current_user.is_authenticated:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    return delete_document(file_id)
+    return _perform_document_deletion(file_id)
 
-@views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
-@login_required
-def delete_document(document_id):
+def _perform_document_deletion(document_id):
     """
-    Deletes a document from S3, Supabase stores, and its metadata record from the database.
-    """
-    # Get document from Supabase (not local PostgreSQL)
-    user_business_uuid = _normalize_uuid_str(getattr(current_user, "business_id", None)) or _ensure_business_uuid()
+    Centralized document deletion logic.
+    Uses UnifiedDeletionService for complete deletion from S3, Supabase, and all related data stores.
     
+    Args:
+        document_id: UUID of the document to delete
+        
+    Returns:
+        Flask Response with deletion results
+    """
+    # Authentication and authorization checks
+    company_name = getattr(current_user, "company_name", None)
+    if not company_name:
+        logger.warning("Current user has no company_name; denying delete request.")
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    user_business_uuid = _ensure_business_uuid()
     if not user_business_uuid:
         logger.warning("Current user has no business UUID; denying delete request.")
         return jsonify({'error': 'Unauthorized'}), 403
-    
-    # Get document from Supabase
+
+    # Get document from Supabase to verify ownership and get S3 path
     from .services.document_storage_service import DocumentStorageService
     doc_storage = DocumentStorageService()
-    success, document_data, error = doc_storage.get_document(str(document_id), user_business_uuid)
+    success, document_data, error = doc_storage.get_document(str(document_id), company_name)
     
     if not success:
         if error == "Document not found":
             return jsonify({'error': 'Document not found'}), 404
-        else:
-            return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
+        return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
     
-    # Extract document fields
+    # Extract document fields and verify ownership
     s3_path = document_data.get('s3_path')
     original_filename = document_data.get('original_filename')
-    document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid') or document_data.get('business_id'))
+    document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid'))
     
-    # Verify business ownership
-    if document_business_uuid != user_business_uuid:
+    if not document_business_uuid or document_business_uuid != user_business_uuid:
         logger.warning(
             "Document business mismatch (doc=%s, user=%s). Denying deletion.",
             document_business_uuid,
             user_business_uuid,
         )
         return jsonify({'error': 'Unauthorized'}), 403
-    
+
     if not s3_path:
         logger.error(f"Document {document_id} missing s3_path")
         return jsonify({'error': 'Document missing S3 path'}), 400
-
-    deletion_results = {
-        's3': False,
-        'supabase': False,
-        'postgresql': False
-    }
-
-    # 1. Get AWS and API Gateway configuration from environment
-    try:
-        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
-        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
-        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
-        bucket_name = os.environ['S3_UPLOAD_BUCKET']
-    except KeyError as e:
-        error_message = f"Missing environment variable: {e}"
-        print(error_message, file=sys.stderr)
-        return jsonify({'error': 'Server is not configured for file deletion.'}), 500
     
-    logger.info("=" * 100)
-    logger.info(f"VIEWS.PY - DELETE DOCUMENT ENDPOINT CALLED")
-    logger.info(f"Document ID: {document_id}")
-    logger.info(f"Filename: {original_filename}")
-    logger.info(f"Business ID: {document_business_uuid}")
-    logger.info(f"User: {current_user.email}")
-    logger.info("=" * 100)
+    logger.info(f"🗑️ DELETE document {document_id} ({original_filename}) by {current_user.email}")
     
-    # 2. Delete the object from S3
-    logger.info("[S3 DELETION]")
-    try:
-        s3_key = s3_path
-        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
-        service = 'execute-api'
-        aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
-
-        logger.info(f"   S3 Key: {s3_key}")
-        response = requests.delete(final_url, auth=aws_auth)
-        response.raise_for_status()
-        deletion_results['s3'] = True
-        logger.info(f"   SUCCESS: Deleted S3 file: {s3_key}")
-
-    except requests.exceptions.RequestException as e:
-        error_message = f"Failed to delete file from S3: {e}"
-        logger.error(f"   FAILED: S3 deletion - {e}")
-        # Don't return error - continue with other deletions
-
-    # 3. Delete from ALL database stores (Supabase + PostgreSQL properties)
-    logger.info("[DATABASE STORES DELETION]")
-    try:
-        deletion_service = DeletionService()
-        all_stores_success, store_results = deletion_service.delete_document_from_all_stores(
-            str(document_id), 
-            document_business_uuid
-        )
-        
-        # Update deletion results with individual store statuses
-        deletion_results.update(store_results)
-        
-        if all_stores_success:
-            logger.info(f"SUCCESS: All database stores deleted for document {document_id}")
-        else:
-            logger.warning(f"PARTIAL: Some stores failed for document {document_id}")
-            logger.warning(f"   Store results: {store_results}")
-            
-    except Exception as e:
-        error_message = f"Failed to delete from data stores: {e}"
-        logger.error(f"   FAILED: Database stores deletion - {e}")
-        import traceback
-        traceback.print_exc()
-        # Don't return error - continue with PostgreSQL document deletion
-
-    # 4. Collect impacted properties, then delete relationships FIRST (before document)
-    logger.info("[SUPABASE DOCUMENT RELATIONSHIPS DELETION]")
-    impacted_property_ids = set()
-    try:
-        from .services.supabase_client_factory import get_supabase_client
-        supabase = get_supabase_client()
-        
-        # Get relationships from Supabase
-        relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', str(document_id)).execute()
-        relationships = relationships_result.data if relationships_result.data else []
-        relationship_count = len(relationships)
-        impacted_property_ids = {str(rel.get('property_id')) for rel in relationships if rel.get('property_id')}
-        logger.info(f"   Found {relationship_count} document relationships; impacted properties: {len(impacted_property_ids)}")
-        
-        # Delete all document relationships for this document from Supabase
-        if relationship_count > 0:
-            delete_result = supabase.table('document_relationships').delete().eq('document_id', str(document_id)).execute()
-            logger.info(f"   SUCCESS: Deleted {relationship_count} document relationships from Supabase")
-        else:
-            logger.info(f"   No document relationships found for this document")
-    except Exception as e:
-        logger.warning(f"   WARNING: Failed to delete document relationships - {e}")
-        import traceback
-        traceback.print_exc()
-        # Continue anyway - don't fail the whole deletion
+    # Use UnifiedDeletionService for all deletion operations
+    from .services.unified_deletion_service import UnifiedDeletionService
+    deletion_service = UnifiedDeletionService()
     
-    # 5. Delete vectors linked to this document (document vectors + property vectors by source doc)
-    logger.info("[VECTORS DELETION]")
-    try:
-        from .services.vector_service import SupabaseVectorService
-        vector_service = SupabaseVectorService()
-
-        dv_ok = vector_service.delete_document_vectors(str(document_id))
-        logger.info(f"   Deleted document vectors for {document_id}: {'OK' if dv_ok else 'FAIL'}")
-
-        # Attempt fine-grained property vector deletion per impacted property
-        pv_any_ok = False
-        if impacted_property_ids:
-            for pid in impacted_property_ids:
-                pv_ok = vector_service.delete_property_vectors_by_source_document(str(document_id), pid)
-                pv_any_ok = pv_any_ok or pv_ok
-                logger.info(f"   Property vectors by source doc for property {pid}: {'OK' if pv_ok else 'SKIP/FAIL'}")
-        else:
-            # If we don't know which property was impacted, attempt global delete by source document id
-            pv_any_ok = vector_service.delete_property_vectors_by_source_document(str(document_id))
-            logger.info(f"   Property vectors by source doc (no property scope): {'OK' if pv_any_ok else 'SKIP/FAIL'}")
-    except Exception as e:
-        logger.warning(f"   WARNING: Vector deletion step failed - {e}")
-
-    # 6. Delete local PostgreSQL processing history (after relationships)
-    logger.info("[POSTGRESQL PROCESSING HISTORY DELETION]")
-    try:
-        from .models import DocumentProcessingHistory
-        history_count = DocumentProcessingHistory.query.filter_by(document_id=document_id).count()
-        logger.info(f"   Found {history_count} processing history entries")
-        
-        # Delete all processing history entries for this document
-        DocumentProcessingHistory.query.filter_by(document_id=document_id).delete()
-        db.session.commit()
-        logger.info(f"   SUCCESS: Deleted {history_count} processing history entries")
-    except Exception as e:
-        logger.warning(f"   WARNING: Failed to delete processing history - {e}")
-        db.session.rollback()
-        # Continue anyway - don't fail the whole deletion
+    result = deletion_service.delete_document_complete(
+        document_id=str(document_id),
+        business_id=document_business_uuid,
+        s3_path=s3_path,
+        delete_s3=True,
+        recompute_properties=True,
+        cleanup_orphans=True
+    )
     
-    # 7. Recompute property hubs impacted by this deletion
-    logger.info("[PROPERTY RECOMPUTE AFTER DOCUMENT DELETION]")
-    try:
-        if impacted_property_ids:
-            from .services.supabase_property_hub_service import SupabasePropertyHubService
-            hub_service = SupabasePropertyHubService()
-            for pid in impacted_property_ids:
-                res = hub_service.recompute_property_after_document_deletion(pid, str(document_id))
-                logger.info(f"   Recomputed property {pid}: {res}")
-        else:
-            logger.info("   No impacted properties detected; skipping recompute")
-    except Exception as e:
-        logger.warning(f"   WARNING: Property recompute failed - {e}")
-
-    # 8. Remove Supabase property hub records when no documents remain
-    logger.info("[SUPABASE PROPERTY HUB CLEANUP]")
-    orphaned_supabase_props = _cleanup_orphan_supabase_properties(impacted_property_ids)
-    if orphaned_supabase_props:
-        logger.info(f"   Removed Supabase property hub data for properties: {orphaned_supabase_props}")
-    else:
-        logger.info("   No Supabase properties required cleanup")
-
-    # 8. PostgreSQL document record deletion (SKIPPED - documents are in Supabase)
-    # Documents are now stored in Supabase, not local PostgreSQL
-    # The deletion service already handles Supabase document deletion
-    logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
-    logger.info("   SKIPPED: Documents are stored in Supabase, not local PostgreSQL")
-    deletion_results['postgresql'] = True  # Mark as success since there's nothing to delete
-
-    # 9. Return comprehensive results
-    success_count = sum(deletion_results.values())
-    total_operations = len(deletion_results)
+    # Build response
+    response_data = result.to_dict()
+    response_data['document_id'] = str(document_id)
+    response_data['results'] = result.operations  # For backwards compatibility
     
-    logger.info("=" * 100)
-    logger.info(f"FINAL DELETION RESULTS:")
-    logger.info(f"   Total operations: {total_operations}")
-    logger.info(f"   Successful: {success_count}")
-    logger.info(f"   Failed: {total_operations - success_count}")
-    logger.info(f"   Details: {deletion_results}")
-    logger.info("=" * 100)
-    
-    response_data = {
-        'message': f'Deletion completed: {success_count}/{total_operations} operations successful',
-        'results': deletion_results,
-        'document_id': str(document_id)
-    }
-    
-    if success_count == total_operations:
-        return jsonify(response_data), 200
-    else:
-        response_data['warning'] = 'Some deletion operations failed'
-        return jsonify(response_data), 207  # 207 Multi-Status
+    return jsonify(response_data), result.http_status
 
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
@@ -4540,6 +4558,18 @@ def download_file():
             )
             
         except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            
+            # Handle "file not found" errors gracefully with 404
+            if error_code in ('NoSuchKey', '404', 'NotFound'):
+                logger.warning(f"File not found in S3: {s3_path}")
+                return jsonify({
+                    'error': 'File not found',
+                    'message': 'The requested file does not exist or has been deleted.',
+                    's3_path': s3_path
+                }), 404
+            
+            # Log and return 500 for other S3 errors
             logger.error(f"Error downloading file from S3: {e}")
             return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
             
