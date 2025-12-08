@@ -56,25 +56,80 @@ class ProcessingHistoryService:
                         'started_at': started_at.isoformat(),
                         'step_metadata': step_metadata or {}
                     }
-                    result = self.supabase.table('document_processing_history').insert(history_data).execute()
-                    if result.data:
-                        logger.debug(f"✅ Logged to Supabase: {step_name} start for document {document_id}")
+                    # FIXED: Handle duplicate key violations gracefully
+                    try:
+                        result = self.supabase.table('document_processing_history').insert(history_data).execute()
+                        if result.data:
+                            logger.debug(f"✅ Logged to Supabase: {step_name} start for document {document_id}")
+                    except Exception as insert_error:
+                        # Check if it's a duplicate key error
+                        error_str = str(insert_error).lower()
+                        if 'duplicate' in error_str or 'unique' in error_str or 'already exists' in error_str:
+                            logger.warning(f"⚠️ Duplicate history record detected, using existing: {history_id}")
+                            # Try to fetch existing record
+                            try:
+                                existing = self.supabase.table('document_processing_history').select('id').eq('id', history_id).execute()
+                                if existing.data:
+                                    logger.info(f"✅ Using existing history record: {history_id}")
+                                else:
+                                    # Generate new ID and retry once
+                                    history_id = str(uuid.uuid4())
+                                    history_data['id'] = history_id
+                                    result = self.supabase.table('document_processing_history').insert(history_data).execute()
+                                    if result.data:
+                                        logger.info(f"✅ Retried with new ID: {history_id}")
+                            except Exception as retry_error:
+                                logger.warning(f"⚠️ Failed to handle duplicate key: {retry_error}")
+                        else:
+                            raise  # Re-raise if not a duplicate key error
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to log to Supabase (non-fatal): {e}")
             
-            # Write to local PostgreSQL
-            history_record = DocumentProcessingHistory(
-                id=history_id,
-                document_id=document_id,
-                step_name=step_name,
-                step_status='started',
-                step_message=f"Step started: {step_name}",
-                started_at=started_at,
-                step_metadata=step_metadata or {}
-            )
+            # Write to local PostgreSQL (with duplicate handling)
+            try:
+                history_record = DocumentProcessingHistory(
+                    id=history_id,
+                    document_id=document_id,
+                    step_name=step_name,
+                    step_status='started',
+                    step_message=f"Step started: {step_name}",
+                    started_at=started_at,
+                    step_metadata=step_metadata or {}
+                )
 
-            db.session.add(history_record)
-            db.session.commit()
+                db.session.add(history_record)
+                db.session.commit()
+            except Exception as db_error:
+                # Handle duplicate key in local DB
+                error_str = str(db_error).lower()
+                if 'duplicate' in error_str or 'unique' in error_str or 'already exists' in error_str:
+                    logger.warning(f"⚠️ Duplicate history record in local DB, checking existing...")
+                    db.session.rollback()
+                    # Try to find existing record
+                    existing = DocumentProcessingHistory.query.filter_by(
+                        document_id=document_id,
+                        step_name=step_name,
+                        step_status='started'
+                    ).first()
+                    if existing:
+                        history_id = str(existing.id)
+                        logger.info(f"✅ Using existing history record: {history_id}")
+                    else:
+                        # Generate new ID and retry
+                        history_id = str(uuid.uuid4())
+                        history_record = DocumentProcessingHistory(
+                            id=history_id,
+                            document_id=document_id,
+                            step_name=step_name,
+                            step_status='started',
+                            step_message=f"Step started: {step_name}",
+                            started_at=started_at,
+                            step_metadata=step_metadata or {}
+                        )
+                        db.session.add(history_record)
+                        db.session.commit()
+                else:
+                    raise  # Re-raise if not a duplicate key error
 
             logger.info(f"✅ Logged start of {step_name} step for document {document_id}")
             return history_id
@@ -82,6 +137,8 @@ class ProcessingHistoryService:
         except Exception as e:
             logger.error(f"❌ Error logging start of {step_name} step for document {document_id}: {e}")
             db.session.rollback()
+            # FIXED: Return None but log as non-fatal (pipeline should continue)
+            logger.warning(f"⚠️ History logging failed but continuing pipeline (non-fatal)")
             return None
 
     def log_step_completion(self, history_id: str, step_message: str = None, step_metadata: Optional[Dict[str, Any]] = None) -> bool:
@@ -96,6 +153,10 @@ class ProcessingHistoryService:
         Returns:
             Success status
         """
+        # FIXED: Handle None history_id gracefully (non-fatal)
+        if not history_id:
+            logger.warning(f"⚠️ Cannot log step completion: history_id is None (non-fatal, continuing)")
+            return False
 
         try:
             completed_at = datetime.now(timezone.utc)
@@ -120,7 +181,7 @@ class ProcessingHistoryService:
             # Update local PostgreSQL
             history_record = DocumentProcessingHistory.query.get(history_id)
             if not history_record:
-                logger.error(f"❌ History record not found: {history_id}")
+                logger.warning(f"⚠️ History record not found: {history_id} (non-fatal, continuing)")
                 return False
 
             history_record.step_status = 'completed'  # Lowercase to match Supabase constraint

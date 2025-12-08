@@ -16,9 +16,14 @@ class LLMConfig(BaseSettings):
 
     # OpenAI 
     openai_api_key: str = os.environ.get('OPENAI_API_KEY')
-    openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o')
+    openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-5-mini')
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+
+    # Voyage AI embeddings
+    voyage_api_key: str = os.getenv("VOYAGE_API_KEY", "")
+    voyage_embedding_model: str = os.getenv("VOYAGE_EMBEDDING_MODEL", "voyage-law-2")
+    use_voyage_embeddings: bool = os.getenv("USE_VOYAGE_EMBEDDINGS", "true").lower() == "true"
 
     # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
@@ -30,6 +35,12 @@ class LLMConfig(BaseSettings):
     vector_top_k: int = int(os.getenv("VECTOR_TOP_K", "30"))
     similarity_threshold: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.35"))
     min_similarity_threshold: float = float(os.getenv("MIN_SIMILARITY_THRESHOLD", "0.15"))
+
+    # Chunk Expansion (adjacency-based context retrieval)
+    # Expands retrieved chunks with adjacent neighbors to improve accuracy for multi-paragraph concepts
+    # (e.g., lease clauses, covenants) that are split across multiple chunks during chunking
+    chunk_expansion_enabled: bool = os.getenv("CHUNK_EXPANSION_ENABLED", "true").lower() == "true"
+    chunk_expansion_size: int = int(os.getenv("CHUNK_EXPANSION_SIZE", "2"))  # ±2 chunks by default
 
     # Cohere Reranker
     cohere_api_key: str = os.getenv("COHERE_API_KEY", "")

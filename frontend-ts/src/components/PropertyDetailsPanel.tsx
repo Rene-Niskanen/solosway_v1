@@ -1389,7 +1389,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const handleDeleteDocument = async (documentId: string) => {
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      const response = await fetch(`${backendUrl}/api/document/${documentId}`, {
+      const response = await fetch(`${backendUrl}/api/documents/${documentId}`, {
         method: 'DELETE',
         credentials: 'include',
         headers: {
@@ -1397,7 +1397,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         },
       });
 
-      if (!response.ok) {
+      // Handle 404 as success - document is already gone
+      if (response.status === 404) {
+        console.info(`Document ${documentId} was already deleted, removing from UI`);
+        // Fall through to remove from local state
+      } else if (!response.ok) {
         throw new Error(`Failed to delete document: ${response.status}`);
       }
 
@@ -1420,9 +1424,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       if (selectedCardIndex !== null && filteredDocuments[selectedCardIndex]?.id === documentId) {
         setSelectedCardIndex(null);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error deleting document:', err);
-      alert(`Failed to delete document: ${err.message}`);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      alert(`Failed to delete document: ${errorMessage}`);
     }
   };
 
@@ -3423,7 +3428,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                   Promise.all(
                                     documentsToDelete.map(async (docId) => {
                                       try {
-                                        const response = await fetch(`${backendUrl}/api/document/${docId}`, {
+                                        const response = await fetch(`${backendUrl}/api/documents/${docId}`, {
                                           method: 'DELETE',
                                           credentials: 'include',
                                           headers: { 'Content-Type': 'application/json' },

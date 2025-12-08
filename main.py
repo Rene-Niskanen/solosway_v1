@@ -18,9 +18,9 @@ async def initialize_langgraph():
     try:
         from backend.llm.graphs.main_graph import initialize_graph
         await initialize_graph()
-        logger.info("✅ LangGraph initialized successfully on app startup")
+        logger.info(" LangGraph initialized successfully on app startup")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize LangGraph: {e}", exc_info=True)
+        logger.error(f" Failed to initialize LangGraph: {e}", exc_info=True)
         # Continue anyway - app can still run without checkpointer
 
 # Only initialize LangGraph when actually running the server (not for Flask CLI commands)

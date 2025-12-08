@@ -1,3 +1,26 @@
+"""
+DEPRECATED: This module is deprecated and will be removed in a future version.
+
+Use UnifiedDeletionService instead:
+
+    from backend.services.unified_deletion_service import UnifiedDeletionService
+    
+    service = UnifiedDeletionService()
+    result = service.delete_document_complete(
+        document_id="...",
+        business_id="...",
+        s3_path="..."
+    )
+
+The UnifiedDeletionService provides:
+- Complete deletion in FK-safe order
+- Proper error tracking with DeletionResult
+- S3 deletion included
+- Property recomputation
+- Orphan property cleanup
+"""
+
+import warnings
 import requests
 import uuid
 import logging
@@ -8,9 +31,30 @@ from .supabase_client_factory import get_supabase_client
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# Emit deprecation warning when module is imported
+warnings.warn(
+    "deletion_service.DeletionService is deprecated. "
+    "Use unified_deletion_service.UnifiedDeletionService instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
+
 class DeletionService:
+    """
+    DEPRECATED: Use UnifiedDeletionService instead.
+    
+    This class is maintained for backwards compatibility only and will be
+    removed in a future version.
+    """
+    
     def __init__(self):
-        pass
+        warnings.warn(
+            "DeletionService is deprecated. Use UnifiedDeletionService instead. "
+            "See unified_deletion_service.py for the new implementation.",
+            DeprecationWarning,
+            stacklevel=2
+        )
     
     def delete_document_from_all_stores(self, document_id, business_id):
         """
