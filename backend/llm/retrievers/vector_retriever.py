@@ -182,6 +182,9 @@ class VectorDocumentRetriever:
             # Cache document summaries to avoid repeated queries
             document_summaries_cache = {}
             
+            # Cache document filenames for documents missing original_filename from RPC
+            document_filenames_cache = {}
+            
             # NEW: Batch expand chunks if enabled (more efficient than expanding one-by-one)
             expanded_chunks_cache = {}
             if config.chunk_expansion_enabled and rows:
@@ -209,6 +212,32 @@ class VectorDocumentRetriever:
                     except Exception as e:
                         logger.warning(f"Chunk expansion failed, falling back to original chunks: {e}")
                         expanded_chunks_cache = {}
+            
+            # Batch fetch missing filenames for documents that don't have original_filename from RPC
+            doc_ids_missing_filename = []
+            for row in rows:
+                doc_id = row.get("document_id")
+                if doc_id and not row.get("original_filename"):
+                    doc_ids_missing_filename.append(doc_id)
+            
+            if doc_ids_missing_filename:
+                try:
+                    # Batch fetch filenames for documents missing them
+                    unique_doc_ids = list(set(doc_ids_missing_filename))
+                    filename_results = self.supabase.table('documents')\
+                        .select('id, original_filename')\
+                        .in_('id', unique_doc_ids)\
+                        .execute()
+                    
+                    for doc_row in filename_results.data:
+                        doc_id = doc_row.get('id')
+                        filename = doc_row.get('original_filename')
+                        if doc_id and filename:
+                            document_filenames_cache[doc_id] = filename
+                    
+                    logger.debug(f"Fetched {len(document_filenames_cache)} missing filenames from documents table")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch missing filenames: {e}")
             
             for row in rows:
                 doc_id = row.get("document_id")
@@ -310,10 +339,16 @@ class VectorDocumentRetriever:
                 # Combine all parts
                 full_content = "\n\n".join(content_parts)
                 
+                # Get original_filename from row, or fallback to cache if missing
+                doc_id = row.get("document_id")
+                original_filename = row.get("original_filename")
+                if not original_filename and doc_id:
+                    original_filename = document_filenames_cache.get(doc_id)
+                
                 results.append(
                     RetrievedDocument(
                         vector_id=row["id"],
-                        doc_id=row["document_id"],
+                        doc_id=doc_id,
                         property_id=row.get("property_id"),
                         content=full_content,  # Now includes document summary + chunk
                         classification_type=row.get("classification_type", ""),
@@ -324,7 +359,7 @@ class VectorDocumentRetriever:
                         source="vector",
                         address_hash=row.get("address_hash"),
                         business_id=row.get("business_uuid"),
-                        original_filename=row.get("original_filename"),
+                        original_filename=original_filename,
                         property_address=row.get("property_address") or row.get("formatted_address"),
                     )
                 )

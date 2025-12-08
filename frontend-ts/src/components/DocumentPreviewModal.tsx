@@ -28,6 +28,8 @@ interface DocumentPreviewModalProps {
   onAddAttachment?: () => void;
   isMapVisible?: boolean;
   isSidebarCollapsed?: boolean;
+  chatPanelWidth?: number; // Width of the SideChatPanel in pixels
+  sidebarWidth?: number; // Width of the sidebar in pixels
 }
 
 export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
@@ -40,7 +42,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   onTabReorder,
   onAddAttachment,
   isMapVisible = false,
-  isSidebarCollapsed = false
+  isSidebarCollapsed = false,
+  chatPanelWidth = 0,
+  sidebarWidth = 56
 }) => {
   const file = files[activeTabIndex] || null;
   const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
@@ -78,7 +82,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const PADDING_X = 0.02;  // 2% horizontal padding
     const PADDING_Y = 0.01;  // 1% vertical padding
     
-    let { left, top, width, height, page, original_page } = bbox;
+    let { left, top, width, height, page } = bbox;
+    const original_page = (bbox as any).original_page; // Optional field, may not be in type
     
     // Only expand if the BBOX is tiny (likely a rendering issue, not a precise match)
     const isTooSmall = width < 0.02 || height < 0.005;
@@ -120,7 +125,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       console.log('📐 [BBOX] Using precise bbox with padding:', { left, top, width, height });
     }
     
-    return { left, top, width, height, page, original_page };
+    return { left, top, width, height, page, ...(original_page !== undefined && { original_page }) };
   }, [fileHighlight?.bbox]);
   
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
@@ -1398,14 +1403,16 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               ...(isResizing ? { willChange: 'width, height, left, top' } : {}),
               ...(isMapVisible 
                 ? { 
-                    // Calculate left position based on sidebar state or resize position
-                    // Sidebar is 40px (w-10) on mobile, 56px (lg:w-14) on desktop when expanded
-                    // Add spacing after sidebar to match top spacing proportionally (24px to match 16px top)
+                    // Position to the right of the chat panel when chat is open
+                    // Chat panel is positioned at sidebarWidth, with width chatPanelWidth
+                    // Add 16px spacing between chat panel and document preview
                     left: modalPosition?.left !== undefined 
                       ? `${modalPosition.left}px`
-                      : (isSidebarCollapsed 
-                          ? '24px' 
-                          : 'calc(max(40px, 56px) + 24px)'), // Responsive: 40px mobile, 56px desktop + 24px spacing (1.5x top spacing)
+                      : (chatPanelWidth > 0 
+                          ? `${sidebarWidth + chatPanelWidth + 16}px` // Position to the right of chat panel
+                          : (isSidebarCollapsed 
+                              ? '24px' 
+                              : 'calc(max(40px, 56px) + 24px)')), // Fallback: after sidebar
                     top: modalPosition?.top !== undefined 
                       ? `${modalPosition.top}px`
                       : '16px', 

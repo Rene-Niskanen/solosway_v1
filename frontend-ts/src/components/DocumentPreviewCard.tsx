@@ -11,7 +11,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface DocumentMetadata {
   doc_id: string;
-  original_filename: string;
+  original_filename?: string | null; // Can be null when backend doesn't have filename
   classification_type: string;
   page_range?: string;
   page_numbers?: number[];
@@ -52,10 +52,18 @@ const LoadingIndicator: React.FC = () => (
   </div>
 );
 
-// Get file icon based on extension - OpenAI style refined icons
-const getFileIcon = (filename: string, size: number = 13) => {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
+// Get file icon based on extension or classification type - OpenAI style refined icons
+const getFileIcon = (filename: string | null | undefined, size: number = 13, classificationType?: string) => {
+  const ext = filename?.split('.').pop()?.toLowerCase() || '';
   const style = { color: '#8E94A0', opacity: 0.75, strokeWidth: 1.5 };
+  
+  // Check classification type for common document types
+  if (classificationType) {
+    const classLower = classificationType.toLowerCase();
+    if (classLower.includes('valuation') || classLower.includes('report') || classLower.includes('pdf')) {
+      return <FileText size={size} style={style} />;
+    }
+  }
   
   if (['pdf'].includes(ext)) {
     return <FileText size={size} style={style} />;
@@ -110,15 +118,22 @@ const renderPdfThumbnail = async (arrayBuffer: ArrayBuffer): Promise<string | nu
  * Shows loading animation + filename + actual document preview.
  */
 export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metadata, onClick }) => {
-  const { doc_id, original_filename, s3_path, download_url } = metadata;
+  const { doc_id, original_filename, classification_type, s3_path, download_url } = metadata;
+  
+  // Build display filename with fallbacks: original_filename -> classification_type label -> "Document"
+  const classificationLabel = classification_type 
+    ? classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+    : '';
+  const displayFilename = original_filename || classificationLabel || 'Document';
   
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pdfThumbnail, setPdfThumbnail] = useState<string | null>(null);
   
-  // Determine file type
-  const isImage = original_filename?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
-  const isPDF = original_filename?.toLowerCase().endsWith('.pdf');
+  // Determine file type - use download_url as fallback for type detection
+  const fileToCheck = original_filename || download_url || '';
+  const isImage = fileToCheck?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
+  const isPDF = fileToCheck?.toLowerCase().endsWith('.pdf') || classification_type === 'valuation_report' || classification_type?.includes('pdf');
   
   // Fetch document and generate preview
   useEffect(() => {
@@ -307,7 +322,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
               flex: 1
             }}
           >
-            {original_filename}
+            {displayFilename}
           </span>
         </div>
         
@@ -362,7 +377,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
               backgroundColor: '#F9FAFB',
               gap: '8px'
             }}>
-              {getFileIcon(original_filename, 32)}
+              {getFileIcon(original_filename, 32, classification_type)}
               <span style={{
                 fontSize: '10px',
                 color: '#9CA3AF',
@@ -404,7 +419,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
 export const StackedDocumentPreviews: React.FC<{
   documents: Array<{
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null; // Can be null
     classification_type: string;
     page_range?: string;
     page_numbers?: number[];
@@ -450,6 +465,12 @@ export const StackedDocumentPreviews: React.FC<{
         // Higher cards drop from further away for a cascading effect
         const dropDistance = (totalDocs - index) * 25;
         
+        // Build display filename with fallbacks: original_filename -> classification_type label -> "Document"
+        const classificationLabel = doc.classification_type 
+          ? doc.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          : '';
+        const displayFilename = doc.original_filename || classificationLabel || 'Document';
+        
         return (
           <motion.div
             key={doc.doc_id || `stacked-doc-${index}`}
@@ -489,7 +510,7 @@ export const StackedDocumentPreviews: React.FC<{
           >
             {/* File icon */}
             <div style={{ flexShrink: 0, opacity: 0.5 }}>
-              {getFileIcon(doc.original_filename, 14)}
+              {getFileIcon(doc.original_filename, 14, doc.classification_type)}
             </div>
             <span
               style={{
@@ -504,7 +525,7 @@ export const StackedDocumentPreviews: React.FC<{
                 flex: 1
               }}
             >
-              {doc.original_filename}
+              {displayFilename}
             </span>
           </motion.div>
         );

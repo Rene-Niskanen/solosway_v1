@@ -68,7 +68,7 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
 const DocumentPreviewOverlay: React.FC<{
   document: {
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null;
     classification_type: string;
     page_range?: string;
     page_numbers?: number[];
@@ -84,9 +84,13 @@ const DocumentPreviewOverlay: React.FC<{
   const [error, setError] = React.useState<string | null>(null);
   const [blobType, setBlobType] = React.useState<string | null>(null);
   
-  // Determine file type from filename
+  // Determine file type from filename or classification_type
   const fileName = document.original_filename || '';
-  const isPDF = fileName.toLowerCase().endsWith('.pdf');
+  const classType = document.classification_type?.toLowerCase() || '';
+  const isPDF = fileName.toLowerCase().endsWith('.pdf') || 
+                classType.includes('valuation') || 
+                classType.includes('report') ||
+                classType.includes('pdf');
   const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i.test(fileName);
   const isDOCX = /\.(doc|docx)$/i.test(fileName);
   
@@ -298,7 +302,7 @@ interface CitationChunkData {
 
 interface CitationDataType {
   doc_id: string;
-  original_filename: string;
+  original_filename?: string | null; // Can be null when backend doesn't have filename
   property_address: string;
   page_range: string;
   classification_type: string;
@@ -315,45 +319,69 @@ const CitationLink: React.FC<{
   citationNumber: string;
   citationData: CitationDataType;
   onClick: (data: CitationDataType) => void;
-}> = ({ citationNumber, citationData, onClick }) => (
-  <button
-    onClick={(e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      onClick(citationData);
-    }}
-    style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginLeft: '1px',
-      marginRight: '1px',
-      paddingLeft: '4px',
-      paddingRight: '4px',
-      paddingTop: '1px',
-      paddingBottom: '1px',
-      fontSize: '11px',
-      fontWeight: 500,
-      color: '#2563EB',
-      backgroundColor: '#EFF6FF',
-      borderRadius: '4px',
-      border: 'none',
-      cursor: 'pointer',
-      transition: 'all 0.15s ease',
-      verticalAlign: 'baseline',
-      lineHeight: '1.2'
-    }}
-    onMouseEnter={(e) => {
-      e.currentTarget.style.backgroundColor = '#DBEAFE';
-    }}
-    onMouseLeave={(e) => {
-      e.currentTarget.style.backgroundColor = '#EFF6FF';
-    }}
-    title={citationData.original_filename}
-  >
-    [{citationNumber}]
-  </button>
-);
+}> = ({ citationNumber, citationData, onClick }) => {
+  // Build display name with fallbacks
+  const displayName = citationData.original_filename || 
+    (citationData.classification_type ? citationData.classification_type.replace(/_/g, ' ') : 'Document');
+  
+  return (
+    <button
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick(citationData);
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: '2px',
+        marginRight: '2px',
+        width: '18px',
+        height: '18px',
+        fontSize: '10px',
+        fontWeight: 600,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: 'rgba(0, 0, 0, 0.06)',
+        borderRadius: '50%',
+        border: 'none',
+        cursor: 'pointer',
+        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+        verticalAlign: 'middle',
+        position: 'relative',
+        top: '-1px',
+        lineHeight: 1,
+        letterSpacing: '-0.02em',
+        boxShadow: '0 0 0 0 rgba(0, 0, 0, 0)',
+        transform: 'scale(1)',
+        flexShrink: 0
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.12)';
+        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.9)';
+        e.currentTarget.style.transform = 'scale(1.1)';
+        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.15)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.06)';
+        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.7)';
+        e.currentTarget.style.transform = 'scale(1)';
+        e.currentTarget.style.boxShadow = '0 0 0 0 rgba(0, 0, 0, 0)';
+      }}
+      onMouseDown={(e) => {
+        e.currentTarget.style.transform = 'scale(0.95)';
+      }}
+      onMouseUp={(e) => {
+        e.currentTarget.style.transform = 'scale(1.1)';
+      }}
+      title={`Source: ${displayName}`}
+      aria-label={`Citation ${citationNumber} - ${displayName}`}
+    >
+      {citationNumber}
+    </button>
+  );
+};
 
 // Helper function to render text with clickable citation links
 const renderTextWithCitations = (
@@ -732,6 +760,43 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onQuickStartToggle,
   isQuickStartBarVisible = false // Default to false
 }, ref) => {
+  // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
+  // This prevents artifacts from showing during streaming
+  const cleanResponseText = (text: string): string => {
+    if (!text) return text;
+    
+    let cleaned = text;
+    
+    // First, remove complete EVIDENCE_FEEDBACK tags (including content between tags)
+    const feedbackStartIdx = cleaned.indexOf('<EVIDENCE_FEEDBACK>');
+    if (feedbackStartIdx !== -1) {
+      const feedbackEndIdx = cleaned.indexOf('</EVIDENCE_FEEDBACK>', feedbackStartIdx);
+      if (feedbackEndIdx !== -1) {
+        // Remove the entire tag and its content
+        cleaned = cleaned.substring(0, feedbackStartIdx) + cleaned.substring(feedbackEndIdx + '</EVIDENCE_FEEDBACK>'.length);
+      } else {
+        // No end tag found, remove from start tag onwards
+        cleaned = cleaned.substring(0, feedbackStartIdx);
+      }
+    }
+    
+    // Remove partial EVIDENCE_FEEDBACK tags that might appear during streaming
+    // Match incomplete tags at the end of the string (e.g., "<EVIDENCE_FEEDBACK" or "<EVIDENCE_FEEDBACK>")
+    cleaned = cleaned.replace(/<EVIDENCE_FEEDBACK[^>]*$/g, '');
+    
+    // Remove complete [CHUNK:X] markers (including with PAGE:Y)
+    // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
+    cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
+    
+    // Remove partial CHUNK markers that might appear during streaming
+    // These appear at the end of the string as tokens arrive incrementally
+    // Match patterns like: "[CHUNK:", "[CHUNK:1", "[CHUNK:12", "[CHUNK:1:", "[CHUNK:1:PAGE:1", etc.
+    // Only match if it's at the end of the string (incomplete marker)
+    cleaned = cleaned.replace(/\[CHUNK:\d*(?::PAGE?:\d*)?$/g, '');
+    
+    return cleaned.trim();
+  };
+
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
@@ -1161,7 +1226,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   interface CitationData {
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null;
     property_address: string;
     page_range: string;
     classification_type: string;
@@ -1193,7 +1258,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Document preview state for reasoning step card clicks
   const [previewDocument, setPreviewDocument] = React.useState<{
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null;
     classification_type: string;
     page_range?: string;
     page_numbers?: number[];
@@ -1354,40 +1419,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               messageHistory,
               `session_${Date.now()}`,
               // onToken: Stream each token as it arrives
+              // Don't update state during streaming - just accumulate text locally
+              // This prevents laggy re-renders and ensures smooth final response
               (token: string) => {
                 accumulatedText += token;
-                // Strip any EVIDENCE_FEEDBACK block from displayed text
-                let displayText = accumulatedText;
-                const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
-                if (feedbackStart !== -1) {
-                  displayText = displayText.substring(0, feedbackStart).trim();
-                }
-                setChatMessages(prev => {
-                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: displayText,
-                    isLoading: true,
-                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? responseMessage
-                      : msg
-                  );
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                // No state update during streaming - text will appear only when complete
               },
               // onComplete: Final response received
               (data: any) => {
-                // Clean the summary of any EVIDENCE_FEEDBACK before displaying
-                let finalText = data.summary || accumulatedText || "I found some information for you.";
-                const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
-                if (feedbackIdx !== -1) {
-                  finalText = finalText.substring(0, feedbackIdx).trim();
-                }
+                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
                 
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -1668,7 +1709,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
   const handleDocumentPreviewClick = React.useCallback(async (metadata: {
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null;
     classification_type: string;
     page_range?: string;
     page_numbers?: number[];
@@ -1701,8 +1742,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       const blob = await response.blob();
       
+      // Build display filename with fallbacks
+      const displayFilename = metadata.original_filename || 
+        (metadata.classification_type ? metadata.classification_type.replace(/_/g, ' ') : 'document.pdf');
+      
       // Create a File object from the blob
-      const file = new File([blob], metadata.original_filename, { 
+      const file = new File([blob], displayFilename, { 
         type: blob.type || 'application/pdf'
       });
       
@@ -1710,7 +1755,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const fileData: FileAttachmentData = {
         id: metadata.doc_id,
         file: file,
-        name: metadata.original_filename,
+        name: displayFilename,
         type: blob.type || 'application/pdf',
         size: blob.size
       };
@@ -1980,40 +2025,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               [], // No message history for initial query
               `session_${Date.now()}`,
               // onToken: Stream each token as it arrives
+              // Don't update state during streaming - just accumulate text locally
+              // This prevents laggy re-renders and ensures smooth final response
               (token: string) => {
                 accumulatedText += token;
-                // Strip any EVIDENCE_FEEDBACK block from displayed text
-                let displayText = accumulatedText;
-                const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
-                if (feedbackStart !== -1) {
-                  displayText = displayText.substring(0, feedbackStart).trim();
-                }
-                setChatMessages(prev => {
-                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: displayText,
-                    isLoading: true,
-                    reasoningSteps: existingMessage?.reasoningSteps || []
-                };
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? responseMessage
-                      : msg
-                  );
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                // No state update during streaming - text will appear only when complete
               },
               // onComplete: Final response received
               (data: any) => {
-                // Clean the summary of any EVIDENCE_FEEDBACK before displaying
-                let finalText = data.summary || accumulatedText || "I found some information for you.";
-                const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
-                if (feedbackIdx !== -1) {
-                  finalText = finalText.substring(0, feedbackIdx).trim();
-                }
+                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
                 
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
@@ -2428,41 +2449,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             messageHistory,
             `session_${Date.now()}`,
             // onToken: Stream each token as it arrives
+            // Don't update state during streaming - just accumulate text locally
+            // This prevents laggy re-renders and ensures smooth final response
             (token: string) => {
               accumulatedText += token;
-              // Strip any EVIDENCE_FEEDBACK block from displayed text
-              let displayText = accumulatedText;
-              const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
-              if (feedbackStart !== -1) {
-                displayText = displayText.substring(0, feedbackStart).trim();
-              }
-              setChatMessages(prev => {
-                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-              const responseMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: displayText,
-                  isLoading: true,  // Still loading while streaming
-                  reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-              };
-              
-                const updated = prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? responseMessage
-                    : msg
-                );
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
+              // No state update during streaming - text will appear only when complete
             },
             // onComplete: Final response received
             (data: any) => {
-              // Clean the summary of any EVIDENCE_FEEDBACK before displaying
-              let finalText = data.summary || accumulatedText || "I found some information for you.";
-              const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
-              if (feedbackIdx !== -1) {
-                finalText = finalText.substring(0, feedbackIdx).trim();
-              }
+              // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+              const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
               
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
@@ -2750,16 +2746,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
             <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
           )}
-          {message.isLoading && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px 0', position: 'relative', width: '28px', height: '28px', perspective: '150px', perspectiveOrigin: 'center center', overflow: 'visible' }}>
-              <div style={{ position: 'absolute', width: '28px', height: '28px', top: '50%', left: '50%', marginTop: '-14px', marginLeft: '-14px', animation: 'rotateAtom 0.65s linear infinite', transformOrigin: 'center center', transformStyle: 'preserve-3d', overflow: 'visible' }}>
-                <div style={{ position: 'absolute', width: '16px', height: '16px', top: '50%', left: '50%', marginTop: '-8px', marginLeft: '-8px', borderRadius: '50%', border: '1px solid rgba(212, 175, 55, 0.5)', borderTopColor: 'rgba(212, 175, 55, 0.9)', borderRightColor: 'rgba(212, 175, 55, 0.7)', boxShadow: '0 0 6px rgba(212, 175, 55, 0.4), 0 0 3px rgba(212, 175, 55, 0.2)', animation: 'rotateRing 1.5s linear infinite', transformOrigin: 'center center', transformStyle: 'preserve-3d', willChange: 'transform', backfaceVisibility: 'visible', WebkitBackfaceVisibility: 'visible' }} />
-                <Globe3D />
-              </div>
-            </div>
-          )}
-          {message.text && (
-            <div style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}>
+          {/* Only show text when streaming is complete - no spinner, no partial text during streaming */}
+          {message.text && !message.isLoading && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}
+            >
               <ReactMarkdown components={{
                 p: ({ children }) => {
                   // Process children to find and replace citation patterns [1], [2], etc.
@@ -2791,7 +2785,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
                 hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
               }}>{message.text}</ReactMarkdown>
-            </div>
+            </motion.div>
           )}
         </div>
       );

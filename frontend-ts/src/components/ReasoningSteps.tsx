@@ -24,7 +24,7 @@ export interface ReasoningStep {
     filename?: string;
     doc_metadata?: {
       doc_id: string;
-      original_filename: string;
+      original_filename?: string | null; // Can be null
       classification_type: string;
       page_range?: string;
       page_numbers?: number[];
@@ -33,7 +33,7 @@ export interface ReasoningStep {
     };
     doc_previews?: Array<{
       doc_id: string;
-      original_filename: string;
+      original_filename?: string | null; // Can be null
       classification_type: string;
       page_range?: string;
       page_numbers?: number[];
@@ -84,19 +84,33 @@ const preloadDocumentCover = async (doc: {
   doc_id: string;
   s3_path?: string;
   download_url?: string;
-  original_filename?: string;
+  original_filename?: string | null;
+  classification_type?: string;
 }) => {
   if (!doc.doc_id) return;
   
   // Skip if already cached (check for complete cache with thumbnailUrl for PDFs)
   const existingCache = (window as any).__preloadedDocumentCovers?.[doc.doc_id];
+  
+  // Determine file type - use original_filename first, then classification_type as fallback
+  const filenameLower = doc.original_filename?.toLowerCase() || '';
+  const classType = doc.classification_type?.toLowerCase() || '';
+  const isPDF = filenameLower.endsWith('.pdf') || 
+                classType.includes('valuation') || 
+                classType.includes('report') ||
+                classType.includes('pdf');
+  const isImage = filenameLower.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+  
   if (existingCache) {
     // If it's a PDF, make sure we have the thumbnail already
-    const isPDF = doc.original_filename?.toLowerCase().endsWith('.pdf');
     if (!isPDF || existingCache.thumbnailUrl) {
       return; // Already fully cached
     }
   }
+  
+  // Build display name for logging
+  const displayName = doc.original_filename || 
+    (doc.classification_type ? doc.classification_type.replace(/_/g, ' ') : doc.doc_id);
   
   try {
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
@@ -110,7 +124,7 @@ const preloadDocumentCover = async (doc: {
       fetchUrl = `${backendUrl}/api/files/download?document_id=${doc.doc_id}`;
     }
     
-    console.log(`🔄 Preloading document: ${doc.original_filename || doc.doc_id}`);
+    console.log(`🔄 Preloading document: ${displayName}`);
     
     const response = await fetch(fetchUrl, {
       credentials: 'include'
@@ -126,10 +140,6 @@ const preloadDocumentCover = async (doc: {
       (window as any).__preloadedDocumentCovers = {};
     }
     
-    // Determine file type
-    const isPDF = doc.original_filename?.toLowerCase().endsWith('.pdf');
-    const isImage = doc.original_filename?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
-    
     if (isPDF) {
       // For PDFs, generate the thumbnail NOW so it's ready when the card renders
       try {
@@ -143,7 +153,7 @@ const preloadDocumentCover = async (doc: {
             type: blob.type,
             timestamp: Date.now()
           };
-          console.log(`✅ Preloaded PDF with thumbnail: ${doc.original_filename || doc.doc_id}`);
+          console.log(`✅ Preloaded PDF with thumbnail: ${displayName}`);
         } else {
           // Fallback - at least cache the URL
           (window as any).__preloadedDocumentCovers[doc.doc_id] = {
@@ -151,7 +161,7 @@ const preloadDocumentCover = async (doc: {
             type: blob.type,
             timestamp: Date.now()
           };
-          console.log(`⚠️ Preloaded PDF (no thumbnail): ${doc.original_filename || doc.doc_id}`);
+          console.log(`⚠️ Preloaded PDF (no thumbnail): ${displayName}`);
         }
       } catch (pdfError) {
         console.warn('Failed to generate PDF thumbnail during preload:', pdfError);
@@ -168,7 +178,7 @@ const preloadDocumentCover = async (doc: {
         type: blob.type,
         timestamp: Date.now()
       };
-      console.log(`✅ Preloaded image: ${doc.original_filename || doc.doc_id}`);
+      console.log(`✅ Preloaded image: ${displayName}`);
     } else {
       // For other files, just cache the URL
       (window as any).__preloadedDocumentCovers[doc.doc_id] = {
@@ -176,17 +186,17 @@ const preloadDocumentCover = async (doc: {
         type: blob.type,
         timestamp: Date.now()
       };
-      console.log(`✅ Preloaded document: ${doc.original_filename || doc.doc_id}`);
+      console.log(`✅ Preloaded document: ${displayName}`);
     }
   } catch (error) {
-    console.warn(`Failed to preload document: ${doc.original_filename || doc.doc_id}`, error);
+    console.warn(`Failed to preload document: ${displayName}`, error);
     // Silently fail - preview will load on demand
   }
 };
 
 interface DocumentMetadata {
   doc_id: string;
-  original_filename: string;
+  original_filename?: string | null; // Can be null when backend doesn't have filename
   classification_type: string;
   page_range?: string;
   page_numbers?: number[];
@@ -213,7 +223,20 @@ const ReadingStepWithTransition: React.FC<{
   readingIndex: number; // Which reading step this is (0, 1, 2...)
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   isTransitioning?: boolean; // New prop to indicate transition phase
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false }) => {
+  showPreview?: boolean; // Whether to show the preview card (first time only)
+}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true }) => {
+  // Debug: Log preview state
+  React.useEffect(() => {
+    if (docMetadata) {
+      console.log('🔍 [ReadingStepWithTransition] Preview state:', {
+        showPreview,
+        hasDocMetadata: !!docMetadata,
+        hasOriginalFilename: !!docMetadata.original_filename,
+        filename,
+        docId: docMetadata.doc_id
+      });
+    }
+  }, [showPreview, docMetadata, filename]);
   const [phase, setPhase] = useState<'waiting' | 'reading' | 'read'>('waiting');
   
   useEffect(() => {
@@ -261,7 +284,7 @@ const ReadingStepWithTransition: React.FC<{
         <span style={actionStyle}>
           Read {filename}
         </span>
-        {docMetadata && docMetadata.original_filename && (
+        {showPreview && docMetadata && docMetadata.doc_id && (
           <DocumentPreviewCard 
             key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, 'static')}
             metadata={docMetadata} 
@@ -291,9 +314,9 @@ const ReadingStepWithTransition: React.FC<{
           </span>
         )}
       </span>
-      {/* Preview card appears with "Reading" text and stays visible */}
+      {/* Preview card appears with "Reading" text and stays visible - only on first appearance */}
       {/* Add collapse animation when transitioning */}
-      {docMetadata && docMetadata.original_filename && (
+      {showPreview && docMetadata && docMetadata.doc_id && (
         <motion.div
           animate={isTransitioning ? {
             height: 0,
@@ -352,7 +375,8 @@ const StepRenderer: React.FC<{
   totalReadingSteps?: number; // Total number of reading steps
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   isTransitioning?: boolean; // Indicates transition from loading to stacked view
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false }) => {
+  shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false, shownDocumentsRef }) => {
   const actionStyle: React.CSSProperties = {
     color: '#374151',
     fontWeight: 500
@@ -437,8 +461,46 @@ const StepRenderer: React.FC<{
       // Each reading step transitions from "Reading" -> "Read" after a delay
       // This is handled by the ReadingStepWithTransition component
       const docMetadata = step.details?.doc_metadata;
-      const filename = step.details?.filename || docMetadata?.original_filename || '';
-      const truncatedFilename = filename.length > 35 ? filename.substring(0, 32) + '...' : filename;
+      
+      // Build filename from multiple sources - original_filename, classification_type, or fallback
+      const rawFilename = step.details?.filename || docMetadata?.original_filename || '';
+      const classificationLabel = docMetadata?.classification_type 
+        ? docMetadata.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+        : '';
+      const displayFilename = rawFilename || classificationLabel || 'Document';
+      const truncatedFilename = displayFilename.length > 35 ? displayFilename.substring(0, 32) + '...' : displayFilename;
+      
+      // Check if this is the first time we're showing this document in this query
+      // Only require doc_id to show preview - filename can use fallbacks
+      const docId = docMetadata?.doc_id;
+      const hasValidMetadata = docMetadata && docId; // Only require doc_id, not original_filename
+      
+      // Determine if we should show the preview card
+      // Instead of using a ref (which gets mutated on re-render), check if any PREVIOUS
+      // reading step in the array has the same doc_id. This is stable across re-renders.
+      let shouldShowPreview = false;
+      if (hasValidMetadata) {
+        // Find all reading steps BEFORE this one that have the same doc_id
+        const previousReadingStepsWithSameDoc = allSteps
+          .slice(0, stepIndex) // Only steps before current
+          .filter(s => s.action_type === 'reading' && s.details?.doc_metadata?.doc_id === docId);
+        
+        // Show preview only if this is the FIRST reading step for this document
+        shouldShowPreview = previousReadingStepsWithSameDoc.length === 0;
+        
+        if (shouldShowPreview) {
+          console.log('✅ [ReasoningSteps] Will show preview card for:', displayFilename, 'docId:', docId);
+        } else {
+          console.log('⏭️ [ReasoningSteps] Skipping preview (shown in earlier step):', displayFilename, 'docId:', docId);
+        }
+      } else {
+        console.warn('⚠️ [ReasoningSteps] Cannot show preview - missing doc_id:', {
+          hasDocMetadata: !!docMetadata,
+          hasDocId: !!docId,
+          stepDetails: step.details,
+          fullStep: step
+        });
+      }
       
       return (
         <ReadingStepWithTransition 
@@ -448,6 +510,7 @@ const StepRenderer: React.FC<{
           readingIndex={readingStepIndex}
           onDocumentClick={onDocumentClick}
           isTransitioning={isTransitioning}
+          showPreview={shouldShowPreview}
         />
       );
     
@@ -502,6 +565,21 @@ const StepRenderer: React.FC<{
 export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick }) => {
   // Track which documents we've already started preloading
   const preloadedDocsRef = useRef<Set<string>>(new Set());
+  
+  // Track which documents have been shown in reasoning steps (for first-time preview display)
+  // Reset when a new query starts (isLoading changes from false to true)
+  const shownDocumentsRef = useRef<Set<string>>(new Set());
+  const previousLoadingRef = useRef<boolean>(isLoading);
+  
+  // Reset shown documents when a new query starts
+  useEffect(() => {
+    // If we transition from not loading to loading, it's a new query - reset the tracking
+    if (!previousLoadingRef.current && isLoading) {
+      shownDocumentsRef.current.clear();
+      console.log('🔄 [ReasoningSteps] New query started, resetting shown documents tracking');
+    }
+    previousLoadingRef.current = isLoading;
+  }, [isLoading]);
   
   // Track when all reading steps have completed
   const [allReadingComplete, setAllReadingComplete] = useState(false);
@@ -819,7 +897,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           {animatedSteps.map(({ step, stepKey: finalStepKey, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx }) => {
             // Check if this is a reading step with a preview card
             const isReadingStep = step.action_type === 'reading';
-            const hasPreview = isReadingStep && step.details?.doc_metadata?.original_filename;
+            const hasPreview = isReadingStep && step.details?.doc_metadata?.doc_id;
             
             return (
               <motion.div
@@ -869,6 +947,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 totalReadingSteps={totalReadingSteps}
                 onDocumentClick={onDocumentClick}
                 isTransitioning={isTransitioning}
+                shownDocumentsRef={shownDocumentsRef}
               />
               </motion.div>
             );
@@ -884,9 +963,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             const otherSteps = filteredSteps.filter(s => s.action_type !== 'reading');
             
             // Collect document metadata from reading steps for stacked preview
+            // Only require doc_id - original_filename can be null (we'll use classification_type as fallback)
             const readingDocuments = readingSteps
               .map(step => step.details?.doc_metadata)
-              .filter((doc): doc is NonNullable<typeof doc> => doc != null && !!doc.original_filename);
+              .filter((doc): doc is NonNullable<typeof doc> => doc != null && !!doc.doc_id);
             
             return (
               <>
@@ -924,6 +1004,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                         totalReadingSteps={totalReadingSteps}
                         onDocumentClick={onDocumentClick}
                         isTransitioning={false}
+                        shownDocumentsRef={shownDocumentsRef}
                       />
                     </div>
                   );

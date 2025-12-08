@@ -862,26 +862,33 @@ Do not use quotes around the response."""
                                             doc_names = []
                                             doc_previews = []  # Full metadata for preview cards
                                             for doc in relevant_docs[:5]:  # Max 5 documents
-                                                filename = doc.get('original_filename', '')
-                                                classification_type = doc.get('classification_type', 'Document')
+                                                filename = doc.get('original_filename', '') or ''
+                                                classification_type = doc.get('classification_type', 'Document') or 'Document'
                                                 doc_id = doc.get('doc_id', '')
                                                 
+                                                # Build display name with fallback to classification_type
                                                 if filename:
-                                                    # Truncate long filenames for the message
                                                     display_name = filename
-                                                    if len(display_name) > 30:
-                                                        display_name = display_name[:27] + '...'
-                                                    doc_names.append(display_name)
-                                                    
-                                                    # Full metadata for preview card (include download URL for frontend)
+                                                else:
+                                                    # Use classification_type as display name (e.g., "valuation_report" -> "Valuation Report")
+                                                    display_name = classification_type.replace('_', ' ').title()
+                                                
+                                                # Truncate long display names for the message
+                                                if len(display_name) > 30:
+                                                    display_name = display_name[:27] + '...'
+                                                doc_names.append(display_name)
+                                                
+                                                # Full metadata for preview card (include download URL for frontend)
+                                                # Always add if we have doc_id, even without original_filename
+                                                if doc_id:
                                                     doc_previews.append({
                                                         'doc_id': doc_id,
-                                                        'original_filename': filename,
+                                                        'original_filename': filename if filename else None,
                                                         'classification_type': classification_type,
                                                         'page_range': doc.get('page_range', ''),
                                                         'page_numbers': doc.get('page_numbers', []),
                                                         's3_path': doc.get('s3_path', ''),
-                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                        'download_url': f"/api/files/download?document_id={doc_id}"
                                                     })
                                             
                                             # Build message - different for follow-ups vs first query
@@ -954,21 +961,25 @@ Do not use quotes around the response."""
                                             else:
                                                 # First query - show individual read steps with preview cards
                                                 for i, doc_output in enumerate(doc_outputs):
-                                                    filename = doc_output.get('original_filename', '')
-                                                    display_filename = filename
-                                                    if not display_filename:
-                                                        display_filename = f'Document {i + 1}'
-                                                    else:
+                                                    filename = doc_output.get('original_filename', '') or ''
+                                                    classification_type = doc_output.get('classification_type', 'Document') or 'Document'
+                                                    
+                                                    # Build display name with classification_type fallback
+                                                    if filename:
+                                                        display_filename = filename
                                                         # Truncate long filenames for display
                                                         if len(display_filename) > 35:
                                                             display_filename = display_filename[:32] + '...'
+                                                    else:
+                                                        # Use classification_type as display name (e.g., "valuation_report" -> "Valuation Report")
+                                                        display_filename = classification_type.replace('_', ' ').title()
                                                     
                                                     # Extract document metadata for preview card (include download URL)
                                                     doc_id_for_meta = doc_output.get('doc_id', '')
                                                     doc_metadata = {
                                                         'doc_id': doc_id_for_meta,
-                                                        'original_filename': filename,
-                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'original_filename': filename if filename else None,
+                                                        'classification_type': classification_type,
                                                         'page_range': doc_output.get('page_range', ''),
                                                         'page_numbers': doc_output.get('page_numbers', []),
                                                         's3_path': doc_output.get('s3_path', ''),
@@ -982,7 +993,7 @@ Do not use quotes around the response."""
                                                         'message': f'Read {display_filename}',
                                                         'details': {
                                                             'document_index': i, 
-                                                            'filename': filename,
+                                                            'filename': filename if filename else None,
                                                             'doc_metadata': doc_metadata
                                                         }
                                                     }
@@ -1047,14 +1058,21 @@ Do not use quotes around the response."""
                                             relevant_docs = state_data.get("relevant_documents", [])
                                             doc_count = len(relevant_docs)
                                             if doc_count > 0:
-                                                # Extract document names
+                                                # Extract document names with classification_type fallback
                                                 doc_names = []
                                                 for doc in relevant_docs[:5]:
-                                                    filename = doc.get('original_filename', '')
+                                                    filename = doc.get('original_filename', '') or ''
+                                                    classification_type = doc.get('classification_type', 'Document') or 'Document'
+                                                    
+                                                    # Build display name with fallback
                                                     if filename:
-                                                        if len(filename) > 30:
-                                                            filename = filename[:27] + '...'
-                                                        doc_names.append(filename)
+                                                        display_name = filename
+                                                    else:
+                                                        display_name = classification_type.replace('_', ' ').title()
+                                                    
+                                                    if len(display_name) > 30:
+                                                        display_name = display_name[:27] + '...'
+                                                    doc_names.append(display_name)
                                                 
                                                 if doc_names:
                                                     names_str = ', '.join(doc_names)
@@ -1079,38 +1097,41 @@ Do not use quotes around the response."""
                                             if doc_outputs_count > 0:
                                                 # Emit individual "Read [filename]" steps with metadata
                                                 for i, doc_output in enumerate(doc_outputs):
-                                                    filename = doc_output.get('original_filename', '')
-                                                    display_filename = filename
-                                                    if not display_filename:
-                                                        display_filename = f'Document {i + 1}'
-                                                    else:
+                                                    filename = doc_output.get('original_filename', '') or ''
+                                                    classification_type = doc_output.get('classification_type', 'Document') or 'Document'
+                                                    
+                                                    # Build display name with classification_type fallback
+                                                    if filename:
+                                                        display_filename = filename
                                                         if len(display_filename) > 35:
                                                             display_filename = display_filename[:32] + '...'
+                                                    else:
+                                                        display_filename = classification_type.replace('_', ' ').title()
                                                     
                                                     # Extract document metadata for preview card (include download URL)
                                                     doc_id_for_meta = doc_output.get('doc_id', '')
                                                     doc_metadata = {
                                                         'doc_id': doc_id_for_meta,
-                                                        'original_filename': filename,
-                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'original_filename': filename if filename else None,
+                                                        'classification_type': classification_type,
                                                         'page_range': doc_output.get('page_range', ''),
                                                         'page_numbers': doc_output.get('page_numbers', []),
                                                         's3_path': doc_output.get('s3_path', ''),
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
-                                                reasoning_data = {
-                                                    'type': 'reasoning_step',
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
                                                         'message': f'Read {display_filename}',
                                                         'details': {
                                                             'document_index': i, 
-                                                            'filename': filename,
+                                                            'filename': filename if filename else None,
                                                             'doc_metadata': doc_metadata
                                                         }
-                                                }
-                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
                                         # Store the state from the last event
                                         if state_update:
