@@ -1,6 +1,6 @@
-from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response, make_response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
+from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
@@ -15,11 +15,19 @@ import logging
 import boto3
 import time
 import re
+import tempfile
 from .tasks import process_document_task, process_document_fast_task
-# NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
-# from .services.deletion_service import DeletionService
+from backend.llm.evidence_feedback import (
+    build_feedback_instruction,
+    extract_feedback_from_answer,
+    match_feedback_to_chunks,
+    EVIDENCE_FEEDBACK_START,
+)
+from backend.utils.bbox import ensure_bbox_dict, summarize_bbox
+from .services.deletion_service import DeletionService
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
+from sqlalchemy.orm import load_only
 import json
 from uuid import UUID
 def _ensure_business_uuid():
@@ -66,16 +74,220 @@ def _normalize_uuid_str(value):
         return None
 
 
-# DEPRECATED: This function has been moved to UnifiedDeletionService._cleanup_orphan_properties()
-# Kept here for reference during migration. Can be removed after testing.
-# def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
-#     """
-#     Remove Supabase property hub records when no documents remain linked to a property.
-#     Returns list of property IDs that were fully removed from Supabase.
-#     
-#     NOTE: This functionality is now handled by UnifiedDeletionService._cleanup_orphan_properties()
-#     """
-#     pass
+def _extract_citation_context(text: str, citation_num: str, context_chars: int = 150) -> str:
+    """
+    Extract text immediately preceding a citation to identify what's being cited.
+    
+    Args:
+        text: The full text containing citations
+        citation_num: The citation number to look for (e.g., "1" for [1])
+        context_chars: Number of characters to extract before the citation
+        
+    Returns:
+        The text context before the citation, or None if not found
+    """
+    import re
+    # Pattern to find text before the specific citation
+    pattern = rf'(.{{0,{context_chars}}})\[{citation_num}\]'
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _find_best_chunk_for_citation(context_text: str, source_chunks: list, logger=None) -> dict:
+    """
+    Find the chunk that best matches the citation context using text matching.
+    
+    This solves the problem where citations were always mapped to the first chunk,
+    even when the actual cited information (like "£2,400,000") is in a different chunk.
+    
+    Args:
+        context_text: Text extracted from near the citation (e.g., "The sale price is £2,400,000")
+        source_chunks: List of chunk metadata dicts with 'content', 'page_number', 'bbox', etc.
+        logger: Optional logger for debugging
+        
+    Returns:
+        The best matching chunk dict, or the first chunk if no match found
+    """
+    import re
+    from difflib import SequenceMatcher
+    
+    if not source_chunks:
+        return None
+    
+    if not context_text:
+        if logger:
+            logger.debug("[CHUNK_MATCH] No context text, using first chunk")
+        return source_chunks[0]
+    
+    # Extract key patterns that are likely to be unique identifiers
+    key_patterns = [
+        r'£[\d,]+(?:\.\d{2})?',  # Prices: £2,400,000
+        r'\$[\d,]+(?:\.\d{2})?',  # Dollar prices
+        r'\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4}',  # Dates: 9th February 2024
+        r'\d+(?:,\d{3})+(?:\.\d+)?',  # Large numbers with commas: 5,691
+        r'\d+\.\d+\s*(?:sq\s*ft|sqft|acres?|hectares?)',  # Measurements
+        r'\b\d{4,}\b',  # 4+ digit numbers (years, codes, etc.)
+    ]
+    
+    key_phrases = []
+    for pattern in key_patterns:
+        matches = re.findall(pattern, context_text, re.IGNORECASE)
+        key_phrases.extend(matches)
+    
+    # Also extract significant words (4+ chars, excluding common words)
+    common_words = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 'will', 'their', 'would', 'about', 'which', 'there', 'other'}
+    words = re.findall(r'\b[A-Za-z]{4,}\b', context_text)
+    significant_words = [w for w in words if w.lower() not in common_words][-5:]  # Last 5 significant words
+    key_phrases.extend(significant_words)
+    
+    # Separate numeric/currency phrases from generic words
+    numeric_phrases = []
+    word_phrases = []
+    for phrase in key_phrases:
+        if re.search(r'[£$]|\d', phrase):
+            numeric_phrases.append(phrase)
+        else:
+            word_phrases.append(phrase)
+    
+    if logger:
+        logger.info(
+            "[CHUNK_MATCH] Context excerpt='%s...' | numeric=%s | words=%s",
+            context_text[:120],
+            numeric_phrases[:5],
+            word_phrases[:5]
+        )
+    
+    context_text_lower = context_text.lower()
+    # Score each chunk by how many key phrases it contains
+    best_chunk = source_chunks[0]
+    best_score = 0
+    
+    for chunk in source_chunks:
+        chunk_content = chunk.get('content', '')
+        if not chunk_content:
+            continue
+            
+        score = 0
+        matched_phrases = []
+        lowered_chunk = chunk_content.lower()
+        
+        # Numeric/currency matches get highest weight
+        for phrase in numeric_phrases:
+            if phrase and phrase in chunk_content:
+                score += 5
+                matched_phrases.append(phrase)
+        
+        # Word/phrase matches (case-insensitive)
+        for phrase in word_phrases:
+            if phrase.lower() in lowered_chunk:
+                score += 1
+                matched_phrases.append(phrase)
+        
+        # Fuzzy overlap between context text and chunk snippet
+        snippet_length = max(200, len(context_text) * 2)
+        snippet = lowered_chunk[:snippet_length]
+        if snippet:
+            similarity = SequenceMatcher(None, context_text_lower, snippet).ratio()
+            if similarity > 0.2:
+                score += similarity * 2  # modest boost for contextual overlap
+        
+        # Bonus if chunk page already referenced by citation number (page heuristics)
+        if chunk.get('page_number') and str(chunk.get('page_number')) in context_text:
+            score += 1
+        
+        if logger:
+            logger.debug(
+                "[CHUNK_MATCH] Chunk idx=%s page=%s score=%.3f matches=%s",
+                chunk.get('chunk_index'),
+                chunk.get('page_number'),
+                score,
+                matched_phrases[:5]
+            )
+        
+        if score > best_score:
+            best_score = score
+            best_chunk = chunk
+            if logger:
+                logger.debug(f"[CHUNK_MATCH] New best chunk: page {chunk.get('page_number')}, score {score}, matches: {matched_phrases[:5]}")
+    
+    # If no score improvements but we have numeric phrases, fall back to first chunk containing them
+    if best_score == 0 and numeric_phrases:
+        for phrase in numeric_phrases:
+            for chunk in source_chunks:
+                if phrase in chunk.get('content', ''):
+                    if logger:
+                        logger.info(f"[CHUNK_MATCH] Fallback: selecting chunk on page {chunk.get('page_number')} for numeric phrase {phrase}")
+                    return chunk
+    
+    if logger:
+        logger.info(
+            "[CHUNK_MATCH] Selected chunk idx=%s page=%s score=%.3f for context='%s...'",
+            best_chunk.get('chunk_index'),
+            best_chunk.get('page_number'),
+            best_score,
+            context_text[:80]
+        )
+    
+    return best_chunk
+
+
+def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
+    """
+    Remove Supabase property hub records when no documents remain linked to a property.
+    Returns list of property IDs that were fully removed from Supabase.
+    """
+    cleaned_properties = []
+    if not property_ids:
+        return cleaned_properties
+
+    supabase = None
+    for property_id in property_ids:
+        if not property_id:
+            continue
+
+        # Check if any local document relationships still reference this property
+        remaining_relationships = DocumentRelationship.query.filter_by(property_id=property_id).count()
+        if remaining_relationships > 0:
+            continue
+
+        try:
+            if supabase is None:
+                supabase = get_supabase_client()
+
+            pid_str = str(property_id)
+
+            # Delete property vectors first
+            try:
+                supabase.table('property_vectors').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property vectors for property {pid_str}: {e}")
+
+            # Delete property details rows
+            try:
+                supabase.table('property_details').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property details for property {pid_str}: {e}")
+
+            # Delete supabase document_relationships (if any remain)
+            try:
+                supabase.table('document_relationships').delete().eq('property_id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete Supabase document relationships for property {pid_str}: {e}")
+
+            # Finally delete the property record itself
+            try:
+                supabase.table('properties').delete().eq('id', pid_str).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete property {pid_str} from Supabase properties table: {e}")
+
+            cleaned_properties.append(pid_str)
+            logger.info(f"Cleaned Supabase property hub data for property {pid_str}")
+        except Exception as e:
+            logger.warning(f"Could not clean Supabase property {property_id}: {e}")
+
+    return cleaned_properties
 
 views = Blueprint('views', __name__)
 
@@ -379,12 +591,144 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Yielding initial status message")
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
-                # Emit initial reasoning step IMMEDIATELY when query is received
+                # Extract intent from query for contextual reasoning step
+                # Simple heuristic: identify what user is looking for and where
+                def extract_query_intent(q: str) -> str:
+                    """Extract a human-readable intent from the query."""
+                    q_lower = q.lower().strip()
+                    words_in_query = q_lower.split()
+                    
+                    # Common search targets
+                    targets = []
+                    
+                    # Check for "who" questions first - these ask about people/companies
+                    is_who_question = 'who' in words_in_query
+                    
+                    if is_who_question:
+                        # "Who valued/surveyed/wrote/prepared" etc.
+                        if any(word in q_lower for word in ['valued', 'valuation', 'value ']):
+                            targets.append('valuer')
+                        elif any(word in q_lower for word in ['surveyed', 'survey', 'inspected']):
+                            targets.append('surveyor')
+                        elif any(word in q_lower for word in ['wrote', 'write', 'prepared', 'created', 'authored']):
+                            targets.append('author')
+                        elif any(word in q_lower for word in ['sold', 'sell', 'sale']):
+                            targets.append('seller')
+                        elif any(word in q_lower for word in ['bought', 'buy', 'purchase']):
+                            targets.append('buyer')
+                        elif any(word in q_lower for word in ['owns', 'own', 'owner']):
+                            targets.append('owner')
+                        else:
+                            targets.append('person/company')
+                    else:
+                        # Standard value/price checks - but not if asking about who valued
+                        if any(word in words_in_query for word in ['price', 'cost', 'worth', 'sale']):
+                            targets.append('price')
+                        elif 'value' in words_in_query and 'valued' not in q_lower:
+                            targets.append('value')
+                        elif 'valuation' in q_lower and 'who' not in q_lower:
+                            targets.append('valuation details')
+                    
+                    # Other common targets
+                    if any(word in q_lower for word in ['bedroom', 'bed', 'beds']):
+                        targets.append('bedrooms')
+                    if any(word in q_lower for word in ['bathroom', 'bath', 'baths']):
+                        targets.append('bathrooms')
+                    if any(word in q_lower for word in ['epc', 'energy']):
+                        targets.append('EPC rating')
+                    if any(word in q_lower for word in ['survey', 'report']) and 'surveyor' not in targets:
+                        targets.append('report details')
+                    if any(word in q_lower for word in ['issue', 'problem', 'defect', 'damage']):
+                        targets.append('issues')
+                    if any(word in q_lower for word in ['amenity', 'amenities', 'feature', 'features']):
+                        targets.append('amenities')
+                    if any(word in q_lower for word in ['date', 'when', 'dated']):
+                        targets.append('date')
+                    if any(word in q_lower for word in ['size', 'sqft', 'square', 'area', 'footage']):
+                        targets.append('size')
+                    if any(word in q_lower for word in ['address', 'location', 'where']):
+                        targets.append('location')
+                    
+                    # Extract potential document/property names (capitalized words)
+                    import re
+                    # Look for capitalized words that might be names (excluding common words)
+                    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where'}
+                    words = q.split()
+                    potential_names = [w for w in words if len(w) > 2 and w[0].isupper() and w.lower() not in common_words]
+                    
+                    # Build the intent message
+                    target_str = ', '.join(targets) if targets else 'information'
+                    if potential_names:
+                        name_str = ' '.join(potential_names[:2])  # Max 2 names
+                        return f"Searching for {target_str} in {name_str} documents"
+                    else:
+                        return f"Searching for {target_str}"
+                
+                intent_message = extract_query_intent(query)
+                
+                # Helper function to generate contextual narration using fast LLM
+                async def generate_context_narration(moment: str, context_data: dict) -> str:
+                    """Generate a short contextual sentence explaining what's happening."""
+                    try:
+                        from openai import AsyncOpenAI
+                        
+                        client = AsyncOpenAI()
+                        
+                        # Build prompt based on moment
+                        if moment == 'documents_found':
+                            doc_count = context_data.get('doc_count', 0)
+                            doc_names = context_data.get('doc_names', [])
+                            doc_types = context_data.get('doc_types', [])
+                            user_query = context_data.get('user_query', '')
+                            
+                            prompt = f"""Based on this user query: "{user_query}"
+I found {doc_count} document(s): {', '.join(doc_names[:3])}.
+Document types: {', '.join(set(doc_types[:3])) if doc_types else 'various'}.
+
+Generate a single, natural sentence (max 20 words) explaining what I found and why it might be relevant. 
+Start with "I found" or "Looking at". Be specific about the document types if relevant.
+Do not use quotes around the response."""
+                        
+                        elif moment == 'documents_processed':
+                            doc_count = context_data.get('doc_count', 0)
+                            user_query = context_data.get('user_query', '')
+                            
+                            prompt = f"""User asked: "{user_query}"
+I just finished reading {doc_count} document(s).
+
+Generate a single, natural sentence (max 15 words) saying I extracted the relevant information.
+Start with "Extracted" or "Found". Be brief and confident.
+Do not use quotes around the response."""
+                        
+                        else:
+                            return ""
+                        
+                        # Use gpt-4o-mini for speed
+                        response = await client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": "You are a helpful assistant that generates brief, natural explanations. Be concise and conversational."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            max_tokens=50,
+                            temperature=0.7
+                        )
+                        
+                        result = response.choices[0].message.content.strip()
+                        # Remove any quotes that might have been added
+                        result = result.strip('"\'')
+                        return result
+                    except Exception as e:
+                        logger.warning(f"Failed to generate context narration: {e}")
+                        return ""
+                
+                # Emit initial reasoning step with extracted intent
                 initial_reasoning = {
                     'type': 'reasoning_step',
                     'step': 'initial',
-                    'message': 'Starting document search...',
-                    'details': {}
+                    'action_type': 'searching',
+                    'message': intent_message,
+                    'details': {'original_query': query}
                 }
                 initial_reasoning_json = json.dumps(initial_reasoning)
                 yield f"data: {initial_reasoning_json}\n\n"
@@ -425,36 +769,47 @@ def query_documents_stream():
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
+                        # Check for existing session state (follow-up detection)
+                        is_followup = False
+                        existing_doc_count = 0
+                        try:
+                            if checkpointer:
+                                existing_state = await graph.aget_state(config_dict)
+                                if existing_state and existing_state.values:
+                                    conv_history = existing_state.values.get('conversation_history', [])
+                                    prev_docs = existing_state.values.get('relevant_documents', [])
+                                    if conv_history and len(conv_history) > 0:
+                                        is_followup = True
+                                        existing_doc_count = len(prev_docs) if prev_docs else 0
+                                        logger.info(f"🟡 [STREAM] Follow-up query detected! Previous docs: {existing_doc_count}")
+                        except Exception as state_err:
+                            logger.warning(f"Could not check existing state: {state_err}")
+                        
                         # Use astream_events to capture node execution and emit reasoning steps
                         logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
                         
-                        # Node name to user-friendly message mapping
+                        # Track if this is a follow-up for dynamic step generation
+                        followup_context = {
+                            'is_followup': is_followup,
+                            'existing_doc_count': existing_doc_count,
+                            'docs_already_shown': False  # Track if we've shown "Using cached" message
+                        }
+                        
+                        # Node name to user-friendly message mapping with action types for Cursor-style UI
+                        # These are minimal - most steps are dynamically generated from on_chain_end events
                         node_messages = {
-                            'rewrite_query': {
-                                'message': 'Analyzing query and conversation context...',
-                                'details': {}
-                            },
-                            'expand_query': {
-                                'message': 'Generating query variations for better search...',
-                                'details': {}
-                            },
-                            'query_vector_documents': {
-                                'message': 'Searching documents...',
-                                'details': {}
-                            },
+                            # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
-                                'message': 'Ranking and organizing results...',
-                                'details': {}
-                            },
-                            'process_documents': {
-                                'message': 'Analyzing document content...',
+                                'action_type': 'analyzing',
+                                'message': 'Ranking results',
                                 'details': {}
                             },
                             'summarize_results': {
-                                'message': 'Synthesizing findings...',
+                                'action_type': 'planning',
+                                'message': 'Preparing response',
                                 'details': {}
                             }
                         }
@@ -479,6 +834,7 @@ def query_documents_stream():
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': node_name,
+                                            'action_type': node_messages[node_name]['action_type'],
                                             'message': node_messages[node_name]['message'],
                                             'details': node_messages[node_name]['details']
                                         }
@@ -499,27 +855,154 @@ def query_documents_stream():
                                     # Update details based on node output
                                     if node_name == "query_vector_documents":
                                         state_data = state_update if state_update else output
-                                        doc_count = len(state_data.get("relevant_documents", []))
+                                        relevant_docs = state_data.get("relevant_documents", [])
+                                        doc_count = len(relevant_docs)
                                         if doc_count > 0:
+                                            # Extract document names and metadata for display and preview cards
+                                            doc_names = []
+                                            doc_previews = []  # Full metadata for preview cards
+                                            for doc in relevant_docs[:5]:  # Max 5 documents
+                                                filename = doc.get('original_filename', '')
+                                                classification_type = doc.get('classification_type', 'Document')
+                                                doc_id = doc.get('doc_id', '')
+                                                
+                                                if filename:
+                                                    # Truncate long filenames for the message
+                                                    display_name = filename
+                                                    if len(display_name) > 30:
+                                                        display_name = display_name[:27] + '...'
+                                                    doc_names.append(display_name)
+                                                    
+                                                    # Full metadata for preview card (include download URL for frontend)
+                                                    doc_previews.append({
+                                                        'doc_id': doc_id,
+                                                        'original_filename': filename,
+                                                        'classification_type': classification_type,
+                                                        'page_range': doc.get('page_range', ''),
+                                                        'page_numbers': doc.get('page_numbers', []),
+                                                        's3_path': doc.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                    })
+                                            
+                                            # Build message - different for follow-ups vs first query
+                                            if followup_context['is_followup'] and not followup_context['docs_already_shown']:
+                                                # For follow-up queries, show a more contextual message
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names[:3])  # Show fewer names for cleaner display
+                                                    message = f'Using documents: {names_str}'
+                                                else:
+                                                    message = f'Using {doc_count} existing documents'
+                                                followup_context['docs_already_shown'] = True
+                                            else:
+                                                # First query - show full "Found X documents" message
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names)
+                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                else:
+                                                    message = f'Found {doc_count} documents'
+                                            
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
-                                                'step': node_name,
-                                                'message': f'Found {doc_count} relevant document(s)',
-                                                'details': {'documents_found': doc_count}
+                                                'step': 'found_documents',
+                                                'action_type': 'exploring',
+                                                'message': message,
+                                                'count': doc_count,
+                                                'details': {
+                                                    'documents_found': doc_count, 
+                                                    'document_names': doc_names,
+                                                    'doc_previews': doc_previews  # Full metadata for preview cards
+                                                }
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # Generate contextual narration for documents found
+                                            try:
+                                                doc_types = [doc.get('classification_type', 'Document') for doc in relevant_docs[:5]]
+                                                context_message = await generate_context_narration('documents_found', {
+                                                    'doc_count': doc_count,
+                                                    'doc_names': doc_names,
+                                                    'doc_types': doc_types,
+                                                    'user_query': query
+                                                })
+                                                if context_message:
+                                                    context_data = {
+                                                        'type': 'reasoning_context',
+                                                        'message': context_message,
+                                                        'moment': 'documents_found'
+                                                    }
+                                                    yield f"data: {json.dumps(context_data)}\n\n"
+                                            except Exception as ctx_err:
+                                                logger.warning(f"Failed to generate context narration: {ctx_err}")
                                     
                                     elif node_name == "process_documents":
                                         state_data = state_update if state_update else output
-                                        doc_outputs_count = len(state_data.get("document_outputs", []))
+                                        doc_outputs = state_data.get("document_outputs", [])
+                                        doc_outputs_count = len(doc_outputs)
                                         if doc_outputs_count > 0:
-                                            reasoning_data = {
-                                                'type': 'reasoning_step',
-                                                'step': node_name,
-                                                'message': f'Processed {doc_outputs_count} document(s)',
-                                                'details': {'documents_processed': doc_outputs_count}
-                                            }
-                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            # For follow-ups, show a single "Analyzing documents" step
+                                            # For first queries, show individual "Read [filename]" steps with preview cards
+                                            if followup_context['is_followup']:
+                                                # Single step for follow-up - documents already read before
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'analyzing_for_followup',
+                                                    'action_type': 'analyzing',
+                                                    'message': f'Analyzing {doc_outputs_count} documents for your question',
+                                                    'details': {'documents_analyzed': doc_outputs_count}
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            else:
+                                                # First query - show individual read steps with preview cards
+                                                for i, doc_output in enumerate(doc_outputs):
+                                                    filename = doc_output.get('original_filename', '')
+                                                    display_filename = filename
+                                                    if not display_filename:
+                                                        display_filename = f'Document {i + 1}'
+                                                    else:
+                                                        # Truncate long filenames for display
+                                                        if len(display_filename) > 35:
+                                                            display_filename = display_filename[:32] + '...'
+                                                    
+                                                    # Extract document metadata for preview card (include download URL)
+                                                    doc_id_for_meta = doc_output.get('doc_id', '')
+                                                    doc_metadata = {
+                                                        'doc_id': doc_id_for_meta,
+                                                        'original_filename': filename,
+                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
+                                                    }
+                                                    
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': f'read_doc_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'details': {
+                                                            'document_index': i, 
+                                                            'filename': filename,
+                                                            'doc_metadata': doc_metadata
+                                                        }
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # Generate contextual narration after all documents processed
+                                            try:
+                                                context_message = await generate_context_narration('documents_processed', {
+                                                    'doc_count': doc_outputs_count,
+                                                    'user_query': query
+                                                })
+                                                if context_message:
+                                                    context_data = {
+                                                        'type': 'reasoning_context',
+                                                        'message': context_message,
+                                                        'moment': 'documents_processed'
+                                                    }
+                                                    yield f"data: {json.dumps(context_data)}\n\n"
+                                            except Exception as ctx_err:
+                                                logger.warning(f"Failed to generate context narration: {ctx_err}")
                                     
                                     # Store the state from the last event (should be final state after summarize_results)
                                     if state_update:
@@ -545,6 +1028,7 @@ def query_documents_stream():
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': node_name,
+                                                'action_type': node_messages[node_name]['action_type'],
                                                 'message': node_messages[node_name]['message'],
                                                 'details': node_messages[node_name]['details']
                                             }
@@ -556,28 +1040,75 @@ def query_documents_stream():
                                         node_name = event.get("name", "")
                                         event_data = event.get("data", {})
                                         state_update = event_data.get("data", {})
+                                        output = event_data.get("output", {})
                                         
                                         if node_name == "query_vector_documents":
-                                            state_data = state_update if state_update else event_data.get("output", {})
-                                            doc_count = len(state_data.get("relevant_documents", []))
+                                            state_data = state_update if state_update else output
+                                            relevant_docs = state_data.get("relevant_documents", [])
+                                            doc_count = len(relevant_docs)
                                             if doc_count > 0:
+                                                # Extract document names
+                                                doc_names = []
+                                                for doc in relevant_docs[:5]:
+                                                    filename = doc.get('original_filename', '')
+                                                    if filename:
+                                                        if len(filename) > 30:
+                                                            filename = filename[:27] + '...'
+                                                        doc_names.append(filename)
+                                                
+                                                if doc_names:
+                                                    names_str = ', '.join(doc_names)
+                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                else:
+                                                    message = f'Found {doc_count} documents'
+                                                
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': node_name,
-                                                    'message': f'Found {doc_count} relevant document(s)',
-                                                    'details': {'documents_found': doc_count}
+                                                    'step': 'found_documents',
+                                                    'action_type': 'exploring',
+                                                    'message': message,
+                                                    'count': doc_count,
+                                                    'details': {'documents_found': doc_count, 'document_names': doc_names}
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
                                         elif node_name == "process_documents":
-                                            state_data = state_update if state_update else event_data.get("output", {})
-                                            doc_outputs_count = len(state_data.get("document_outputs", []))
+                                            state_data = state_update if state_update else output
+                                            doc_outputs = state_data.get("document_outputs", [])
+                                            doc_outputs_count = len(doc_outputs)
                                             if doc_outputs_count > 0:
+                                                # Emit individual "Read [filename]" steps with metadata
+                                                for i, doc_output in enumerate(doc_outputs):
+                                                    filename = doc_output.get('original_filename', '')
+                                                    display_filename = filename
+                                                    if not display_filename:
+                                                        display_filename = f'Document {i + 1}'
+                                                    else:
+                                                        if len(display_filename) > 35:
+                                                            display_filename = display_filename[:32] + '...'
+                                                    
+                                                    # Extract document metadata for preview card (include download URL)
+                                                    doc_id_for_meta = doc_output.get('doc_id', '')
+                                                    doc_metadata = {
+                                                        'doc_id': doc_id_for_meta,
+                                                        'original_filename': filename,
+                                                        'classification_type': doc_output.get('classification_type', 'Document'),
+                                                        'page_range': doc_output.get('page_range', ''),
+                                                        'page_numbers': doc_output.get('page_numbers', []),
+                                                        's3_path': doc_output.get('s3_path', ''),
+                                                        'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
+                                                    }
+                                                    
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
-                                                    'step': node_name,
-                                                    'message': f'Processed {doc_outputs_count} document(s)',
-                                                    'details': {'documents_processed': doc_outputs_count}
+                                                        'step': f'read_doc_{i}',
+                                                        'action_type': 'reading',
+                                                        'message': f'Read {display_filename}',
+                                                        'details': {
+                                                            'document_index': i, 
+                                                            'filename': filename,
+                                                            'doc_metadata': doc_metadata
+                                                        }
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
@@ -683,7 +1214,7 @@ def query_documents_stream():
                         
                         formatted_outputs_str = "\n".join(formatted_outputs)
                         
-                        prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
+                        prompt_body = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
 
 CONTEXT
 
@@ -704,12 +1235,14 @@ Speak naturally, like an experienced real estate professional giving you exactly
 
 **CITATION REQUIREMENTS:**
 - Each document is labeled with [Document 1], [Document 2], etc. at the top
-- When you use information from a document, cite it immediately after the relevant sentence using the format [1], [2], [3], etc.
-- Place citations right after the sentence that contains information from that document
-- Example: "The property is approximately 2.5 acres[1]. The valuation was completed by John Smith[2]."
+- When you use information from a document, cite it immediately after the specific figure, value, or knowledge mentioned, NOT after the sentence or document title
+- Place citations directly after the figure/knowledge: "£2,400,000[1]" or "5 bedrooms[1]" or "John Smith[2]"
+- Do NOT place citations after document names or at the end of sentences
+- Example: "The asking price is £2,400,000[1] for the property." NOT "The asking price for Highlands[1] is £2,400,000."
+- For names, dates, prices, values, measurements: place citation immediately after that specific information
 - If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
 - Citations should appear inline, naturally within your response
-- Always cite your sources - use [1], [2], etc. after each fact that comes from a document
+- Only cite when you actually use information from a document - do not add unnecessary citations
 
 Focus on what matters in real estate:
 - Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
@@ -728,6 +1261,7 @@ TONE
 Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
 
 Now provide your response (answer directly, no heading, no additional context, with citations):"""
+                        prompt = f"{prompt_body}\n\n{build_feedback_instruction()}"
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -744,6 +1278,8 @@ Now provide your response (answer directly, no heading, no additional context, w
                         # Stream tokens
                         full_summary = ""
                         chunk_count = 0
+                        visible_sent_length = 0
+                        feedback_started = False
                         for chunk in llm.stream(prompt):
                             chunk_count += 1
                             if chunk_count == 1:
@@ -751,11 +1287,43 @@ Now provide your response (answer directly, no heading, no additional context, w
                             if chunk.content:
                                 token = chunk.content
                                 full_summary += token
-                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+                                if feedback_started:
+                                    continue
+
+                                feedback_idx = full_summary.find(EVIDENCE_FEEDBACK_START)
+                                if feedback_idx != -1:
+                                    feedback_started = True
+                                    visible_segment = full_summary[visible_sent_length:feedback_idx]
+                                    if visible_segment:
+                                        yield f"data: {json.dumps({'type': 'token', 'token': visible_segment})}\n\n"
+                                    visible_sent_length = feedback_idx
+                                else:
+                                    new_segment = full_summary[visible_sent_length:]
+                                    if new_segment:
+                                        yield f"data: {json.dumps({'type': 'token', 'token': new_segment})}\n\n"
+                                        visible_sent_length = len(full_summary)
                         
                         # NEW: Parse citations from LLM response and map to bbox metadata
                         # Strategy: Number citations per unique chunk/bbox, not per document
                         # Each unique chunk gets its own sequential number (1, 2, 3...)
+                        feedback_records = []
+                        matched_feedback_records = []
+                        try:
+                            full_summary, feedback_records = extract_feedback_from_answer(full_summary, logger)
+                            if feedback_records:
+                                matched_feedback_records = match_feedback_to_chunks(feedback_records, doc_outputs, logger)
+                                matched_count = sum(1 for record in matched_feedback_records if record.get('matched_chunk'))
+                                logger.info(
+                                    "[EVIDENCE_FEEDBACK] Streaming summary produced %d feedback record(s); matched %d chunk(s)",
+                                    len(feedback_records),
+                                    matched_count,
+                                )
+                        except Exception as feedback_err:
+                            logger.warning(f"[EVIDENCE_FEEDBACK] Failed to parse streaming feedback: {feedback_err}")
+                            feedback_records = []
+                            matched_feedback_records = []
+
                         citations_data = {}  # Initialize to empty dict
                         try:
                             citation_pattern = r'\[(\d+)\]'
@@ -765,45 +1333,127 @@ Now provide your response (answer directly, no heading, no additional context, w
                             if not citation_map:
                                 logger.info("🟡 [CITATIONS] No documents found, skipping citation processing")
                             else:
-                                # Step 1: Build a map of ALL unique chunks from ALL documents
+                                # Step 1: Lazy citation assignment - only create citations for chunks that are actually cited
                                 # Key: (doc_id, chunk_index, page_number) -> unique chunk identifier
                                 # Value: sequential citation number
-                                all_chunks_map = {}  # Map chunk_signature to citation number
                                 sequential_num = 1
                                 chunk_to_citation = {}  # Map chunk_signature to citation number
                                 citation_to_chunks = {}  # Map citation number to chunk metadata
                                 
-                                # First, collect ALL chunks from ALL documents in citation_map
-                                for doc_num_str, doc_citation in citation_map.items():
-                                    doc_id = doc_citation['doc_id']
-                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
+                                # DO NOT pre-assign citations to all chunks
+                                # Citations will be created on-demand when:
+                                # 1. Evidence feedback matches a chunk
+                                # 2. Context matching finds a chunk for a citation
+                                # 3. A chunk is explicitly referenced
+                                
+                                doc_id_to_doc_num = {
+                                    meta.get('doc_id'): doc_num_str
+                                    for doc_num_str, meta in citation_map.items()
+                                    if meta.get('doc_id')
+                                }
+
+                                def ensure_chunk_citation_entry(doc_id, chunk, doc_meta, match_source="feedback"):
+                                    chunk_index = chunk.get('chunk_index')
+                                    page_number = chunk.get('page_number')
+                                    signature = (doc_id, chunk_index, page_number)
+                                    if signature in chunk_to_citation:
+                                        citation_number = str(chunk_to_citation[signature])
+                                        entry = citation_to_chunks.get(citation_number)
+                                    else:
+                                        next_cit_num = (max(chunk_to_citation.values()) if chunk_to_citation else 0) + 1
+                                        chunk_to_citation[signature] = next_cit_num
+                                        citation_number = str(next_cit_num)
+                                        entry = None
                                     
-                                    if isinstance(source_chunks_metadata, list):
-                                        for chunk in source_chunks_metadata:
-                                            if isinstance(chunk, dict):
-                                                chunk_index = chunk.get('chunk_index')
-                                                page_number = chunk.get('page_number')
-                                                bbox = chunk.get('bbox')
-                                                
-                                                # Create unique chunk signature: (doc_id, chunk_index, page_number)
-                                                # This uniquely identifies a chunk regardless of document
-                                                chunk_signature = (doc_id, chunk_index, page_number)
-                                                
-                                                # If this is a new unique chunk, assign it a citation number
-                                                if chunk_signature not in chunk_to_citation:
-                                                    chunk_to_citation[chunk_signature] = sequential_num
-                                                    citation_to_chunks[str(sequential_num)] = {
-                                                        'doc_id': doc_id,
-                                                        'chunk_index': chunk_index,
-                                                        'page_number': page_number,
-                                                        'chunk_metadata': chunk,  # Full chunk metadata including bbox
-                                                        'original_filename': doc_citation.get('original_filename'),
-                                                        'property_address': doc_citation.get('property_address'),
-                                                        'page_range': doc_citation.get('page_range'),
-                                                        'classification_type': doc_citation.get('classification_type')
-                                                    }
-                                                    logger.info(f"🟡 [CITATIONS] Assigned citation [{sequential_num}] to chunk: doc {doc_id[:8]}, chunk_idx {chunk_index}, page {page_number}")
-                                                    sequential_num += 1
+                                    normalized_chunk = {
+                                        'doc_id': doc_id,
+                                        'chunk_index': chunk_index,
+                                        'page_number': page_number,
+                                        'bbox': chunk.get('bbox'),
+                                        'content': (chunk.get('content') or '')[:500],
+                                        'match_reason': chunk.get('match_reason') or match_source
+                                    }
+                                    bbox_summary = summarize_bbox(normalized_chunk.get('bbox'))
+                                    logger.info(
+                                        "[BBOX TRACE] %s doc=%s chunk_idx=%s page=%s bbox=%s",
+                                        match_source.upper(),
+                                        (doc_id or 'unknown')[:8],
+                                        chunk_index,
+                                        page_number,
+                                        bbox_summary,
+                                    )
+                                    
+                                    if entry:
+                                        entry['matched_chunk_metadata'] = normalized_chunk
+                                        entry['chunk_metadata'] = normalized_chunk
+                                        entry['match_reason'] = normalized_chunk['match_reason']
+                                        logger.info(
+                                            "🟢 [CITATIONS] %s reused citation [%s] for doc %s, chunk_idx %s, page %s (bbox: %s)",
+                                            match_source.upper(),
+                                            citation_number,
+                                            (doc_id or '')[:8],
+                                            chunk_index,
+                                            page_number,
+                                            bool(normalized_chunk.get('bbox')),
+                                        )
+                                    else:
+                                        citation_to_chunks[citation_number] = {
+                                            'doc_id': doc_id,
+                                            'original_filename': doc_meta.get('original_filename') if doc_meta else None,
+                                            'property_address': doc_meta.get('property_address') if doc_meta else None,
+                                            'page_range': doc_meta.get('page_range') if doc_meta else None,
+                                            'classification_type': doc_meta.get('classification_type') if doc_meta else None,
+                                            'chunk_index': chunk_index,
+                                            'page_number': page_number,
+                                            'candidate_chunks_metadata': doc_meta.get('source_chunks_metadata', []) if doc_meta else [],
+                                            'matched_chunk_metadata': normalized_chunk,
+                                            'chunk_metadata': normalized_chunk,
+                                            'match_reason': normalized_chunk['match_reason']
+                                        }
+                                        logger.info(
+                                            "🟢 [CITATIONS] %s created citation [%s] for doc %s, chunk_idx %s, page %s (bbox: %s)",
+                                            match_source.upper(),
+                                            citation_number,
+                                            (doc_id or '')[:8],
+                                            chunk_index,
+                                            page_number,
+                                            bool(normalized_chunk.get('bbox')),
+                                        )
+                                    return citation_number
+
+                                feedback_override_map = {}
+                                if matched_feedback_records:
+                                    for matched_record in matched_feedback_records:
+                                        feedback_entry = matched_record.get('feedback') or {}
+                                        matched_chunk = matched_record.get('matched_chunk')
+                                        if not matched_chunk:
+                                            continue
+                                        doc_id = feedback_entry.get('doc_id') or matched_chunk.get('doc_id')
+                                        if not doc_id:
+                                            continue
+                                        doc_num_str = doc_id_to_doc_num.get(doc_id)
+                                        if not doc_num_str:
+                                            continue
+                                        doc_meta = citation_map.get(doc_num_str, {})
+                                        matched_chunk = {
+                                            **matched_chunk,
+                                            'match_reason': matched_chunk.get('match_reason') or 'feedback_snippet'
+                                        }
+                                        citation_number = ensure_chunk_citation_entry(doc_id, matched_chunk, doc_meta, match_source="feedback")
+                                        entry = citation_to_chunks.get(citation_number)
+                                        if entry:
+                                            entry.setdefault('evidence_feedback', []).append(feedback_entry)
+                                        label = (feedback_entry.get('citation_label') or '').strip()
+                                        if label.startswith('[') and label.endswith(']'):
+                                            label_num = label[1:-1]
+                                            if label_num == doc_num_str:
+                                                feedback_override_map[doc_num_str] = citation_number
+                                                logger.info(
+                                                    "[EVIDENCE_FEEDBACK] Overriding citation [%s] with chunk citation [%s] based on feedback snippet '%s...'",
+                                                    doc_num_str,
+                                                    citation_number,
+                                                    feedback_entry.get('snippet', '')[:40]
+                                                )
                                 
                                 # Step 2: Map LLM's document citations to chunk citations
                                 # When LLM cites [1] (Document 1), we need to map it to all chunks from Document 1
@@ -831,22 +1481,222 @@ Now provide your response (answer directly, no heading, no additional context, w
                                     doc_to_chunk_citations[doc_num_str] = chunk_citations
                                 
                                 # Step 3: Replace document citations with chunk citations in the text
-                                # When we see [1], replace it with [1], [2], [3] etc. based on chunks
-                                # But actually, we should just use the first chunk citation number
-                                # and let the frontend handle multiple chunks per document
+                                # When we see [1], replace it with the chunk that best matches the cited content
+                                # This uses text matching to find the chunk containing the actual cited information
                                 
-                                # For now, map each document citation to its first chunk citation
-                                # (We can enhance this later to handle multiple chunks per document citation)
+                                # For each document citation, find the BEST matching chunk (not just the first)
+                                # by analyzing the text context around the citation
                                 for doc_num_str in citations_found:
-                                    if doc_num_str in doc_to_chunk_citations:
-                                        chunk_citations = doc_to_chunk_citations[doc_num_str]
-                                        if chunk_citations:
-                                            # Use the first chunk citation number for this document
-                                            citation_renumber_map[doc_num_str] = chunk_citations[0]
-                                            logger.info(f"🟡 [CITATIONS] Mapped document citation [{doc_num_str}] to chunk citation [{chunk_citations[0]}] (from {len(chunk_citations)} chunks)")
+                                    # Check if feedback override exists first
+                                    if doc_num_str in feedback_override_map:
+                                        citation_renumber_map[doc_num_str] = feedback_override_map[doc_num_str]
+                                        logger.info(
+                                            "[EVIDENCE_FEEDBACK] Using feedback override for citation [%s] -> chunk citation [%s]",
+                                            doc_num_str,
+                                            feedback_override_map[doc_num_str],
+                                        )
+                                        continue
+                                    
+                                    # Get the source chunks for this document
+                                    doc_citation = citation_map.get(doc_num_str, {})
+                                    source_chunks = doc_citation.get('source_chunks_metadata', [])
+                                    doc_id = doc_citation.get('doc_id')
+                                    
+                                    # Extract context text before this citation to identify what's being cited
+                                    context_text = _extract_citation_context(full_summary, doc_num_str)
+                                    
+                                    # Check if we already have chunk citations for this document
+                                    chunk_citations = doc_to_chunk_citations.get(doc_num_str, [])
+                                    
+                                    logger.info(f"🟡 [CITATIONS] Doc [{doc_num_str}]: {len(source_chunks)} chunks available, context: '{context_text[:50] if context_text else 'None'}...', pre-assigned citations: {len(chunk_citations)}")
+                                    
+                                    # If we only have 1 chunk but have context, try fetching more chunks from DB
+                                    if context_text and doc_id and len(source_chunks) <= 1:
+                                        logger.info(f"🟡 [CITATIONS] Only {len(source_chunks)} chunk(s) for doc [{doc_num_str}], fetching more from DB...")
+                                        try:
+                                            # Query Supabase for more chunks from this document
+                                            supabase_client = get_supabase_client()
+                                            chunks_response = supabase_client.from_('document_vectors')\
+                                                .select('chunk_text, chunk_index, page_number, bbox')\
+                                                .eq('document_id', doc_id)\
+                                                .order('chunk_index')\
+                                                .limit(50)\
+                                                .execute()
+                                            
+                                            if chunks_response.data:
+                                                # Build extended source_chunks with bbox parsing
+                                                extended_chunks = []
+                                                for chunk_row in chunks_response.data:
+                                                    bbox_val = ensure_bbox_dict(chunk_row.get('bbox'))
+                                                    extended_chunks.append({
+                                                        'content': chunk_row.get('chunk_text', ''),
+                                                        'chunk_index': chunk_row.get('chunk_index'),
+                                                        'page_number': chunk_row.get('page_number'),
+                                                        'bbox': bbox_val,
+                                                        'doc_id': doc_id
+                                                    })
+                                                source_chunks = extended_chunks
+                                                logger.info(f"🟡 [CITATIONS] Fetched {len(extended_chunks)} chunks from DB for doc [{doc_num_str}]")
+                                        except Exception as fetch_err:
+                                            logger.warning(f"🟡 [CITATIONS] Failed to fetch more chunks: {fetch_err}")
+                                    
+                                    # Try to match citation to a chunk via context
+                                    if context_text and source_chunks and len(source_chunks) > 0:
+                                        # Find the chunk that best matches the citation context
+                                        best_chunk = _find_best_chunk_for_citation(context_text, source_chunks, logger)
+                                        
+                                        if best_chunk:
+                                                    best_chunk = {
+                                                        **best_chunk,
+                                                        'match_reason': best_chunk.get('match_reason') or 'context_match'
+                                                    }
+                                                    # Get the citation number for this specific chunk
+                                                    best_doc_id = best_chunk.get('doc_id') or doc_citation.get('doc_id')
+                                                    chunk_signature = (
+                                                        best_doc_id,
+                                                        best_chunk.get('chunk_index'),
+                                                        best_chunk.get('page_number')
+                                                    )
+                                                    
+                                                    # Check if this chunk's citation exists, if not create one
+                                                    if chunk_signature in chunk_to_citation:
+                                                        matched_cit_num = str(chunk_to_citation[chunk_signature])
+                                                        citation_renumber_map[doc_num_str] = matched_cit_num
+                                                        normalized_best_chunk = {
+                                                            **best_chunk,
+                                                            'doc_id': best_doc_id
+                                                        }
+                                                        entry = citation_to_chunks.get(matched_cit_num)
+                                                        if entry:
+                                                            entry['matched_chunk_metadata'] = normalized_best_chunk
+                                                            entry['chunk_metadata'] = normalized_best_chunk
+                                                            entry['candidate_chunks_metadata'] = source_chunks
+                                                            entry['match_reason'] = best_chunk.get('match_reason') or entry.get('match_reason')
+                                                            logger.info(
+                                                                "[BBOX TRACE] CONTEXT doc=%s chunk_idx=%s page=%s bbox=%s",
+                                                                (best_doc_id or 'unknown')[:8],
+                                                                best_chunk.get('chunk_index'),
+                                                                best_chunk.get('page_number'),
+                                                                summarize_bbox(best_chunk.get('bbox')),
+                                                            )
+                                                            logger.info(
+                                                                f"🟡 [CITATIONS] HEURISTIC matched citation [{doc_num_str}] to chunk on page {best_chunk.get('page_number')} "
+                                                                f"(context: '{context_text[:40]}...') -> citation [{matched_cit_num}], "
+                                                                f"bbox: {bool(best_chunk.get('bbox'))}"
+                                                            )
+                                                        else:
+                                                            # Create a new citation entry for this chunk
+                                                            # Structure must match what the citations_data builder expects:
+                                                            # - Top-level: doc_id, original_filename, property_address, page_range, classification_type
+                                                            # - chunk_metadata: chunk details including bbox
+                                                            next_cit_num = max([int(x) for x in chunk_to_citation.values()] + [0]) + 1
+                                                            chunk_to_citation[chunk_signature] = next_cit_num
+                                                            
+                                                            page_num = best_chunk.get('page_number')
+                                                            normalized_best_chunk = {
+                                                                'doc_id': best_doc_id,
+                                                                'chunk_index': best_chunk.get('chunk_index'),
+                                                                'page_number': page_num,
+                                                                'bbox': best_chunk.get('bbox'),
+                                                                'content': best_chunk.get('content', '')[:500]
+                                                            }
+                                                            citation_to_chunks[str(next_cit_num)] = {
+                                                                'doc_id': best_doc_id,
+                                                                'original_filename': doc_citation.get('original_filename'),
+                                                                'property_address': doc_citation.get('property_address'),
+                                                                'page_range': f"page {page_num}" if page_num else None,
+                                                                'classification_type': doc_citation.get('classification_type'),
+                                                                'chunk_index': best_chunk.get('chunk_index'),
+                                                                'page_number': page_num,
+                                                                # Keep the full chunk list we evaluated for traceability
+                                                                'candidate_chunks_metadata': source_chunks,
+                                                                # chunk_metadata is what gets extracted for source_chunks_metadata
+                                                                'matched_chunk_metadata': normalized_best_chunk,
+                                                                'chunk_metadata': normalized_best_chunk,
+                                                                'match_reason': best_chunk.get('match_reason') or 'context_match'
+                                                            }
+                                                            citation_renumber_map[doc_num_str] = str(next_cit_num)
+                                                            logger.info(
+                                                                "[BBOX TRACE] CONTEXT doc=%s chunk_idx=%s page=%s bbox=%s",
+                                                                (best_doc_id or 'unknown')[:8],
+                                                                best_chunk.get('chunk_index'),
+                                                                page_num,
+                                                                summarize_bbox(best_chunk.get('bbox')),
+                                                            )
+                                                            logger.info(
+                                                                f"🟡 [CITATIONS] HEURISTIC created NEW citation [{next_cit_num}] for doc {best_doc_id[:8] if best_doc_id else 'unknown'}, "
+                                                                f"page {page_num}, chunk_idx {best_chunk.get('chunk_index')}, bbox: {bool(best_chunk.get('bbox'))}"
+                                                            )
+                                        else:
+                                            # No best chunk found via context matching
+                                            if chunk_citations:
+                                                # Use first pre-assigned chunk citation as fallback
+                                                citation_renumber_map[doc_num_str] = chunk_citations[0]
+                                                logger.info(
+                                                    f"🟡 [CITATIONS] Fallback to first chunk citation [{chunk_citations[0]}] "
+                                                    "(no best match found)"
+                                                )
+                                            elif source_chunks:
+                                                # No pre-assigned citations, but we have chunks - create citation for first chunk
+                                                first_chunk = source_chunks[0]
+                                                chunk_signature = (doc_id, first_chunk.get('chunk_index'), first_chunk.get('page_number'))
+                                                if chunk_signature not in chunk_to_citation:
+                                                    next_cit_num = max([int(x) for x in chunk_to_citation.values()] + [0]) + 1
+                                                    chunk_to_citation[chunk_signature] = next_cit_num
+                                                    citation_to_chunks[str(next_cit_num)] = {
+                                                        'doc_id': doc_id,
+                                                        'original_filename': doc_citation.get('original_filename'),
+                                                        'property_address': doc_citation.get('property_address'),
+                                                        'page_range': f"page {first_chunk.get('page_number')}" if first_chunk.get('page_number') else None,
+                                                        'classification_type': doc_citation.get('classification_type'),
+                                                        'chunk_index': first_chunk.get('chunk_index'),
+                                                        'page_number': first_chunk.get('page_number'),
+                                                        'matched_chunk_metadata': {
+                                                            'doc_id': doc_id,
+                                                            'chunk_index': first_chunk.get('chunk_index'),
+                                                            'page_number': first_chunk.get('page_number'),
+                                                            'bbox': first_chunk.get('bbox'),
+                                                            'content': (first_chunk.get('content') or '')[:500]
+                                                        },
+                                                        'chunk_metadata': {
+                                                            'doc_id': doc_id,
+                                                            'chunk_index': first_chunk.get('chunk_index'),
+                                                            'page_number': first_chunk.get('page_number'),
+                                                            'bbox': first_chunk.get('bbox'),
+                                                            'content': (first_chunk.get('content') or '')[:500]
+                                                        },
+                                                        'candidate_chunks_metadata': source_chunks,
+                                                        'match_reason': 'fallback_first_chunk'
+                                                    }
+                                                    citation_renumber_map[doc_num_str] = str(next_cit_num)
+                                                    logger.info(f"🟡 [CITATIONS] Created fallback citation [{next_cit_num}] for first chunk (no context match)")
+                                    elif chunk_citations:
+                                        # No context but we have pre-assigned citations, use first one
+                                        citation_renumber_map[doc_num_str] = chunk_citations[0]
+                                        logger.info(f"🟡 [CITATIONS] Using first chunk citation [{chunk_citations[0]}] (no context, single chunk: {len(source_chunks)})")
+                                    elif source_chunks:
+                                        # No pre-assigned citations and no context, but we have chunks - skip this citation
+                                        logger.warning(f"🟡 [CITATIONS] Citation [{doc_num_str}] found but no matching chunk identified (no context, {len(source_chunks)} chunks available)")
                                 
                                 # Get unique chunk citation numbers that were actually used
                                 unique_citations = sorted(set(citation_renumber_map.values()), key=int) if citation_renumber_map else []
+                                
+                                if unique_citations:
+                                    citation_number_remap = {
+                                        old_num: str(idx + 1)
+                                        for idx, old_num in enumerate(unique_citations)
+                                    }
+                                    citation_renumber_map = {
+                                        doc_num: citation_number_remap.get(chunk_num, chunk_num)
+                                        for doc_num, chunk_num in citation_renumber_map.items()
+                                    }
+                                    remapped_citation_to_chunks = {}
+                                    for old_num, chunk_info in citation_to_chunks.items():
+                                        new_num = citation_number_remap.get(old_num)
+                                        if new_num:
+                                            remapped_citation_to_chunks[new_num] = chunk_info
+                                    citation_to_chunks = remapped_citation_to_chunks
+                                    unique_citations = list(citation_number_remap.values())
                                 
                                 logger.info(f"🟡 [CITATIONS] Found {len(citations_found)} document citation(s), mapped to {len(unique_citations)} unique chunk citation(s): {unique_citations}")
                                 
@@ -911,21 +1761,32 @@ Now provide your response (answer directly, no heading, no additional context, w
                                 for citation_num_str, chunk_info in citation_to_chunks.items():
                                     # Only include citations that were actually used in the response
                                     if citation_num_str in unique_citations:
-                                        chunk_metadata = chunk_info.get('chunk_metadata', {})
+                                        matched_chunk_metadata = chunk_info.get('matched_chunk_metadata') or chunk_info.get('chunk_metadata', {})
+                                        candidate_chunks = chunk_info.get('candidate_chunks_metadata', [])
                                         
                                         # FIX: Get doc_id from chunk_info or fallback to chunk_metadata
                                         # This handles cases where doc_id might be empty in citation_map
-                                        doc_id = chunk_info.get('doc_id') or chunk_metadata.get('doc_id') or ''
+                                        doc_id = chunk_info.get('doc_id') or matched_chunk_metadata.get('doc_id') or ''
                                         
                                         if not doc_id:
                                             logger.warning(f"🟡 [CITATIONS] No doc_id found for citation [{citation_num_str}], chunk_idx {chunk_info.get('chunk_index')}")
                                         
-                                        # Ensure doc_id is in chunk_metadata for frontend
-                                        if chunk_metadata and not chunk_metadata.get('doc_id'):
-                                            chunk_metadata = {**chunk_metadata, 'doc_id': doc_id}
+                                        # Ensure doc_id is in matched chunk metadata for frontend
+                                        if matched_chunk_metadata and not matched_chunk_metadata.get('doc_id'):
+                                            matched_chunk_metadata = {**matched_chunk_metadata, 'doc_id': doc_id}
                                         
-                                        # Build source_chunks_metadata array with just this chunk
-                                        source_chunks_metadata = [chunk_metadata] if chunk_metadata else []
+                                        has_bbox = bool(matched_chunk_metadata.get('bbox'))
+                                        if not has_bbox:
+                                            logger.warning(
+                                                "⚠️ [CITATIONS] Citation [%s] missing bbox (doc %s, chunk_idx %s, match_reason=%s)",
+                                                citation_num_str,
+                                                (doc_id or '')[:8],
+                                                chunk_info.get('chunk_index'),
+                                                chunk_info.get('match_reason') or 'unknown',
+                                            )
+                                        
+                                        # Build source_chunks_metadata array with just the matched chunk
+                                        source_chunks_metadata = [matched_chunk_metadata] if matched_chunk_metadata else []
                                         
                                         citations_data[citation_num_str] = {
                                             'doc_id': doc_id,  # Use recovered doc_id
@@ -933,12 +1794,17 @@ Now provide your response (answer directly, no heading, no additional context, w
                                             'property_address': chunk_info.get('property_address'),
                                             'page_range': chunk_info.get('page_range'),
                                             'classification_type': chunk_info.get('classification_type'),
-                                            'source_chunks_metadata': source_chunks_metadata  # Single chunk with bbox!
+                                            'source_chunks_metadata': source_chunks_metadata,  # Matched chunk with bbox
+                                            'matched_chunk_metadata': matched_chunk_metadata,
+                                            # Optional: include all candidate chunks for debugging/analysis
+                                            'candidate_chunks_metadata': candidate_chunks,
+                                            'match_reason': chunk_info.get('match_reason'),
+                                            'evidence_feedback': chunk_info.get('evidence_feedback', []),
                                         }
                                         logger.info(
                                             f"🟡 [CITATIONS] Mapped chunk citation [{citation_num_str}] to doc {doc_id[:8] if doc_id else 'MISSING'}, "
                                             f"chunk_idx {chunk_info.get('chunk_index')}, page {chunk_info.get('page_number')}, "
-                                            f"bbox: {bool(chunk_metadata.get('bbox'))}"
+                                            f"bbox: {bool(matched_chunk_metadata.get('bbox'))}"
                                         )
                         except Exception as citation_error:
                             logger.error(f"🟡 [CITATIONS] Error parsing citations: {citation_error}", exc_info=True)
@@ -952,6 +1818,8 @@ Now provide your response (answer directly, no heading, no additional context, w
                                 'relevant_documents': relevant_docs,
                                 'document_outputs': doc_outputs,
                                 'citations': citations_data,  # Citation mapping with bbox
+                                'evidence_feedback': feedback_records,
+                                'matched_evidence': matched_feedback_records,
                                 'session_id': session_id
                             }
                         }
@@ -1222,6 +2090,10 @@ def query_documents():
             "session_id": session_id,
             "property_id": property_id  # Pass property_id to filter results
         }
+
+        if document_id:
+            # Hint downstream nodes to focus on the specific document linked to this property
+            initial_state["document_ids"] = [document_id]
         
         # Use global graph instance (initialized on app startup)
         async def run_query():
@@ -1282,6 +2154,8 @@ def query_documents():
             "message": final_summary,  # Alias for compatibility
             "relevant_documents": result.get("relevant_documents", []),
             "document_outputs": result.get("document_outputs", []),
+            "evidence_feedback": result.get("evidence_feedback", []),
+            "matched_evidence": result.get("matched_evidence", []),
             "session_id": session_id
         }
         
@@ -1780,6 +2654,13 @@ def extract_text_from_image():
             'error': str(e)
         }), 500
 
+@views.route('/api/documents/upload', methods=['POST'])
+@login_required
+def upload_property_document():
+    """Upload property document (wrapper for existing upload-file)"""
+    # Redirect to existing upload-file endpoint
+    return upload_file_to_gateway()
+
 @views.route('/api/simple-test', methods=['GET'])
 def simple_test():
     """Simple test endpoint without database or auth"""
@@ -1854,7 +2735,7 @@ def get_presigned_url():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@views.route('/api/documents/proxy-upload', methods=['POST', 'OPTIONS'])
+@views.route('/api/documents/proxy-upload', methods=['POST'])
 @login_required
 def proxy_upload():
     """
@@ -1868,20 +2749,6 @@ def proxy_upload():
     
     Documents uploaded without property_id will remain in 'UPLOADED' status.
     """
-    # Handle CORS preflight
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    logger.info(f"📤 [PROXY-UPLOAD] POST request received from {current_user.email}")
-    logger.info(f"📤 [PROXY-UPLOAD] Form data keys: {list(request.form.keys())}")
-    logger.info(f"📤 [PROXY-UPLOAD] Files keys: {list(request.files.keys())}")
-    
     try:
         if 'file' not in request.files:
             logger.error("No 'file' key in request.files")
@@ -1933,7 +2800,6 @@ def proxy_upload():
             
             # Get property_id from form data if provided
             property_id_raw = request.form.get('property_id')
-            logger.info(f"📤 [PROXY-UPLOAD] Raw property_id from form: {property_id_raw} (type: {type(property_id_raw).__name__})")
             property_id = None
             
             # Normalize property_id: handle "null", "", None, or invalid UUIDs
@@ -1964,7 +2830,7 @@ def proxy_upload():
                 'file_type': file.content_type,
                 'file_size': file.content_length or 0,
                 'uploaded_by_user_id': str(current_user.id),
-                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
+                'business_id': str(business_uuid),  # Supabase documents.business_id is varchar
                 'business_uuid': business_uuid_str,  # Also store as UUID type
                 'status': 'uploaded',
                 'property_id': property_id  # Already normalized to None or valid UUID string
@@ -1980,7 +2846,6 @@ def proxy_upload():
                 return jsonify({'error': f'Failed to create document in Supabase: {error}'}), 500
             
             logger.info(f"✅ Document {doc_id} created in Supabase documents table")
-            logger.info(f"📤 [PROXY-UPLOAD] Normalized property_id: {property_id} (will trigger fast pipeline: {property_id is not None})")
             
             # If property_id was provided, create document_relationships entry in Supabase
             if property_id:
@@ -2026,7 +2891,6 @@ def proxy_upload():
             # Trigger fast processing if property_id is provided
             if property_id:
                 try:
-                    logger.info(f"⚡ [PROXY-UPLOAD] Property ID provided ({property_id}), queuing fast processing task...")
                     # Queue fast processing task (property_id already known - no extraction needed)
                     task = process_document_fast_task.delay(
                         document_id=doc_id,
@@ -2035,12 +2899,11 @@ def proxy_upload():
                         business_id=str(business_uuid_str),
                         property_id=str(property_id)
                     )
-                    logger.info(f"⚡ [PROXY-UPLOAD] ✅ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
+                    
+                    logger.info(f"⚡ Queued fast processing task {task.id} for document {doc_id} (property {property_id})")
                 except Exception as e:
-                    logger.error(f"❌ [PROXY-UPLOAD] Failed to queue fast processing task: {e}", exc_info=True)
+                    logger.warning(f"Failed to queue fast processing task: {e}")
                     # Don't fail the upload - document is already created and uploaded
-            else:
-                logger.warning(f"⚠️ [PROXY-UPLOAD] No property_id provided - document {doc_id} will remain in 'UPLOADED' status (no processing pipeline activated)")
             
             # Success - document created in Supabase and linked to property if provided
             return jsonify({
@@ -2064,161 +2927,6 @@ def proxy_upload():
     except Exception as e:
         logger.error(f"Proxy upload failed: {e}")
         return jsonify({'error': str(e)}), 500
-
-@views.route('/api/documents/upload', methods=['POST', 'OPTIONS'])
-@login_required
-def upload_document():
-    """
-    General document upload endpoint for files NOT associated with a property.
-    
-    Full Pipeline: Always triggers full processing:
-    - Document classification
-    - Property extraction (if applicable)
-    - Full schema extraction
-    - Image processing
-    - Section-based chunking
-    - Document-level context generation
-    - Embedding and vector storage
-    
-    This endpoint is for general file uploads (e.g., from FileManager) that need
-    full processing, unlike proxy-upload which is optimized for property card uploads.
-    """
-    # Handle CORS preflight
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    logger.info(f"📤 [UPLOAD] POST request received from {current_user.email}")
-    logger.info(f"📤 [UPLOAD] Form data keys: {list(request.form.keys())}")
-    logger.info(f"📤 [UPLOAD] Files keys: {list(request.files.keys())}")
-    
-    try:
-        if 'file' not in request.files:
-            logger.error("No 'file' key in request.files")
-            return jsonify({'error': 'No file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            logger.error("Empty filename")
-            return jsonify({'error': 'No file selected'}), 400
-
-        business_uuid_str = _ensure_business_uuid()
-        if not business_uuid_str:
-            return jsonify({'error': 'User is not associated with a business'}), 400
-        business_uuid = UUID(business_uuid_str)
-        
-        # Generate unique S3 key
-        filename = secure_filename(file.filename)
-        s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
-        
-        # Upload to S3 FIRST (before creating database record)
-        try:
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-                aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-                region_name=os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
-            )
-            
-            # Read file content once (will be reused for full processing task)
-            file.seek(0)  # Reset file pointer
-            file_content = file.read()
-            
-            # Upload file to S3
-            s3_client.put_object(
-                Bucket=os.environ['S3_UPLOAD_BUCKET'],
-                Key=s3_key,
-                Body=file_content,
-                ContentType=file.content_type
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to upload to S3: {e}")
-            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
-        
-        # Create document record in Supabase
-        try:
-            from .services.document_storage_service import DocumentStorageService
-            
-            # Generate document ID
-            document_id = str(uuid.uuid4())
-            
-            # Create document directly in Supabase (NO property_id for general uploads)
-            doc_storage = DocumentStorageService()
-            success, doc_id, error = doc_storage.create_document({
-                'id': document_id,
-                'original_filename': filename,
-                's3_path': s3_key,
-                'file_type': file.content_type,
-                'file_size': file.content_length or 0,
-                'uploaded_by_user_id': str(current_user.id),
-                'business_id': current_user.company_name,  # Supabase documents.business_id is varchar
-                'business_uuid': business_uuid_str,  # Also store as UUID type
-                'status': 'uploaded',
-                'property_id': None  # General uploads are not linked to properties initially
-            })
-            
-            if not success:
-                logger.error(f"Failed to create document in Supabase: {error}")
-                # Try to clean up S3 file
-                try:
-                    s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
-                except:
-                    pass
-                return jsonify({'error': f'Failed to create document in Supabase: {error}'}), 500
-            
-            logger.info(f"✅ Document {doc_id} created in Supabase documents table")
-            logger.info(f"🔄 [UPLOAD] Queuing FULL processing pipeline for document {doc_id}")
-            
-            # ALWAYS trigger full processing pipeline (classification → extraction → embedding)
-            try:
-                # Queue full processing task (process_document_task → process_document_classification → full extraction)
-                task = process_document_task.delay(
-                    document_id=doc_id,
-                    file_content=file_content,
-                    original_filename=filename,
-                    business_id=str(business_uuid_str)
-                )
-                logger.info(f"🔄 [UPLOAD] ✅ Queued full processing task {task.id} for document {doc_id}")
-                logger.info(f"   Pipeline: classification → extraction → embedding")
-            except Exception as e:
-                logger.error(f"❌ [UPLOAD] Failed to queue full processing task: {e}", exc_info=True)
-                # Don't fail the upload - document is already created and uploaded
-                # But log this as a critical error since processing won't happen
-            
-            # Success - document created in Supabase and full processing queued
-            return jsonify({
-                'success': True,
-                'document_id': doc_id,
-                'message': 'Document uploaded and full processing pipeline queued.',
-                'status': 'uploaded',
-                'processing_queued': True,  # Always true for this endpoint
-                'pipeline': 'full'  # Indicate this uses the full pipeline
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Failed to create document record in Supabase: {e}", exc_info=True)
-            # Try to clean up S3 file if database record creation fails
-            try:
-                s3_client.delete_object(Bucket=os.environ['S3_UPLOAD_BUCKET'], Key=s3_key)
-            except:
-                pass
-            response = jsonify({'error': f'Failed to create document record: {str(e)}'})
-            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            response.headers.add('Access-Control-Allow-Credentials', 'true')
-            return response, 500
-            
-    except Exception as e:
-        logger.error(f"Document upload failed: {e}")
-        response = jsonify({'error': str(e)})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        return response, 500
 
 @views.route('/api/documents/temp-preview', methods=['POST'])
 @login_required
@@ -2280,71 +2988,6 @@ def test_s3_upload():
         
     except Exception as e:
         return jsonify({'error': f'S3 upload failed: {str(e)}'}), 500
-
-@views.route('/api/documents', methods=['GET'])
-@login_required
-def get_documents():
-    """
-    Fetches all documents associated with the current user's business.
-    """
-    business_uuid_str = _ensure_business_uuid()
-    if not business_uuid_str:
-        return jsonify({'error': 'User is not associated with a business'}), 400
-
-    documents = (
-        Document.query
-        .filter_by(business_id=UUID(business_uuid_str))
-        .order_by(Document.created_at.desc())
-        .all()
-    )
-    
-    return jsonify([doc.serialize() for doc in documents])
-
-@views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
-def delete_document_standard(document_id):
-    """
-    Standardized deletion endpoint for documents.
-    Matches RESTful pattern: /api/documents/<id> (DELETE)
-    Deletes a document from S3, Supabase stores, and its metadata record from the database.
-    """
-    # Handle CORS preflight - MUST be first, before authentication check
-    if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        response.headers.add('Access-Control-Max-Age', '3600')
-        return response, 200
-    
-    # Require login for actual DELETE request
-    if not current_user.is_authenticated:
-        response = jsonify({
-            'success': False,
-            'error': 'Authentication required'
-        })
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        return response, 401
-    
-    logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
-    result = _perform_document_deletion(document_id)
-    
-    # Ensure CORS headers are present in the response
-    if isinstance(result, tuple):
-        response_obj, status_code = result
-    else:
-        response_obj = result
-        status_code = 200
-    
-    if hasattr(response_obj, 'headers'):
-        response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
-        response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-    
-    return result
 
 @views.route('/api/documents/<uuid:document_id>/processing-history', methods=['GET'])
 @login_required
@@ -2425,7 +3068,7 @@ def confirm_upload(document_id):
     try:
         document = Document.query.get_or_404(document_id)
         
-        if str(document.get('business_id')) != str(current_user.business_id):
+        if str(document.business_id) != str(current_user.business_id):
             return jsonify({'error': 'Unauthorized'}), 403
         
         data = request.get_json()
@@ -2454,10 +3097,10 @@ def confirm_upload(document_id):
             
             # Trigger processing task
             task = process_document_task.delay(
-                document_id=new_document.id,
+                document_id=document.id,
                 file_content=file_content,
-                original_filename=filename,
-                business_id=new_document.business_id
+                original_filename=document.original_filename,
+                business_id=document.business_id
             )
             
             return jsonify({
@@ -2667,7 +3310,7 @@ def api_dashboard():
         try:
             properties = (
                 Property.query
-                .filter_by(business_id=business_uuid)
+                .filter_by(business_id=business_uuid_str)
                 .order_by(Property.created_at.desc())
                 .limit(10)
                 .all()
@@ -2730,146 +3373,46 @@ def api_dashboard():
 @views.route('/api/appraisal', methods=['POST'])
 @login_required
 def api_create_appraisal():
-    data = request.get_json()
-    
-    address = data.get('address')
-    if not address: 
-        return jsonify({'error': 'Address is required'}), 400
-    
-    try:
-        new_appraisal = Appraisal(
-                address=address,
-            bedrooms=data.get('bedrooms'),
-            bathrooms=data.get('bathrooms'),
-            property_type=data.get('property_type'),
-            land_size=float(data.get('land_size')) if data.get('land_size') else None,
-            floor_area=float(data.get('floor_area')) if data.get('floor_area') else None,
-            condition=int(data.get('condition')) if data.get('condition') else None,
-            features=','.join(data.get('features', [])) if data.get('features') else None,
-                user_id=current_user.id,
-                status='In Progress'
-            )
-        db.session.add(new_appraisal)
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'appraisal_id': new_appraisal.id,
-            'message': 'Appraisal created successfully'
-        })
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 # API endpoint for React frontend
 @views.route('/api/appraisal/<int:id>', methods=['GET'])
 @login_required
 def api_appraisal(id):
-    appraisal = Appraisal.query.get_or_404(id)
-    if appraisal.user_id != current_user.id:
-        return jsonify({'error': 'You do not have permission to view this appraisal.'}), 403
-
-    comparable_properties = ComparableProperty.query.filter_by(appraisal_id=id).all()
-    chat_messages = ChatMessage.query.filter_by(appraisal_id=id).order_by(ChatMessage.timestamp).all()
-
-    # Convert to JSON-serializable format
-    appraisal_data = {
-        'id': appraisal.id,
-        'address': appraisal.address,
-        'bedrooms': appraisal.bedrooms,
-        'bathrooms': appraisal.bathrooms,
-        'property_type': appraisal.property_type,
-        'land_size': appraisal.land_size,
-        'floor_area': appraisal.floor_area,
-        'condition': appraisal.condition,
-        'features': appraisal.features,
-        'status': appraisal.status,
-        'date_created': appraisal.date_created.isoformat() if appraisal.date_created else None,
-        'user_id': appraisal.user_id
-    }
-
-    comparable_data = []
-    for prop in comparable_properties:
-        comparable_data.append({
-            'id': prop.id,
-            'address': prop.address,
-            'postcode': prop.postcode,
-            'bedrooms': prop.bedrooms,
-            'bathrooms': prop.bathrooms,
-            'floor_area': prop.floor_area,
-            'image_url': prop.image_url,
-            'price': prop.price,
-            'square_feet': prop.square_feet,
-            'days_on_market': prop.days_on_market,
-            'distance_to': prop.distance_to,
-            'location_adjustment': prop.location_adjustment,
-            'size_adjustment': prop.size_adjustment,
-            'market_adjustment': prop.market_adjustment,
-            'adjusted_value': prop.adjusted_value,
-            'appraisal_id': prop.appraisal_id
-        })
-
-    chat_data = []
-    for msg in chat_messages:
-        chat_data.append({
-            'id': msg.id,
-            'content': msg.content,
-            'is_user': msg.is_user,
-            'timestamp': msg.timestamp.isoformat() if msg.timestamp else None,
-            'appraisal_id': msg.appraisal_id
-        })
-
-    return jsonify({
-        'appraisal': appraisal_data,
-        'comparable_properties': comparable_data,
-        'chat_messages': chat_data
-    })
-
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 # API endpoint for chat messages
 @views.route('/api/appraisal/<int:id>/chat', methods=['POST'])
 @login_required
 def api_chat(id):
-    appraisal = Appraisal.query.get_or_404(id)
-    if appraisal.user_id != current_user.id:
-        return jsonify({'error': 'You do not have permission to access this appraisal.'}), 403
-
-    data = request.get_json()
-    message_content = data.get('message')
-
-    if not message_content:
-        return jsonify({'error': 'Message content is required.'}), 400
-
-    # Save user message
-    new_message = ChatMessage(
-        content=message_content,
-        is_user=True,
-        appraisal_id=appraisal.id,
-        timestamp=datetime.utcnow()
-    )
-    db.session.add(new_message)
-    db.session.commit()
-    
-    # Generate AI response (placeholder for now)
-    ai_response = ChatMessage(
-        content="I've received your message and will analyze the property details. Please give me a moment to process this information.",
-        is_user=False,
-        appraisal_id=appraisal.id,
-        timestamp=datetime.utcnow()
-    )
-    db.session.add(ai_response)
-    db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'ai_response': ai_response.content,
-        'message_id': new_message.id
-    })
+    """Legacy endpoint - not implemented (models missing)"""
+    return jsonify({'error': 'This endpoint is not implemented'}), 501
 
 @views.route('/dashboard')
 @login_required
 def dashboard():
     return render_template("dashboard.html", user=current_user)
+
+@views.route('/api/documents', methods=['GET'])
+@login_required
+def get_documents():
+    """
+    Fetches all documents associated with the current user's business.
+    """
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        return jsonify({'error': 'User is not associated with a business'}), 400
+
+    documents = (
+        Document.query
+        .filter_by(business_id=business_uuid_str)
+        .order_by(Document.created_at.desc())
+        .all()
+    )
+    
+    return jsonify([doc.serialize() for doc in documents])
 
 @views.route('/api/files', methods=['GET'])
 @login_required
@@ -2895,19 +3438,10 @@ def get_files():
         logger.error(f"Error fetching documents from Supabase: {e}")
         return jsonify({'error': str(e)}), 500
 
-@views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
-@login_required
-def delete_document(document_id):
-    """
-    Legacy deletion endpoint (backward compatibility).
-    Use /api/documents/<uuid:document_id> instead for consistency.
-    """
-    return _perform_document_deletion(document_id)
-
 @views.route('/api/files/<uuid:file_id>', methods=['DELETE', 'OPTIONS'])
 def delete_file(file_id):
     """
-    Alias for /api/documents/<uuid:document_id> DELETE - TypeScript frontend compatibility.
+    Alias for /api/document/<uuid:document_id> DELETE - TypeScript frontend compatibility.
     Deletes a document from S3, Supabase stores, and its metadata record from the database.
     """
     if request.method == 'OPTIONS':
@@ -2918,78 +3452,328 @@ def delete_file(file_id):
     if not current_user.is_authenticated:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    return _perform_document_deletion(file_id)
+    return delete_document(file_id)
 
-def _perform_document_deletion(document_id):
+@views.route('/api/document/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
+def delete_document(document_id):
     """
-    Centralized document deletion logic.
-    Uses UnifiedDeletionService for complete deletion from S3, Supabase, and all related data stores.
+    Deletes a document from S3, Supabase stores, and its metadata record from the database.
+    """
+    if request.method == 'OPTIONS':
+        # Handle CORS preflight - no auth needed
+        response = make_response('', 200)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
     
-    Args:
-        document_id: UUID of the document to delete
-        
-    Returns:
-        Flask Response with deletion results
-    """
-    # Authentication and authorization checks
-    company_name = getattr(current_user, "company_name", None)
-    if not company_name:
-        logger.warning("Current user has no company_name; denying delete request.")
-        return jsonify({'error': 'Unauthorized'}), 403
-
-    user_business_uuid = _ensure_business_uuid()
+    # Apply login_required check for actual DELETE
+    if not current_user.is_authenticated:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    # Get document from Supabase (not local PostgreSQL)
+    user_business_uuid = _normalize_uuid_str(getattr(current_user, "business_id", None)) or _ensure_business_uuid()
+    
     if not user_business_uuid:
         logger.warning("Current user has no business UUID; denying delete request.")
         return jsonify({'error': 'Unauthorized'}), 403
-
-    # Get document from Supabase to verify ownership and get S3 path
+    
+    # Get document from Supabase
     from .services.document_storage_service import DocumentStorageService
+    from .services.supabase_client_factory import get_supabase_client
     doc_storage = DocumentStorageService()
-    success, document_data, error = doc_storage.get_document(str(document_id), company_name)
+    
+    document_id_str = str(document_id)
+    logger.info(f"DELETE: Attempting to retrieve document {document_id_str} for business {user_business_uuid}")
+    
+    success, document_data, error = doc_storage.get_document(document_id_str, user_business_uuid)
     
     if not success:
-        if error == "Document not found":
-            return jsonify({'error': 'Document not found'}), 404
-        return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
+        # Try to fetch document without business_id filter to see if it exists with different business_id
+        logger.warning(f"DELETE: Document not found with business_id filter. Checking if document exists and is linked to user's properties...")
+        try:
+            supabase = get_supabase_client()
+            # First check if document exists at all
+            check_result = supabase.table('documents').select('id, business_id, s3_path, original_filename').eq('id', document_id_str).execute()
+            if check_result.data and len(check_result.data) > 0:
+                doc_business_id = check_result.data[0].get('business_id')
+                logger.info(f"DELETE: Document exists with business_id: {doc_business_id}, User business_id: {user_business_uuid}")
+                
+                # Check if document is linked to any property that belongs to user's business
+                relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', document_id_str).execute()
+                if relationships_result.data and len(relationships_result.data) > 0:
+                    property_ids = [rel.get('property_id') for rel in relationships_result.data if rel.get('property_id')]
+                    logger.info(f"DELETE: Document is linked to {len(property_ids)} properties")
+                    
+                    # Check if any of these properties belong to user's business
+                    if property_ids:
+                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+                        hub_service = SupabasePropertyHubService()
+                        for prop_id in property_ids:
+                            prop_hub = hub_service.get_property_hub(str(prop_id), user_business_uuid)
+                            if prop_hub:
+                                logger.info(f"DELETE: Document is linked to property {prop_id} which belongs to user's business. Allowing deletion.")
+                                # Use the document data we found (with its actual business_id)
+                                document_data = check_result.data[0]
+                                # Continue with deletion using the document's actual business_id
+                                break
+                        else:
+                            logger.warning(f"DELETE: Document is not linked to any property in user's business")
+                            return jsonify({'error': 'Document not found or access denied'}), 404
+                    else:
+                        logger.warning(f"DELETE: Document has no property relationships")
+                        return jsonify({'error': 'Document not found or access denied'}), 404
+                else:
+                    logger.warning(f"DELETE: Document exists but is not linked to any property")
+                    return jsonify({'error': 'Document not found or access denied'}), 404
+            else:
+                logger.warning(f"DELETE: Document {document_id_str} does not exist in database")
+                return jsonify({'error': 'Document not found'}), 404
+        except Exception as check_error:
+            logger.error(f"DELETE: Error checking document existence: {check_error}")
+            import traceback
+            traceback.print_exc()
+        
+        if not document_data:
+            if error == "Document not found":
+                return jsonify({'error': 'Document not found'}), 404
+            else:
+                return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
     
-    # Extract document fields and verify ownership
+    # Extract document fields
     s3_path = document_data.get('s3_path')
     original_filename = document_data.get('original_filename')
-    document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid'))
+    document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid') or document_data.get('business_id'))
     
-    if not document_business_uuid or document_business_uuid != user_business_uuid:
-        logger.warning(
-            "Document business mismatch (doc=%s, user=%s). Denying deletion.",
-            document_business_uuid,
-            user_business_uuid,
-        )
-        return jsonify({'error': 'Unauthorized'}), 403
-
+    # Verify business ownership - but allow if document is linked to user's property
+    if document_business_uuid != user_business_uuid:
+        # Check if document is linked to a property in user's business
+        logger.info(f"DELETE: Document business mismatch. Checking property relationships...")
+        try:
+            supabase = get_supabase_client()
+            relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', document_id_str).execute()
+            if relationships_result.data and len(relationships_result.data) > 0:
+                property_ids = [rel.get('property_id') for rel in relationships_result.data if rel.get('property_id')]
+                if property_ids:
+                    from .services.supabase_property_hub_service import SupabasePropertyHubService
+                    hub_service = SupabasePropertyHubService()
+                    for prop_id in property_ids:
+                        prop_hub = hub_service.get_property_hub(str(prop_id), user_business_uuid)
+                        if prop_hub:
+                            logger.info(f"DELETE: Document is linked to property {prop_id} which belongs to user's business. Allowing deletion.")
+                            # Use document's actual business_id for deletion operations
+                            break
+                    else:
+                        logger.warning(f"DELETE: Document business mismatch and not linked to user's properties. Denying deletion.")
+                        return jsonify({'error': 'Unauthorized'}), 403
+                else:
+                    logger.warning(f"DELETE: Document business mismatch and has no valid property relationships. Denying deletion.")
+                    return jsonify({'error': 'Unauthorized'}), 403
+            else:
+                logger.warning(f"DELETE: Document business mismatch and not linked to any property. Denying deletion.")
+                return jsonify({'error': 'Unauthorized'}), 403
+        except Exception as rel_check_error:
+            logger.error(f"DELETE: Error checking property relationships: {rel_check_error}")
+            return jsonify({'error': 'Unauthorized'}), 403
+    
     if not s3_path:
         logger.error(f"Document {document_id} missing s3_path")
         return jsonify({'error': 'Document missing S3 path'}), 400
+
+    deletion_results = {
+        's3': False,
+        'supabase': False,
+        'postgresql': False
+    }
+
+    # 1. Get AWS and API Gateway configuration from environment
+    try:
+        aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
+        aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
+        aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+        invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
+        bucket_name = os.environ['S3_UPLOAD_BUCKET']
+    except KeyError as e:
+        error_message = f"Missing environment variable: {e}"
+        print(error_message, file=sys.stderr)
+        return jsonify({'error': 'Server is not configured for file deletion.'}), 500
     
-    logger.info(f"🗑️ DELETE document {document_id} ({original_filename}) by {current_user.email}")
+    logger.info("=" * 100)
+    logger.info(f"VIEWS.PY - DELETE DOCUMENT ENDPOINT CALLED")
+    logger.info(f"Document ID: {document_id}")
+    logger.info(f"Filename: {original_filename}")
+    logger.info(f"Business ID: {document_business_uuid}")
+    logger.info(f"User: {current_user.email}")
+    logger.info("=" * 100)
     
-    # Use UnifiedDeletionService for all deletion operations
-    from .services.unified_deletion_service import UnifiedDeletionService
-    deletion_service = UnifiedDeletionService()
+    # 2. Delete the object from S3
+    logger.info("[S3 DELETION]")
+    try:
+        s3_key = s3_path
+        final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{s3_key}"
+        service = 'execute-api'
+        aws_auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, service)
+
+        logger.info(f"   S3 Key: {s3_key}")
+        response = requests.delete(final_url, auth=aws_auth)
+        response.raise_for_status()
+        deletion_results['s3'] = True
+        logger.info(f"   SUCCESS: Deleted S3 file: {s3_key}")
+
+    except requests.exceptions.RequestException as e:
+        error_message = f"Failed to delete file from S3: {e}"
+        logger.error(f"   FAILED: S3 deletion - {e}")
+        # Don't return error - continue with other deletions
+
+    # 3. Delete from ALL database stores (Supabase + PostgreSQL properties)
+    logger.info("[DATABASE STORES DELETION]")
+    try:
+        deletion_service = DeletionService()
+        all_stores_success, store_results = deletion_service.delete_document_from_all_stores(
+            str(document_id), 
+            document_business_uuid
+        )
+        
+        # Update deletion results with individual store statuses
+        deletion_results.update(store_results)
+        
+        if all_stores_success:
+            logger.info(f"SUCCESS: All database stores deleted for document {document_id}")
+        else:
+            logger.warning(f"PARTIAL: Some stores failed for document {document_id}")
+            logger.warning(f"   Store results: {store_results}")
+            
+    except Exception as e:
+        error_message = f"Failed to delete from data stores: {e}"
+        logger.error(f"   FAILED: Database stores deletion - {e}")
+        import traceback
+        traceback.print_exc()
+        # Don't return error - continue with PostgreSQL document deletion
+
+    # 4. Collect impacted properties, then delete relationships FIRST (before document)
+    logger.info("[SUPABASE DOCUMENT RELATIONSHIPS DELETION]")
+    impacted_property_ids = set()
+    try:
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        
+        # Get relationships from Supabase
+        relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', str(document_id)).execute()
+        relationships = relationships_result.data if relationships_result.data else []
+        relationship_count = len(relationships)
+        impacted_property_ids = {str(rel.get('property_id')) for rel in relationships if rel.get('property_id')}
+        logger.info(f"   Found {relationship_count} document relationships; impacted properties: {len(impacted_property_ids)}")
+        
+        # Delete all document relationships for this document from Supabase
+        if relationship_count > 0:
+            delete_result = supabase.table('document_relationships').delete().eq('document_id', str(document_id)).execute()
+            logger.info(f"   SUCCESS: Deleted {relationship_count} document relationships from Supabase")
+        else:
+            logger.info(f"   No document relationships found for this document")
+    except Exception as e:
+        logger.warning(f"   WARNING: Failed to delete document relationships - {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue anyway - don't fail the whole deletion
     
-    result = deletion_service.delete_document_complete(
-        document_id=str(document_id),
-        business_id=document_business_uuid,
-        s3_path=s3_path,
-        delete_s3=True,
-        recompute_properties=True,
-        cleanup_orphans=True
-    )
+    # 5. Delete vectors linked to this document (document vectors + property vectors by source doc)
+    logger.info("[VECTORS DELETION]")
+    try:
+        from .services.vector_service import SupabaseVectorService
+        vector_service = SupabaseVectorService()
+
+        dv_ok = vector_service.delete_document_vectors(str(document_id))
+        logger.info(f"   Deleted document vectors for {document_id}: {'OK' if dv_ok else 'FAIL'}")
+
+        # Attempt fine-grained property vector deletion per impacted property
+        pv_any_ok = False
+        if impacted_property_ids:
+            for pid in impacted_property_ids:
+                pv_ok = vector_service.delete_property_vectors_by_source_document(str(document_id), pid)
+                pv_any_ok = pv_any_ok or pv_ok
+                logger.info(f"   Property vectors by source doc for property {pid}: {'OK' if pv_ok else 'SKIP/FAIL'}")
+        else:
+            # If we don't know which property was impacted, attempt global delete by source document id
+            pv_any_ok = vector_service.delete_property_vectors_by_source_document(str(document_id))
+            logger.info(f"   Property vectors by source doc (no property scope): {'OK' if pv_any_ok else 'SKIP/FAIL'}")
+    except Exception as e:
+        logger.warning(f"   WARNING: Vector deletion step failed - {e}")
+
+    # 6. Delete local PostgreSQL processing history (after relationships)
+    logger.info("[POSTGRESQL PROCESSING HISTORY DELETION]")
+    try:
+        from .models import DocumentProcessingHistory
+        history_count = DocumentProcessingHistory.query.filter_by(document_id=document_id).count()
+        logger.info(f"   Found {history_count} processing history entries")
+        
+        # Delete all processing history entries for this document
+        DocumentProcessingHistory.query.filter_by(document_id=document_id).delete()
+        db.session.commit()
+        logger.info(f"   SUCCESS: Deleted {history_count} processing history entries")
+    except Exception as e:
+        logger.warning(f"   WARNING: Failed to delete processing history - {e}")
+        db.session.rollback()
+        # Continue anyway - don't fail the whole deletion
     
-    # Build response
-    response_data = result.to_dict()
-    response_data['document_id'] = str(document_id)
-    response_data['results'] = result.operations  # For backwards compatibility
+    # 7. Recompute property hubs impacted by this deletion
+    logger.info("[PROPERTY RECOMPUTE AFTER DOCUMENT DELETION]")
+    try:
+        if impacted_property_ids:
+            from .services.supabase_property_hub_service import SupabasePropertyHubService
+            hub_service = SupabasePropertyHubService()
+            for pid in impacted_property_ids:
+                res = hub_service.recompute_property_after_document_deletion(pid, str(document_id))
+                logger.info(f"   Recomputed property {pid}: {res}")
+        else:
+            logger.info("   No impacted properties detected; skipping recompute")
+    except Exception as e:
+        logger.warning(f"   WARNING: Property recompute failed - {e}")
+
+    # 8. Remove Supabase property hub records when no documents remain
+    logger.info("[SUPABASE PROPERTY HUB CLEANUP]")
+    orphaned_supabase_props = _cleanup_orphan_supabase_properties(impacted_property_ids)
+    if orphaned_supabase_props:
+        logger.info(f"   Removed Supabase property hub data for properties: {orphaned_supabase_props}")
+    else:
+        logger.info("   No Supabase properties required cleanup")
+
+    # 8. PostgreSQL document record deletion (SKIPPED - documents are in Supabase)
+    # Documents are now stored in Supabase, not local PostgreSQL
+    # The deletion service already handles Supabase document deletion
+    logger.info("[POSTGRESQL DOCUMENT RECORD DELETION]")
+    logger.info("   SKIPPED: Documents are stored in Supabase, not local PostgreSQL")
+    deletion_results['postgresql'] = True  # Mark as success since there's nothing to delete
+
+    # 9. Return comprehensive results
+    success_count = sum(deletion_results.values())
+    total_operations = len(deletion_results)
     
-    return jsonify(response_data), result.http_status
+    logger.info("=" * 100)
+    logger.info(f"FINAL DELETION RESULTS:")
+    logger.info(f"   Total operations: {total_operations}")
+    logger.info(f"   Successful: {success_count}")
+    logger.info(f"   Failed: {total_operations - success_count}")
+    logger.info(f"   Details: {deletion_results}")
+    logger.info("=" * 100)
+    
+    response_data = {
+        'message': f'Deletion completed: {success_count}/{total_operations} operations successful',
+        'results': deletion_results,
+        'document_id': str(document_id)
+    }
+    
+    if success_count == total_operations:
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    else:
+        response_data['warning'] = 'Some deletion operations failed'
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 207  # 207 Multi-Status
 
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
@@ -3154,6 +3938,249 @@ def process_document(document_id):
         
     except Exception as e:
         return jsonify({'error': f'Failed to start processing: {str(e)}'}), 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
+@login_required
+def reprocess_document(document_id):
+    """
+    Reprocess a document to extract BBOX data using Reducto.
+    
+    Modes:
+    - 'full': Re-embed + extract bbox (complete reprocessing)
+    - 'bbox_only': Just update bbox data, preserve embeddings
+    """
+    # Get the origin for CORS
+    origin = request.headers.get('Origin', 'http://localhost:3000')
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        mode = data.get('mode', 'full')
+        
+        if mode not in ['full', 'bbox_only']:
+            response = jsonify({'error': 'Invalid mode. Use "full" or "bbox_only"'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Connect to Supabase (primary source of truth)
+        supabase = get_supabase_client()
+        
+        doc_result = supabase.table('documents')\
+            .select('id,business_id,business_uuid,s3_path,original_filename,file_type')\
+            .eq('id', str(document_id))\
+            .single()\
+            .execute()
+        
+        document_record = doc_result.data if doc_result else None
+        if not document_record:
+            response = jsonify({'error': 'Document not found'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        # Validate business ownership using Supabase data
+        document_business = document_record.get('business_id') or document_record.get('business_uuid')
+        if document_business and str(document_business) != str(current_user.business_id):
+            response = jsonify({'error': 'Unauthorized'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 403
+        
+        logger.info(f"🔄 Reprocessing document {document_id} in {mode} mode...")
+        
+        # Get the S3 file URL
+        s3_path = document_record.get('s3_path')
+        if not s3_path:
+            response = jsonify({'error': 'Document has no S3 path'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Generate presigned URL for the file
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
+        aws_region = os.environ.get('AWS_REGION', 'us-east-1')
+        
+        s3_client = boto3.client(
+            's3',
+            region_name=aws_region,
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+        )
+
+        # Download the file locally
+        file_ext = os.path.splitext(s3_path)[1]
+        temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext or '.pdf')
+        os.close(temp_fd)
+        s3_client.download_file(bucket_name, s3_path, temp_file_path)
+
+        try:
+            # Use Reducto to parse with BBOX
+            from .services.reducto_service import ReductoService
+            reducto = ReductoService()
+            
+            logger.info("📄 Parsing document with Reducto (fast mode)...")
+            
+            parse_result = reducto.parse_document_fast(
+                file_path=temp_file_path,
+                use_sync_for_small=True,
+                timeout=300
+            )
+            
+            chunks = parse_result.get('chunks', [])
+        finally:
+            os.remove(temp_file_path)
+        
+        if not chunks:
+            response = jsonify({
+                'error': 'Reducto returned no chunks',
+                'success': False
+            })
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
+        
+        logger.info(f"✅ Reducto returned {len(chunks)} chunks")
+        
+        # Count chunks with bbox
+        chunks_with_bbox = 0
+        chunks_updated = 0
+        
+        for i, chunk in enumerate(chunks):
+            bbox = chunk.get('bbox')
+            page_number = chunk.get('page_number', i + 1)
+            chunk_text = chunk.get('content', '')
+            
+            if bbox:
+                chunks_with_bbox += 1
+            
+            if mode == 'bbox_only':
+                # Update bbox plus metadata to keep chunk_text + bbox in sync
+                update_payload = {
+                    'bbox': ensure_bbox_dict(bbox),
+                    'page_number': page_number,
+                    'chunk_text': (chunk_text or '')[:10000]
+                }
+                update_result = (
+                    supabase.table('document_vectors')
+                    .update(update_payload)
+                    .eq('document_id', str(document_id))
+                    .eq('chunk_index', i)
+                    .select('id')
+                    .execute()
+                )
+                
+                if update_result.data:
+                    chunks_updated += 1
+            else:
+                # Full mode: upsert chunk with all data
+                # First try to update existing chunk
+                existing = supabase.table('document_vectors')\
+                    .select('id')\
+                    .eq('document_id', str(document_id))\
+                    .eq('chunk_index', i)\
+                    .execute()
+                
+                if existing.data:
+                    # Update existing
+                    updated = (
+                        supabase.table('document_vectors')
+                        .update({
+                            'chunk_text': (chunk_text or '')[:10000],  # Limit chunk size
+                            'page_number': page_number,
+                            'bbox': ensure_bbox_dict(bbox)
+                        })
+                        .eq('document_id', str(document_id))
+                        .eq('chunk_index', i)
+                        .select('id')
+                        .execute()
+                    )
+                    if updated.data:
+                        chunks_updated += 1
+                else:
+                    # Insert new chunk (without embedding for now)
+                    inserted = supabase.table('document_vectors').insert({
+                        'document_id': str(document_id),
+                        'chunk_index': i,
+                        'chunk_text': (chunk_text or '')[:10000],
+                        'page_number': page_number,
+                        'bbox': ensure_bbox_dict(bbox),
+                        'embedding_status': 'pending'
+                    }).execute()
+                    if inserted.data:
+                        chunks_updated += 1
+        
+        logger.info(f"✅ Reprocessing complete: {chunks_updated} chunks updated, {chunks_with_bbox} with bbox")
+        
+        response = jsonify({
+            'success': True,
+            'message': f'Successfully reprocessed document with {chunks_with_bbox} chunks containing BBOX',
+            'chunks_total': len(chunks),
+            'chunks_with_bbox': chunks_with_bbox,
+            'chunks_updated': chunks_updated,
+            'mode': mode
+        })
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"❌ Reprocess error: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess/progress', methods=['GET', 'OPTIONS'])
+def reprocess_progress(document_id):
+    """
+    SSE endpoint for real-time reprocess progress updates.
+    Note: Not using @login_required for SSE compatibility.
+    """
+    origin = request.headers.get('Origin', 'http://localhost:3000')
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
+    def generate():
+        # For now, just send a simple progress stream
+        # In a full implementation, this would track actual progress
+        import time
+        
+        for i in range(0, 101, 10):
+            yield f"data: {json.dumps({'progress': i, 'status': 'processing'})}\n\n"
+            time.sleep(0.5)
+        
+        yield f"data: {json.dumps({'progress': 100, 'status': 'complete'})}\n\n"
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers.add('Access-Control-Allow-Origin', origin)
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Cache-Control', 'no-cache')
+    return response
+
 
 # ============================================================================
 # PROPERTY LINKING ENDPOINTS (Additional endpoints for property node management)
@@ -4558,18 +5585,6 @@ def download_file():
             )
             
         except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            
-            # Handle "file not found" errors gracefully with 404
-            if error_code in ('NoSuchKey', '404', 'NotFound'):
-                logger.warning(f"File not found in S3: {s3_path}")
-                return jsonify({
-                    'error': 'File not found',
-                    'message': 'The requested file does not exist or has been deleted.',
-                    's3_path': s3_path
-                }), 404
-            
-            # Log and return 500 for other S3 errors
             logger.error(f"Error downloading file from S3: {e}")
             return jsonify({'error': f'Failed to download file: {str(e)}'}), 500
             
@@ -4726,3 +5741,94 @@ def test_property_matching():
             'error': str(e)
         }), 500
 
+
+@views.route('/api/admin/migrate_bbox', methods=['GET'])
+def run_bbox_migration():
+    """Run the SQL migration to fix match_documents function"""
+    try:
+        from sqlalchemy import text
+        from backend import db
+        import os
+        
+        logger.info("🚀 Starting migration to fix match_documents function via API...")
+        
+        # Read SQL file
+        # Note: Path is relative to where the app is run from (root)
+        sql_file_path = os.path.join('backend', 'migrations', 'fix_match_documents_bbox.sql')
+        with open(sql_file_path, 'r') as f:
+            sql_content = f.read()
+            
+        logger.info(f"📜 Read SQL file: {sql_file_path}")
+        
+        # Execute SQL using SQLAlchemy raw connection
+        with db.engine.connect() as conn:
+            # Need to use execution_options to allow autocommit for some operations if needed
+            # But for CREATE FUNCTION it should be fine in a transaction
+            conn.execute(text(sql_content))
+            conn.commit()
+            
+            # Verify
+            result = conn.execute(text("SELECT proargnames, prorettype::regtype FROM pg_proc WHERE proname = 'match_documents'")).fetchone()
+            verification = str(result)
+            
+        logger.info("✅ Migration executed successfully!")
+        return jsonify({
+            'success': True,
+            'message': 'Migration executed successfully',
+            'verification': verification
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Migration failed: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/admin/check_bbox/<document_id>', methods=['GET'])
+def check_bbox_data(document_id):
+    """Check if bbox data exists in document_vectors for a document"""
+    try:
+        supabase = get_supabase_client()
+        result = supabase.table('document_vectors')\
+            .select('id, chunk_index, page_number, bbox')\
+            .eq('document_id', document_id)\
+            .order('chunk_index')\
+            .limit(20)\
+            .execute()
+        
+        chunks_with_bbox = sum(1 for r in result.data if r.get('bbox'))
+        
+        # Also check what the bbox looks like for chunks that have it
+        bbox_samples = []
+        for r in result.data:
+            if r.get('bbox'):
+                bbox_samples.append({
+                    'chunk_index': r.get('chunk_index'),
+                    'page_number': r.get('page_number'),
+                    'bbox': r.get('bbox')
+                })
+        
+        return jsonify({
+            'success': True,
+            'document_id': document_id,
+            'total_chunks': len(result.data),
+            'chunks_with_bbox': chunks_with_bbox,
+            'bbox_samples': bbox_samples[:5],  # First 5 chunks with bbox
+            'sample_chunks': [
+                {
+                    'chunk_index': r.get('chunk_index'),
+                    'page_number': r.get('page_number'),
+                    'has_bbox': bool(r.get('bbox')),
+                    'bbox_type': type(r.get('bbox')).__name__ if r.get('bbox') else None
+                }
+                for r in result.data[:10]
+            ]
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Check bbox failed: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
