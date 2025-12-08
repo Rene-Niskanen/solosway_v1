@@ -236,7 +236,16 @@ Guidelines:
 - If the document starts with "PROPERTY DETAILS (VERIFIED FROM DATABASE):", that section contains VERIFIED property information
 - For property attribute questions (bedrooms, bathrooms, etc.), if the answer is in PROPERTY DETAILS, state it clearly and directly
 - Be concise (2-3 sentences typically)
-- Cite specific passages when relevant
+- **CHUNK CITATIONS** (CRITICAL - MUST FOLLOW):
+  - The document excerpt contains [CHUNK:X:PAGE:Y] markers at the start of each section
+  - EVERY fact you state MUST have its own [CHUNK:X] citation immediately after it
+  - Place the citation DIRECTLY after each specific piece of information:
+    ✅ CORRECT: "The valuation is £2,300,000[CHUNK:2] as of 12th February 2024[CHUNK:0]"
+    ❌ WRONG: "The valuation is £2,300,000 as of 12th February 2024[CHUNK:2]"
+  - Each price, date, name, measurement, or fact needs its own citation
+  - Examples:
+    - "The property has 5 bedrooms[CHUNK:0] and 3 bathrooms[CHUNK:0], valued at £2.4M[CHUNK:3]"
+    - "The inspection was on 6th February 2024[CHUNK:1] by John Smith MRICS[CHUNK:1]"
 - Say "No relevant information in this excerpt" ONLY after thoroughly searching the entire excerpt
 - Do not suggest external sources
 - Do NOT add "Additional Context" sections - only provide context if explicitly requested
@@ -250,7 +259,13 @@ Guidelines:
 1. Directly answer the original question - do NOT repeat the question as a heading or title
 2. **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
 3. If any document contains "PROPERTY DETAILS (VERIFIED FROM DATABASE)" section, treat that as authoritative for attribute-based questions
-4. Cite which documents support each claim
+4. **CHUNK CITATIONS** (CRITICAL - MUST FOLLOW):
+   - Document excerpts contain [CHUNK:X] markers indicating source sections
+   - EVERY fact you state MUST have its own [CHUNK:X] citation immediately after it
+   - Place citations DIRECTLY after each specific piece of information:
+     ✅ CORRECT: "The valuation is £2,300,000[CHUNK:2] as of 12th February 2024[CHUNK:0]"
+     ❌ WRONG: "The valuation is £2,300,000 as of 12th February 2024[CHUNK:2]"
+   - Each price, date, name, or measurement needs its own citation
 5. Highlight key insights and differences (only if relevant to the question)
 6. Provide clear, concise recommendations (only if the question explicitly asks for recommendations)
 7. If no relevant documents found, state: "No documents in the system match this criteria"

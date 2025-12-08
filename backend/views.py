@@ -1234,15 +1234,15 @@ GUIDELINES FOR YOUR RESPONSE
 Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
 
 **CITATION REQUIREMENTS:**
-- Each document is labeled with [Document 1], [Document 2], etc. at the top
-- When you use information from a document, cite it immediately after the specific figure, value, or knowledge mentioned, NOT after the sentence or document title
-- Place citations directly after the figure/knowledge: "£2,400,000[1]" or "5 bedrooms[1]" or "John Smith[2]"
-- Do NOT place citations after document names or at the end of sentences
-- Example: "The asking price is £2,400,000[1] for the property." NOT "The asking price for Highlands[1] is £2,400,000."
+- Document excerpts contain [CHUNK:X] markers indicating the source section
+- When you use information from a document, cite it using the chunk marker: "£2,400,000[CHUNK:2]" or "5 bedrooms[CHUNK:0]"
+- Place citations directly after the figure/knowledge you are citing
+- Example: "The asking price is £2,400,000[CHUNK:3] for the property."
 - For names, dates, prices, values, measurements: place citation immediately after that specific information
-- If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
+- If information comes from multiple chunks, cite all: "The property has 5 bedrooms[CHUNK:0][CHUNK:4]"
 - Citations should appear inline, naturally within your response
-- Only cite when you actually use information from a document - do not add unnecessary citations
+- Only cite when you actually use information from a chunk - do not add unnecessary citations
+- IMPORTANT: Use the exact [CHUNK:X] format where X is the chunk number
 
 Focus on what matters in real estate:
 - Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
@@ -1252,7 +1252,7 @@ CRITICAL RULES:
 2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
 3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
 4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
-5. **Always cite your sources** - Use [1], [2], etc. after each fact that comes from a document.
+5. **Always cite your sources** - Use [CHUNK:X] markers after each fact that comes from a document.
 
 Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
 
@@ -1326,12 +1326,328 @@ Now provide your response (answer directly, no heading, no additional context, w
 
                         citations_data = {}  # Initialize to empty dict
                         try:
-                            citation_pattern = r'\[(\d+)\]'
-                            citations_found = re.findall(citation_pattern, full_summary)
+                            # NEW: First try to parse [CHUNK:X] citations (direct chunk mapping)
+                            chunk_citation_pattern = r'\[CHUNK:(\d+)(?::PAGE:\d+)?\]'
+                            chunk_citations_found = re.findall(chunk_citation_pattern, full_summary)
+                            
+                            if chunk_citations_found and doc_outputs:
+                                # Direct chunk citation mapping - map [CHUNK:X] to source_chunks_metadata[X]
+                                logger.info(f"🟢 [CITATIONS] Found {len(chunk_citations_found)} chunk citations: {chunk_citations_found}")
+                                
+                                # Build citations_data directly from chunk indices
+                                sequential_cit_num = 1
+                                chunk_idx_to_cit_num = {}  # Map chunk index to citation number
+                                
+                                # For now, assume all chunks come from the first document (most common case)
+                                # TODO: Handle multi-document chunk citations if needed
+                                primary_output = doc_outputs[0]
+                                doc_id = primary_output.get('doc_id') or ''
+                                source_chunks = primary_output.get('source_chunks_metadata', [])
+                                
+                                for chunk_idx_str in chunk_citations_found:
+                                    chunk_idx = int(chunk_idx_str)
+                                    
+                                    # Skip if already processed
+                                    if chunk_idx in chunk_idx_to_cit_num:
+                                        continue
+                                    
+                                    # Map to sequential citation number
+                                    cit_num = str(sequential_cit_num)
+                                    chunk_idx_to_cit_num[chunk_idx] = cit_num
+                                    sequential_cit_num += 1
+                                    
+                                    # Get the chunk metadata - chunk_idx is the marker index (0, 1, 2...)
+                                    # which corresponds to position in source_chunks array
+                                    if chunk_idx < len(source_chunks):
+                                        chunk = source_chunks[chunk_idx]
+                                        chunk_content_preview = (chunk.get('content') or '')[:100].replace('\n', ' ')
+                                        
+                                        # IMPROVED: Extract the MAIN value from the clause containing this citation
+                                        # LLM often puts citation at end: "£2,300,000 as of 12th February 2024 [1]"
+                                        # We need to find the PRICE in that clause, not just what's immediately before
+                                        citation_context = None
+                                        citation_value = None  # Extracted numeric value for precise matching
+                                        value_type = None  # 'price', 'date', or 'other'
+                                        
+                                        # Step 1: Extract the clause/sentence containing this [CHUNK:X]
+                                        # Look for text between previous citation (or start) and this citation
+                                        clause_pattern = r'(?:^|[.!?]\s*|\[CHUNK:\d+\]\s*)([^.!?]*?)\[CHUNK:' + str(chunk_idx) + r'\]'
+                                        clause_match = re.search(clause_pattern, full_summary, re.IGNORECASE)
+                                        clause_text = clause_match.group(1) if clause_match else full_summary
+                                        
+                                        logger.info(f"🔍 [CITATIONS] Clause for CHUNK:{chunk_idx}: '{clause_text[:80]}...'")
+                                        
+                                        # Step 2: Find ALL prices in this clause (prioritize prices over dates)
+                                        prices_in_clause = re.findall(r'[£$€]([\d,]+(?:\.\d+)?(?:\s*(?:million|m|k|thousand))?)', clause_text, re.IGNORECASE)
+                                        
+                                        if prices_in_clause:
+                                            # Pick the largest price (main value)
+                                            best_price = None
+                                            best_value = 0
+                                            for price in prices_in_clause:
+                                                try:
+                                                    numeric = int(re.sub(r'[,.\s]', '', re.sub(r'[a-zA-Z]', '', price)))
+                                                    if numeric > best_value:
+                                                        best_value = numeric
+                                                        best_price = price
+                                                except:
+                                                    pass
+                                            
+                                            if best_price:
+                                                citation_context = f"£{best_price}"
+                                                citation_value = str(best_value)
+                                                value_type = 'price'
+                                                logger.info(f"💰 [CITATIONS] Extracted price for CHUNK:{chunk_idx}: {citation_context} -> {citation_value}")
+                                        
+                                        # Step 3: If no price found, look for dates
+                                        if not citation_value:
+                                            date_match = re.search(
+                                                r'(\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})',
+                                                clause_text, re.IGNORECASE
+                                            )
+                                            if date_match:
+                                                citation_context = date_match.group(1)
+                                                citation_value = citation_context.lower()
+                                                value_type = 'date'
+                                                logger.info(f"📅 [CITATIONS] Extracted date for CHUNK:{chunk_idx}: {citation_context}")
+                                        
+                                        # Step 4: Fallback - extract any significant number
+                                        if not citation_value:
+                                            num_match = re.search(r'([\d,]+(?:\.\d+)?)', clause_text)
+                                            if num_match:
+                                                citation_context = num_match.group(1)
+                                                citation_value = re.sub(r'[,]', '', citation_context)
+                                                value_type = 'other'
+                                                logger.info(f"📝 [CITATIONS] Extracted number for CHUNK:{chunk_idx}: {citation_context}")
+                                        
+                                        # Try to find matching block with precise BBOX
+                                        precise_bbox = chunk.get('bbox')  # Default to chunk BBOX
+                                        precise_page = chunk.get('page_number')
+                                        if citation_context:
+                                            try:
+                                                # Query document's reducto_chunks for block-level BBOX
+                                                from backend.services.supabase_client_factory import get_supabase_client
+                                                supabase = get_supabase_client()
+                                                doc_result = supabase.table('documents').select('document_summary').eq('id', doc_id).single().execute()
+                                                
+                                                if doc_result.data and doc_result.data.get('document_summary'):
+                                                    reducto_chunks = doc_result.data['document_summary'].get('reducto_chunks', [])
+                                                    
+                                                    # Prepare search value based on type
+                                                    search_value = citation_value if citation_value else re.sub(r'[£$€,\s]', '', citation_context.lower())
+                                                    logger.info(f"🔍 [CITATIONS] Searching for '{search_value}' (type={value_type}, context='{citation_context}')")
+                                                    
+                                                    # Search ALL blocks in ALL chunks to find the exact value
+                                                    best_block = None
+                                                    best_score = float('inf')  # Lower score = more precise (smaller area)
+                                                    
+                                                    for rc in reducto_chunks:
+                                                        blocks = rc.get('blocks', [])
+                                                        for block in blocks:
+                                                            block_content = block.get('content', '')
+                                                            block_content_lower = block_content.lower()
+                                                            block_content_normalized = re.sub(r'[£$€,\s]', '', block_content_lower)
+                                                            
+                                                            # Check if block contains the cited value
+                                                            block_matches = False
+                                                            match_quality = 1.0  # Lower = better
+                                                            
+                                                            if value_type == 'price':
+                                                                # For prices, match the numeric value
+                                                                if citation_value and citation_value in block_content_normalized:
+                                                                    block_matches = True
+                                                                    # Bonus if currency symbol is present
+                                                                    if re.search(r'[£$€]', block_content):
+                                                                        match_quality *= 0.5
+                                                            
+                                                            elif value_type == 'date':
+                                                                # For dates, match the date text more flexibly
+                                                                # Extract just month and year for matching
+                                                                date_parts = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)\s*(\d{4})', citation_value)
+                                                                if date_parts:
+                                                                    month = date_parts.group(1)
+                                                                    year = date_parts.group(2)
+                                                                    if month in block_content_lower and year in block_content:
+                                                                        block_matches = True
+                                                                        # Bonus if full date with day is present
+                                                                        if re.search(r'\d{1,2}(st|nd|rd|th)?\s*' + month, block_content_lower):
+                                                                            match_quality *= 0.5
+                                                            
+                                                            else:
+                                                                # General matching
+                                                                if citation_value and citation_value in block_content_normalized:
+                                                                    block_matches = True
+                                                                elif search_value in block_content_normalized:
+                                                                    block_matches = True
+                                                            
+                                                            if block_matches:
+                                                                block_bbox = block.get('bbox')
+                                                                if block_bbox and isinstance(block_bbox, dict):
+                                                                    # Calculate block area (width * height) - smaller = more precise
+                                                                    block_width = block_bbox.get('width', 1) or 1
+                                                                    block_height = block_bbox.get('height', 1) or 1
+                                                                    block_area = block_width * block_height
+                                                                    
+                                                                    # Score combines area and match quality
+                                                                    score = block_area * match_quality
+                                                                    
+                                                                    # Bonus for short blocks (more precise)
+                                                                    if len(block_content) < 50:
+                                                                        score *= 0.3
+                                                                    elif len(block_content) < 100:
+                                                                        score *= 0.5
+                                                                    
+                                                                    if score < best_score:
+                                                                        best_score = score
+                                                                        best_block = block
+                                                    
+                                                    if best_block:
+                                                        precise_bbox = best_block.get('bbox')
+                                                        precise_page = precise_bbox.get('page') or precise_bbox.get('original_page')
+                                                        block_content_preview = (best_block.get('content') or '')[:80].replace('\n', ' ')
+                                                        bbox_summary = summarize_bbox(precise_bbox)
+                                                        logger.info(
+                                                            f"🎯 [CITATIONS] Found PRECISE block BBOX for '{citation_context}' on page {precise_page}: "
+                                                            f"bbox={bbox_summary}, content='{block_content_preview}'"
+                                                        )
+                                                    else:
+                                                        logger.warning(f"⚠️ [CITATIONS] Could not find block containing '{search_value}' in document blocks")
+                                            except Exception as e:
+                                                logger.debug(f"Could not fetch block-level BBOX: {e}, using chunk BBOX")
+                                        
+                                        chunk_metadata = {
+                                            'doc_id': doc_id,
+                                            'chunk_index': chunk.get('chunk_index'),
+                                            'page_number': precise_page or chunk.get('page_number'),  # Use precise block's page if found
+                                            'bbox': precise_bbox,  # Use precise block BBOX if found
+                                            'content': (chunk.get('content') or '')[:500],
+                                            'match_reason': 'precise_block_citation' if precise_page else 'direct_chunk_citation'
+                                        }
+                                        
+                                        citations_data[cit_num] = {
+                                            'doc_id': doc_id,
+                                            'original_filename': primary_output.get('original_filename'),
+                                            'property_address': primary_output.get('property_address'),
+                                            'page_range': primary_output.get('page_range'),
+                                            'classification_type': primary_output.get('classification_type'),
+                                            'source_chunks_metadata': [chunk_metadata],
+                                            'matched_chunk_metadata': chunk_metadata,
+                                            'chunk_metadata': chunk_metadata,
+                                            'candidate_chunks_metadata': source_chunks,
+                                            'match_reason': 'direct_chunk_citation',
+                                            'evidence_feedback': []
+                                        }
+                                        
+                                        bbox_summary = summarize_bbox(chunk.get('bbox'))
+                                        logger.info(
+                                            f"🟢 [CITATIONS] Mapped [CHUNK:{chunk_idx}] -> citation [{cit_num}], "
+                                            f"db_chunk_index={chunk.get('chunk_index')}, page={chunk.get('page_number')}, "
+                                            f"bbox={bbox_summary}, content_preview='{chunk_content_preview}...'"
+                                        )
+                                    else:
+                                        logger.warning(f"🟡 [CITATIONS] Chunk index {chunk_idx} out of range (max: {len(source_chunks)-1})")
+                                
+                                # Replace [CHUNK:X] with [N] in the summary for frontend display
+                                def replace_chunk_citation(match):
+                                    chunk_idx = int(match.group(1))
+                                    if chunk_idx in chunk_idx_to_cit_num:
+                                        return f"[{chunk_idx_to_cit_num[chunk_idx]}]"
+                                    return match.group(0)
+                                
+                                full_summary = re.sub(chunk_citation_pattern, replace_chunk_citation, full_summary)
+                                logger.info(f"🟢 [CITATIONS] Replaced chunk citations in response. citations_data has {len(citations_data)} entries")
+                            
+                            # FALLBACK: If no chunk citations, try old [1], [2] format
+                            elif not chunk_citations_found:
+                                citation_pattern = r'\[(\d+)\]'
+                                citations_found = re.findall(citation_pattern, full_summary)
+                            else:
+                                citations_found = []
                             
                             # If no documents, skip citation processing
-                            if not citation_map:
+                            if not citation_map and not chunk_citations_found:
                                 logger.info("🟡 [CITATIONS] No documents found, skipping citation processing")
+                            # If chunk citations were already processed, skip old logic
+                            elif chunk_citations_found and citations_data:
+                                logger.info(f"🟢 [CITATIONS] Chunk citations already processed ({len(citations_data)} entries), skipping old logic")
+                            # OPTIMIZATION: For single document with [1] citation, create citation data directly
+                            elif len(doc_outputs) == 1 and '1' in citations_found:
+                                logger.info("🟡 [CITATIONS] Single document detected - creating citation [1] directly")
+                                single_output = doc_outputs[0]
+                                doc_id = single_output.get('doc_id') or ''
+                                source_chunks = single_output.get('source_chunks_metadata', [])
+                                
+                                if doc_id and source_chunks:
+                                    # IMPROVED: Find chunk that best matches the LLM response content
+                                    best_chunk = None
+                                    best_match_score = 0
+                                    
+                                    # Extract key values from summary (prices, dates, percentages)
+                                    summary_lower = full_summary.lower()
+                                    price_pattern = r'£[\d,]+(?:\.\d+)?(?:\s*(?:million|m|k))?|\d+(?:,\d{3})+(?:\.\d+)?'
+                                    summary_values = set(re.findall(price_pattern, full_summary, re.IGNORECASE))
+                                    
+                                    for chunk in source_chunks:
+                                        if not chunk.get('bbox'):
+                                            continue
+                                        chunk_content = (chunk.get('content') or '').lower()
+                                        if not chunk_content:
+                                            continue
+                                        
+                                        score = 0
+                                        # Strong match for exact values (prices, figures)
+                                        for value in summary_values:
+                                            if value.lower() in chunk_content:
+                                                score += 10
+                                        
+                                        # Word overlap scoring
+                                        summary_words = set(summary_lower.split())
+                                        chunk_words = set(chunk_content.split())
+                                        common = summary_words & chunk_words - {'the', 'a', 'an', 'is', 'was', 'are', 'were', 'and', 'or', 'for', 'to', 'of', 'in', 'on', 'at', 'by'}
+                                        score += len(common)
+                                        
+                                        if score > best_match_score:
+                                            best_match_score = score
+                                            best_chunk = chunk
+                                    
+                                    # Fallback to first chunk with bbox if no good match
+                                    if not best_chunk:
+                                        for chunk in source_chunks:
+                                            if chunk.get('bbox'):
+                                                best_chunk = chunk
+                                                break
+                                    if not best_chunk and source_chunks:
+                                        best_chunk = source_chunks[0]
+                                    
+                                    logger.info(f"🔍 [CITATIONS] Best chunk match score: {best_match_score}, chunk_idx: {best_chunk.get('chunk_index') if best_chunk else 'none'}")
+                                    
+                                    if best_chunk:
+                                        matched_chunk_metadata = {
+                                            'doc_id': doc_id,
+                                            'chunk_index': best_chunk.get('chunk_index'),
+                                            'page_number': best_chunk.get('page_number'),
+                                            'bbox': best_chunk.get('bbox'),
+                                            'content': (best_chunk.get('content') or '')[:500],
+                                            'match_reason': 'single_document_fallback'
+                                        }
+                                        
+                                        citations_data['1'] = {
+                                            'doc_id': doc_id,
+                                            'original_filename': single_output.get('original_filename'),
+                                            'property_address': single_output.get('property_address'),
+                                            'page_range': single_output.get('page_range'),
+                                            'classification_type': single_output.get('classification_type'),
+                                            'source_chunks_metadata': [matched_chunk_metadata],
+                                            'matched_chunk_metadata': matched_chunk_metadata,
+                                            'candidate_chunks_metadata': source_chunks,
+                                            'match_reason': 'single_document_fallback',
+                                            'evidence_feedback': []
+                                        }
+                                        logger.info(f"🟢 [CITATIONS] Created citation [1] for single document {doc_id[:8]}, chunk_idx {best_chunk.get('chunk_index')}, bbox: {bool(best_chunk.get('bbox'))}")
+                                    else:
+                                        logger.warning("🟡 [CITATIONS] Single document has no source_chunks_metadata")
+                                else:
+                                    logger.warning(f"🟡 [CITATIONS] Single document missing doc_id or source_chunks: doc_id={bool(doc_id)}, chunks={len(source_chunks) if source_chunks else 0}")
                             else:
                                 # Step 1: Lazy citation assignment - only create citations for chunks that are actually cited
                                 # Key: (doc_id, chunk_index, page_number) -> unique chunk identifier
@@ -1811,10 +2127,25 @@ Now provide your response (answer directly, no heading, no additional context, w
                             citations_data = {}  # Fallback to empty citations
                         
                         # Send complete message with metadata
+                        # IMPORTANT: Strip any remaining EVIDENCE_FEEDBACK tags from the summary
+                        clean_summary = full_summary.strip()
+                        if EVIDENCE_FEEDBACK_START in clean_summary:
+                            # Double-check cleanup - remove any EVIDENCE_FEEDBACK block
+                            start_idx = clean_summary.find(EVIDENCE_FEEDBACK_START)
+                            if start_idx != -1:
+                                end_tag = '</EVIDENCE_FEEDBACK>'
+                                end_idx = clean_summary.find(end_tag)
+                                if end_idx != -1:
+                                    clean_summary = (clean_summary[:start_idx] + clean_summary[end_idx + len(end_tag):]).strip()
+                                else:
+                                    # No end tag, just remove from start tag onwards
+                                    clean_summary = clean_summary[:start_idx].strip()
+                                logger.info(f"🧹 [CLEANUP] Stripped EVIDENCE_FEEDBACK from summary")
+                        
                         complete_data = {
                             'type': 'complete',
                             'data': {
-                                'summary': full_summary.strip(),
+                                'summary': clean_summary,
                                 'relevant_documents': relevant_docs,
                                 'document_outputs': doc_outputs,
                                 'citations': citations_data,  # Citation mapping with bbox

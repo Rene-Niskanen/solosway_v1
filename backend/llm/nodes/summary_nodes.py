@@ -88,6 +88,75 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             "- \"property details\""
         }
 
+    # OPTIMIZATION: Skip LLM summarization for single-document queries (much faster)
+    # The document_qa_agent should have already added [CHUNK:X] citations
+    if len(doc_outputs) == 1:
+        logger.info("[SUMMARIZE_RESULTS] Single document - returning directly without LLM summarization")
+        single_output = doc_outputs[0]
+        summary = single_output.get('output', '')
+        filename = single_output.get('original_filename', 'Document')
+        address = single_output.get('property_address', '')
+        
+        # Check if [CHUNK:X] citations are already present (from document_qa_agent)
+        import re
+        has_chunk_citations = bool(re.search(r'\[CHUNK:\d+', summary))
+        
+        if summary and not has_chunk_citations:
+            # IMPROVED: Find the chunk that best matches the LLM response content
+            # Instead of defaulting to [CHUNK:0], find which chunk contains the information
+            source_chunks = single_output.get('source_chunks_metadata', [])
+            best_match_idx = 0
+            best_match_score = 0
+            
+            # Extract key numbers/values from summary (prices, dates, percentages)
+            summary_lower = summary.lower()
+            price_pattern = r'£[\d,]+(?:\.\d+)?(?:\s*(?:million|m|k))?|\d+(?:,\d{3})+(?:\.\d+)?'
+            summary_values = set(re.findall(price_pattern, summary, re.IGNORECASE))
+            
+            for idx, chunk in enumerate(source_chunks):
+                chunk_content = (chunk.get('content') or '').lower()
+                if not chunk_content:
+                    continue
+                
+                score = 0
+                # Check for matching values (prices, figures)
+                for value in summary_values:
+                    if value.lower() in chunk_content:
+                        score += 10  # Strong match for exact values
+                
+                # Check for key phrase overlaps
+                summary_words = set(summary_lower.split())
+                chunk_words = set(chunk_content.split())
+                common_words = summary_words & chunk_words
+                # Filter out common words
+                common_words -= {'the', 'a', 'an', 'is', 'was', 'are', 'were', 'and', 'or', 'for', 'to', 'of', 'in', 'on', 'at', 'by'}
+                score += len(common_words)
+                
+                if score > best_match_score:
+                    best_match_score = score
+                    best_match_idx = idx
+            
+            summary = summary.rstrip() + f' [CHUNK:{best_match_idx}]'
+            logger.info(f"[SUMMARIZE_RESULTS] Found best matching chunk [{best_match_idx}] (score: {best_match_score}) for citation")
+        
+        # Add minimal context header
+        if address:
+            summary = f"From {filename} ({address}):\n\n{summary}"
+        else:
+            summary = f"From {filename}:\n\n{summary}"
+        
+        conversation_entry = {
+            "query": state['user_query'],
+            "summary": summary,
+            "timestamp": datetime.now().isoformat(),
+            "document_ids": [single_output.get('doc_id', '')]
+        }
+        
+        return {
+            "final_summary": summary,
+            "conversation_history": [conversation_entry]
+        }
+
     if config.simple_mode:
         logger.info(
             "[SUMMARIZE_RESULTS] Simple mode enabled - returning lightweight summary"
@@ -112,6 +181,7 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         api_key=config.openai_api_key,
         model=config.openai_model,
         temperature=0,
+        max_tokens=1000,  # Limit response length for faster generation
     )
 
     # Format outputs with natural names (filename and address)
@@ -158,9 +228,20 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             header += f" (relevance: {similarity_score:.2f})"
         header += f"\n---------------------------------------------\n"
         
-        formatted_outputs.append(header + output.get('output', ''))
+        # OPTIMIZATION: Truncate very long outputs to speed up summarization
+        # Keep first 2000 chars (most important info is usually at the start)
+        doc_content = output.get('output', '')
+        if len(doc_content) > 2000:
+            doc_content = doc_content[:2000] + "\n\n[Content truncated for speed - showing most relevant portion]"
+        
+        formatted_outputs.append(header + doc_content)
     
     formatted_outputs_str = "\n".join(formatted_outputs)
+    
+    # OPTIMIZATION: Limit total context to ~8000 chars for faster processing
+    if len(formatted_outputs_str) > 8000:
+        logger.info(f"[SUMMARIZE_RESULTS] Truncating context from {len(formatted_outputs_str)} to 8000 chars for speed")
+        formatted_outputs_str = formatted_outputs_str[:8000] + "\n\n[Additional document content truncated for faster response]"
     
     # Build search summary for LLM context
     search_summary_parts = []

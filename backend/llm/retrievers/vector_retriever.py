@@ -78,7 +78,8 @@ class VectorDocumentRetriever:
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
         address_hash: Optional[str] = None,
-        business_id: Optional[str] = None
+        business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None
     ) -> List[RetrievedDocument]:
         """
         Search for documents using semantic similarity with adaptive thresholding.
@@ -90,6 +91,7 @@ class VectorDocumentRetriever:
             classification_type: Optional filter (inspection, appraisal, etc)
             address_hash: Optional filter by address hash 
             business_id: Optional filter by business ID
+            document_ids: Optional list of document IDs to filter results
 
         Returns:
             List of RetrievedDocument dicts sorted by similarity
@@ -167,6 +169,12 @@ class VectorDocumentRetriever:
                     config.min_similarity_threshold,
                 )
                 rows = _fetch(config.min_similarity_threshold)
+
+            # Filter by document_ids if provided
+            if document_ids and rows:
+                document_ids_set = set(document_ids)
+                rows = [row for row in rows if row.get("document_id") in document_ids_set]
+                logger.debug(f"Filtered to {len(rows)} rows matching {len(document_ids)} document_ids")
 
             # step 3: convert to typed results with document-level context prepending
             results: List[RetrievedDocument] = []

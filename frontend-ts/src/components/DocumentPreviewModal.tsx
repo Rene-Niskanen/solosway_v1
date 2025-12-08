@@ -60,6 +60,69 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
     return null;
   }, [highlightCitation, file]);
+  
+  // Expand small BBOXes to ensure citations are always visible
+  // The stored BBOX may only cover a single block (e.g., 8% x 3% of page)
+  // We expand it to a minimum readable size while keeping the center position
+  const expandedBbox = React.useMemo(() => {
+    if (!fileHighlight?.bbox) return null;
+    
+    const bbox = fileHighlight.bbox;
+    
+    // IMPROVED: Use tighter minimum dimensions for precise highlighting
+    // Small BBOXes are often CORRECT (e.g., just "£2,300,000")
+    const MIN_WIDTH = 0.12;   // Minimum 12% of page width (enough for a price)
+    const MIN_HEIGHT = 0.025; // Minimum 2.5% of page height (one line of text)
+    
+    // Add small padding around precise values for better visibility
+    const PADDING_X = 0.02;  // 2% horizontal padding
+    const PADDING_Y = 0.01;  // 1% vertical padding
+    
+    let { left, top, width, height, page, original_page } = bbox;
+    
+    // Only expand if the BBOX is tiny (likely a rendering issue, not a precise match)
+    const isTooSmall = width < 0.02 || height < 0.005;
+    
+    if (isTooSmall) {
+      console.log('📐 [BBOX] Expanding tiny bbox:', { 
+        original: { left, top, width, height },
+        reason: 'too small to be visible'
+      });
+      
+      // Expand to minimum visible size
+      const centerX = left + width / 2;
+      const centerY = top + height / 2;
+      
+      width = Math.max(width, MIN_WIDTH);
+      height = Math.max(height, MIN_HEIGHT);
+      
+      // Re-center around original position
+      left = Math.max(0, centerX - width / 2);
+      top = Math.max(0, centerY - height / 2);
+      
+      // Ensure within bounds
+      if (left + width > 1) left = 1 - width;
+      if (top + height > 1) top = 1 - height;
+      
+      console.log('📐 [BBOX] Expanded to:', { left, top, width, height });
+    } else {
+      // Add slight padding for better visibility of precise matches
+      const paddedLeft = Math.max(0, left - PADDING_X);
+      const paddedTop = Math.max(0, top - PADDING_Y);
+      const paddedWidth = Math.min(width + PADDING_X * 2, 1 - paddedLeft);
+      const paddedHeight = Math.min(height + PADDING_Y * 2, 1 - paddedTop);
+      
+      left = paddedLeft;
+      top = paddedTop;
+      width = paddedWidth;
+      height = paddedHeight;
+      
+      console.log('📐 [BBOX] Using precise bbox with padding:', { left, top, width, height });
+    }
+    
+    return { left, top, width, height, page, original_page };
+  }, [fileHighlight?.bbox]);
+  
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
   const [imageNaturalWidth, setImageNaturalWidth] = React.useState<number | null>(null);
   const [imageRenderedHeight, setImageRenderedHeight] = React.useState<number | null>(null);
@@ -91,15 +154,16 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   }, [fileHighlight, file?.id]);
 
   React.useEffect(() => {
-    if (!fileHighlight?.bbox) return;
+    if (!expandedBbox) return;
     console.log('🎯 [PreviewHighlight] render state', {
       fileId: file?.id,
-      highlightPage: fileHighlight.bbox.page,
-      visibleOnCurrentPage: fileHighlight.bbox.page === currentPage,
-      bbox: fileHighlight.bbox,
+      highlightPage: expandedBbox.page,
+      visibleOnCurrentPage: expandedBbox.page === currentPage,
+      originalBbox: fileHighlight?.bbox,
+      expandedBbox,
       currentPage
     });
-  }, [fileHighlight, currentPage, file?.id]);
+  }, [expandedBbox, fileHighlight?.bbox, currentPage, file?.id]);
   
   // Set initial dimensions immediately based on file type (no shrinking effect)
   // Calculate dimensions synchronously before state initialization
@@ -1882,16 +1946,16 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                             )}
                             
                             {/* Highlight overlay for citations - positioned using percentage-based coordinates */}
-                            {/* Reducto bbox values are normalized 0-1, so we use CSS percentages directly */}
-                            {fileHighlight && fileHighlight.bbox && fileHighlight.bbox.page === currentPage && (
+                            {/* Uses expandedBbox which ensures small BBOXes are enlarged for visibility */}
+                            {expandedBbox && expandedBbox.page === currentPage && (
                               <div
                                 style={{
                                   position: 'absolute',
                                   // Use percentage-based positioning since bbox is normalized 0-1
-                                  left: `${fileHighlight.bbox.left * 100}%`,
-                                  top: `${fileHighlight.bbox.top * 100}%`,
-                                  width: `${fileHighlight.bbox.width * 100}%`,
-                                  height: `${fileHighlight.bbox.height * 100}%`,
+                                  left: `${expandedBbox.left * 100}%`,
+                                  top: `${expandedBbox.top * 100}%`,
+                                  width: `${expandedBbox.width * 100}%`,
+                                  height: `${expandedBbox.height * 100}%`,
                                   backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
                                   border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
                                   borderRadius: '2px',

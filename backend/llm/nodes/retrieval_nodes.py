@@ -236,15 +236,14 @@ def _build_price_chunk_fallback_documents(
 
 def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Node: Query Rewriting with Conversation Context
+    Node: Query Rewriting with Conversation Context (RULE-BASED, NO LLM)
     
-    Rewrites vague follow-up queries to be self-contained using conversation history.
+    Rewrites vague follow-up queries using simple rule-based extraction from conversation history.
     This ensures vector search understands references like "the document", "that property".
     
     Examples:
-        "What's the price?" → "What's the price for Highlands, Berden Road property?"
-        "Review the document" → "Review Highlands_Berden_Bishops_Stortford valuation report"
-        "Show amenities" → "Show amenities for the 5-bedroom property at Highlands"
+        "What's the price?" → "What's the price for Highlands property?"
+        "Review the document" → "Review Highlands valuation report"
     
     Args:
         state: MainWorkflowState with user_query and conversation_history
@@ -258,67 +257,68 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
         logger.info("[REWRITE_QUERY] No conversation history, using original query")
         return {}  # No changes to state
     
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    original_query = state['user_query'].lower().strip()
     
-    # Build conversation context (last 2 exchanges)
+    # Extract property names and document names from conversation history
+    property_names = []
+    document_names = []
+    
+    # Look at last 2 exchanges for context
     recent_history = state['conversation_history'][-2:]
-    history_lines = []
     for exchange in recent_history:
-        # Handle different conversation history formats:
-        # Format 1: From summary_nodes (has 'query' and 'summary')
-        # Format 2: From frontend/views (has 'role' and 'content')
-        if 'query' in exchange and 'summary' in exchange:
-            # Format from summary_nodes
-            history_lines.append(f"User asked: {exchange['query']}")
-            summary_preview = exchange['summary'][:400].replace('\n', ' ')
-            history_lines.append(f"Assistant responded: {summary_preview}...")
-        elif 'role' in exchange and 'content' in exchange:
-            # Format from frontend (role-based messages)
-            role = exchange['role']
-            content = exchange['content']
-            if role == 'user':
-                history_lines.append(f"User asked: {content}")
-            elif role == 'assistant':
-                content_preview = content[:400].replace('\n', ' ')
-                history_lines.append(f"Assistant responded: {content_preview}...")
-        else:
-            # Skip malformed entries
-            logger.warning(f"[REWRITE_QUERY] Skipping malformed conversation entry: {exchange.keys()}")
-            continue
-    
-    history_context = "\n".join(history_lines)
-    
-    # Get system prompt for rewrite task
-    system_msg = get_system_prompt('rewrite')
-    
-    # Get human message content
-    human_content = get_query_rewrite_human_content(
-        user_query=state['user_query'],
-        conversation_history=history_context
-    )
-    
-    try:
-        # Use LangGraph message format
-        messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
-        rewritten = response.content.strip().strip('"').strip("'")  # Clean quotes
+        text = ""
+        if 'query' in exchange:
+            text = exchange['query']
+        elif 'summary' in exchange:
+            text = exchange['summary']
+        elif 'content' in exchange:
+            text = exchange['content']
         
-        # Only use rewritten if it's different and not too long
-        if rewritten != state['user_query'] and len(rewritten) < 500:
-            logger.info(f"[REWRITE_QUERY]   Original: '{state['user_query']}'")
-            logger.info(f"[REWRITE_QUERY]  Rewritten: '{rewritten}'")
-            return {"user_query": rewritten}
-        else:
-            logger.info("[REWRITE_QUERY]   No rewrite needed")
-            return {}
-            
-    except Exception as exc:
-        logger.error(f"[REWRITE_QUERY]  Failed to rewrite: {exc}")
-        return {}  # Keep original query on error
+        # Simple extraction: look for property names (capitalized words, addresses)
+        # and document filenames (words with underscores, .pdf extensions)
+        words = text.split()
+        for i, word in enumerate(words):
+            # Property names: capitalized words, or "Highlands", "Berden", etc.
+            if word and word[0].isupper() and len(word) > 3:
+                if word not in property_names and word not in ['User', 'Assistant', 'The', 'This', 'That']:
+                    property_names.append(word)
+            # Document names: contains underscores or .pdf
+            if '_' in word or '.pdf' in word.lower():
+                doc_name = word.strip('.,!?;:')
+                if doc_name not in document_names:
+                    document_names.append(doc_name)
+    
+    # Only rewrite if query is vague (short, uses pronouns/references)
+    vague_indicators = ['it', 'this', 'that', 'the document', 'the property', 'the report']
+    is_vague = len(original_query.split()) <= 5 and any(indicator in original_query for indicator in vague_indicators)
+    
+    if not is_vague:
+        logger.info("[REWRITE_QUERY] Query is specific enough, no rewrite needed")
+        return {}
+    
+    # Build rewritten query by appending context
+    rewritten = state['user_query']
+    
+    if property_names:
+        # Add first property name found
+        property_context = property_names[0]
+        if property_context not in rewritten:
+            rewritten = f"{rewritten} {property_context}"
+    
+    if document_names and 'document' in original_query:
+        # Add document name if query mentions "document"
+        doc_context = document_names[0].replace('.pdf', '').replace('_', ' ')
+        if doc_context not in rewritten:
+            rewritten = f"{rewritten} {doc_context}"
+    
+    # Only return if we actually added context
+    if rewritten != state['user_query'] and len(rewritten) < 500:
+        logger.info(f"[REWRITE_QUERY]   Original: '{state['user_query']}'")
+        logger.info(f"[REWRITE_QUERY]  Rewritten: '{rewritten}' (rule-based)")
+        return {"user_query": rewritten}
+    else:
+        logger.info("[REWRITE_QUERY]   No rewrite needed")
+        return {}
 
 
 def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
@@ -343,44 +343,11 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     
     original_query = state['user_query']
     
-    # Skip expansion for very specific/long queries (already clear)
-    if len(original_query.split()) > 15:
-        logger.info("[EXPAND_QUERY] Query already specific, skipping expansion")
-        return {"query_variations": [original_query]}
-    
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0.4,  # Slight creativity for variations
-    )
-    
-    # Get system prompt for expansion task
-    system_msg = get_system_prompt('expand')
-    
-    # Get human message content
-    human_content = get_query_expansion_human_content(original_query=original_query)
-    
-    try:
-        # Use LangGraph message format
-        messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
-        variations = [v.strip() for v in response.content.strip().split('\n') if v.strip()]
-        
-        # Limit to 2 variations
-        variations = variations[:2]
-        
-        # Combine: original + variations
-        all_queries = [original_query] + variations
-        
-        logger.info(f"[EXPAND_QUERY] Generated {len(variations)} variations:")
-        for i, q in enumerate(all_queries, 1):
-            logger.info(f"  {i}. {q}")
-        
-        return {"query_variations": all_queries}
-        
-    except Exception as exc:
-        logger.error(f"[EXPAND_QUERY] Failed to expand query: {exc}")
-        return {"query_variations": [original_query]}
+    # OPTIMIZATION: Skip LLM-based expansion entirely for speed
+    # Vector search with good embeddings (Voyage) handles query variations well enough
+    # This saves ~1-2 seconds per query by removing the LLM call
+    logger.info("[EXPAND_QUERY] Skipping LLM expansion for speed - using original query only")
+    return {"query_variations": [original_query]}
 
 
 def route_query(state: MainWorkflowState) -> MainWorkflowState:
@@ -1392,7 +1359,7 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
         parsed_bbox = ensure_bbox_dict(doc.get('bbox'))
         
         bbox_log = summarize_bbox(parsed_bbox)
-        logger.info(
+        logger.debug(
             "[BBOX TRACE] vector doc=%s chunk_idx=%s page=%s bbox=%s",
             doc_id[:8],
             doc.get('chunk_index'),
@@ -1439,7 +1406,7 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 for row in supabase_rows:
                     idx = row.get('chunk_index')
                     parsed_bbox = ensure_bbox_dict(row.get('bbox'))
-                    logger.info(
+                    logger.debug(
                         "[BBOX TRACE] fallback doc=%s chunk_idx=%s page=%s bbox=%s",
                         doc_id[:8],
                         idx,
@@ -1581,7 +1548,7 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                         chunk['bbox'] = parsed_bbox
                         if not chunk.get('page_number'):
                             chunk['page_number'] = row_map[idx].get('page_number') or chunk.get('page_number')
-                        logger.info(
+                        logger.debug(
                             "[BBOX TRACE] backfill doc=%s chunk_idx=%s page=%s bbox=%s",
                             doc_id[:8],
                             idx,
@@ -1617,14 +1584,21 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             for chunk in selected_chunks
             if chunk.get('chunk_index') is not None
         }
+        # Track content hashes to deduplicate chunks with None chunk_index
+        included_content_hashes = {
+            hash(chunk.get('content', ''))
+            for chunk in selected_chunks
+        }
 
         if price_focus_query:
             supplemental_candidates = []
             for chunk in group['chunks']:
                 idx = chunk.get('chunk_index')
-                if idx in included_chunk_indices:
-                    continue
                 content = chunk.get('content') or ''
+                content_hash = hash(content)
+                # Check both chunk_index AND content hash to handle None indices
+                if idx in included_chunk_indices or content_hash in included_content_hashes:
+                    continue
                 lowered = content.lower()
                 price_text_match = any(term in lowered for term in price_terms)
                 currency_match = any(symbol in content for symbol in currency_tokens)
@@ -1635,8 +1609,11 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             supplemental_chunks = []
             for chunk in supplemental_candidates:
                 idx = chunk.get('chunk_index')
+                content_hash = hash(chunk.get('content', ''))
                 selected_chunks.append(chunk)
                 supplemental_chunks.append(chunk)
+                # Track both index and content hash for deduplication
+                included_content_hashes.add(content_hash)
                 if idx is not None:
                     included_chunk_indices.add(idx)
                 if len(supplemental_chunks) >= 3 or len(selected_chunks) >= 10:
@@ -1651,9 +1628,12 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 )
 
             # Ensure at least one strong valuation chunk is present
+            # Check both chunk_index AND content hash to handle None indices
             valuation_candidates = [
                 chunk for chunk in group['chunks']
-                if chunk.get('valuation_priority') and chunk.get('chunk_index') not in included_chunk_indices
+                if chunk.get('valuation_priority') 
+                and chunk.get('chunk_index') not in included_chunk_indices
+                and hash(chunk.get('content', '')) not in included_content_hashes
             ]
             if valuation_candidates:
                 valuation_candidates.sort(
@@ -1662,8 +1642,11 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 )
                 best_chunk = valuation_candidates[0]
                 idx = best_chunk.get('chunk_index')
-                if idx not in included_chunk_indices:
+                content_hash = hash(best_chunk.get('content', ''))
+                # Double-check deduplication before adding
+                if idx not in included_chunk_indices and content_hash not in included_content_hashes:
                     selected_chunks.append(best_chunk)
+                    included_content_hashes.add(content_hash)
                     if idx is not None:
                         included_chunk_indices.add(idx)
                     logger.info(
@@ -1681,7 +1664,16 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 )
             )
 
-        merged_content = "\n\n".join([chunk['content'] for chunk in selected_chunks])
+        # Format each chunk with a marker for citation tracking
+        # [CHUNK:idx:PAGE:page_num] allows LLM to cite specific chunks
+        def format_chunk_with_marker(chunk, idx):
+            page = chunk.get('page_number', '?')
+            return f"[CHUNK:{idx}:PAGE:{page}]\n{chunk['content']}"
+        
+        merged_content = "\n\n---\n\n".join([
+            format_chunk_with_marker(chunk, i) 
+            for i, chunk in enumerate(selected_chunks)
+        ])
         
         # Extract page numbers from top chunks (filter out 0 and None)
         page_numbers = sorted(set(
@@ -1712,8 +1704,8 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             # NEW: Pass through filename and address
             'original_filename': group.get('original_filename'),
             'property_address': group.get('property_address'),
-            # NEW: Store ALL source chunks with full metadata for citation/highlighting
-            # Use ALL chunks (not just top_chunks) so text matching can find the correct page
+            # Store SELECTED chunks (ones LLM sees) with full metadata for citation/highlighting
+            # Indices match the [CHUNK:X] markers in merged_content
             'source_chunks_metadata': [
                 {
                     'content': chunk['content'],
@@ -1725,8 +1717,9 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                     'doc_id': doc_id,  # Include doc_id in each chunk for citation recovery
                     'price_boost': chunk.get('price_boost'),
                     'valuation_priority': chunk.get('valuation_priority', False),
+                    'marker_index': i,  # Index matching [CHUNK:X] marker
                 }
-                for chunk in group['chunks']  # ALL chunks from this document, not just top 7
+                for i, chunk in enumerate(selected_chunks)  # Only selected chunks (match markers)
             ]
         })
 
@@ -1737,7 +1730,7 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 for chunk in bbox_chunks[:3]
             )
             suffix = "" if len(bbox_chunks) <= 3 else f" (+{len(bbox_chunks) - 3} more)"
-            logger.info(
+            logger.debug(
                 "[BBOX TRACE] doc=%s stored %d chunk bbox entries: %s%s",
                 doc_id[:8],
                 len(bbox_chunks),
@@ -1745,7 +1738,7 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                 suffix,
             )
         else:
-            logger.warning("[BBOX TRACE] doc=%s stored 0 chunk bbox entries", doc_id[:8])
+            logger.debug("[BBOX TRACE] doc=%s stored 0 chunk bbox entries", doc_id[:8])
     
     logger.info(
         "[CLARIFY] Grouped %d chunks into %d unique documents:",

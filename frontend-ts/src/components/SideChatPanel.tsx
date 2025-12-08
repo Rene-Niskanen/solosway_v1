@@ -1356,12 +1356,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onToken: Stream each token as it arrives
               (token: string) => {
                 accumulatedText += token;
+                // Strip any EVIDENCE_FEEDBACK block from displayed text
+                let displayText = accumulatedText;
+                const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
+                if (feedbackStart !== -1) {
+                  displayText = displayText.substring(0, feedbackStart).trim();
+                }
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: accumulatedText,
+                  text: displayText,
                     isLoading: true,
                     reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
@@ -1376,7 +1382,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onComplete: Final response received
               (data: any) => {
-                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                // Clean the summary of any EVIDENCE_FEEDBACK before displaying
+                let finalText = data.summary || accumulatedText || "I found some information for you.";
+                const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
+                if (feedbackIdx !== -1) {
+                  finalText = finalText.substring(0, feedbackIdx).trim();
+                }
                 
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -1971,12 +1982,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onToken: Stream each token as it arrives
               (token: string) => {
                 accumulatedText += token;
+                // Strip any EVIDENCE_FEEDBACK block from displayed text
+                let displayText = accumulatedText;
+                const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
+                if (feedbackStart !== -1) {
+                  displayText = displayText.substring(0, feedbackStart).trim();
+                }
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: accumulatedText,
+                  text: displayText,
                     isLoading: true,
                     reasoningSteps: existingMessage?.reasoningSteps || []
                 };
@@ -1991,7 +2008,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onComplete: Final response received
               (data: any) => {
-                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                // Clean the summary of any EVIDENCE_FEEDBACK before displaying
+                let finalText = data.summary || accumulatedText || "I found some information for you.";
+                const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
+                if (feedbackIdx !== -1) {
+                  finalText = finalText.substring(0, feedbackIdx).trim();
+                }
                 
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
@@ -2408,12 +2430,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onToken: Stream each token as it arrives
             (token: string) => {
               accumulatedText += token;
+              // Strip any EVIDENCE_FEEDBACK block from displayed text
+              let displayText = accumulatedText;
+              const feedbackStart = displayText.indexOf('<EVIDENCE_FEEDBACK>');
+              if (feedbackStart !== -1) {
+                displayText = displayText.substring(0, feedbackStart).trim();
+              }
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
               const responseMessage: ChatMessage = {
                 id: loadingResponseId,
                 type: 'response',
-                text: accumulatedText,
+                text: displayText,
                   isLoading: true,  // Still loading while streaming
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
               };
@@ -2429,7 +2457,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             },
             // onComplete: Final response received
             (data: any) => {
-              const finalText = data.summary || accumulatedText || "I found some information for you.";
+              // Clean the summary of any EVIDENCE_FEEDBACK before displaying
+              let finalText = data.summary || accumulatedText || "I found some information for you.";
+              const feedbackIdx = finalText.indexOf('<EVIDENCE_FEEDBACK>');
+              if (feedbackIdx !== -1) {
+                finalText = finalText.substring(0, feedbackIdx).trim();
+              }
               
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),

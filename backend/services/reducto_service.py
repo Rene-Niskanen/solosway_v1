@@ -190,9 +190,41 @@ class ReductoService:
                                         'page': getattr(bbox_obj, 'page', None),
                                         'original_page': getattr(bbox_obj, 'original_page', None)
                                     }
-                                    # Use first block's bbox as chunk-level bbox (or aggregate if needed)
+                                    # FIXED: Compute aggregate BBOX that covers ALL blocks in chunk
+                                    # This ensures the highlight covers the entire text region, not just the first block
                                     if chunk_bbox_aggregate is None:
                                         chunk_bbox_aggregate = block_bbox.copy()
+                                    else:
+                                        # Only merge if on the same page
+                                        if (block_bbox.get('page') == chunk_bbox_aggregate.get('page') or 
+                                            block_bbox.get('original_page') == chunk_bbox_aggregate.get('original_page')):
+                                            # Compute merged bounding box
+                                            agg_left = chunk_bbox_aggregate.get('left', 0) or 0
+                                            agg_top = chunk_bbox_aggregate.get('top', 0) or 0
+                                            agg_width = chunk_bbox_aggregate.get('width', 0) or 0
+                                            agg_height = chunk_bbox_aggregate.get('height', 0) or 0
+                                            
+                                            block_left = block_bbox.get('left', 0) or 0
+                                            block_top = block_bbox.get('top', 0) or 0
+                                            block_width = block_bbox.get('width', 0) or 0
+                                            block_height = block_bbox.get('height', 0) or 0
+                                            
+                                            # Calculate right/bottom edges
+                                            agg_right = agg_left + agg_width
+                                            agg_bottom = agg_top + agg_height
+                                            block_right = block_left + block_width
+                                            block_bottom = block_top + block_height
+                                            
+                                            # Merge: min left/top, max right/bottom
+                                            new_left = min(agg_left, block_left)
+                                            new_top = min(agg_top, block_top)
+                                            new_right = max(agg_right, block_right)
+                                            new_bottom = max(agg_bottom, block_bottom)
+                                            
+                                            chunk_bbox_aggregate['left'] = new_left
+                                            chunk_bbox_aggregate['top'] = new_top
+                                            chunk_bbox_aggregate['width'] = new_right - new_left
+                                            chunk_bbox_aggregate['height'] = new_bottom - new_top
                                 
                                 block_metadata = {
                                     'type': block_type,
@@ -219,7 +251,7 @@ class ReductoService:
                             'embed': chunk_embed,
                             'enriched': chunk_enriched,  # NEW
                             'blocks': chunk_blocks,  # ALL blocks, not just images
-                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (first block's bbox)
+                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (aggregate of all blocks)
                         })
                         document_text += chunk_content + "\n"
                 
@@ -417,9 +449,41 @@ class ReductoService:
                                         'page': getattr(bbox_obj, 'page', None),
                                         'original_page': getattr(bbox_obj, 'original_page', None)
                                     }
-                                    # Use first block's bbox as chunk-level bbox
+                                    # FIXED: Compute aggregate BBOX that covers ALL blocks in chunk
+                                    # This ensures the highlight covers the entire text region, not just the first block
                                     if chunk_bbox_aggregate is None:
                                         chunk_bbox_aggregate = block_bbox.copy()
+                                    else:
+                                        # Only merge if on the same page
+                                        if (block_bbox.get('page') == chunk_bbox_aggregate.get('page') or 
+                                            block_bbox.get('original_page') == chunk_bbox_aggregate.get('original_page')):
+                                            # Compute merged bounding box
+                                            agg_left = chunk_bbox_aggregate.get('left', 0) or 0
+                                            agg_top = chunk_bbox_aggregate.get('top', 0) or 0
+                                            agg_width = chunk_bbox_aggregate.get('width', 0) or 0
+                                            agg_height = chunk_bbox_aggregate.get('height', 0) or 0
+                                            
+                                            block_left = block_bbox.get('left', 0) or 0
+                                            block_top = block_bbox.get('top', 0) or 0
+                                            block_width = block_bbox.get('width', 0) or 0
+                                            block_height = block_bbox.get('height', 0) or 0
+                                            
+                                            # Calculate right/bottom edges
+                                            agg_right = agg_left + agg_width
+                                            agg_bottom = agg_top + agg_height
+                                            block_right = block_left + block_width
+                                            block_bottom = block_top + block_height
+                                            
+                                            # Merge: min left/top, max right/bottom
+                                            new_left = min(agg_left, block_left)
+                                            new_top = min(agg_top, block_top)
+                                            new_right = max(agg_right, block_right)
+                                            new_bottom = max(agg_bottom, block_bottom)
+                                            
+                                            chunk_bbox_aggregate['left'] = new_left
+                                            chunk_bbox_aggregate['top'] = new_top
+                                            chunk_bbox_aggregate['width'] = new_right - new_left
+                                            chunk_bbox_aggregate['height'] = new_bottom - new_top
                                 
                                 block_metadata = {
                                     'type': block_type,

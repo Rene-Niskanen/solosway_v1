@@ -229,9 +229,16 @@ def get_document_qa_human_content(user_query: str, doc_content: str) -> str:
      3. Summarize or paraphrase those relevant parts  
      4. Then synthesize them into a final, concise answer.
 
-5. **Cite Your Sources**  
-   - When you refer to a fact, mention where it was found ("In the PROPERTY DETAILS section," or "In paragraph 3 of the excerpt…").  
-   - This increases traceability and trust.
+5. **Cite Your Sources Using Chunk Markers** (CRITICAL)
+   - The document contains [CHUNK:X:PAGE:Y] markers at the start of each section
+   - EVERY fact you state MUST have its own [CHUNK:X] citation immediately after it
+   - Place citations DIRECTLY after each specific piece of information:
+     ✅ CORRECT: "The valuation is £2,300,000[CHUNK:2] as of 12th February 2024[CHUNK:0]"
+     ❌ WRONG: "The valuation is £2,300,000 as of 12th February 2024[CHUNK:2]"
+   - Each price, date, name, measurement, or key fact needs its own citation
+   - Examples:
+     - "5 bedrooms[CHUNK:0] and 3 bathrooms[CHUNK:0], valued at £2.4M[CHUNK:3]"
+     - "Inspected on 6th February 2024[CHUNK:1] by John Smith MRICS[CHUNK:1]"
 
 6. **Guard Against Hallucination**  
    - Do **not** guess or invent details not present in the excerpt.  
