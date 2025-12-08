@@ -40,6 +40,16 @@ def reciprocal_rank_fusion(result_lists: List[List[dict]], k: int = 60) -> List[
                     doc_scores[doc_id]['doc'].get('similarity_score', 0),
                     doc.get('similarity_score', 0)
                 )
+                # IMPORTANT: Preserve bbox if new doc has it and existing doesn't
+                # This fixes the issue where BM25 results (without bbox) are processed
+                # before vector results (with bbox), causing bbox to be lost
+                if doc.get('bbox') and not doc_scores[doc_id]['doc'].get('bbox'):
+                    doc_scores[doc_id]['doc']['bbox'] = doc.get('bbox')
+                # Also preserve chunk_index and page_number if missing
+                if doc.get('chunk_index') is not None and doc_scores[doc_id]['doc'].get('chunk_index') is None:
+                    doc_scores[doc_id]['doc']['chunk_index'] = doc.get('chunk_index')
+                if doc.get('page_number') and not doc_scores[doc_id]['doc'].get('page_number'):
+                    doc_scores[doc_id]['doc']['page_number'] = doc.get('page_number')
             else:
                 doc_scores[doc_id] = {
                     'doc': doc,

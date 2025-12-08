@@ -214,7 +214,7 @@ class BackendApiService {
     onStatus?: (message: string) => void,
     abortSignal?: AbortSignal,
     documentIds?: string[],
-    onReasoningStep?: (step: { step: string; message: string; details: any }) => void,
+    onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
     onReasoningContext?: (context: { message: string; moment: string }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
@@ -1228,6 +1228,28 @@ class BackendApiService {
   async deleteDocument(documentId: string): Promise<ApiResponse> {
     return this.fetchApi(`/api/document/${documentId}`, {
       method: 'DELETE'
+    });
+  }
+
+  /**
+   * Reprocess a document to extract BBOX coordinates for citation highlighting
+   * @param documentId - The document UUID to reprocess
+   * @param mode - 'full' (re-embed + bbox) or 'bbox_only' (update bbox, preserve embeddings)
+   */
+  async reprocessDocument(
+    documentId: string, 
+    mode: 'full' | 'bbox_only' = 'full'
+  ): Promise<ApiResponse<{
+    success: boolean;
+    message: string;
+    chunks_total: number;
+    chunks_with_bbox: number;
+    chunks_updated?: number;
+    mode: string;
+  }>> {
+    return this.fetchApi(`/api/documents/${documentId}/reprocess`, {
+      method: 'POST',
+      body: JSON.stringify({ mode })
     });
   }
 }

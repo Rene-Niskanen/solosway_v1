@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
+from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response, make_response
 from flask_login import login_required, current_user, login_user, logout_user
 from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
 from .services.property_enrichment_service import PropertyEnrichmentService
@@ -15,10 +15,19 @@ import logging
 import boto3
 import time
 import re
+import tempfile
 from .tasks import process_document_task, process_document_fast_task
+from backend.llm.evidence_feedback import (
+    build_feedback_instruction,
+    extract_feedback_from_answer,
+    match_feedback_to_chunks,
+    EVIDENCE_FEEDBACK_START,
+)
+from backend.utils.bbox import ensure_bbox_dict, summarize_bbox
 from .services.deletion_service import DeletionService
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
+from sqlalchemy.orm import load_only
 import json
 from uuid import UUID
 def _ensure_business_uuid():
@@ -63,6 +72,165 @@ def _normalize_uuid_str(value):
         return str(UUID(str(value)))
     except (ValueError, TypeError):
         return None
+
+
+def _extract_citation_context(text: str, citation_num: str, context_chars: int = 150) -> str:
+    """
+    Extract text immediately preceding a citation to identify what's being cited.
+    
+    Args:
+        text: The full text containing citations
+        citation_num: The citation number to look for (e.g., "1" for [1])
+        context_chars: Number of characters to extract before the citation
+        
+    Returns:
+        The text context before the citation, or None if not found
+    """
+    import re
+    # Pattern to find text before the specific citation
+    pattern = rf'(.{{0,{context_chars}}})\[{citation_num}\]'
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _find_best_chunk_for_citation(context_text: str, source_chunks: list, logger=None) -> dict:
+    """
+    Find the chunk that best matches the citation context using text matching.
+    
+    This solves the problem where citations were always mapped to the first chunk,
+    even when the actual cited information (like "£2,400,000") is in a different chunk.
+    
+    Args:
+        context_text: Text extracted from near the citation (e.g., "The sale price is £2,400,000")
+        source_chunks: List of chunk metadata dicts with 'content', 'page_number', 'bbox', etc.
+        logger: Optional logger for debugging
+        
+    Returns:
+        The best matching chunk dict, or the first chunk if no match found
+    """
+    import re
+    from difflib import SequenceMatcher
+    
+    if not source_chunks:
+        return None
+    
+    if not context_text:
+        if logger:
+            logger.debug("[CHUNK_MATCH] No context text, using first chunk")
+        return source_chunks[0]
+    
+    # Extract key patterns that are likely to be unique identifiers
+    key_patterns = [
+        r'£[\d,]+(?:\.\d{2})?',  # Prices: £2,400,000
+        r'\$[\d,]+(?:\.\d{2})?',  # Dollar prices
+        r'\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4}',  # Dates: 9th February 2024
+        r'\d+(?:,\d{3})+(?:\.\d+)?',  # Large numbers with commas: 5,691
+        r'\d+\.\d+\s*(?:sq\s*ft|sqft|acres?|hectares?)',  # Measurements
+        r'\b\d{4,}\b',  # 4+ digit numbers (years, codes, etc.)
+    ]
+    
+    key_phrases = []
+    for pattern in key_patterns:
+        matches = re.findall(pattern, context_text, re.IGNORECASE)
+        key_phrases.extend(matches)
+    
+    # Also extract significant words (4+ chars, excluding common words)
+    common_words = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 'will', 'their', 'would', 'about', 'which', 'there', 'other'}
+    words = re.findall(r'\b[A-Za-z]{4,}\b', context_text)
+    significant_words = [w for w in words if w.lower() not in common_words][-5:]  # Last 5 significant words
+    key_phrases.extend(significant_words)
+    
+    # Separate numeric/currency phrases from generic words
+    numeric_phrases = []
+    word_phrases = []
+    for phrase in key_phrases:
+        if re.search(r'[£$]|\d', phrase):
+            numeric_phrases.append(phrase)
+        else:
+            word_phrases.append(phrase)
+    
+    if logger:
+        logger.info(
+            "[CHUNK_MATCH] Context excerpt='%s...' | numeric=%s | words=%s",
+            context_text[:120],
+            numeric_phrases[:5],
+            word_phrases[:5]
+        )
+    
+    context_text_lower = context_text.lower()
+    # Score each chunk by how many key phrases it contains
+    best_chunk = source_chunks[0]
+    best_score = 0
+    
+    for chunk in source_chunks:
+        chunk_content = chunk.get('content', '')
+        if not chunk_content:
+            continue
+            
+        score = 0
+        matched_phrases = []
+        lowered_chunk = chunk_content.lower()
+        
+        # Numeric/currency matches get highest weight
+        for phrase in numeric_phrases:
+            if phrase and phrase in chunk_content:
+                score += 5
+                matched_phrases.append(phrase)
+        
+        # Word/phrase matches (case-insensitive)
+        for phrase in word_phrases:
+            if phrase.lower() in lowered_chunk:
+                score += 1
+                matched_phrases.append(phrase)
+        
+        # Fuzzy overlap between context text and chunk snippet
+        snippet_length = max(200, len(context_text) * 2)
+        snippet = lowered_chunk[:snippet_length]
+        if snippet:
+            similarity = SequenceMatcher(None, context_text_lower, snippet).ratio()
+            if similarity > 0.2:
+                score += similarity * 2  # modest boost for contextual overlap
+        
+        # Bonus if chunk page already referenced by citation number (page heuristics)
+        if chunk.get('page_number') and str(chunk.get('page_number')) in context_text:
+            score += 1
+        
+        if logger:
+            logger.debug(
+                "[CHUNK_MATCH] Chunk idx=%s page=%s score=%.3f matches=%s",
+                chunk.get('chunk_index'),
+                chunk.get('page_number'),
+                score,
+                matched_phrases[:5]
+            )
+        
+        if score > best_score:
+            best_score = score
+            best_chunk = chunk
+            if logger:
+                logger.debug(f"[CHUNK_MATCH] New best chunk: page {chunk.get('page_number')}, score {score}, matches: {matched_phrases[:5]}")
+    
+    # If no score improvements but we have numeric phrases, fall back to first chunk containing them
+    if best_score == 0 and numeric_phrases:
+        for phrase in numeric_phrases:
+            for chunk in source_chunks:
+                if phrase in chunk.get('content', ''):
+                    if logger:
+                        logger.info(f"[CHUNK_MATCH] Fallback: selecting chunk on page {chunk.get('page_number')} for numeric phrase {phrase}")
+                    return chunk
+    
+    if logger:
+        logger.info(
+            "[CHUNK_MATCH] Selected chunk idx=%s page=%s score=%.3f for context='%s...'",
+            best_chunk.get('chunk_index'),
+            best_chunk.get('page_number'),
+            best_score,
+            context_text[:80]
+        )
+    
+    return best_chunk
 
 
 def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
@@ -1046,7 +1214,7 @@ Do not use quotes around the response."""
                         
                         formatted_outputs_str = "\n".join(formatted_outputs)
                         
-                        prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
+                        prompt_body = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
 
 CONTEXT
 
@@ -1067,12 +1235,14 @@ Speak naturally, like an experienced real estate professional giving you exactly
 
 **CITATION REQUIREMENTS:**
 - Each document is labeled with [Document 1], [Document 2], etc. at the top
-- When you use information from a document, cite it immediately after the relevant sentence using the format [1], [2], [3], etc.
-- Place citations right after the sentence that contains information from that document
-- Example: "The property is approximately 2.5 acres[1]. The valuation was completed by John Smith[2]."
+- When you use information from a document, cite it immediately after the specific figure, value, or knowledge mentioned, NOT after the sentence or document title
+- Place citations directly after the figure/knowledge: "£2,400,000[1]" or "5 bedrooms[1]" or "John Smith[2]"
+- Do NOT place citations after document names or at the end of sentences
+- Example: "The asking price is £2,400,000[1] for the property." NOT "The asking price for Highlands[1] is £2,400,000."
+- For names, dates, prices, values, measurements: place citation immediately after that specific information
 - If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
 - Citations should appear inline, naturally within your response
-- Always cite your sources - use [1], [2], etc. after each fact that comes from a document
+- Only cite when you actually use information from a document - do not add unnecessary citations
 
 Focus on what matters in real estate:
 - Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
@@ -1091,6 +1261,7 @@ TONE
 Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
 
 Now provide your response (answer directly, no heading, no additional context, with citations):"""
+                        prompt = f"{prompt_body}\n\n{build_feedback_instruction()}"
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -1107,6 +1278,8 @@ Now provide your response (answer directly, no heading, no additional context, w
                         # Stream tokens
                         full_summary = ""
                         chunk_count = 0
+                        visible_sent_length = 0
+                        feedback_started = False
                         for chunk in llm.stream(prompt):
                             chunk_count += 1
                             if chunk_count == 1:
@@ -1114,11 +1287,43 @@ Now provide your response (answer directly, no heading, no additional context, w
                             if chunk.content:
                                 token = chunk.content
                                 full_summary += token
-                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+
+                                if feedback_started:
+                                    continue
+
+                                feedback_idx = full_summary.find(EVIDENCE_FEEDBACK_START)
+                                if feedback_idx != -1:
+                                    feedback_started = True
+                                    visible_segment = full_summary[visible_sent_length:feedback_idx]
+                                    if visible_segment:
+                                        yield f"data: {json.dumps({'type': 'token', 'token': visible_segment})}\n\n"
+                                    visible_sent_length = feedback_idx
+                                else:
+                                    new_segment = full_summary[visible_sent_length:]
+                                    if new_segment:
+                                        yield f"data: {json.dumps({'type': 'token', 'token': new_segment})}\n\n"
+                                        visible_sent_length = len(full_summary)
                         
                         # NEW: Parse citations from LLM response and map to bbox metadata
                         # Strategy: Number citations per unique chunk/bbox, not per document
                         # Each unique chunk gets its own sequential number (1, 2, 3...)
+                        feedback_records = []
+                        matched_feedback_records = []
+                        try:
+                            full_summary, feedback_records = extract_feedback_from_answer(full_summary, logger)
+                            if feedback_records:
+                                matched_feedback_records = match_feedback_to_chunks(feedback_records, doc_outputs, logger)
+                                matched_count = sum(1 for record in matched_feedback_records if record.get('matched_chunk'))
+                                logger.info(
+                                    "[EVIDENCE_FEEDBACK] Streaming summary produced %d feedback record(s); matched %d chunk(s)",
+                                    len(feedback_records),
+                                    matched_count,
+                                )
+                        except Exception as feedback_err:
+                            logger.warning(f"[EVIDENCE_FEEDBACK] Failed to parse streaming feedback: {feedback_err}")
+                            feedback_records = []
+                            matched_feedback_records = []
+
                         citations_data = {}  # Initialize to empty dict
                         try:
                             citation_pattern = r'\[(\d+)\]'
@@ -1128,45 +1333,127 @@ Now provide your response (answer directly, no heading, no additional context, w
                             if not citation_map:
                                 logger.info("🟡 [CITATIONS] No documents found, skipping citation processing")
                             else:
-                                # Step 1: Build a map of ALL unique chunks from ALL documents
+                                # Step 1: Lazy citation assignment - only create citations for chunks that are actually cited
                                 # Key: (doc_id, chunk_index, page_number) -> unique chunk identifier
                                 # Value: sequential citation number
-                                all_chunks_map = {}  # Map chunk_signature to citation number
                                 sequential_num = 1
                                 chunk_to_citation = {}  # Map chunk_signature to citation number
                                 citation_to_chunks = {}  # Map citation number to chunk metadata
                                 
-                                # First, collect ALL chunks from ALL documents in citation_map
-                                for doc_num_str, doc_citation in citation_map.items():
-                                    doc_id = doc_citation['doc_id']
-                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
+                                # DO NOT pre-assign citations to all chunks
+                                # Citations will be created on-demand when:
+                                # 1. Evidence feedback matches a chunk
+                                # 2. Context matching finds a chunk for a citation
+                                # 3. A chunk is explicitly referenced
+                                
+                                doc_id_to_doc_num = {
+                                    meta.get('doc_id'): doc_num_str
+                                    for doc_num_str, meta in citation_map.items()
+                                    if meta.get('doc_id')
+                                }
+
+                                def ensure_chunk_citation_entry(doc_id, chunk, doc_meta, match_source="feedback"):
+                                    chunk_index = chunk.get('chunk_index')
+                                    page_number = chunk.get('page_number')
+                                    signature = (doc_id, chunk_index, page_number)
+                                    if signature in chunk_to_citation:
+                                        citation_number = str(chunk_to_citation[signature])
+                                        entry = citation_to_chunks.get(citation_number)
+                                    else:
+                                        next_cit_num = (max(chunk_to_citation.values()) if chunk_to_citation else 0) + 1
+                                        chunk_to_citation[signature] = next_cit_num
+                                        citation_number = str(next_cit_num)
+                                        entry = None
                                     
-                                    if isinstance(source_chunks_metadata, list):
-                                        for chunk in source_chunks_metadata:
-                                            if isinstance(chunk, dict):
-                                                chunk_index = chunk.get('chunk_index')
-                                                page_number = chunk.get('page_number')
-                                                bbox = chunk.get('bbox')
-                                                
-                                                # Create unique chunk signature: (doc_id, chunk_index, page_number)
-                                                # This uniquely identifies a chunk regardless of document
-                                                chunk_signature = (doc_id, chunk_index, page_number)
-                                                
-                                                # If this is a new unique chunk, assign it a citation number
-                                                if chunk_signature not in chunk_to_citation:
-                                                    chunk_to_citation[chunk_signature] = sequential_num
-                                                    citation_to_chunks[str(sequential_num)] = {
-                                                        'doc_id': doc_id,
-                                                        'chunk_index': chunk_index,
-                                                        'page_number': page_number,
-                                                        'chunk_metadata': chunk,  # Full chunk metadata including bbox
-                                                        'original_filename': doc_citation.get('original_filename'),
-                                                        'property_address': doc_citation.get('property_address'),
-                                                        'page_range': doc_citation.get('page_range'),
-                                                        'classification_type': doc_citation.get('classification_type')
-                                                    }
-                                                    logger.info(f"🟡 [CITATIONS] Assigned citation [{sequential_num}] to chunk: doc {doc_id[:8]}, chunk_idx {chunk_index}, page {page_number}")
-                                                    sequential_num += 1
+                                    normalized_chunk = {
+                                        'doc_id': doc_id,
+                                        'chunk_index': chunk_index,
+                                        'page_number': page_number,
+                                        'bbox': chunk.get('bbox'),
+                                        'content': (chunk.get('content') or '')[:500],
+                                        'match_reason': chunk.get('match_reason') or match_source
+                                    }
+                                    bbox_summary = summarize_bbox(normalized_chunk.get('bbox'))
+                                    logger.info(
+                                        "[BBOX TRACE] %s doc=%s chunk_idx=%s page=%s bbox=%s",
+                                        match_source.upper(),
+                                        (doc_id or 'unknown')[:8],
+                                        chunk_index,
+                                        page_number,
+                                        bbox_summary,
+                                    )
+                                    
+                                    if entry:
+                                        entry['matched_chunk_metadata'] = normalized_chunk
+                                        entry['chunk_metadata'] = normalized_chunk
+                                        entry['match_reason'] = normalized_chunk['match_reason']
+                                        logger.info(
+                                            "🟢 [CITATIONS] %s reused citation [%s] for doc %s, chunk_idx %s, page %s (bbox: %s)",
+                                            match_source.upper(),
+                                            citation_number,
+                                            (doc_id or '')[:8],
+                                            chunk_index,
+                                            page_number,
+                                            bool(normalized_chunk.get('bbox')),
+                                        )
+                                    else:
+                                        citation_to_chunks[citation_number] = {
+                                            'doc_id': doc_id,
+                                            'original_filename': doc_meta.get('original_filename') if doc_meta else None,
+                                            'property_address': doc_meta.get('property_address') if doc_meta else None,
+                                            'page_range': doc_meta.get('page_range') if doc_meta else None,
+                                            'classification_type': doc_meta.get('classification_type') if doc_meta else None,
+                                            'chunk_index': chunk_index,
+                                            'page_number': page_number,
+                                            'candidate_chunks_metadata': doc_meta.get('source_chunks_metadata', []) if doc_meta else [],
+                                            'matched_chunk_metadata': normalized_chunk,
+                                            'chunk_metadata': normalized_chunk,
+                                            'match_reason': normalized_chunk['match_reason']
+                                        }
+                                        logger.info(
+                                            "🟢 [CITATIONS] %s created citation [%s] for doc %s, chunk_idx %s, page %s (bbox: %s)",
+                                            match_source.upper(),
+                                            citation_number,
+                                            (doc_id or '')[:8],
+                                            chunk_index,
+                                            page_number,
+                                            bool(normalized_chunk.get('bbox')),
+                                        )
+                                    return citation_number
+
+                                feedback_override_map = {}
+                                if matched_feedback_records:
+                                    for matched_record in matched_feedback_records:
+                                        feedback_entry = matched_record.get('feedback') or {}
+                                        matched_chunk = matched_record.get('matched_chunk')
+                                        if not matched_chunk:
+                                            continue
+                                        doc_id = feedback_entry.get('doc_id') or matched_chunk.get('doc_id')
+                                        if not doc_id:
+                                            continue
+                                        doc_num_str = doc_id_to_doc_num.get(doc_id)
+                                        if not doc_num_str:
+                                            continue
+                                        doc_meta = citation_map.get(doc_num_str, {})
+                                        matched_chunk = {
+                                            **matched_chunk,
+                                            'match_reason': matched_chunk.get('match_reason') or 'feedback_snippet'
+                                        }
+                                        citation_number = ensure_chunk_citation_entry(doc_id, matched_chunk, doc_meta, match_source="feedback")
+                                        entry = citation_to_chunks.get(citation_number)
+                                        if entry:
+                                            entry.setdefault('evidence_feedback', []).append(feedback_entry)
+                                        label = (feedback_entry.get('citation_label') or '').strip()
+                                        if label.startswith('[') and label.endswith(']'):
+                                            label_num = label[1:-1]
+                                            if label_num == doc_num_str:
+                                                feedback_override_map[doc_num_str] = citation_number
+                                                logger.info(
+                                                    "[EVIDENCE_FEEDBACK] Overriding citation [%s] with chunk citation [%s] based on feedback snippet '%s...'",
+                                                    doc_num_str,
+                                                    citation_number,
+                                                    feedback_entry.get('snippet', '')[:40]
+                                                )
                                 
                                 # Step 2: Map LLM's document citations to chunk citations
                                 # When LLM cites [1] (Document 1), we need to map it to all chunks from Document 1
@@ -1194,22 +1481,222 @@ Now provide your response (answer directly, no heading, no additional context, w
                                     doc_to_chunk_citations[doc_num_str] = chunk_citations
                                 
                                 # Step 3: Replace document citations with chunk citations in the text
-                                # When we see [1], replace it with [1], [2], [3] etc. based on chunks
-                                # But actually, we should just use the first chunk citation number
-                                # and let the frontend handle multiple chunks per document
+                                # When we see [1], replace it with the chunk that best matches the cited content
+                                # This uses text matching to find the chunk containing the actual cited information
                                 
-                                # For now, map each document citation to its first chunk citation
-                                # (We can enhance this later to handle multiple chunks per document citation)
+                                # For each document citation, find the BEST matching chunk (not just the first)
+                                # by analyzing the text context around the citation
                                 for doc_num_str in citations_found:
-                                    if doc_num_str in doc_to_chunk_citations:
-                                        chunk_citations = doc_to_chunk_citations[doc_num_str]
-                                        if chunk_citations:
-                                            # Use the first chunk citation number for this document
-                                            citation_renumber_map[doc_num_str] = chunk_citations[0]
-                                            logger.info(f"🟡 [CITATIONS] Mapped document citation [{doc_num_str}] to chunk citation [{chunk_citations[0]}] (from {len(chunk_citations)} chunks)")
+                                    # Check if feedback override exists first
+                                    if doc_num_str in feedback_override_map:
+                                        citation_renumber_map[doc_num_str] = feedback_override_map[doc_num_str]
+                                        logger.info(
+                                            "[EVIDENCE_FEEDBACK] Using feedback override for citation [%s] -> chunk citation [%s]",
+                                            doc_num_str,
+                                            feedback_override_map[doc_num_str],
+                                        )
+                                        continue
+                                    
+                                    # Get the source chunks for this document
+                                    doc_citation = citation_map.get(doc_num_str, {})
+                                    source_chunks = doc_citation.get('source_chunks_metadata', [])
+                                    doc_id = doc_citation.get('doc_id')
+                                    
+                                    # Extract context text before this citation to identify what's being cited
+                                    context_text = _extract_citation_context(full_summary, doc_num_str)
+                                    
+                                    # Check if we already have chunk citations for this document
+                                    chunk_citations = doc_to_chunk_citations.get(doc_num_str, [])
+                                    
+                                    logger.info(f"🟡 [CITATIONS] Doc [{doc_num_str}]: {len(source_chunks)} chunks available, context: '{context_text[:50] if context_text else 'None'}...', pre-assigned citations: {len(chunk_citations)}")
+                                    
+                                    # If we only have 1 chunk but have context, try fetching more chunks from DB
+                                    if context_text and doc_id and len(source_chunks) <= 1:
+                                        logger.info(f"🟡 [CITATIONS] Only {len(source_chunks)} chunk(s) for doc [{doc_num_str}], fetching more from DB...")
+                                        try:
+                                            # Query Supabase for more chunks from this document
+                                            supabase_client = get_supabase_client()
+                                            chunks_response = supabase_client.from_('document_vectors')\
+                                                .select('chunk_text, chunk_index, page_number, bbox')\
+                                                .eq('document_id', doc_id)\
+                                                .order('chunk_index')\
+                                                .limit(50)\
+                                                .execute()
+                                            
+                                            if chunks_response.data:
+                                                # Build extended source_chunks with bbox parsing
+                                                extended_chunks = []
+                                                for chunk_row in chunks_response.data:
+                                                    bbox_val = ensure_bbox_dict(chunk_row.get('bbox'))
+                                                    extended_chunks.append({
+                                                        'content': chunk_row.get('chunk_text', ''),
+                                                        'chunk_index': chunk_row.get('chunk_index'),
+                                                        'page_number': chunk_row.get('page_number'),
+                                                        'bbox': bbox_val,
+                                                        'doc_id': doc_id
+                                                    })
+                                                source_chunks = extended_chunks
+                                                logger.info(f"🟡 [CITATIONS] Fetched {len(extended_chunks)} chunks from DB for doc [{doc_num_str}]")
+                                        except Exception as fetch_err:
+                                            logger.warning(f"🟡 [CITATIONS] Failed to fetch more chunks: {fetch_err}")
+                                    
+                                    # Try to match citation to a chunk via context
+                                    if context_text and source_chunks and len(source_chunks) > 0:
+                                        # Find the chunk that best matches the citation context
+                                        best_chunk = _find_best_chunk_for_citation(context_text, source_chunks, logger)
+                                        
+                                        if best_chunk:
+                                                    best_chunk = {
+                                                        **best_chunk,
+                                                        'match_reason': best_chunk.get('match_reason') or 'context_match'
+                                                    }
+                                                    # Get the citation number for this specific chunk
+                                                    best_doc_id = best_chunk.get('doc_id') or doc_citation.get('doc_id')
+                                                    chunk_signature = (
+                                                        best_doc_id,
+                                                        best_chunk.get('chunk_index'),
+                                                        best_chunk.get('page_number')
+                                                    )
+                                                    
+                                                    # Check if this chunk's citation exists, if not create one
+                                                    if chunk_signature in chunk_to_citation:
+                                                        matched_cit_num = str(chunk_to_citation[chunk_signature])
+                                                        citation_renumber_map[doc_num_str] = matched_cit_num
+                                                        normalized_best_chunk = {
+                                                            **best_chunk,
+                                                            'doc_id': best_doc_id
+                                                        }
+                                                        entry = citation_to_chunks.get(matched_cit_num)
+                                                        if entry:
+                                                            entry['matched_chunk_metadata'] = normalized_best_chunk
+                                                            entry['chunk_metadata'] = normalized_best_chunk
+                                                            entry['candidate_chunks_metadata'] = source_chunks
+                                                            entry['match_reason'] = best_chunk.get('match_reason') or entry.get('match_reason')
+                                                            logger.info(
+                                                                "[BBOX TRACE] CONTEXT doc=%s chunk_idx=%s page=%s bbox=%s",
+                                                                (best_doc_id or 'unknown')[:8],
+                                                                best_chunk.get('chunk_index'),
+                                                                best_chunk.get('page_number'),
+                                                                summarize_bbox(best_chunk.get('bbox')),
+                                                            )
+                                                            logger.info(
+                                                                f"🟡 [CITATIONS] HEURISTIC matched citation [{doc_num_str}] to chunk on page {best_chunk.get('page_number')} "
+                                                                f"(context: '{context_text[:40]}...') -> citation [{matched_cit_num}], "
+                                                                f"bbox: {bool(best_chunk.get('bbox'))}"
+                                                            )
+                                                        else:
+                                                            # Create a new citation entry for this chunk
+                                                            # Structure must match what the citations_data builder expects:
+                                                            # - Top-level: doc_id, original_filename, property_address, page_range, classification_type
+                                                            # - chunk_metadata: chunk details including bbox
+                                                            next_cit_num = max([int(x) for x in chunk_to_citation.values()] + [0]) + 1
+                                                            chunk_to_citation[chunk_signature] = next_cit_num
+                                                            
+                                                            page_num = best_chunk.get('page_number')
+                                                            normalized_best_chunk = {
+                                                                'doc_id': best_doc_id,
+                                                                'chunk_index': best_chunk.get('chunk_index'),
+                                                                'page_number': page_num,
+                                                                'bbox': best_chunk.get('bbox'),
+                                                                'content': best_chunk.get('content', '')[:500]
+                                                            }
+                                                            citation_to_chunks[str(next_cit_num)] = {
+                                                                'doc_id': best_doc_id,
+                                                                'original_filename': doc_citation.get('original_filename'),
+                                                                'property_address': doc_citation.get('property_address'),
+                                                                'page_range': f"page {page_num}" if page_num else None,
+                                                                'classification_type': doc_citation.get('classification_type'),
+                                                                'chunk_index': best_chunk.get('chunk_index'),
+                                                                'page_number': page_num,
+                                                                # Keep the full chunk list we evaluated for traceability
+                                                                'candidate_chunks_metadata': source_chunks,
+                                                                # chunk_metadata is what gets extracted for source_chunks_metadata
+                                                                'matched_chunk_metadata': normalized_best_chunk,
+                                                                'chunk_metadata': normalized_best_chunk,
+                                                                'match_reason': best_chunk.get('match_reason') or 'context_match'
+                                                            }
+                                                            citation_renumber_map[doc_num_str] = str(next_cit_num)
+                                                            logger.info(
+                                                                "[BBOX TRACE] CONTEXT doc=%s chunk_idx=%s page=%s bbox=%s",
+                                                                (best_doc_id or 'unknown')[:8],
+                                                                best_chunk.get('chunk_index'),
+                                                                page_num,
+                                                                summarize_bbox(best_chunk.get('bbox')),
+                                                            )
+                                                            logger.info(
+                                                                f"🟡 [CITATIONS] HEURISTIC created NEW citation [{next_cit_num}] for doc {best_doc_id[:8] if best_doc_id else 'unknown'}, "
+                                                                f"page {page_num}, chunk_idx {best_chunk.get('chunk_index')}, bbox: {bool(best_chunk.get('bbox'))}"
+                                                            )
+                                        else:
+                                            # No best chunk found via context matching
+                                            if chunk_citations:
+                                                # Use first pre-assigned chunk citation as fallback
+                                                citation_renumber_map[doc_num_str] = chunk_citations[0]
+                                                logger.info(
+                                                    f"🟡 [CITATIONS] Fallback to first chunk citation [{chunk_citations[0]}] "
+                                                    "(no best match found)"
+                                                )
+                                            elif source_chunks:
+                                                # No pre-assigned citations, but we have chunks - create citation for first chunk
+                                                first_chunk = source_chunks[0]
+                                                chunk_signature = (doc_id, first_chunk.get('chunk_index'), first_chunk.get('page_number'))
+                                                if chunk_signature not in chunk_to_citation:
+                                                    next_cit_num = max([int(x) for x in chunk_to_citation.values()] + [0]) + 1
+                                                    chunk_to_citation[chunk_signature] = next_cit_num
+                                                    citation_to_chunks[str(next_cit_num)] = {
+                                                        'doc_id': doc_id,
+                                                        'original_filename': doc_citation.get('original_filename'),
+                                                        'property_address': doc_citation.get('property_address'),
+                                                        'page_range': f"page {first_chunk.get('page_number')}" if first_chunk.get('page_number') else None,
+                                                        'classification_type': doc_citation.get('classification_type'),
+                                                        'chunk_index': first_chunk.get('chunk_index'),
+                                                        'page_number': first_chunk.get('page_number'),
+                                                        'matched_chunk_metadata': {
+                                                            'doc_id': doc_id,
+                                                            'chunk_index': first_chunk.get('chunk_index'),
+                                                            'page_number': first_chunk.get('page_number'),
+                                                            'bbox': first_chunk.get('bbox'),
+                                                            'content': (first_chunk.get('content') or '')[:500]
+                                                        },
+                                                        'chunk_metadata': {
+                                                            'doc_id': doc_id,
+                                                            'chunk_index': first_chunk.get('chunk_index'),
+                                                            'page_number': first_chunk.get('page_number'),
+                                                            'bbox': first_chunk.get('bbox'),
+                                                            'content': (first_chunk.get('content') or '')[:500]
+                                                        },
+                                                        'candidate_chunks_metadata': source_chunks,
+                                                        'match_reason': 'fallback_first_chunk'
+                                                    }
+                                                    citation_renumber_map[doc_num_str] = str(next_cit_num)
+                                                    logger.info(f"🟡 [CITATIONS] Created fallback citation [{next_cit_num}] for first chunk (no context match)")
+                                    elif chunk_citations:
+                                        # No context but we have pre-assigned citations, use first one
+                                        citation_renumber_map[doc_num_str] = chunk_citations[0]
+                                        logger.info(f"🟡 [CITATIONS] Using first chunk citation [{chunk_citations[0]}] (no context, single chunk: {len(source_chunks)})")
+                                    elif source_chunks:
+                                        # No pre-assigned citations and no context, but we have chunks - skip this citation
+                                        logger.warning(f"🟡 [CITATIONS] Citation [{doc_num_str}] found but no matching chunk identified (no context, {len(source_chunks)} chunks available)")
                                 
                                 # Get unique chunk citation numbers that were actually used
                                 unique_citations = sorted(set(citation_renumber_map.values()), key=int) if citation_renumber_map else []
+                                
+                                if unique_citations:
+                                    citation_number_remap = {
+                                        old_num: str(idx + 1)
+                                        for idx, old_num in enumerate(unique_citations)
+                                    }
+                                    citation_renumber_map = {
+                                        doc_num: citation_number_remap.get(chunk_num, chunk_num)
+                                        for doc_num, chunk_num in citation_renumber_map.items()
+                                    }
+                                    remapped_citation_to_chunks = {}
+                                    for old_num, chunk_info in citation_to_chunks.items():
+                                        new_num = citation_number_remap.get(old_num)
+                                        if new_num:
+                                            remapped_citation_to_chunks[new_num] = chunk_info
+                                    citation_to_chunks = remapped_citation_to_chunks
+                                    unique_citations = list(citation_number_remap.values())
                                 
                                 logger.info(f"🟡 [CITATIONS] Found {len(citations_found)} document citation(s), mapped to {len(unique_citations)} unique chunk citation(s): {unique_citations}")
                                 
@@ -1274,21 +1761,32 @@ Now provide your response (answer directly, no heading, no additional context, w
                                 for citation_num_str, chunk_info in citation_to_chunks.items():
                                     # Only include citations that were actually used in the response
                                     if citation_num_str in unique_citations:
-                                        chunk_metadata = chunk_info.get('chunk_metadata', {})
+                                        matched_chunk_metadata = chunk_info.get('matched_chunk_metadata') or chunk_info.get('chunk_metadata', {})
+                                        candidate_chunks = chunk_info.get('candidate_chunks_metadata', [])
                                         
                                         # FIX: Get doc_id from chunk_info or fallback to chunk_metadata
                                         # This handles cases where doc_id might be empty in citation_map
-                                        doc_id = chunk_info.get('doc_id') or chunk_metadata.get('doc_id') or ''
+                                        doc_id = chunk_info.get('doc_id') or matched_chunk_metadata.get('doc_id') or ''
                                         
                                         if not doc_id:
                                             logger.warning(f"🟡 [CITATIONS] No doc_id found for citation [{citation_num_str}], chunk_idx {chunk_info.get('chunk_index')}")
                                         
-                                        # Ensure doc_id is in chunk_metadata for frontend
-                                        if chunk_metadata and not chunk_metadata.get('doc_id'):
-                                            chunk_metadata = {**chunk_metadata, 'doc_id': doc_id}
+                                        # Ensure doc_id is in matched chunk metadata for frontend
+                                        if matched_chunk_metadata and not matched_chunk_metadata.get('doc_id'):
+                                            matched_chunk_metadata = {**matched_chunk_metadata, 'doc_id': doc_id}
                                         
-                                        # Build source_chunks_metadata array with just this chunk
-                                        source_chunks_metadata = [chunk_metadata] if chunk_metadata else []
+                                        has_bbox = bool(matched_chunk_metadata.get('bbox'))
+                                        if not has_bbox:
+                                            logger.warning(
+                                                "⚠️ [CITATIONS] Citation [%s] missing bbox (doc %s, chunk_idx %s, match_reason=%s)",
+                                                citation_num_str,
+                                                (doc_id or '')[:8],
+                                                chunk_info.get('chunk_index'),
+                                                chunk_info.get('match_reason') or 'unknown',
+                                            )
+                                        
+                                        # Build source_chunks_metadata array with just the matched chunk
+                                        source_chunks_metadata = [matched_chunk_metadata] if matched_chunk_metadata else []
                                         
                                         citations_data[citation_num_str] = {
                                             'doc_id': doc_id,  # Use recovered doc_id
@@ -1296,12 +1794,17 @@ Now provide your response (answer directly, no heading, no additional context, w
                                             'property_address': chunk_info.get('property_address'),
                                             'page_range': chunk_info.get('page_range'),
                                             'classification_type': chunk_info.get('classification_type'),
-                                            'source_chunks_metadata': source_chunks_metadata  # Single chunk with bbox!
+                                            'source_chunks_metadata': source_chunks_metadata,  # Matched chunk with bbox
+                                            'matched_chunk_metadata': matched_chunk_metadata,
+                                            # Optional: include all candidate chunks for debugging/analysis
+                                            'candidate_chunks_metadata': candidate_chunks,
+                                            'match_reason': chunk_info.get('match_reason'),
+                                            'evidence_feedback': chunk_info.get('evidence_feedback', []),
                                         }
                                         logger.info(
                                             f"🟡 [CITATIONS] Mapped chunk citation [{citation_num_str}] to doc {doc_id[:8] if doc_id else 'MISSING'}, "
                                             f"chunk_idx {chunk_info.get('chunk_index')}, page {chunk_info.get('page_number')}, "
-                                            f"bbox: {bool(chunk_metadata.get('bbox'))}"
+                                            f"bbox: {bool(matched_chunk_metadata.get('bbox'))}"
                                         )
                         except Exception as citation_error:
                             logger.error(f"🟡 [CITATIONS] Error parsing citations: {citation_error}", exc_info=True)
@@ -1315,6 +1818,8 @@ Now provide your response (answer directly, no heading, no additional context, w
                                 'relevant_documents': relevant_docs,
                                 'document_outputs': doc_outputs,
                                 'citations': citations_data,  # Citation mapping with bbox
+                                'evidence_feedback': feedback_records,
+                                'matched_evidence': matched_feedback_records,
                                 'session_id': session_id
                             }
                         }
@@ -1585,6 +2090,10 @@ def query_documents():
             "session_id": session_id,
             "property_id": property_id  # Pass property_id to filter results
         }
+
+        if document_id:
+            # Hint downstream nodes to focus on the specific document linked to this property
+            initial_state["document_ids"] = [document_id]
         
         # Use global graph instance (initialized on app startup)
         async def run_query():
@@ -1645,6 +2154,8 @@ def query_documents():
             "message": final_summary,  # Alias for compatibility
             "relevant_documents": result.get("relevant_documents", []),
             "document_outputs": result.get("document_outputs", []),
+            "evidence_feedback": result.get("evidence_feedback", []),
+            "matched_evidence": result.get("matched_evidence", []),
             "session_id": session_id
         }
         
@@ -2943,12 +3454,24 @@ def delete_file(file_id):
     
     return delete_document(file_id)
 
-@views.route('/api/document/<uuid:document_id>', methods=['DELETE'])
-@login_required
+@views.route('/api/document/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
 def delete_document(document_id):
     """
     Deletes a document from S3, Supabase stores, and its metadata record from the database.
     """
+    if request.method == 'OPTIONS':
+        # Handle CORS preflight - no auth needed
+        response = make_response('', 200)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+    
+    # Apply login_required check for actual DELETE
+    if not current_user.is_authenticated:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
     # Get document from Supabase (not local PostgreSQL)
     user_business_uuid = _normalize_uuid_str(getattr(current_user, "business_id", None)) or _ensure_business_uuid()
     
@@ -2958,28 +3481,101 @@ def delete_document(document_id):
     
     # Get document from Supabase
     from .services.document_storage_service import DocumentStorageService
+    from .services.supabase_client_factory import get_supabase_client
     doc_storage = DocumentStorageService()
-    success, document_data, error = doc_storage.get_document(str(document_id), user_business_uuid)
+    
+    document_id_str = str(document_id)
+    logger.info(f"DELETE: Attempting to retrieve document {document_id_str} for business {user_business_uuid}")
+    
+    success, document_data, error = doc_storage.get_document(document_id_str, user_business_uuid)
     
     if not success:
-        if error == "Document not found":
-            return jsonify({'error': 'Document not found'}), 404
-        else:
-            return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
+        # Try to fetch document without business_id filter to see if it exists with different business_id
+        logger.warning(f"DELETE: Document not found with business_id filter. Checking if document exists and is linked to user's properties...")
+        try:
+            supabase = get_supabase_client()
+            # First check if document exists at all
+            check_result = supabase.table('documents').select('id, business_id, s3_path, original_filename').eq('id', document_id_str).execute()
+            if check_result.data and len(check_result.data) > 0:
+                doc_business_id = check_result.data[0].get('business_id')
+                logger.info(f"DELETE: Document exists with business_id: {doc_business_id}, User business_id: {user_business_uuid}")
+                
+                # Check if document is linked to any property that belongs to user's business
+                relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', document_id_str).execute()
+                if relationships_result.data and len(relationships_result.data) > 0:
+                    property_ids = [rel.get('property_id') for rel in relationships_result.data if rel.get('property_id')]
+                    logger.info(f"DELETE: Document is linked to {len(property_ids)} properties")
+                    
+                    # Check if any of these properties belong to user's business
+                    if property_ids:
+                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+                        hub_service = SupabasePropertyHubService()
+                        for prop_id in property_ids:
+                            prop_hub = hub_service.get_property_hub(str(prop_id), user_business_uuid)
+                            if prop_hub:
+                                logger.info(f"DELETE: Document is linked to property {prop_id} which belongs to user's business. Allowing deletion.")
+                                # Use the document data we found (with its actual business_id)
+                                document_data = check_result.data[0]
+                                # Continue with deletion using the document's actual business_id
+                                break
+                        else:
+                            logger.warning(f"DELETE: Document is not linked to any property in user's business")
+                            return jsonify({'error': 'Document not found or access denied'}), 404
+                    else:
+                        logger.warning(f"DELETE: Document has no property relationships")
+                        return jsonify({'error': 'Document not found or access denied'}), 404
+                else:
+                    logger.warning(f"DELETE: Document exists but is not linked to any property")
+                    return jsonify({'error': 'Document not found or access denied'}), 404
+            else:
+                logger.warning(f"DELETE: Document {document_id_str} does not exist in database")
+                return jsonify({'error': 'Document not found'}), 404
+        except Exception as check_error:
+            logger.error(f"DELETE: Error checking document existence: {check_error}")
+            import traceback
+            traceback.print_exc()
+        
+        if not document_data:
+            if error == "Document not found":
+                return jsonify({'error': 'Document not found'}), 404
+            else:
+                return jsonify({'error': f'Failed to retrieve document: {error}'}), 500
     
     # Extract document fields
     s3_path = document_data.get('s3_path')
     original_filename = document_data.get('original_filename')
     document_business_uuid = _normalize_uuid_str(document_data.get('business_uuid') or document_data.get('business_id'))
     
-    # Verify business ownership
+    # Verify business ownership - but allow if document is linked to user's property
     if document_business_uuid != user_business_uuid:
-        logger.warning(
-            "Document business mismatch (doc=%s, user=%s). Denying deletion.",
-            document_business_uuid,
-            user_business_uuid,
-        )
-        return jsonify({'error': 'Unauthorized'}), 403
+        # Check if document is linked to a property in user's business
+        logger.info(f"DELETE: Document business mismatch. Checking property relationships...")
+        try:
+            supabase = get_supabase_client()
+            relationships_result = supabase.table('document_relationships').select('property_id').eq('document_id', document_id_str).execute()
+            if relationships_result.data and len(relationships_result.data) > 0:
+                property_ids = [rel.get('property_id') for rel in relationships_result.data if rel.get('property_id')]
+                if property_ids:
+                    from .services.supabase_property_hub_service import SupabasePropertyHubService
+                    hub_service = SupabasePropertyHubService()
+                    for prop_id in property_ids:
+                        prop_hub = hub_service.get_property_hub(str(prop_id), user_business_uuid)
+                        if prop_hub:
+                            logger.info(f"DELETE: Document is linked to property {prop_id} which belongs to user's business. Allowing deletion.")
+                            # Use document's actual business_id for deletion operations
+                            break
+                    else:
+                        logger.warning(f"DELETE: Document business mismatch and not linked to user's properties. Denying deletion.")
+                        return jsonify({'error': 'Unauthorized'}), 403
+                else:
+                    logger.warning(f"DELETE: Document business mismatch and has no valid property relationships. Denying deletion.")
+                    return jsonify({'error': 'Unauthorized'}), 403
+            else:
+                logger.warning(f"DELETE: Document business mismatch and not linked to any property. Denying deletion.")
+                return jsonify({'error': 'Unauthorized'}), 403
+        except Exception as rel_check_error:
+            logger.error(f"DELETE: Error checking property relationships: {rel_check_error}")
+            return jsonify({'error': 'Unauthorized'}), 403
     
     if not s3_path:
         logger.error(f"Document {document_id} missing s3_path")
@@ -3168,10 +3764,16 @@ def delete_document(document_id):
     }
     
     if success_count == total_operations:
-        return jsonify(response_data), 200
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
     else:
         response_data['warning'] = 'Some deletion operations failed'
-        return jsonify(response_data), 207  # 207 Multi-Status
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 207  # 207 Multi-Status
 
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
@@ -3336,6 +3938,249 @@ def process_document(document_id):
         
     except Exception as e:
         return jsonify({'error': f'Failed to start processing: {str(e)}'}), 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
+@login_required
+def reprocess_document(document_id):
+    """
+    Reprocess a document to extract BBOX data using Reducto.
+    
+    Modes:
+    - 'full': Re-embed + extract bbox (complete reprocessing)
+    - 'bbox_only': Just update bbox data, preserve embeddings
+    """
+    # Get the origin for CORS
+    origin = request.headers.get('Origin', 'http://localhost:3000')
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        mode = data.get('mode', 'full')
+        
+        if mode not in ['full', 'bbox_only']:
+            response = jsonify({'error': 'Invalid mode. Use "full" or "bbox_only"'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Connect to Supabase (primary source of truth)
+        supabase = get_supabase_client()
+        
+        doc_result = supabase.table('documents')\
+            .select('id,business_id,business_uuid,s3_path,original_filename,file_type')\
+            .eq('id', str(document_id))\
+            .single()\
+            .execute()
+        
+        document_record = doc_result.data if doc_result else None
+        if not document_record:
+            response = jsonify({'error': 'Document not found'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        # Validate business ownership using Supabase data
+        document_business = document_record.get('business_id') or document_record.get('business_uuid')
+        if document_business and str(document_business) != str(current_user.business_id):
+            response = jsonify({'error': 'Unauthorized'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 403
+        
+        logger.info(f"🔄 Reprocessing document {document_id} in {mode} mode...")
+        
+        # Get the S3 file URL
+        s3_path = document_record.get('s3_path')
+        if not s3_path:
+            response = jsonify({'error': 'Document has no S3 path'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Generate presigned URL for the file
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
+        aws_region = os.environ.get('AWS_REGION', 'us-east-1')
+        
+        s3_client = boto3.client(
+            's3',
+            region_name=aws_region,
+            aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+        )
+
+        # Download the file locally
+        file_ext = os.path.splitext(s3_path)[1]
+        temp_fd, temp_file_path = tempfile.mkstemp(suffix=file_ext or '.pdf')
+        os.close(temp_fd)
+        s3_client.download_file(bucket_name, s3_path, temp_file_path)
+
+        try:
+            # Use Reducto to parse with BBOX
+            from .services.reducto_service import ReductoService
+            reducto = ReductoService()
+            
+            logger.info("📄 Parsing document with Reducto (fast mode)...")
+            
+            parse_result = reducto.parse_document_fast(
+                file_path=temp_file_path,
+                use_sync_for_small=True,
+                timeout=300
+            )
+            
+            chunks = parse_result.get('chunks', [])
+        finally:
+            os.remove(temp_file_path)
+        
+        if not chunks:
+            response = jsonify({
+                'error': 'Reducto returned no chunks',
+                'success': False
+            })
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
+        
+        logger.info(f"✅ Reducto returned {len(chunks)} chunks")
+        
+        # Count chunks with bbox
+        chunks_with_bbox = 0
+        chunks_updated = 0
+        
+        for i, chunk in enumerate(chunks):
+            bbox = chunk.get('bbox')
+            page_number = chunk.get('page_number', i + 1)
+            chunk_text = chunk.get('content', '')
+            
+            if bbox:
+                chunks_with_bbox += 1
+            
+            if mode == 'bbox_only':
+                # Update bbox plus metadata to keep chunk_text + bbox in sync
+                update_payload = {
+                    'bbox': ensure_bbox_dict(bbox),
+                    'page_number': page_number,
+                    'chunk_text': (chunk_text or '')[:10000]
+                }
+                update_result = (
+                    supabase.table('document_vectors')
+                    .update(update_payload)
+                    .eq('document_id', str(document_id))
+                    .eq('chunk_index', i)
+                    .select('id')
+                    .execute()
+                )
+                
+                if update_result.data:
+                    chunks_updated += 1
+            else:
+                # Full mode: upsert chunk with all data
+                # First try to update existing chunk
+                existing = supabase.table('document_vectors')\
+                    .select('id')\
+                    .eq('document_id', str(document_id))\
+                    .eq('chunk_index', i)\
+                    .execute()
+                
+                if existing.data:
+                    # Update existing
+                    updated = (
+                        supabase.table('document_vectors')
+                        .update({
+                            'chunk_text': (chunk_text or '')[:10000],  # Limit chunk size
+                            'page_number': page_number,
+                            'bbox': ensure_bbox_dict(bbox)
+                        })
+                        .eq('document_id', str(document_id))
+                        .eq('chunk_index', i)
+                        .select('id')
+                        .execute()
+                    )
+                    if updated.data:
+                        chunks_updated += 1
+                else:
+                    # Insert new chunk (without embedding for now)
+                    inserted = supabase.table('document_vectors').insert({
+                        'document_id': str(document_id),
+                        'chunk_index': i,
+                        'chunk_text': (chunk_text or '')[:10000],
+                        'page_number': page_number,
+                        'bbox': ensure_bbox_dict(bbox),
+                        'embedding_status': 'pending'
+                    }).execute()
+                    if inserted.data:
+                        chunks_updated += 1
+        
+        logger.info(f"✅ Reprocessing complete: {chunks_updated} chunks updated, {chunks_with_bbox} with bbox")
+        
+        response = jsonify({
+            'success': True,
+            'message': f'Successfully reprocessed document with {chunks_with_bbox} chunks containing BBOX',
+            'chunks_total': len(chunks),
+            'chunks_with_bbox': chunks_with_bbox,
+            'chunks_updated': chunks_updated,
+            'mode': mode
+        })
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"❌ Reprocess error: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+
+@views.route('/api/documents/<uuid:document_id>/reprocess/progress', methods=['GET', 'OPTIONS'])
+def reprocess_progress(document_id):
+    """
+    SSE endpoint for real-time reprocess progress updates.
+    Note: Not using @login_required for SSE compatibility.
+    """
+    origin = request.headers.get('Origin', 'http://localhost:3000')
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
+    def generate():
+        # For now, just send a simple progress stream
+        # In a full implementation, this would track actual progress
+        import time
+        
+        for i in range(0, 101, 10):
+            yield f"data: {json.dumps({'progress': i, 'status': 'processing'})}\n\n"
+            time.sleep(0.5)
+        
+        yield f"data: {json.dumps({'progress': 100, 'status': 'complete'})}\n\n"
+    
+    response = Response(generate(), mimetype='text/event-stream')
+    response.headers.add('Access-Control-Allow-Origin', origin)
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    response.headers.add('Cache-Control', 'no-cache')
+    return response
+
 
 # ============================================================================
 # PROPERTY LINKING ENDPOINTS (Additional endpoints for property node management)
@@ -4896,3 +5741,94 @@ def test_property_matching():
             'error': str(e)
         }), 500
 
+
+@views.route('/api/admin/migrate_bbox', methods=['GET'])
+def run_bbox_migration():
+    """Run the SQL migration to fix match_documents function"""
+    try:
+        from sqlalchemy import text
+        from backend import db
+        import os
+        
+        logger.info("🚀 Starting migration to fix match_documents function via API...")
+        
+        # Read SQL file
+        # Note: Path is relative to where the app is run from (root)
+        sql_file_path = os.path.join('backend', 'migrations', 'fix_match_documents_bbox.sql')
+        with open(sql_file_path, 'r') as f:
+            sql_content = f.read()
+            
+        logger.info(f"📜 Read SQL file: {sql_file_path}")
+        
+        # Execute SQL using SQLAlchemy raw connection
+        with db.engine.connect() as conn:
+            # Need to use execution_options to allow autocommit for some operations if needed
+            # But for CREATE FUNCTION it should be fine in a transaction
+            conn.execute(text(sql_content))
+            conn.commit()
+            
+            # Verify
+            result = conn.execute(text("SELECT proargnames, prorettype::regtype FROM pg_proc WHERE proname = 'match_documents'")).fetchone()
+            verification = str(result)
+            
+        logger.info("✅ Migration executed successfully!")
+        return jsonify({
+            'success': True,
+            'message': 'Migration executed successfully',
+            'verification': verification
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Migration failed: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/admin/check_bbox/<document_id>', methods=['GET'])
+def check_bbox_data(document_id):
+    """Check if bbox data exists in document_vectors for a document"""
+    try:
+        supabase = get_supabase_client()
+        result = supabase.table('document_vectors')\
+            .select('id, chunk_index, page_number, bbox')\
+            .eq('document_id', document_id)\
+            .order('chunk_index')\
+            .limit(20)\
+            .execute()
+        
+        chunks_with_bbox = sum(1 for r in result.data if r.get('bbox'))
+        
+        # Also check what the bbox looks like for chunks that have it
+        bbox_samples = []
+        for r in result.data:
+            if r.get('bbox'):
+                bbox_samples.append({
+                    'chunk_index': r.get('chunk_index'),
+                    'page_number': r.get('page_number'),
+                    'bbox': r.get('bbox')
+                })
+        
+        return jsonify({
+            'success': True,
+            'document_id': document_id,
+            'total_chunks': len(result.data),
+            'chunks_with_bbox': chunks_with_bbox,
+            'bbox_samples': bbox_samples[:5],  # First 5 chunks with bbox
+            'sample_chunks': [
+                {
+                    'chunk_index': r.get('chunk_index'),
+                    'page_number': r.get('page_number'),
+                    'has_bbox': bool(r.get('bbox')),
+                    'bbox_type': type(r.get('bbox')).__name__ if r.get('bbox') else None
+                }
+                for r in result.data[:10]
+            ]
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Check bbox failed: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500

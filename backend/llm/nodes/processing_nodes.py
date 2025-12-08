@@ -104,6 +104,16 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             # NEW: Extract source chunks metadata from doc (preserved from clarify_relevant_docs)
             source_chunks_metadata = doc.get('source_chunks_metadata')
             
+            # BBOX DEBUG: Log source_chunks_metadata received from clarify_relevant_docs
+            if source_chunks_metadata:
+                logger.info(f"[BBOX DEBUG] process_one: doc {doc.get('doc_id', '')[:8]} has {len(source_chunks_metadata)} source chunks")
+                for idx, chunk in enumerate(source_chunks_metadata[:2]):
+                    has_bbox = bool(chunk.get('bbox'))
+                    bbox = chunk.get('bbox', {})
+                    logger.info(f"[BBOX DEBUG]   Chunk {idx}: has_bbox={has_bbox}, page={chunk.get('page_number')}, bbox={bbox}")
+            else:
+                logger.warning(f"[BBOX DEBUG] process_one: doc {doc.get('doc_id', '')[:8]} has NO source_chunks_metadata!")
+            
             result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
             
             # Add metadata from original doc (page numbers, classification, filename, address)

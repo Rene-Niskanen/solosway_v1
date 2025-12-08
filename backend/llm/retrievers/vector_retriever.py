@@ -2,15 +2,26 @@
 Vector similarity search retriever using Supabase pgvector.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Set
+import logging
+import re
+
 from backend.llm.types import RetrievedDocument
-from backend.llm.config import config 
+from backend.llm.config import config
 from langchain_openai import OpenAIEmbeddings
-import logging 
 
 from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+PRICE_QUERY_PATTERN = re.compile(
+    r'(?:£|\$|€)\s*\d|\b(?:price|value|valuation|market value|sale price|asking price|market rent)\b',
+    re.IGNORECASE,
+)
+PRICE_CHUNK_PATTERN = re.compile(
+    r'(?:£|\$|€)\s*\d[\d,\.]*(?:\s*(?:million|bn|billion|m))?|\bmarket value\b|\bopinion of value\b',
+    re.IGNORECASE,
+)
 
 class VectorDocumentRetriever:
     """Query supabase pgvector using semantic similarity search."""
@@ -21,6 +32,9 @@ class VectorDocumentRetriever:
             model=config.openai_embedding_model,
         )
         self.supabase = get_supabase_client()
+
+    def _is_price_query(self, query: str) -> bool:
+        return bool(PRICE_QUERY_PATTERN.search(query))
 
     def _get_adaptive_threshold(self, query: str) -> float:
         """
@@ -35,22 +49,25 @@ class VectorDocumentRetriever:
         Returns:
             Adaptive similarity threshold
         """
-        import re
-        
         # Check for specific indicators that suggest high-precision query
         has_numbers = bool(re.search(r'\d+', query))
-        has_price = bool(re.search(r'[\$£€]\s*\d+|price|cost|value', query, re.IGNORECASE))
+        has_price = self._is_price_query(query)
         has_address = bool(re.search(r'\b(?:road|street|avenue|lane|drive|way|rd|st|ave)\b', query, re.IGNORECASE))
         is_short_query = len(query.split()) <= 3
         
-        # Higher threshold for specific queries (need precision)
-        if (has_numbers and has_price) or has_address:
-            return 0.45  # Very specific query, need high similarity
-        elif has_numbers or is_short_query:
+        # Price-focused questions benefit from lower thresholds to improve recall
+        if has_price:
+            if has_numbers:
+                return max(config.min_similarity_threshold, 0.28)
+            return max(config.min_similarity_threshold, 0.32)
+        
+        if has_address:
+            return 0.45  # Very specific query, need high precision
+        if has_numbers or is_short_query:
             return 0.40  # Moderately specific
-        else:
-            # Lower threshold for semantic/descriptive queries (need recall)
-            return config.similarity_threshold  # Default (0.35)
+        
+        # Lower threshold for semantic/descriptive queries (need recall)
+        return config.similarity_threshold  # Default (0.35)
     
     def query_documents(
         self,
@@ -59,7 +76,8 @@ class VectorDocumentRetriever:
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
         address_hash: Optional[str] = None,
-        business_id: Optional[str] = None
+        business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
     ) -> List[RetrievedDocument]:
         """
         Search for documents using semantic similarity with adaptive thresholding.
@@ -79,25 +97,42 @@ class VectorDocumentRetriever:
             top_k = config.vector_top_k
 
         try:
+            document_ids_set: Optional[Set[str]] = set(document_ids) if document_ids else None
             # step one: embed the query 
             query_embedding = self.embeddings.embed_query(user_query)
+            price_query = self._is_price_query(user_query)
+            if price_query and top_k < config.vector_top_k * 2:
+                top_k = config.vector_top_k * 2
 
-            def _fetch(match_threshold: float):
+            def _fetch(match_threshold: float, property_filter: Optional[str] = property_id):
                 payload = {
                     'query_embedding': query_embedding,
                     'match_count': top_k,
                     'match_threshold': match_threshold,
-                    'filter_property_id': property_id,
                     'filter_classification_type': classification_type,
                     'filter_address_hash': address_hash
                 }
+
+                if property_filter:
+                    payload['filter_property_id'] = property_filter
                 # Add business_id if provided (now only UUID version exists after migration)
                 if business_id:
                     payload['filter_business_id'] = str(business_id)
                 
                 try:
                     response = self.supabase.rpc('match_documents', payload).execute()
-                    return response.data or []
+                    data = response.data or []
+                    # DEBUG: Log bbox info from RPC response
+                    if data:
+                        for i, row in enumerate(data[:3]):
+                            bbox_val = row.get('bbox')
+                            logger.info(f"[BBOX RPC DEBUG] Row {i}: doc_id={row.get('document_id', '')[:8]}, chunk_idx={row.get('chunk_index')}, has_bbox={bool(bbox_val)}, bbox_type={type(bbox_val).__name__}, bbox_sample={str(bbox_val)[:100] if bbox_val else 'None'}")
+                    if document_ids_set and not property_filter:
+                        data = [
+                            row for row in data
+                            if row.get('document_id') in document_ids_set
+                        ]
+                    return data
                 except Exception as rpc_error:
                     # Handle function overloading ambiguity
                     error_msg = str(rpc_error)
@@ -139,12 +174,32 @@ class VectorDocumentRetriever:
                 )
                 rows = _fetch(config.min_similarity_threshold)
 
+            # If property filter excluded the known document, retry without the filter
+            if (
+                not rows
+                and property_id
+                and document_ids_set
+            ):
+                logger.info(
+                    "Vector search returned 0 rows for property_id %s; retrying without property filter",
+                    property_id[:8],
+                )
+                rows = _fetch(primary_threshold, property_filter=None)
+                if not rows and primary_threshold > config.min_similarity_threshold:
+                    rows = _fetch(config.min_similarity_threshold, property_filter=None)
+
             # step 3: convert to typed results with document-level context prepending
             results: List[RetrievedDocument] = []
             
             # Cache document summaries to avoid repeated queries
             document_summaries_cache = {}
             
+            if price_query and rows:
+                for row in rows:
+                    chunk_text = row.get("chunk_text", "")
+                    if PRICE_CHUNK_PATTERN.search(chunk_text):
+                        row['similarity_score'] = (row.get('similarity_score') or 0.0) + 0.15
+
             for row in rows:
                 doc_id = row.get("document_id")
                 chunk_text = row.get("chunk_text", "")
@@ -235,6 +290,19 @@ class VectorDocumentRetriever:
                 # Combine all parts
                 full_content = "\n\n".join(content_parts)
                 
+                # Parse bbox from JSON string if needed (stored as JSON string in database)
+                raw_bbox = row.get("bbox")
+                parsed_bbox = None
+                if raw_bbox:
+                    if isinstance(raw_bbox, dict):
+                        parsed_bbox = raw_bbox
+                    elif isinstance(raw_bbox, str):
+                        try:
+                            import json
+                            parsed_bbox = json.loads(raw_bbox)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed_bbox = None
+                
                 results.append(
                     RetrievedDocument(
                         vector_id=row["id"],
@@ -244,7 +312,7 @@ class VectorDocumentRetriever:
                         classification_type=row.get("classification_type", ""),
                         chunk_index=row.get("chunk_index", 0),
                         page_number=row.get("page_number", 0),
-                        bbox=row.get("bbox"),
+                        bbox=parsed_bbox,  # Now parsed from JSON string
                         similarity_score=float(row.get("similarity", 0.0)),
                         source="vector",
                         address_hash=row.get("address_hash"),

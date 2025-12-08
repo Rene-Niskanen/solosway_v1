@@ -278,6 +278,124 @@ const DocumentPreviewOverlay: React.FC<{
   );
 };
 
+// Citation link component - renders clickable citation buttons [1], [2], etc.
+interface CitationChunkData {
+  doc_id?: string;
+  content?: string;
+  chunk_index?: number;
+  page_number?: number;
+  match_reason?: string;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+  vector_id?: string;
+  similarity?: number;
+}
+
+interface CitationDataType {
+  doc_id: string;
+  original_filename: string;
+  property_address: string;
+  page_range: string;
+  classification_type: string;
+  chunk_index?: number;
+  page_number?: number;
+  source_chunks_metadata?: CitationChunkData[];
+  candidate_chunks_metadata?: CitationChunkData[];
+  matched_chunk_metadata?: CitationChunkData;
+  chunk_metadata?: CitationChunkData;
+  match_reason?: string;
+}
+
+const CitationLink: React.FC<{
+  citationNumber: string;
+  citationData: CitationDataType;
+  onClick: (data: CitationDataType) => void;
+}> = ({ citationNumber, citationData, onClick }) => (
+  <button
+    onClick={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick(citationData);
+    }}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginLeft: '1px',
+      marginRight: '1px',
+      paddingLeft: '4px',
+      paddingRight: '4px',
+      paddingTop: '1px',
+      paddingBottom: '1px',
+      fontSize: '11px',
+      fontWeight: 500,
+      color: '#2563EB',
+      backgroundColor: '#EFF6FF',
+      borderRadius: '4px',
+      border: 'none',
+      cursor: 'pointer',
+      transition: 'all 0.15s ease',
+      verticalAlign: 'baseline',
+      lineHeight: '1.2'
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.backgroundColor = '#DBEAFE';
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.backgroundColor = '#EFF6FF';
+    }}
+    title={citationData.original_filename}
+  >
+    [{citationNumber}]
+  </button>
+);
+
+// Helper function to render text with clickable citation links
+const renderTextWithCitations = (
+  text: string, 
+  citations: Record<string, CitationDataType> | undefined,
+  onCitationClick: (data: CitationDataType) => void
+): React.ReactNode => {
+  // Debug: Log when this function is called
+  console.log('🔗 renderTextWithCitations called:', { 
+    textLength: text?.length, 
+    hasCitations: !!citations,
+    citationKeys: citations ? Object.keys(citations) : [],
+    textPreview: text?.substring(0, 100)
+  });
+  
+  if (!citations || Object.keys(citations).length === 0) {
+    return text;
+  }
+  
+  // Split text by citation pattern [N]
+  const parts = text.split(/(\[\d+\])/g);
+  
+  return parts.map((part, idx) => {
+    const match = part.match(/\[(\d+)\]/);
+    if (match) {
+      const citNum = match[1];
+      const citData = citations[citNum];
+      if (citData) {
+        return (
+          <CitationLink 
+            key={`cit-${idx}-${citNum}`} 
+            citationNumber={citNum} 
+            citationData={citData} 
+            onClick={onCitationClick} 
+          />
+        );
+      }
+    }
+    return part;
+  });
+};
+
 // Component for displaying property attachment in query bubble
 const QueryPropertyAttachment: React.FC<{ 
   attachment: PropertyAttachmentData;
@@ -1047,20 +1165,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     property_address: string;
     page_range: string;
     classification_type: string;
-    source_chunks_metadata: Array<{
-      content: string;
-      chunk_index: number;
+    chunk_index?: number;
       page_number?: number;
-      bbox?: {
-        left: number;
-        top: number;
-        width: number;
-        height: number;
-        page: number;
-      };
-      vector_id?: string;
-      similarity?: number;
-    }>;
+    source_chunks_metadata?: CitationChunkData[];
+    candidate_chunks_metadata?: CitationChunkData[];
+    matched_chunk_metadata?: CitationChunkData;
+    chunk_metadata?: CitationChunkData;
+    match_reason?: string;
   }
 
   interface ChatMessage {
@@ -1413,6 +1524,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleCitationClick = React.useCallback(async (citationData: CitationData) => {
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      
+      console.groupCollapsed('📚 [CITATION] handleCitationClick');
+      console.log('Raw citation payload:', citationData);
+      console.log('Matched chunk metadata:', citationData.matched_chunk_metadata);
+      console.groupEnd();
+
       const docId = citationData.doc_id;
       
       if (!docId) {
@@ -1426,6 +1543,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
 
       console.log('📎 Opening document from citation:', citationData.original_filename, 'doc_id:', docId);
+      console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
+      console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
 
       // Fetch document using document_id
       const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
@@ -1457,29 +1576,68 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         size: blob.size
       };
 
-      // Extract highlight metadata from citation (first chunk with bbox)
-      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
-      
-      if (citationData.source_chunks_metadata && citationData.source_chunks_metadata.length > 0) {
-        // Find first chunk with valid bbox
-        const chunkWithBbox = citationData.source_chunks_metadata.find(
-          (chunk) => chunk.bbox && chunk.bbox.page && chunk.bbox.left !== undefined
+      // Extract highlight metadata using matched evidence feedback first, then fallbacks
+      const hasValidBbox = (chunk?: CitationChunkData | null): chunk is CitationChunkData & { bbox: NonNullable<CitationChunkData['bbox']> } =>
+        !!(chunk && chunk.bbox && typeof chunk.bbox.left === 'number' && typeof chunk.bbox.top === 'number' && typeof chunk.bbox.width === 'number' && typeof chunk.bbox.height === 'number');
+
+      const candidateChunks = citationData.candidate_chunks_metadata?.length
+        ? [...citationData.candidate_chunks_metadata]
+        : [];
+      const sourceChunks = citationData.source_chunks_metadata?.length
+        ? [...citationData.source_chunks_metadata]
+        : [];
+
+      const priorityList: Array<{ chunk?: CitationChunkData; reason: string }> = [
+        { chunk: citationData.matched_chunk_metadata, reason: 'matched_chunk_metadata' },
+        { chunk: citationData.chunk_metadata, reason: 'chunk_metadata' },
+        { chunk: candidateChunks.find((chunk) => hasValidBbox(chunk)), reason: 'candidate_chunks_metadata' },
+        { chunk: sourceChunks.find((chunk) => hasValidBbox(chunk)), reason: 'source_chunks_metadata' },
+      ];
+
+      const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
+      const highlightChunk = highlightSource?.chunk;
+      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string; chunks?: CitationChunkData[] } | undefined;
+
+      if (highlightChunk && highlightChunk.bbox) {
+        const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page_number || 1;
+        let overlayChunks: CitationChunkData[] = candidateChunks.length ? candidateChunks : sourceChunks;
+
+        // Make sure the highlight chunk is part of the overlay set for debugging overlays
+        const chunkAlreadyIncluded = overlayChunks.some(
+          (chunk) =>
+            chunk.chunk_index === highlightChunk.chunk_index &&
+            chunk.page_number === highlightChunk.page_number &&
+            chunk.bbox?.left === highlightChunk.bbox?.left
         );
-        
-        if (chunkWithBbox && chunkWithBbox.bbox) {
+        if (!chunkAlreadyIncluded) {
+          overlayChunks = [...overlayChunks, highlightChunk];
+        }
+
           highlightData = {
             fileId: docId,
             bbox: {
-              left: chunkWithBbox.bbox.left,
-              top: chunkWithBbox.bbox.top,
-              width: chunkWithBbox.bbox.width,
-              height: chunkWithBbox.bbox.height,
-              page: chunkWithBbox.bbox.page || chunkWithBbox.page_number || 1
-            }
-          };
-          console.log('📎 Highlight data extracted:', highlightData);
-        }
+            left: highlightChunk.bbox.left,
+            top: highlightChunk.bbox.top,
+            width: highlightChunk.bbox.width,
+            height: highlightChunk.bbox.height,
+            page: highlightPage
+          },
+          chunks: overlayChunks
+        };
+
+        console.log('🎯 [CITATION] Highlight chunk selected', {
+          reason: highlightSource?.reason,
+          chunk_index: highlightChunk.chunk_index,
+          page_number: highlightChunk.page_number,
+          bbox: highlightChunk.bbox,
+          candidate_count: candidateChunks.length,
+          source_count: sourceChunks.length
+        });
+      } else {
+        console.warn('⚠️ [CITATION] Unable to determine highlight chunk from feedback. Falling back to no highlight.');
       }
+
+      console.log('📚 [CITATION] Highlight payload prepared for preview:', highlightData);
 
       // Open document in preview modal with highlight
       addPreviewFile(fileData, highlightData);
@@ -1496,7 +1654,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [addPreviewFile, toast]);
   
   // Handle document preview click from reasoning step cards
-  const handleDocumentPreviewClick = React.useCallback((metadata: {
+  // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
+  const handleDocumentPreviewClick = React.useCallback(async (metadata: {
     doc_id: string;
     original_filename: string;
     classification_type: string;
@@ -1506,8 +1665,57 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     download_url?: string;
   }) => {
     console.log('📄 Opening document preview from reasoning step:', metadata.original_filename);
-    setPreviewDocument(metadata);
-  }, []);
+    
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      let downloadUrl: string;
+      
+      // Determine download URL from available metadata
+      if (metadata.download_url) {
+        downloadUrl = metadata.download_url.startsWith('http') 
+          ? metadata.download_url 
+          : `${backendUrl}${metadata.download_url}`;
+      } else if (metadata.s3_path) {
+        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(metadata.s3_path)}`;
+      } else {
+        downloadUrl = `${backendUrl}/api/files/download?document_id=${metadata.doc_id}`;
+      }
+      
+      // Fetch the document
+      const response = await fetch(downloadUrl, { credentials: 'include' });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch document: ${response.status}`);
+      }
+      
+      const blob = await response.blob();
+      
+      // Create a File object from the blob
+      const file = new File([blob], metadata.original_filename, { 
+        type: blob.type || 'application/pdf'
+      });
+      
+      // Convert to FileAttachmentData format for DocumentPreviewModal
+      const fileData: FileAttachmentData = {
+        id: metadata.doc_id,
+        file: file,
+        name: metadata.original_filename,
+        type: blob.type || 'application/pdf',
+        size: blob.size
+      };
+      
+      // Use shared preview context to add file (same as PropertyDetailsPanel)
+      addPreviewFile(fileData);
+      
+    } catch (error) {
+      console.error('❌ Error opening document from reasoning step:', error);
+      toast({
+        title: "Error opening document",
+        description: "Failed to load the document preview. Please try again.",
+        variant: "destructive",
+      });
+    }
+  }, [addPreviewFile, toast]);
   
   // Initialize textarea height on mount
   React.useEffect(() => {
@@ -2226,8 +2434,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
-                citations: data.citations ? Object.keys(data.citations).length : 0
+                citationCount: data.citations ? Object.keys(data.citations).length : 0,
+                citationKeys: data.citations ? Object.keys(data.citations) : []
               });
+              // Log full citations with source_chunks_metadata for bbox debugging
+              if (data.citations) {
+                Object.entries(data.citations).forEach(([key, citData]) => {
+                  console.log(`📍 Citation [${key}]:`, {
+                    doc_id: (citData as any).doc_id,
+                    filename: (citData as any).original_filename,
+                    source_chunks_count: (citData as any).source_chunks_metadata?.length,
+                    source_chunks_metadata: (citData as any).source_chunks_metadata
+                  });
+                });
+              }
               
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -2419,6 +2639,132 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   };
   
   const hasContent = inputValue.trim().length > 0;
+  
+  // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
+  // This fixes "Rendered more hooks than during the previous render" error
+  const renderedMessages = useMemo(() => {
+    const validMessages = (Array.isArray(chatMessages) ? chatMessages : [])
+      .map((message, idx) => ({ message, idx }))
+      .filter(({ message }) => message && typeof message === 'object');
+    
+    if (validMessages.length === 0) return [];
+    
+    return validMessages.map(({ message, idx }) => {
+      const finalKey = message.id || `msg-${idx}`;
+      const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
+      
+      if (message.type === 'query') {
+        return (
+          <div key={finalKey} style={{
+            alignSelf: 'flex-start', maxWidth: '85%', width: 'fit-content',
+            marginTop: '8px', marginLeft: isExpanded ? '0' : '12px',
+            display: 'flex', flexDirection: 'column', gap: '6px'
+          }}>
+            {message.selectedDocumentIds?.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
+                <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
+                <span style={{ fontWeight: 400 }}>
+                  {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
+                    ? message.selectedDocumentNames[0]
+                    : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
+                </span>
+              </div>
+            )}
+            <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: '1px solid rgba(0, 0, 0, 0.08)', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', wordWrap: 'break-word', display: 'inline-block', maxWidth: '100%' }}>
+              {message.attachments?.length > 0 && (
+                <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {message.attachments.map((attachment, i) => (
+                    <QueryAttachment key={attachment.id || attachment.name || `att-${i}`} attachment={attachment} />
+                  ))}
+                </div>
+              )}
+              {message.propertyAttachments?.length > 0 && (
+                <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {message.propertyAttachments.map((prop, i) => (
+                    <QueryPropertyAttachment 
+                      key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
+                      attachment={prop}
+                      onOpenProperty={(att) => onOpenProperty?.(att.address, att.property?.latitude && att.property?.longitude ? { lat: att.property.latitude, lng: att.property.longitude } : undefined, att.property?.id || att.propertyId)}
+                    />
+                  ))}
+                </div>
+              )}
+              {message.text && (
+                <div style={{ color: '#0D0D0D', fontSize: '13px', lineHeight: '19px', margin: 0, padding: 0, textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box' }}>
+                  <ReactMarkdown components={{
+                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
+                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
+                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
+                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
+                    li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
+                    strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                    em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                  }}>{message.text}</ReactMarkdown>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      
+      // Response message
+      return (
+        <div key={finalKey} style={{ width: '100%', padding: '0', margin: '0', marginTop: '8px', paddingLeft: isExpanded ? '0' : '12px', paddingRight: isExpanded ? '0' : '20px', wordWrap: 'break-word' }}>
+          {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
+          )}
+          {message.isLoading && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px 0', position: 'relative', width: '28px', height: '28px', perspective: '150px', perspectiveOrigin: 'center center', overflow: 'visible' }}>
+              <div style={{ position: 'absolute', width: '28px', height: '28px', top: '50%', left: '50%', marginTop: '-14px', marginLeft: '-14px', animation: 'rotateAtom 0.65s linear infinite', transformOrigin: 'center center', transformStyle: 'preserve-3d', overflow: 'visible' }}>
+                <div style={{ position: 'absolute', width: '16px', height: '16px', top: '50%', left: '50%', marginTop: '-8px', marginLeft: '-8px', borderRadius: '50%', border: '1px solid rgba(212, 175, 55, 0.5)', borderTopColor: 'rgba(212, 175, 55, 0.9)', borderRightColor: 'rgba(212, 175, 55, 0.7)', boxShadow: '0 0 6px rgba(212, 175, 55, 0.4), 0 0 3px rgba(212, 175, 55, 0.2)', animation: 'rotateRing 1.5s linear infinite', transformOrigin: 'center center', transformStyle: 'preserve-3d', willChange: 'transform', backfaceVisibility: 'visible', WebkitBackfaceVisibility: 'visible' }} />
+                <Globe3D />
+              </div>
+            </div>
+          )}
+          {message.text && (
+            <div style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}>
+              <ReactMarkdown components={{
+                p: ({ children }) => {
+                  // Process children to find and replace citation patterns [1], [2], etc.
+                  const processedChildren = React.Children.map(children, child => {
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
+                    return child;
+                  });
+                  return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
+                },
+                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                h2: () => null, h3: () => null,
+                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+                li: ({ children }) => {
+                  // Also process citations in list items
+                  const processedChildren = React.Children.map(children, child => {
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
+                    return child;
+                  });
+                  return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
+                },
+                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+              }}>{message.text}</ReactMarkdown>
+            </div>
+          )}
+        </div>
+      );
+    }).filter(Boolean);
+  }, [chatMessages, isExpanded, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty]);
+
   return (
     <AnimatePresence>
       {isVisible && (
@@ -2530,8 +2876,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         showReasoningTrace ? 'bg-emerald-500' : 'bg-slate-300'
                       }`}
                     >
-                      <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
-                        showReasoningTrace ? 'translate-x-3.5' : 'translate-x-0.5'
+                      <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                        showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
                       }`} />
                     </button>
                   </div>
@@ -2581,604 +2927,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             >
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
                 <AnimatePresence>
-                  {useMemo(() => {
-                    // DEBUG: Log the entire chatMessages array
-                    console.log('🔍 [DEBUG] chatMessages array:', {
-                      length: chatMessages?.length || 0,
-                      isArray: Array.isArray(chatMessages),
-                      messages: chatMessages
-                    });
-                    
-                    const validMessages = (Array.isArray(chatMessages) ? chatMessages : [])
-                      .map((message, idx) => ({ message, idx }))
-                      .filter(({ message, idx }) => {
-                        if (!message || typeof message !== 'object') {
-                          console.warn('⚠️ Filtering out invalid message at index', idx);
-                          return false;
-                        }
-                        // Pre-validate key generation to filter out messages that would produce empty keys
-                        const testKey = generateAnimatePresenceKey(
-                          'SideChatPanel',
-                          idx,
-                          message.id,
-                          message.type || 'message'
-                        );
-                        if (!testKey || typeof testKey !== 'string' || testKey.trim().length === 0 || testKey === '') {
-                          console.error('❌ CRITICAL: Would generate empty key!', { idx, message, messageId: message.id, testKey });
-                          return false;
-                        }
-                        return true;
-                      });
-                    
-                    console.log('🔍 [DEBUG] Valid messages after filter:', {
-                      count: validMessages.length,
-                      messages: validMessages.map(({ message, idx }) => ({
-                        idx,
-                        id: message.id,
-                        type: message.type,
-                        hasId: !!message.id
-                      }))
-                    });
-                    
-                    // CRITICAL: If no valid messages, return empty array (not null or undefined)
-                    if (validMessages.length === 0) {
-                      console.log('🔍 [DEBUG] No valid messages to render');
-                      return [];
-                    }
-                    
-                    return validMessages.map(({ message, idx }) => {
-                      // CRITICAL: Validate message.id before using it - empty string causes empty keys
-                      // If message.id is empty string, treat it as missing and use index
-                      const messageIdForKey = (message.id && typeof message.id === 'string' && message.id.trim().length > 0)
-                        ? message.id
-                        : (message.id && typeof message.id === 'number')
-                          ? message.id
-                          : null; // Use null so keyGenerator uses index fallback
-                      
-                      // Use centralized key generation utility - guarantees uniqueness
-                      const messageKey = generateAnimatePresenceKey(
-                        'SideChatPanel',
-                        idx,
-                        messageIdForKey,
-                        message.type || 'message'
-                      );
-                      
-                      // CRITICAL: Double-check key is valid before proceeding
-                      if (!messageKey || typeof messageKey !== 'string' || messageKey.trim().length === 0) {
-                        console.error('❌ FATAL: messageKey is invalid after generation!', {
-                          idx,
-                          message,
-                          messageId: message.id,
-                          messageIdForKey,
-                          messageType: message.type,
-                          generatedKey: messageKey,
-                          keyType: typeof messageKey
-                        });
-                        // This should never happen, but if it does, skip this message
-                        return null;
-                      }
-                      
-                      // Check if this is a restored message (existed when panel was opened)
-                      // For restored messages, don't animate - they should appear instantly
-                      const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
-                      const shouldAnimate = !isRestored;
-                    
-                    // CRITICAL: Final safety check - ensure key is never empty
-                    // Use stable fallback based on index if messageKey is somehow invalid
-                    let finalKey = messageKey && typeof messageKey === 'string' && messageKey.trim().length > 0
-                      ? messageKey.trim()
-                      : `emergency-msg-key-${idx}-${messageIdForKey || 'no-id'}`;
-                    
-                    // ABSOLUTE FINAL CHECK - if somehow finalKey is still empty, use index
-                    if (!finalKey || finalKey.length === 0 || finalKey.trim().length === 0) {
-                      console.error('❌ CRITICAL: finalKey is still empty after all checks!', {
-                        idx,
-                        message,
-                        messageKey,
-                        messageIdForKey,
-                        finalKey
-                      });
-                      finalKey = `fallback-msg-key-${idx}`;
-                    }
-                      
-                      // Log the key being used
-                      console.log('🔍 [DEBUG] Rendering message with key:', finalKey, 'idx:', idx, 'messageId:', message.id);
-                    
-                    return message.type === 'query' ? (
-                      // Query message container - ChatGPT style with attachments above
-                      <div
-                        key={finalKey}
-                        style={{
-                          alignSelf: 'flex-start',
-                          maxWidth: '85%',
-                          width: 'fit-content',
-                          marginTop: '8px',
-                          marginLeft: isExpanded ? '0' : '12px', // Align with chat bar when expanded
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '6px'
-                        }}
-                      >
-                        {/* Display selected documents indicator above bubble (ChatGPT style) */}
-                        {message.selectedDocumentIds && message.selectedDocumentIds.length > 0 && (
-                          <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '6px',
-                            padding: '4px 8px',
-                            backgroundColor: 'transparent',
-                            borderRadius: '6px',
-                            fontSize: '11px',
-                            color: '#6B7280',
-                            marginBottom: '2px'
-                          }}>
-                            <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
-                            <span style={{ fontWeight: 400 }}>
-                              {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames && message.selectedDocumentNames.length > 0
-                                ? message.selectedDocumentNames[0]
-                                : `${message.selectedDocumentIds.length} ${message.selectedDocumentIds.length === 1 ? 'document' : 'documents'} selected`}
-                            </span>
-                          </div>
-                        )}
-                        
-                        {/* Query bubble */}
-                        <div
-                          style={{
-                            backgroundColor: '#F5F5F5', // Light grey background
-                            borderRadius: '8px',
-                            padding: '4px 10px', // Tighter horizontal padding
-                            border: '1px solid rgba(0, 0, 0, 0.08)', // Subtle border
-                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', // Very subtle shadow
-                            width: 'fit-content', // Fit container tightly around content
-                            wordWrap: 'break-word',
-                            display: 'inline-block', // Ensure container fits content
-                            maxWidth: '100%' // Prevent overflow
-                          }}
-                        >
-                          {/* Display file attachments if any */}
-                          {message.attachments && message.attachments.length > 0 && (
-                            <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                              {message.attachments.map((attachment, attachmentIdx) => (
-                                <QueryAttachment 
-                                  key={generateAnimatePresenceKey(
-                                    'QueryAttachment',
-                                    attachmentIdx,
-                                    attachment.id || attachment.name,
-                                    'attachment'
-                                  )} 
-                                  attachment={attachment} 
-                                />
-                              ))}
-                            </div>
-                          )}
-                          
-                          {/* Display property attachments if any */}
-                          {message.propertyAttachments && message.propertyAttachments.length > 0 ? (
-                              <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                {message.propertyAttachments.map((property, propertyIdx) => {
-                                    const primaryId = property.id ?? property.property?.id;
-                                    const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
-                                    return (
-                                    <QueryPropertyAttachment 
-                                      key={generateAnimatePresenceKey(
-                                        'QueryPropertyAttachment',
-                                        propertyIdx,
-                                        primaryKey || property.address,
-                                        'property'
-                                      )} 
-                                      attachment={property}
-                                      onOpenProperty={(attachment) => {
-                                        console.log('🔍 QueryPropertyAttachment onOpenProperty called:', attachment);
-                                        if (onOpenProperty) {
-                                          const property = attachment.property;
-                                          console.log('📋 Property data:', property);
-                                          const coordinates = property.latitude && property.longitude
-                                            ? { lat: property.latitude, lng: property.longitude }
-                                            : undefined;
-                                          const propertyId = property.id || attachment.propertyId;
-                                          console.log('📍 Coordinates:', coordinates, 'PropertyId:', propertyId);
-                                          onOpenProperty(attachment.address, coordinates, propertyId);
-                                        } else {
-                                          console.warn('⚠️ SideChatPanel onOpenProperty prop not provided');
-                                        }
-                                      }}
-                                    />
-                                    );
-                                  })}
-                              </div>
-                            ) : null}
-                          
-                          {/* Display query text */}
-                          {message.text && (
-                            <div style={{
-                              color: '#0D0D0D',
-                              fontSize: '13px',
-                              lineHeight: '19px',
-                              margin: 0,
-                              padding: 0,
-                              textAlign: 'left',
-                              fontFamily: 'system-ui, -apple-system, sans-serif',
-                              width: 'fit-content',
-                              maxWidth: '100%',
-                              boxSizing: 'border-box'
-                            }}>
-                              <ReactMarkdown
-                              components={{
-                                p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                                h2: () => null, // Remove h2 titles from query responses
-                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                table: ({ children }) => (
-                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                      {children}
-                                    </table>
-                                  </div>
-                                ),
-                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                tbody: ({ children }) => <tbody>{children}</tbody>,
-                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                              }}
-                            >
-                              {message.text}
-                            </ReactMarkdown>
-                          </div>
-                        )}
-                        </div>
-                      </div>
-                    ) : (
-                      // Response message - full width, no bubble (Cursor AI style)
-                      <div
-                        key={finalKey}
-                        style={{
-                          width: '100%',
-                          padding: '0',
-                          margin: '0',
-                          marginTop: '8px',
-                          paddingLeft: isExpanded ? '0' : '20px', // Align with chat bar when expanded
-                          paddingRight: isExpanded ? '0' : '20px', // Align with chat bar when expanded
-                          wordWrap: 'break-word'
-                        }}
-                      >
-                        {/* Display reasoning steps based on toggle setting */}
-                        {/* ON: Steps visible during loading AND after response (static, no animation) */}
-                        {/* OFF: Steps visible only during loading, hidden after response completes */}
-                        {/* ReasoningSteps - conditionally rendered based on toggle */}
-                        {/* ReasoningSteps - only render if conditions are met, otherwise render nothing (not null) */}
-                        {(message.reasoningSteps && message.reasoningSteps.length > 0) && 
-                         (showReasoningTrace || message.isLoading) && (
-                            <ReasoningSteps 
-                              key={generateConditionalKey(
-                                'ReasoningSteps',
-                                finalKey,
-                                message.isLoading ? 'loading' : 'complete'
-                              )}
-                              steps={message.reasoningSteps || []}
-                              isLoading={message.isLoading}
-                              onDocumentClick={handleDocumentPreviewClick}
-                            />
-                          )}
-                        
-                        {/* Display loading state for responses - Globe with rotating ring (atom-like) */}
-                        {message.isLoading && (
-                          <div 
-                            key={generateConditionalKey('LoadingIndicator', finalKey, 'loading')}
-                            style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            padding: '4px 0',
-                            position: 'relative',
-                            width: '28px',
-                            height: '28px',
-                            perspective: '150px',
-                            perspectiveOrigin: 'center center',
-                            overflow: 'visible'
-                          }}>
-                            {/* Atom container - rotates globe and ring together */}
-                            <div style={{
-                              position: 'absolute',
-                              width: '28px',
-                              height: '28px',
-                              top: '50%',
-                              left: '50%',
-                              marginTop: '-14px',
-                              marginLeft: '-14px',
-                              animation: 'rotateAtom 0.65s linear infinite',
-                              transformOrigin: 'center center',
-                              transformStyle: 'preserve-3d',
-                              overflow: 'visible'
-                            }}>
-                              {/* Tilted ring - diagonal spiral */}
-                              <div style={{
-                                position: 'absolute',
-                                width: '16px',
-                                height: '16px',
-                                top: '50%',
-                                left: '50%',
-                                marginTop: '-8px',
-                                marginLeft: '-8px',
-                                borderRadius: '50%',
-                                border: '1px solid rgba(212, 175, 55, 0.5)',
-                                borderTopColor: 'rgba(212, 175, 55, 0.9)',
-                                borderRightColor: 'rgba(212, 175, 55, 0.7)',
-                                boxShadow: '0 0 6px rgba(212, 175, 55, 0.4), 0 0 3px rgba(212, 175, 55, 0.2)',
-                                animation: 'rotateRing 1.5s linear infinite',
-                                transformOrigin: 'center center',
-                                transformStyle: 'preserve-3d',
-                                willChange: 'transform',
-                                backfaceVisibility: 'visible',
-                                WebkitBackfaceVisibility: 'visible'
-                              }} />
-                              {/* Central globe - True 3D sphere using canvas */}
-                              <Globe3D />
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Display response text - rendered markdown with citations */}
-                        {message.text && (() => {
-                          // NEW: Custom component to render citations
-                          const CitationComponent: React.FC<{ citationNum: string }> = ({ citationNum }) => {
-                            const citationData = message.citations?.[citationNum];
-                            return (
-                              <span
-                                style={{
-                                  display: 'inline-block',
-                                  backgroundColor: '#E5E7EB', // Light grey background
-                                  color: '#374151', // Darker text color for better visibility
-                                  borderRadius: '4px',
-                                  padding: '2px 6px',
-                                  fontSize: '11px',
-                                  fontWeight: 500,
-                                  lineHeight: '1.2',
-                                  marginLeft: '2px',
-                                  marginRight: '2px',
-                                  verticalAlign: 'baseline',
-                                  cursor: citationData ? 'pointer' : 'default',
-                                  transition: 'background-color 0.2s',
-                                }}
-                                onMouseEnter={(e) => {
-                                  if (citationData) {
-                                    e.currentTarget.style.backgroundColor = '#D1D5DB';
-                                  }
-                                }}
-                                onMouseLeave={(e) => {
-                                  if (citationData) {
-                                    e.currentTarget.style.backgroundColor = '#E5E7EB';
-                                  }
-                                }}
-                                onClick={(e) => {
-                                  if (citationData) {
-                                    e.stopPropagation();
-                                    console.log('📎 Citation clicked:', citationNum, citationData);
-                                    // Phase 1: Open document in viewer
-                                    handleCitationClick(citationData);
-                                  }
-                                }}
-                                title={citationData ? `${citationData.original_filename} - ${citationData.property_address}` : undefined}
-                              >
-                                {citationNum}
-                              </span>
-                            );
-                          };
-
-                          // Parse text into parts (text segments and citations)
-                          // Also deduplicate consecutive or nearby identical citations
-                          const citationPattern = /\[(\d+)\]/g;
-                          const parts: Array<{ type: 'text' | 'citation'; content: string; citationNum?: string }> = [];
-                          let lastIndex = 0;
-                          let match;
-                          const citationMatches: Array<{ index: number; num: string; fullMatch: string }> = [];
-                          
-                          // First, collect all citation matches
-                          while ((match = citationPattern.exec(message.text)) !== null) {
-                            citationMatches.push({
-                              index: match.index,
-                              num: match[1],
-                              fullMatch: match[0]
-                            });
-                          }
-                          
-                          // Deduplicate citations that appear too close together (within 50 characters or same sentence)
-                          const deduplicatedCitations = citationMatches.filter((citation, idx) => {
-                            if (idx === 0) return true; // Always keep first
-                            
-                            const prevCitation = citationMatches[idx - 1];
-                            const distance = citation.index - (prevCitation.index + prevCitation.fullMatch.length);
-                            
-                            // Keep citation if:
-                            // 1. It's a different citation number, OR
-                            // 2. It's the same citation but far enough apart (>50 chars) and separated by sentence boundary
-                            if (citation.num !== prevCitation.num) {
-                              return true; // Different citation, keep it
-                            }
-                            
-                            // Same citation - only keep if far apart (>50 chars) or sentence boundary
-                            const textBetween = message.text.substring(
-                              prevCitation.index + prevCitation.fullMatch.length,
-                              citation.index
-                            );
-                            
-                            // Check if there's a sentence boundary (period, exclamation, question mark)
-                            const hasSentenceBoundary = /[.!?]\s/.test(textBetween);
-                            
-                            // Keep if distance > 50 chars OR has sentence boundary
-                            return distance > 50 || hasSentenceBoundary;
-                          });
-                          
-                          // Build parts array with deduplicated citations
-                          for (let i = 0; i < deduplicatedCitations.length; i++) {
-                            const citation = deduplicatedCitations[i];
-                            
-                            // Add text before citation
-                            if (citation.index > lastIndex) {
-                              parts.push({
-                                type: 'text',
-                                content: message.text.substring(lastIndex, citation.index)
-                              });
-                            }
-                            
-                            // Add citation
-                            parts.push({
-                              type: 'citation',
-                              content: citation.fullMatch,
-                              citationNum: citation.num
-                            });
-                            
-                            lastIndex = citation.index + citation.fullMatch.length;
-                          }
-                          
-                          // Add remaining text
-                          if (lastIndex < message.text.length) {
-                            parts.push({
-                              type: 'text',
-                              content: message.text.substring(lastIndex)
-                            });
-                          }
-
-                          // If no citations found, render normally
-                          if (parts.length === 1 && parts[0].type === 'text') {
-                            return (
-                          <div style={{
-                            color: '#374151',
-                            fontSize: '13px',
-                            lineHeight: '19px',
-                            margin: 0,
-                            padding: '4px 0',
-                            paddingLeft: 0,
-                            paddingRight: 0,
-                            textAlign: 'left',
-                            fontFamily: 'system-ui, -apple-system, sans-serif',
-                            fontWeight: 400,
-                            textIndent: 0
-                          }}>
-                            <ReactMarkdown
-                              components={{
-                                p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
-                                h2: () => null, // Remove h2 titles from query responses
-                                h3: () => null, // Remove h3 titles from query responses
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                table: ({ children }) => (
-                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                      {children}
-                                    </table>
-                                  </div>
-                                ),
-                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                tbody: ({ children }) => <tbody>{children}</tbody>,
-                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                              }}
-                            >
-                              {message.text}
-                            </ReactMarkdown>
-                      </div>
-                    );
-                          }
-
-                          // Render with citations - split text and render markdown for each segment
-                          return (
-                            <div style={{
-                              color: '#374151',
-                              fontSize: '13px',
-                              lineHeight: '19px',
-                              margin: 0,
-                              padding: '4px 0',
-                              paddingLeft: 0,
-                              paddingRight: 0,
-                              textAlign: 'left',
-                              fontFamily: 'system-ui, -apple-system, sans-serif',
-                              fontWeight: 400,
-                              textIndent: 0
-                            }}>
-                              {parts.map((part, partIdx) => {
-                                if (part.type === 'citation') {
-                                  // Ensure citationNum is never empty/undefined in key
-                                  const citationKey = part.citationNum && String(part.citationNum).trim().length > 0
-                                    ? String(part.citationNum).trim()
-                                    : `unknown-${partIdx}`;
-                                  // Use finalKey instead of messageKey to ensure it's never empty
-                                  const citationFinalKey = `citation-${partIdx}-${citationKey}-${finalKey}`;
-                                  return <CitationComponent key={citationFinalKey} citationNum={part.citationNum!} />;
-                                } else {
-                                  // Render text segment with ReactMarkdown
-                                  // Include finalKey in text key to ensure uniqueness across messages
-                                  const textFinalKey = `text-${partIdx}-${finalKey}`;
-                                  return (
-                                    <ReactMarkdown
-                                      key={textFinalKey}
-                                      components={{
-                                        p: ({ children }) => <span style={{ display: 'inline' }}>{children}</span>,
-                                        strong: ({ children }) => <strong>{children}</strong>,
-                                        em: ({ children }) => <em>{children}</em>,
-                                        code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                                      }}
-                                    >
-                                      {part.content}
-                                    </ReactMarkdown>
-                                  );
-                                }
-                              })}
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    );
-                    })
-                    .filter((item) => {
-                      // CRITICAL: Filter out null/undefined AND verify all items have valid keys
-                      if (item === null || item === undefined) {
-                        console.warn('⚠️ Filtering out null/undefined item');
-                        return false;
-                      }
-                      // Additional safety: Check if item is a React element with a key
-                      if (React.isValidElement(item)) {
-                        const key = item.key;
-                        if (key === null || key === undefined || key === '' || (typeof key === 'string' && key.trim().length === 0)) {
-                          console.error('❌ FATAL: Found React element with empty/invalid key in AnimatePresence!', {
-                            element: item,
-                            key,
-                            keyType: typeof key,
-                            props: item.props,
-                            type: item.type
-                          });
-                          return false; // Don't render items without keys
-                        }
-                        // Log all keys being rendered for debugging (only in dev)
-                        if (process.env.NODE_ENV === 'development') {
-                          console.log('✅ Rendering message with key:', key, 'type:', item.type);
-                        }
-                      } else {
-                        console.error('❌ FATAL: Item is not a valid React element!', { item, itemType: typeof item });
-                        return false;
-                      }
-                      return true;
-                    });
-                  }, [chatMessages, isExpanded, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, handlePropertySelect, handleRemoveFile, removePropertyAttachment, onOpenProperty, addPreviewFile, setIsDraggingFile, setDraggedFileId, setIsOverBin])}
+                  {renderedMessages}
                 </AnimatePresence>
               </div>
             </div>
+            
             
             {/* Chat Input at Bottom - Condensed SearchBar design */}
             <div 

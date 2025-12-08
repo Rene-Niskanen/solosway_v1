@@ -246,7 +246,8 @@ class ReductoService:
     def parse_document_fast(
         self, 
         file_path: str,
-        use_sync_for_small: bool = True  # Use sync for files < 2MB (faster)
+        use_sync_for_small: bool = True,  # Use sync for files < 2MB (faster)
+        timeout: int = None  # Custom timeout in seconds (default: scales with file size)
     ) -> Dict[str, Any]:
         """
         Fast parse with section-based chunking, optimized for speed.
@@ -256,13 +257,17 @@ class ReductoService:
         - Standard OCR (faster than enhanced)
         - No image extraction (skip figure/table images for speed)
         - Synchronous for small files (< 2MB) - faster than async polling
-        - Faster async polling for larger files (1s interval, 60s timeout)
+        - Faster async polling for larger files (1s interval, timeout scales with size)
         
         Target: 5-15 seconds for typical documents
         
         Args:
             file_path: Path to the document file
             use_sync_for_small: If True, use synchronous parsing for files < 2MB (faster)
+            timeout: Optional custom timeout in seconds. If None, scales with file size:
+                     - Files < 2MB: 60s
+                     - Files 2-10MB: 120s
+                     - Files > 10MB: 300s
             
         Returns:
             Dict with keys: job_id, document_text, chunks (section-based), image_urls (empty)
@@ -309,8 +314,17 @@ class ReductoService:
                 job_id = submission.job_id
                 logger.info(f"📋 Parse job submitted: {job_id}")
                 
-                # Faster polling: 1 second intervals, 60 second timeout (faster than main pipeline)
-                max_wait = 60  # 1 minute max (faster timeout)
+                # Timeout scales with file size if not explicitly set
+                if timeout is not None:
+                    max_wait = timeout
+                elif file_size_mb < 2.0:
+                    max_wait = 60  # 1 minute for small files
+                elif file_size_mb < 10.0:
+                    max_wait = 180  # 3 minutes for medium files (2-10MB)
+                else:
+                    max_wait = 300  # 5 minutes for large files (>10MB)
+                
+                logger.info(f"⏱️ Timeout set to {max_wait}s for {file_size_mb:.2f}MB file")
                 wait_time = 0
                 poll_interval = 1  # Check every 1 second (faster than main pipeline's 2s)
                 

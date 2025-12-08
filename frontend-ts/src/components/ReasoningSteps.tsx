@@ -1,6 +1,6 @@
 import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { DocumentPreviewCard } from './DocumentPreviewCard';
+import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
 import * as pdfjs from 'pdfjs-dist';
 
@@ -212,7 +212,8 @@ const ReadingStepWithTransition: React.FC<{
   isLoading?: boolean;
   readingIndex: number; // Which reading step this is (0, 1, 2...)
   onDocumentClick?: (metadata: DocumentMetadata) => void;
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick }) => {
+  isTransitioning?: boolean; // New prop to indicate transition phase
+}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false }) => {
   const [phase, setPhase] = useState<'waiting' | 'reading' | 'read'>('waiting');
   
   useEffect(() => {
@@ -291,12 +292,35 @@ const ReadingStepWithTransition: React.FC<{
         )}
       </span>
       {/* Preview card appears with "Reading" text and stays visible */}
+      {/* Add collapse animation when transitioning */}
       {docMetadata && docMetadata.original_filename && (
-        <DocumentPreviewCard 
-          key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, 'reading')}
-          metadata={docMetadata} 
-          onClick={onDocumentClick ? () => onDocumentClick(docMetadata) : undefined}
-        />
+        <motion.div
+          animate={isTransitioning ? {
+            height: 0,
+            opacity: 0,
+            scale: 0.9,
+            marginTop: 0,
+            marginBottom: 0
+          } : {
+            height: 'auto',
+            opacity: 1,
+            scale: 1
+          }}
+          transition={{
+            duration: 0.4,
+            ease: [0.34, 1.56, 0.64, 1], // Bouncy collapse
+            delay: readingIndex * 0.05 // Stagger the collapse
+          }}
+          style={{
+            overflow: 'hidden'
+          }}
+        >
+          <DocumentPreviewCard 
+            key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, 'reading')}
+            metadata={docMetadata} 
+            onClick={onDocumentClick ? () => onDocumentClick(docMetadata) : undefined}
+          />
+        </motion.div>
       )}
     </motion.div>
   );
@@ -327,7 +351,8 @@ const StepRenderer: React.FC<{
   isLastReadingStep?: boolean; // Is this the last reading step? (still active)
   totalReadingSteps?: number; // Total number of reading steps
   onDocumentClick?: (metadata: DocumentMetadata) => void;
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick }) => {
+  isTransitioning?: boolean; // Indicates transition from loading to stacked view
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false }) => {
   const actionStyle: React.CSSProperties = {
     color: '#374151',
     fontWeight: 500
@@ -422,6 +447,7 @@ const StepRenderer: React.FC<{
           isLoading={isLoading}
           readingIndex={readingStepIndex}
           onDocumentClick={onDocumentClick}
+          isTransitioning={isTransitioning}
         />
       );
     
@@ -479,6 +505,33 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   
   // Track when all reading steps have completed
   const [allReadingComplete, setAllReadingComplete] = useState(false);
+  
+  // Track if we just transitioned from loading to not loading (for stacking animation)
+  const wasLoadingRef = useRef(isLoading);
+  const [shouldAnimateStack, setShouldAnimateStack] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  
+  // Detect transition from loading to not loading
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading) {
+      // Just finished loading - start transition
+      setIsTransitioning(true);
+      // After preview cards collapse, trigger stacking animation
+      const stackTimer = setTimeout(() => {
+        setShouldAnimateStack(true);
+        setIsTransitioning(false);
+      }, 400); // Wait for collapse animation to complete
+      // Reset after all animations complete
+      const resetTimer = setTimeout(() => {
+        setShouldAnimateStack(false);
+      }, 1400);
+      return () => {
+        clearTimeout(stackTimer);
+        clearTimeout(resetTimer);
+      };
+    }
+    wasLoadingRef.current = isLoading;
+  }, [isLoading]);
   
   // Filter out "Preparing response" steps (planning action type) and context messages
   // Also deduplicate steps to prevent rendering the same step twice
@@ -763,24 +816,49 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       {/* Steps stacked vertically - always visible */}
       {isLoading && animatedSteps.length > 0 ? (
         <AnimatePresence mode="popLayout">
-          {animatedSteps.map(({ step, stepKey: finalStepKey, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx }) => (
-            <motion.div
-              key={finalStepKey}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -8 }}
-              transition={{ 
-                duration: 0.2, 
-                delay: stepDelay,
-                ease: [0.25, 0.1, 0.25, 1]
-              }}
-              style={{
-                fontSize: '12px',
-                color: '#6B7280',
-                padding: '2px 0',
-                lineHeight: 1.5
-              }}
-            >
+          {animatedSteps.map(({ step, stepKey: finalStepKey, delay: stepDelay, readingIndex: currentReadingIndex, isLastReadingStep, stepIndex: idx }) => {
+            // Check if this is a reading step with a preview card
+            const isReadingStep = step.action_type === 'reading';
+            const hasPreview = isReadingStep && step.details?.doc_metadata?.original_filename;
+            
+            return (
+              <motion.div
+                key={finalStepKey}
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ 
+                  opacity: 1, 
+                  x: 0,
+                  // Add collapse animation for reading steps during transition
+                  ...(isTransitioning && hasPreview ? {
+                    height: 'auto',
+                    scale: 0.95
+                  } : {})
+                }}
+                exit={{ 
+                  opacity: 0, 
+                  x: -8,
+                  // Collapse preview cards when exiting
+                  ...(isReadingStep && hasPreview ? {
+                    height: 0,
+                    scale: 0.9,
+                    marginBottom: 0
+                  } : {})
+                }}
+                transition={{ 
+                  duration: isTransitioning && hasPreview ? 0.4 : 0.2,
+                  delay: isTransitioning ? 0 : stepDelay,
+                  ease: isTransitioning && hasPreview 
+                    ? [0.34, 1.56, 0.64, 1] // Bouncy collapse
+                    : [0.25, 0.1, 0.25, 1]
+                }}
+                style={{
+                  fontSize: '12px',
+                  color: '#6B7280',
+                  padding: '2px 0',
+                  lineHeight: 1.5,
+                  overflow: isTransitioning && hasPreview ? 'hidden' : 'visible'
+                }}
+              >
               <StepRenderer 
                 step={step} 
                 allSteps={filteredSteps} 
@@ -790,65 +868,93 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 isLastReadingStep={isLastReadingStep}
                 totalReadingSteps={totalReadingSteps}
                 onDocumentClick={onDocumentClick}
+                isTransitioning={isTransitioning}
               />
-            </motion.div>
-          ))}
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
       ) : (
         // When not loading (trace mode), render static divs without AnimatePresence
-        // This prevents exit animations from triggering when isLoading changes
+        // Use StackedDocumentPreviews for reading steps to save vertical space
         <div key="reasoning-steps-static">
           {(() => {
-            let readingCounter = 0;
-            return filteredSteps.map((step, idx) => {
-            let currentReadingIndex = 0;
-            let isLastReadingStep = false;
+            // Separate reading steps from other steps for stacked rendering
+            const readingSteps = filteredSteps.filter(s => s.action_type === 'reading');
+            const otherSteps = filteredSteps.filter(s => s.action_type !== 'reading');
             
-            if (step.action_type === 'reading') {
-              currentReadingIndex = readingCounter;
-              isLastReadingStep = (readingCounter === totalReadingSteps - 1);
-              readingCounter++;
-            }
-            
-            // Note: Planning steps are already filtered out by filteredSteps
-            
-            // Use centralized key generation - same as animated version
-            const stepId = step.details?.doc_metadata?.doc_id 
-              || step.details?.filename 
-              || step.timestamp 
-              || idx;
-            
-            const finalStepKey = generateAnimatePresenceKey(
-              'ReasoningStep',
-              idx,
-              stepId,
-              step.action_type || 'unknown'
-            );
+            // Collect document metadata from reading steps for stacked preview
+            const readingDocuments = readingSteps
+              .map(step => step.details?.doc_metadata)
+              .filter((doc): doc is NonNullable<typeof doc> => doc != null && !!doc.original_filename);
             
             return (
-              <div
-                key={finalStepKey}
-                style={{
-                  fontSize: '12px',
-                  color: '#6B7280',
-                  padding: '2px 0',
-                  lineHeight: 1.5
-                }}
-              >
-                <StepRenderer 
-                  step={step} 
-                  allSteps={filteredSteps} 
-                  stepIndex={idx} 
-                  isLoading={isLoading}
-                  readingStepIndex={currentReadingIndex}
-                  isLastReadingStep={isLastReadingStep}
-                  totalReadingSteps={totalReadingSteps}
-                  onDocumentClick={onDocumentClick}
-                />
-              </div>
+              <>
+                {/* Render non-reading steps first */}
+                {otherSteps.map((step, idx) => {
+                  const stepId = step.details?.doc_metadata?.doc_id 
+                    || step.details?.filename 
+                    || step.timestamp 
+                    || idx;
+                  
+                  const finalStepKey = generateAnimatePresenceKey(
+                    'ReasoningStep',
+                    idx,
+                    stepId,
+                    step.action_type || 'unknown'
+                  );
+                  
+                  return (
+                    <div
+                      key={finalStepKey}
+                      style={{
+                        fontSize: '12px',
+                        color: '#6B7280',
+                        padding: '2px 0',
+                        lineHeight: 1.5
+                      }}
+                    >
+                      <StepRenderer 
+                        step={step} 
+                        allSteps={filteredSteps} 
+                        stepIndex={idx} 
+                        isLoading={isLoading}
+                        readingStepIndex={0}
+                        isLastReadingStep={false}
+                        totalReadingSteps={totalReadingSteps}
+                        onDocumentClick={onDocumentClick}
+                        isTransitioning={false}
+                      />
+                    </div>
+                  );
+                })}
+                
+                {/* Render reading steps with stacked document previews */}
+                {readingSteps.length > 0 && (
+                  <div style={{ marginTop: '4px' }}>
+                    {/* Show "Read X documents" summary */}
+                    <div style={{
+                      fontSize: '12px',
+                      color: '#374151',
+                      fontWeight: 500,
+                      marginBottom: '4px'
+                    }}>
+                      Read {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}
+                    </div>
+                    
+                    {/* Stacked document previews */}
+                    {readingDocuments.length > 0 && (
+                      <StackedDocumentPreviews 
+                        documents={readingDocuments}
+                        onDocumentClick={onDocumentClick}
+                        isAnimating={shouldAnimateStack}
+                      />
+                    )}
+                  </div>
+                )}
+              </>
             );
-          });
-        })()}
+          })()}
         </div>
       )}
       

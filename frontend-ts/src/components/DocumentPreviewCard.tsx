@@ -393,4 +393,124 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
   );
 };
 
+/**
+ * StackedDocumentPreviews Component
+ * 
+ * Displays multiple documents in a compact stacked layout with light cards
+ * matching the background. No preview image - just document names with outlines.
+ * 
+ * Used for the final response state to save vertical space.
+ */
+export const StackedDocumentPreviews: React.FC<{
+  documents: Array<{
+    doc_id: string;
+    original_filename: string;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  }>;
+  onDocumentClick?: (metadata: any) => void;
+  isAnimating?: boolean; // True when transitioning from spread to stacked
+}> = ({ documents, onDocumentClick, isAnimating = false }) => {
+  
+  if (documents.length === 0) return null;
+  
+  return (
+    <motion.div
+      initial={isAnimating ? { 
+        opacity: 0,
+        scale: 0.95,
+        y: 10
+      } : false}
+      animate={{ 
+        opacity: 1,
+        scale: 1,
+        y: 0
+      }}
+      transition={{ 
+        duration: 0.4, 
+        delay: isAnimating ? 0.2 : 0,
+        ease: [0.16, 1, 0.3, 1] 
+      }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        marginTop: '4px',
+        width: '100%',
+        maxWidth: '340px',
+        gap: '4px' // Subtle space between stacked cards
+      }}
+    >
+      {/* Stacked Document Headers - Light cards matching background */}
+      {documents.map((doc, index) => {
+        const totalDocs = documents.length;
+        // Stacking animation: cards drop in from above with staggered timing
+        // Higher cards drop from further away for a cascading effect
+        const dropDistance = (totalDocs - index) * 25;
+        
+        return (
+          <motion.div
+            key={doc.doc_id || `stacked-doc-${index}`}
+            initial={isAnimating ? { 
+              y: -dropDistance - 40, 
+              opacity: 0,
+              scale: 0.8,
+              rotateZ: -2 // Slight rotation for dynamic effect
+            } : false}
+            animate={{ 
+              y: 0, 
+              opacity: 1,
+              scale: 1,
+              rotateZ: 0
+            }}
+            transition={{ 
+              duration: 0.5, 
+              delay: isAnimating ? index * 0.1 : 0,
+              ease: [0.34, 1.56, 0.64, 1] // Bouncy spring effect
+            }}
+            onClick={() => onDocumentClick?.(doc)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 12px',
+              backgroundColor: 'transparent', // Match background
+              borderRadius: '6px',
+              border: '1px solid rgba(0, 0, 0, 0.1)', // Subtle outline
+              cursor: onDocumentClick ? 'pointer' : 'default',
+              transition: 'all 0.15s ease'
+            }}
+            whileHover={onDocumentClick ? { 
+              backgroundColor: 'rgba(0, 0, 0, 0.03)',
+              borderColor: 'rgba(0, 0, 0, 0.15)'
+            } : undefined}
+          >
+            {/* File icon */}
+            <div style={{ flexShrink: 0, opacity: 0.5 }}>
+              {getFileIcon(doc.original_filename, 14)}
+            </div>
+            <span
+              style={{
+                fontSize: '12px',
+                fontWeight: 400,
+                color: '#6B7280', // Grey text matching other UI
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                letterSpacing: '-0.01em',
+                lineHeight: '1.4',
+                flex: 1
+              }}
+            >
+              {doc.original_filename}
+            </span>
+          </motion.div>
+        );
+      })}
+    </motion.div>
+  );
+};
+
 export default DocumentPreviewCard;

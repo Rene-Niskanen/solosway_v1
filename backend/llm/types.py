@@ -47,6 +47,8 @@ class MainWorkflowState(TypedDict, total=False):
     relevant_documents: list[RetrievedDocument]
     document_outputs: Annotated[list[DocumentProcessingResult], operator.add]
     final_summary: str
+    evidence_feedback: list[dict[str, Any]]  # Raw evidence feedback records from LLM
+    matched_evidence: list[dict[str, Any]]   # Feedback records aligned to specific chunks/bboxes
     user_id: str
     business_id: str
     conversation_history: Annotated[list[dict], operator.add]  # New: stores Q&A history

@@ -35,8 +35,15 @@ export const saveToRecentProjects = (propertyToSave: RecentProperty): void => {
     const existing = localStorage.getItem(RECENT_PROPERTIES_KEY);
     let recentProperties: RecentProperty[] = existing ? JSON.parse(existing) : [];
 
-    // Filter out the property if it already exists (by ID)
-    recentProperties = recentProperties.filter(p => p.id !== propertyToSave.id);
+    // Normalize address for comparison (lowercase, trim whitespace)
+    const normalizeAddress = (addr: string) => addr.toLowerCase().trim();
+    const newAddressNormalized = normalizeAddress(propertyToSave.address);
+
+    // Filter out the property if it already exists (by ID OR by normalized address)
+    // This prevents duplicates when the same property has different IDs
+    recentProperties = recentProperties.filter(
+      p => p.id !== propertyToSave.id && normalizeAddress(p.address) !== newAddressNormalized
+    );
 
     // Add the new property to the beginning (most recent first)
     recentProperties.unshift(propertyToSave);
@@ -61,7 +68,7 @@ export const saveToRecentProjects = (propertyToSave: RecentProperty): void => {
 
 /**
  * Load recent properties from localStorage
- * Returns an array of up to 3 most recent properties
+ * Returns an array of up to 3 most recent properties, deduplicated by address
  */
 export const loadRecentProperties = (): RecentProperty[] => {
   try {
@@ -70,7 +77,47 @@ export const loadRecentProperties = (): RecentProperty[] => {
       const properties = JSON.parse(saved);
       // Ensure it's an array and filter out invalid entries
       if (Array.isArray(properties)) {
-        return properties.filter(p => p && p.id && p.address);
+        const validProperties = properties.filter(p => p && p.id && p.address);
+        
+        // Deduplicate by normalized address (keep most recent for each address)
+        const normalizeAddress = (addr: string) => addr.toLowerCase().trim();
+        const seenAddresses = new Map<string, RecentProperty>();
+        
+        // Process in forward order - when we see a duplicate address, keep the one with the more recent timestamp
+        for (const prop of validProperties) {
+          const normalizedAddr = normalizeAddress(prop.address);
+          
+          // If we haven't seen this address, add it
+          if (!seenAddresses.has(normalizedAddr)) {
+            seenAddresses.set(normalizedAddr, prop);
+          } else {
+            const existing = seenAddresses.get(normalizedAddr)!;
+            // Compare timestamps - keep the more recent one
+            // If timestamp is missing/invalid, prefer the one that appears earlier in the array (more recent)
+            const existingTime = existing.timestamp ? new Date(existing.timestamp).getTime() : 0;
+            const currentTime = prop.timestamp ? new Date(prop.timestamp).getTime() : 0;
+            
+            // If both have valid timestamps, keep the more recent
+            // If one is missing, prefer the one with a timestamp
+            // If both are missing, keep the existing one (first seen, which is more recent in the array)
+            if (currentTime > 0 && (currentTime > existingTime || existingTime === 0)) {
+              seenAddresses.set(normalizedAddr, prop);
+            }
+          }
+        }
+        
+        // Convert back to array, sorted by timestamp (most recent first)
+        const deduplicated = Array.from(seenAddresses.values())
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, MAX_RECENT_PROPERTIES);
+        
+        // If we removed duplicates, save the cleaned version back to localStorage
+        if (deduplicated.length !== validProperties.length) {
+          localStorage.setItem(RECENT_PROPERTIES_KEY, JSON.stringify(deduplicated));
+          console.log(`🧹 Cleaned up ${validProperties.length - deduplicated.length} duplicate property(ies) from recent projects`);
+        }
+        
+        return deduplicated;
       }
     }
 

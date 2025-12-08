@@ -35,28 +35,36 @@ const originalCreateElement = React.createElement;
     // Check for duplicate keys in the same render (if we can detect it)
     // Skip for icon elements to reduce noise
     if (!isIconElement && typeof key === 'string' && key.length > 0) {
+      const win = window as any;
+      
       // Use a per-render cache that resets each frame
-      if (!(window as any).__reactKeyCache) {
-        (window as any).__reactKeyCache = new Set();
+      if (!win.__reactKeyCache) {
+        win.__reactKeyCache = new Map();
         // Clear cache on next frame to prevent false positives across renders
         requestAnimationFrame(() => {
-          (window as any).__reactKeyCache = new Set();
+          win.__reactKeyCache = new Map();
         });
       }
-      const keyCache = (window as any).__reactKeyCache;
+      const keyCacheMap: Map<string, Set<string>> = win.__reactKeyCache;
+      
+      const typeName = typeof type === 'string' ? type : type?.displayName || type?.name || 'Unknown';
+      if (!keyCacheMap.has(typeName)) {
+        keyCacheMap.set(typeName, new Set());
+      }
+      const typeKeyCache = keyCacheMap.get(typeName)!;
       
       // Only check for duplicates if key doesn't already have -dup- suffix (to avoid recursive dup-dup-dup)
-      if (!key.includes('-dup-') && keyCache.has(key)) {
+      if (!key.includes('-dup-') && typeKeyCache.has(key)) {
         console.error('❌ NUCLEAR: Duplicate key detected!', {
-          type: typeof type === 'string' ? type : type?.name || 'Unknown',
+          type: typeName,
           key,
           props
         });
         // Make it unique with performance.now() for microsecond precision + random
         props.key = `${key}-dup-${performance.now()}-${Math.random().toString(36).substring(2, 9)}`;
       }
-      // Add the final key (which may have been modified) to cache
-      keyCache.add(props.key);
+      // Add the final key (which may have been modified) to cache for this component type
+      typeKeyCache.add(props.key);
     }
   }
   

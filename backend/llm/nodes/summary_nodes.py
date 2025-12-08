@@ -12,6 +12,11 @@ from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.prompts import get_summary_human_content
+from backend.llm.evidence_feedback import (
+    build_feedback_instruction,
+    extract_feedback_from_answer,
+    match_feedback_to_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +134,7 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         page_info = output.get('page_range', 'multiple pages')
         search_source = output.get('search_source', 'unknown')
         similarity_score = output.get('similarity_score', 0.0)
+        doc_id = output.get('doc_id') or f"doc-{idx+1}"
         
         # Track search sources
         search_source_summary[search_source] = search_source_summary.get(search_source, 0) + 1
@@ -144,6 +150,7 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         }.get(search_source, search_source)
         
         header = f"\n### {doc_type}: {filename}\n"
+        header += f"Document ID: {doc_id}\n"
         header += f"Property: {address}\n"
         header += f"Pages: {page_info}\n"
         header += f"Found via: {source_display}"
@@ -205,12 +212,25 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         search_summary=search_summary,
         formatted_outputs=formatted_outputs_str
     )
+    human_content_with_feedback = f"{human_content}\n\n{build_feedback_instruction()}"
     
     try:
         # Use LangGraph message format
-        messages = [system_msg, HumanMessage(content=human_content)]
+        messages = [system_msg, HumanMessage(content=human_content_with_feedback)]
         response = llm.invoke(messages)
-        summary = response.content.strip()
+        raw_summary = response.content.strip()
+
+        summary, evidence_feedback = extract_feedback_from_answer(raw_summary, logger)
+        matched_evidence = match_feedback_to_chunks(evidence_feedback, doc_outputs, logger) if evidence_feedback else []
+
+        if evidence_feedback:
+            matched_count = sum(1 for record in matched_evidence if record.get('matched_chunk'))
+            logger.info(
+                "[EVIDENCE_FEEDBACK] Captured %d record(s); matched %d chunk(s)",
+                len(evidence_feedback),
+                matched_count,
+            )
+
         logger.info("[SUMMARIZE_RESULTS] Generated final summary")
         
         # Add current exchange to conversation history
@@ -224,6 +244,8 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         
         return {
             "final_summary": summary,
+            "evidence_feedback": evidence_feedback,
+            "matched_evidence": matched_evidence,
             "conversation_history": [conversation_entry]  # operator.add will append to existing history
         }
     except Exception as exc:  # pylint: disable=broad-except

@@ -39,6 +39,7 @@ class HybridDocumentRetriever:
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
         business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,
         bm25_weight: float = 0.4,  # 40% BM25, 60% vector
         vector_weight: float = 0.6,
         trigger_lazy_embedding: bool = True  # Enable lazy embedding triggers
@@ -113,7 +114,8 @@ class HybridDocumentRetriever:
             top_k=top_k,
             property_id=property_id,
             classification_type=classification_type,
-            business_id=business_id
+            business_id=business_id,
+            document_ids=document_ids,
         )
         
         # Step 4: Merge with weighted RRF

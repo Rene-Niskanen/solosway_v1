@@ -3,18 +3,37 @@ Vector Service for Supabase with pgvector
 """
 import os
 import logging
+import re
 from typing import Dict, Any, List, Optional
 import openai
 from supabase import Client
-import json
 import uuid
 from datetime import datetime
-import anthropic
 import asyncio
 
+# Anthropic is optional - only needed for contextual retrieval
+try:
+    import anthropic  # type: ignore
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    anthropic = None
+    ANTHROPIC_AVAILABLE = False
+
 from .supabase_client_factory import get_supabase_client
+from backend.utils.bbox import ensure_bbox_dict
 
 logger = logging.getLogger(__name__)
+
+PRICE_SIGNAL_PATTERN = re.compile(
+    r'(?:£|\$|€)\s*\d[\d,\.]*(?:\s*(?:million|bn|billion|m))?|\bmarket value\b|\bvaluation figure\b|\bsale price\b|\basking price\b|\bopinion of value\b',
+    re.IGNORECASE,
+)
+
+
+def _contains_price_signal(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    return bool(PRICE_SIGNAL_PATTERN.search(text))
 
 class SupabaseVectorService:
     """Service for managing vector embeddings in Supabase with pgvector"""
@@ -33,14 +52,17 @@ class SupabaseVectorService:
         
         # Initialize Anthropic for contextual retrieval (async client for parallel processing)
         self.anthropic_api_key = os.environ.get('ANTHROPIC_API_KEY')
-        if self.anthropic_api_key:
+        if ANTHROPIC_AVAILABLE and self.anthropic_api_key:
             self.anthropic_client = anthropic.AsyncAnthropic(api_key=self.anthropic_api_key)
             self.use_contextual_retrieval = True
             logger.info("Contextual Retrieval enabled (Anthropic - Async)")
         else:
             self.anthropic_client = None
             self.use_contextual_retrieval = False
-            logger.warning("ANTHROPIC_API_KEY not set - Contextual Retrieval disabled")
+            if not ANTHROPIC_AVAILABLE:
+                logger.warning("anthropic module not installed - Contextual Retrieval disabled")
+            else:
+                logger.warning("ANTHROPIC_API_KEY not set - Contextual Retrieval disabled")
         
         # Table names
         self.document_vectors_table = "document_vectors"
@@ -467,28 +489,15 @@ class SupabaseVectorService:
             # Get the block for this sub-chunk (use first block in range)
             if start_block_idx < len(blocks):
                 assigned_block = blocks[start_block_idx]
-                block_bbox = assigned_block.get('bbox')
+                block_bbox = ensure_bbox_dict(assigned_block.get('bbox'))
                 
                 if block_bbox:
-                    if isinstance(block_bbox, dict):
-                        logger.debug(f"Sub-chunk {subchunk_index}: Using block {start_block_idx} (page {block_bbox.get('page')})")
-                        return {
-                            'bbox': block_bbox,
-                            'blocks': blocks[start_block_idx:end_block_idx] if end_block_idx <= len(blocks) else blocks[start_block_idx:],
-                            'page': block_bbox.get('page')
-                        }
-                    else:
-                        try:
-                            import json
-                            bbox_dict = json.loads(block_bbox) if isinstance(block_bbox, str) else block_bbox
-                            if isinstance(bbox_dict, dict):
-                                return {
-                                    'bbox': bbox_dict,
-                                    'blocks': blocks[start_block_idx:end_block_idx] if end_block_idx <= len(blocks) else blocks[start_block_idx:],
-                                    'page': bbox_dict.get('page')
-                                }
-                        except:
-                            pass
+                    logger.debug(f"Sub-chunk {subchunk_index}: Using block {start_block_idx} (page {block_bbox.get('page')})")
+                    return {
+                        'bbox': block_bbox,
+                        'blocks': blocks[start_block_idx:end_block_idx] if end_block_idx <= len(blocks) else blocks[start_block_idx:],
+                        'page': block_bbox.get('page')
+                    }
         
         # Strategy 2: Try to find blocks by word overlap (for smaller chunks or when sequential fails)
         matching_blocks = []
@@ -546,27 +555,13 @@ class SupabaseVectorService:
             selected_block = best_match_block
         
         if selected_block:
-            block_bbox = selected_block.get('bbox')
+            block_bbox = ensure_bbox_dict(selected_block.get('bbox'))
             if block_bbox:
-                # Ensure bbox is a dict
-                if isinstance(block_bbox, dict):
-                    return {
-                        'bbox': block_bbox,
-                        'blocks': [selected_block],
-                        'page': block_bbox.get('page')
-                    }
-                else:
-                    # Try to parse if it's a string
-                    try:
-                        import json
-                        bbox_dict = json.loads(block_bbox) if isinstance(block_bbox, str) else block_bbox
-                        return {
-                            'bbox': bbox_dict,
-                            'blocks': [selected_block],
-                            'page': bbox_dict.get('page') if isinstance(bbox_dict, dict) else None
-                        }
-                    except:
-                        pass
+                return {
+                    'bbox': block_bbox,
+                    'blocks': [selected_block],
+                    'page': block_bbox.get('page')
+                }
         
         # Strategy 2: Sequential assignment - distribute blocks across sub-chunks
         # This is a fallback when text matching fails
@@ -578,25 +573,13 @@ class SupabaseVectorService:
         # Fallback: use first block's bbox if no matches found
         if blocks:
             first_block = blocks[0]
-            block_bbox = first_block.get('bbox')
+            block_bbox = ensure_bbox_dict(first_block.get('bbox'))
             if block_bbox:
-                if isinstance(block_bbox, dict):
-                    return {
-                        'bbox': block_bbox,
-                        'blocks': [first_block],
-                        'page': block_bbox.get('page')
-                    }
-                else:
-                    try:
-                        import json
-                        bbox_dict = json.loads(block_bbox) if isinstance(block_bbox, str) else block_bbox
-                        return {
-                            'bbox': bbox_dict,
-                            'blocks': [first_block],
-                            'page': bbox_dict.get('page') if isinstance(bbox_dict, dict) else None
-                        }
-                    except:
-                        pass
+                return {
+                    'bbox': block_bbox,
+                    'blocks': [first_block],
+                    'page': block_bbox.get('page')
+                }
         
         # Last resort: use parent metadata
         return parent_meta or {}
@@ -837,7 +820,7 @@ class SupabaseVectorService:
                 chunk_meta = chunk_metadata_list[i] if chunk_metadata_list and i < len(chunk_metadata_list) else {}
                 
                 # Extract bbox for the insertion 
-                chunk_bbox = chunk_meta.get('bbox')
+                chunk_bbox = ensure_bbox_dict(chunk_meta.get('bbox'))
                 # Handle both dict and already-extracted page number
                 if chunk_bbox:
                     if isinstance(chunk_bbox, dict):
@@ -877,7 +860,7 @@ class SupabaseVectorService:
                     'business_uuid': business_uuid,
                     'business_id': business_uuid,
                     'page_number': chunk_page,
-                    'bbox': json.dumps(chunk_bbox) if chunk_bbox else None,
+                    'bbox': chunk_bbox,
                     'block_count': len(chunk_blocks),
                     'embedding_status': embedding_status,  # NEW: Track embedding status
                     'embedding_queued_at': embedding_queued_at,  # NEW: When embedding was queued
@@ -1040,6 +1023,36 @@ class SupabaseVectorService:
                 
         except Exception as e:
             logger.error(f"Error searching document vectors: {e}")
+            return []
+    
+    def fetch_price_chunks_for_document(self, document_id: str, max_rows: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Retrieve chunks that contain price/valuation keywords for a specific document.
+        This supplements semantic search when users ask for market values.
+        """
+        try:
+            query = (
+                self.supabase.table(self.document_vectors_table)
+                .select('chunk_index,page_number,chunk_text,bbox')
+                .eq('document_id', document_id)
+                .order('chunk_index')
+            )
+            result = query.execute()
+            rows = result.data or []
+            filtered: List[Dict[str, Any]] = [
+                row for row in rows if _contains_price_signal(row.get('chunk_text'))
+            ]
+            if max_rows:
+                filtered = filtered[:max_rows]
+            logger.info(
+                "[PRICE_CHUNKS] doc=%s fetched %d rows, %d matched price signals",
+                document_id[:8],
+                len(rows),
+                len(filtered),
+            )
+            return filtered
+        except Exception as exc:
+            logger.warning("Failed to fetch price chunks for document %s: %s", document_id, exc)
             return []
     
     def search_property_vectors(self, query: str, business_id: str, limit: int = 10, similarity_threshold: float = 0.7) -> List[Dict[str, Any]]:
