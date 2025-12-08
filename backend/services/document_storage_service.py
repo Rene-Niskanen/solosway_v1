@@ -86,13 +86,33 @@ class DocumentStorageService:
         
         Args:
             document_id: UUID of the document
-            business_id: Business identifier for multi-tenancy
+            business_id: Business identifier for multi-tenancy (can be UUID string or company name)
         
         Returns:
             Tuple of (success, document_data, error_message)
         """
         try:
-            result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_id', business_id).execute()
+            # Helper function to check if a string is a valid UUID format
+            def _is_uuid(value: str) -> bool:
+                """Check if a string is a valid UUID format"""
+                try:
+                    from uuid import UUID
+                    UUID(value)
+                    return True
+                except (ValueError, TypeError):
+                    return False
+            
+            # Determine which field to query based on business_id format
+            # If business_id looks like a UUID, query by business_uuid (UUID field)
+            # Otherwise, query by business_id (varchar field for company name)
+            if _is_uuid(business_id):
+                # Query by business_uuid (UUID field)
+                result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_uuid', business_id).execute()
+                logger.debug(f"Querying document by business_uuid: {business_id}")
+            else:
+                # Query by business_id (varchar field)
+                result = self.supabase.table(self.documents_table).select('*').eq('id', document_id).eq('business_id', business_id).execute()
+                logger.debug(f"Querying document by business_id: {business_id}")
             
             if result.data and len(result.data) > 0:
                 document_data = result.data[0]
@@ -148,8 +168,20 @@ class DocumentStorageService:
             query = self.supabase.table(self.documents_table).update(update_data).eq('id', document_id)
             
             # Add business_id filter if provided
+            # Use business_uuid if business_id looks like a UUID, otherwise use business_id (varchar)
             if business_id:
-                query = query.eq('business_id', business_id)
+                def _is_uuid(value: str) -> bool:
+                    """Check if a string is a valid UUID format"""
+                    try:
+                        uuid.UUID(value)
+                        return True
+                    except (ValueError, TypeError):
+                        return False
+                
+                if _is_uuid(business_id):
+                    query = query.eq('business_uuid', business_id)
+                else:
+                    query = query.eq('business_id', business_id)
             
             result = query.execute()
             
@@ -340,7 +372,18 @@ class DocumentStorageService:
             query = self.supabase.table(self.documents_table).update(update_data).eq('id', document_id)
             
             if business_id:
-                query = query.eq('business_id', business_id)
+                def _is_uuid(value: str) -> bool:
+                    """Check if a string is a valid UUID format"""
+                    try:
+                        uuid.UUID(value)
+                        return True
+                    except (ValueError, TypeError):
+                        return False
+                
+                if _is_uuid(business_id):
+                    query = query.eq('business_uuid', business_id)
+                else:
+                    query = query.eq('business_id', business_id)
             
             result = query.execute()
             
@@ -387,7 +430,18 @@ class DocumentStorageService:
             query = self.supabase.table(self.documents_table).update(update_data).eq('id', document_id)
             
             if business_id:
-                query = query.eq('business_id', business_id)
+                def _is_uuid(value: str) -> bool:
+                    """Check if a string is a valid UUID format"""
+                    try:
+                        uuid.UUID(value)
+                        return True
+                    except (ValueError, TypeError):
+                        return False
+                
+                if _is_uuid(business_id):
+                    query = query.eq('business_uuid', business_id)
+                else:
+                    query = query.eq('business_id', business_id)
             
             result = query.execute()
             
@@ -411,6 +465,87 @@ class DocumentStorageService:
             logger.error(f"❌ Error updating document extraction: {e}")
             return False, str(e)
     
+    def update_document_summary(
+        self, 
+        document_id: str, 
+        business_id: str, 
+        updates: Dict[str, Any], 
+        merge: bool = True
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Update document_summary JSONB field with proper merging.
+        
+        This method ensures that updates to document_summary don't overwrite
+        existing data. It retrieves the current document_summary, merges the
+        updates, and writes back the merged result.
+        
+        Args:
+            document_id: Document UUID
+            business_id: Business UUID
+            updates: Dictionary of fields to update in document_summary
+            merge: If True, merge with existing document_summary. If False, replace.
+        
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            # Get existing document to retrieve current document_summary
+            success, document, error = self.get_document(document_id, business_id)
+            if not success:
+                return False, f"Could not retrieve document: {error}"
+            
+            # Get existing document_summary (safe parsing)
+            existing_summary = document.get('document_summary') or {}
+            if isinstance(existing_summary, str):
+                try:
+                    existing_summary = json.loads(existing_summary)
+                except:
+                    existing_summary = {}
+            if existing_summary is None:
+                existing_summary = {}
+            
+            # Merge or replace
+            if merge:
+                # Deep merge updates into existing summary
+                # This preserves existing fields like reducto_job_id, chunks, etc.
+                merged_summary = {**existing_summary, **updates}
+                logger.debug(f"🔄 Merging document_summary: {len(existing_summary)} existing keys + {len(updates)} new keys")
+            else:
+                merged_summary = updates
+                logger.debug(f"🔄 Replacing document_summary with {len(updates)} keys")
+            
+            # Update document_summary field directly
+            update_data = {'document_summary': merged_summary}
+            
+            # Execute update with proper UUID handling
+            query = self.supabase.table(self.documents_table).update(update_data).eq('id', document_id)
+            
+            if business_id:
+                def _is_uuid(value: str) -> bool:
+                    """Check if a string is a valid UUID format"""
+                    try:
+                        uuid.UUID(value)
+                        return True
+                    except (ValueError, TypeError):
+                        return False
+                
+                if _is_uuid(business_id):
+                    query = query.eq('business_uuid', business_id)
+                else:
+                    query = query.eq('business_id', business_id)
+            
+            result = query.execute()
+            
+            if result.data and len(result.data) > 0:
+                logger.info(f"✅ Updated document_summary for document {document_id}")
+                return True, None
+            else:
+                return False, "Document not found or not updated"
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating document_summary for document {document_id}: {e}")
+            return False, str(e)
+    
     def delete_document(self, document_id: str, business_id: str) -> Tuple[bool, Optional[str]]:
         """
         Delete a document record (cascade will handle related records)
@@ -432,7 +567,22 @@ class DocumentStorageService:
                 access_context={'action': 'document_deleted'}
             )
             
-            result = self.supabase.table(self.documents_table).delete().eq('id', document_id).eq('business_id', business_id).execute()
+            # Use business_uuid if business_id looks like a UUID, otherwise use business_id (varchar)
+            def _is_uuid(value: str) -> bool:
+                """Check if a string is a valid UUID format"""
+                try:
+                    uuid.UUID(value)
+                    return True
+                except (ValueError, TypeError):
+                    return False
+            
+            query = self.supabase.table(self.documents_table).delete().eq('id', document_id)
+            if _is_uuid(business_id):
+                query = query.eq('business_uuid', business_id)
+            else:
+                query = query.eq('business_id', business_id)
+            
+            result = query.execute()
             
             if result.data is not None:
                 logger.info(f"✅ Deleted document {document_id}")

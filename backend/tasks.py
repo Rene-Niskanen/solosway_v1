@@ -60,6 +60,159 @@ def sync_document_to_supabase(document_id, status=None, additional_data=None):
         logger.warning(f"⚠️ Supabase sync failed (non-fatal): {e}")
         return False
 
+# ============================================================================
+# HELPER FUNCTIONS FOR OPTIMIZATION (Phase 1: Eliminate Duplicate Code)
+# ============================================================================
+
+def get_document_summary_safe(document: dict) -> dict:
+    """
+    Safely extract and parse document_summary from document dict.
+    Handles None, string JSON, and dict cases.
+    
+    This function eliminates duplicate code used 9+ times throughout tasks.py.
+    
+    Args:
+        document: Document dict from Supabase
+    
+    Returns:
+        document_summary dict (never None)
+    """
+    document_summary = document.get('document_summary') or {}
+    if isinstance(document_summary, str):
+        try:
+            document_summary = json.loads(document_summary)
+        except:
+            document_summary = {}
+    if document_summary is None:
+        document_summary = {}
+    return document_summary
+
+def get_job_id_with_retry(doc_storage, document_id: str, business_id: str, max_retries: int = 5, retry_delay: float = 1.0) -> Optional[str]:
+    """
+    Retrieve job_id from document_summary with exponential backoff retry.
+    
+    Enhanced with commit verification and detailed logging to debug job_id retrieval.
+    Prevents race condition where extraction task starts before classification
+    commits document_summary to Supabase.
+    
+    Args:
+        doc_storage: DocumentStorageService instance
+        document_id: Document UUID
+        business_id: Business UUID
+        max_retries: Maximum retry attempts (default: 5, increased from 3)
+        retry_delay: Initial delay in seconds for exponential backoff (default: 1.0)
+    
+    Returns:
+        job_id string or None if not found after retries
+    """
+    import time
+    last_document_summary = None
+    
+    logger.info(f"🔍 Attempting to retrieve job_id for document {document_id}...")
+    
+    for attempt in range(max_retries):
+        success, document, error = doc_storage.get_document(str(document_id), business_id)
+        
+        if success and document:
+            document_summary = get_document_summary_safe(document)
+            
+            # Check if document_summary has changed (indicates commit happened)
+            if document_summary != last_document_summary:
+                logger.info(f"📝 Document summary changed on attempt {attempt + 1}, commit detected")
+                last_document_summary = document_summary.copy()
+            
+            # Log document_summary keys for debugging (only on first attempt or when changed)
+            if attempt == 0 or document_summary != last_document_summary:
+                if document_summary and isinstance(document_summary, dict):
+                    summary_keys = list(document_summary.keys())
+                    logger.debug(f"📋 Document summary keys on attempt {attempt + 1}: {summary_keys}")
+            
+            if document_summary and isinstance(document_summary, dict):
+                job_id = document_summary.get('reducto_job_id')
+            else:
+                job_id = None
+            
+            # Validate job_id is not empty string
+            if job_id and isinstance(job_id, str) and job_id.strip():
+                logger.info(f"✅ Retrieved job_id on attempt {attempt + 1}: {job_id}")
+                return job_id.strip()
+            elif job_id:
+                logger.warning(f"⚠️ job_id found but invalid (empty or wrong type): {type(job_id)} = {job_id}")
+            else:
+                logger.debug(f"🔑 'reducto_job_id' not found in document_summary on attempt {attempt + 1}")
+        
+        if attempt < max_retries - 1:
+            wait_time = retry_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            logger.warning(f"⚠️ job_id not found on attempt {attempt + 1}, retrying in {wait_time}s...")
+            time.sleep(wait_time)
+    
+    logger.error(f"❌ Failed to retrieve job_id after {max_retries} attempts")
+    if success and document:
+        final_summary = get_document_summary_safe(document)
+        # Only log keys to avoid massive JSON dumps in terminal
+        logger.error(f"📋 Final document_summary keys: {list(final_summary.keys())}")
+        # Removed full content logging to reduce terminal noise
+    return None
+
+def extract_page_number_from_chunk(chunk: dict) -> Optional[int]:
+    """
+    Extract page number from chunk metadata with multiple fallback strategies.
+    
+    Per Reducto's recommendation: Use original_page for referencing source document pages.
+    
+    Args:
+        chunk: Chunk dict from Reducto with bbox and blocks
+    
+    Returns:
+        Page number (int) or None if not found
+    """
+    # Strategy 1: Chunk-level bbox - PREFER original_page per Reducto recommendation
+    chunk_bbox = chunk.get('bbox')
+    if chunk_bbox:
+        if isinstance(chunk_bbox, dict):
+            # Reducto recommends using original_page for source document references
+            page = chunk_bbox.get('original_page') or chunk_bbox.get('page')
+            if page is not None:
+                try:
+                    return int(page)
+                except (ValueError, TypeError):
+                    pass
+    
+    # Strategy 2: First block's bbox - PREFER original_page
+    blocks = chunk.get('blocks', [])
+    if blocks:
+        first_block = blocks[0]
+        block_bbox = first_block.get('bbox') if isinstance(first_block, dict) else None
+        if block_bbox and isinstance(block_bbox, dict):
+            # Prefer original_page for source document references
+            page = block_bbox.get('original_page') or block_bbox.get('page')
+            if page is not None:
+                try:
+                    return int(page)
+                except (ValueError, TypeError):
+                    pass
+    
+    # Strategy 3: Most common page in blocks (for multi-page chunks) - PREFER original_page
+    if blocks:
+        page_counts = {}
+        for block in blocks:
+            if isinstance(block, dict):
+                block_bbox = block.get('bbox')
+                if block_bbox and isinstance(block_bbox, dict):
+                    # Prefer original_page for source document references
+                    page = block_bbox.get('original_page') or block_bbox.get('page')
+                    if page is not None:
+                        try:
+                            page = int(page)
+                            page_counts[page] = page_counts.get(page, 0) + 1
+                        except (ValueError, TypeError):
+                            pass
+        
+        if page_counts:
+            # Return most common page
+            return max(page_counts, key=page_counts.get)
+    
+    return None  # No page number found
 
 # Create enhanced geocoding function for addresses
 def geocode_address_parallel(addresses: list, max_workers: int = 3) -> list:
@@ -516,16 +669,25 @@ def process_document_classification(self, document_id, file_content, original_fi
     from .models import db, Document, DocumentStatus
     from .services.processing_history_service import ProcessingHistoryService
     from .services.filename_address_service import FilenameAddressService
+    from .services.document_storage_service import DocumentStorageService
     import tempfile
     import os
     
     app = create_app()
     
     with app.app_context():
-        document = Document.query.get(document_id)
-        if not document:
-            logger.error(f"Document with id {document_id} not found.")
-            return {"error": "Document not found"}
+        # Fetch document from Supabase (not local PostgreSQL)
+        doc_storage = DocumentStorageService()
+        success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
+        
+        if not success or not document_dict:
+            logger.error(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            return {"error": f"Document not found: {error}"}
+        
+        logger.info(f"✅ Retrieved document {document_id} from Supabase")
+        
+        # Store document_dict for later use (will replace document.attribute with document_dict['attribute'] in Phase 2)
+        document = document_dict
         
         # Initialize processing history service
         history_service = ProcessingHistoryService()
@@ -542,14 +704,22 @@ def process_document_classification(self, document_id, file_content, original_fi
                 filename_confidence = filename_service.confidence_score(filename_address)
                 logger.info(f"📍 Extracted address from filename: '{filename_address}' (confidence: {filename_confidence:.2f})")
                 
-                # Store filename address in document metadata for later use
-                document.metadata_json = json.dumps({
-                    'filename_address': filename_address,
-                    'filename_address_confidence': filename_confidence,
-                    'address_source': 'filename'
-                })
-                db.session.commit()
-                logger.info(f"✅ Saved filename address to document metadata")
+                # Store filename address in document metadata (Supabase document_summary JSONB)
+                # Use helper function to safely parse document_summary
+                document_summary = get_document_summary_safe(document)
+                
+                document_summary['filename_address'] = filename_address
+                document_summary['filename_address_confidence'] = filename_confidence
+                document_summary['address_source'] = 'filename'
+                
+                # Update document in Supabase
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status=document.get('status', 'uploaded'),  # Keep current status
+                    business_id=business_id,
+                    additional_data={'document_summary': document_summary}
+                )
+                logger.info(f"✅ Saved filename address to document metadata in Supabase")
             else:
                 logger.info(f"ℹ️  No address found in filename, will rely on document content extraction")
             
@@ -564,40 +734,13 @@ def process_document_classification(self, document_id, file_content, original_fi
                 }
             )
             
-            # Update document status
-            document.status = DocumentStatus.PROCESSING
-            db.session.commit()
-            
-            # Create document in Supabase if it doesn't exist
-            try:
-                from .services.supabase_document_service import SupabaseDocumentService
-                doc_service = SupabaseDocumentService()
-                
-                # Check if document exists in Supabase
-                existing_doc = doc_service.get_document_by_id(str(document_id))
-                if not existing_doc:
-                    # Create document in Supabase
-                    doc_data = {
-                        'id': str(document_id),
-                        'original_filename': original_filename,
-                        's3_path': document.s3_path,
-                        'file_type': document.file_type,
-                        'file_size': document.file_size,
-                        'uploaded_by_user_id': str(document.uploaded_by_user_id),
-                        'business_id': business_id,
-                        'status': 'processing',
-                        'created_at': document.created_at.isoformat() if document.created_at else None,
-                        'updated_at': datetime.utcnow().isoformat()
-                    }
-                    doc_service.create_document(doc_data)
-                    logger.info(f"✅ Created document in Supabase: {document_id}")
-                else:
-                    # Update existing document status
-                    doc_service.update_document_status(str(document_id), 'processing')
-                    logger.info(f"✅ Updated document status in Supabase: {document_id}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to sync document to Supabase: {e}")
-                # Continue processing - don't fail the task
+            # Update document status to processing in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='processing',
+                business_id=business_id
+            )
+            logger.info(f"✅ Updated document status to 'processing' in Supabase")
             
             # Save file temporarily for parsing
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
@@ -608,13 +751,14 @@ def process_document_classification(self, document_id, file_content, original_fi
             classification_result = None
             
             try:
-                # REDUCTO PATH: Parse and classify using Reducto
-                logger.info(f"Using Reducto for parsing and classification: {original_filename}")
+                # REDUCTO PATH: Parse and classify using Reducto (section-based chunking)
+                logger.info(f"Using Reducto for parsing and classification (section-based chunking): {original_filename}")
                 from .services.reducto_service import ReductoService
                 
                 reducto = ReductoService()
                 
                 # Parse document - use async for large files (> 1MB)
+                # Now uses section-based chunking to maintain document structure
                 file_size_mb = len(file_content) / (1024 * 1024)
                 use_async = file_size_mb > 1.0  # Use async for files > 1MB
                 
@@ -633,21 +777,19 @@ def process_document_classification(self, document_id, file_content, original_fi
                 chunks = parse_result.get('chunks', [])
                 image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
                 
-                logger.info(f"✅ Reducto Parse completed. Job ID: {job_id}")
+                logger.info(f"✅ Reducto Parse completed (section-based chunking). Job ID: {job_id}")
                 logger.info(f"📄 Extracted {len(document_text)} characters of text")
                 logger.info(f"📸 Found {len(image_urls)} images")
-                logger.info(f"📦 Extracted {len(chunks)} chunks")
+                logger.info(f"📦 Extracted {len(chunks)} section-based chunks")
                 
-                # Store job_id and image URLs in metadata for later use
-                if document.metadata_json:
-                    metadata = json.loads(document.metadata_json)
-                else:
-                    metadata = {}
+                # Store job_id and image URLs in metadata (Supabase document_summary JSONB)
+                # Use helper function to safely parse document_summary
+                document_summary = get_document_summary_safe(document)
                 
-                metadata['reducto_job_id'] = job_id
-                metadata['reducto_parse_timestamp'] = datetime.utcnow().isoformat()
-                metadata['reducto_image_urls'] = image_urls
-                metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
+                document_summary['reducto_job_id'] = job_id
+                document_summary['reducto_parse_timestamp'] = datetime.utcnow().isoformat()
+                document_summary['reducto_image_urls'] = image_urls
+                document_summary['reducto_image_blocks_metadata'] = image_blocks_metadata
                 if chunks:
                     # Store FULL chunks structure with bbox metadata for later retrieval
                     # This ensures bbox data is available even if Reducto job_id expires
@@ -660,82 +802,50 @@ def process_document_classification(self, document_id, file_content, original_fi
                             'bbox': chunk.get('bbox'),
                             'blocks': chunk.get('blocks', [])
                         })
-                    metadata['reducto_chunks'] = chunks_data
-                    metadata['reducto_chunk_count'] = len(chunks)
+                    document_summary['reducto_chunks'] = chunks_data
+                    document_summary['reducto_chunk_count'] = len(chunks)
                     logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document metadata")
-                document.metadata_json = json.dumps(metadata)
                 
-                # Store parsed text immediately
-                document.parsed_text = document_text
-                db.session.commit()
+                # Store parsed text and metadata in Supabase
+                doc_storage.update_document_extraction(
+                    document_id=str(document_id),
+                    parsed_text=document_text,
+                    extracted_json={},  # Will be populated later in extraction step
+                    business_id=business_id
+                )
                 
-                # IMMEDIATELY create document vectors after parse completes
-                # We don't know property_id yet, but we can link via document_relationships later
-                if document_text and chunks:
-                    logger.info(f"🔄 Creating document vectors immediately after parse...")
-                    from .services.vector_service import SupabaseVectorService
-                    vector_service = SupabaseVectorService()
-                    
-                    # Extract chunk texts for embedding
-                    # Use embed if available (optimized for embeddings), otherwise use content
-                    # If chunks are too large, they'll be split by vector_service
-                    chunk_texts = []
-                    chunk_metadata_list = []
-                    
-                    MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin for 8192 token limit
-                    
-                    for chunk in chunks:
-                        # Prefer embed (optimized for embeddings), fallback to content
-                        embed_text = chunk.get('embed', '')
-                        content_text = chunk.get('content', '')
-                        
-                        # Choose text to embed (prefer embed if available)
-                        text_to_embed = embed_text if embed_text else content_text
-                        
-                        if text_to_embed:
-                            # If text is too large, it will be chunked by vector_service
-                            # For now, add it as-is (vector_service will handle chunking)
-                            chunk_texts.append(text_to_embed)
-                            
-                            # Extract chunk metadata with bbox
-                            chunk_bbox = chunk.get('bbox')
-                            chunk_meta = {
-                                'bbox': chunk_bbox,  # Chunk-level bbox
-                                'blocks': chunk.get('blocks', []),  # All blocks with bbox
-                                'page': chunk_bbox.get('page') if chunk_bbox and isinstance(chunk_bbox, dict) else None
-                            }
-                            chunk_metadata_list.append(chunk_meta)
-                            
-                            if len(text_to_embed) > MAX_CHUNK_SIZE:
-                                logger.warning(f"⚠️ Large chunk detected ({len(text_to_embed)} chars), will be split during embedding")
-                    
-                    if chunk_texts:
-                        vector_metadata = {
-                            'document_id': str(document_id),
-                            'classification_type': None,  # Will be set after classification
-                            'address_hash': None,  # Will be set after extraction
-                            'business_id': business_id,
-                            'property_id': None  # Will be set after property linking
-                        }
-                        
-                        success = vector_service.store_document_vectors(
-                            document_id=str(document_id),
-                            chunks=chunk_texts,
-                            metadata=vector_metadata,
-                            chunk_metadata_list=chunk_metadata_list,  # NEW: Pass bbox metadata
-                            lazy_embedding=False  # Immediate embedding after parsing (faster queries)
-                        )
-                        
-                        if success:
-                            logger.info(f"Document vectors stored: {len(chunk_texts)} chunks embedded with bbox metadata")
-                        else:
-                            logger.warning(f"⚠️ Failed to store document vectors")
-                    else:
-                        logger.warning(f"⚠️ No chunk texts to embed")
-                else:
-                    logger.warning(f"⚠️ No document text or chunks to embed")
+                # Update document_summary using dedicated method with proper JSONB merging
+                # This ensures job_id, chunks, and other metadata are preserved
+                doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    updates={
+                        'reducto_job_id': job_id,
+                        'reducto_parse_timestamp': datetime.utcnow().isoformat(),
+                        'reducto_image_urls': image_urls,
+                        'reducto_image_blocks_metadata': image_blocks_metadata,
+                        'reducto_chunks': chunks_data if chunks else [],
+                        'reducto_chunk_count': len(chunks) if chunks else 0
+                    },
+                    merge=True  # Merge with existing document_summary to preserve other fields
+                )
                 
-                # Classify using Reducto Extract (can run in parallel with vectorization above)
+                # Also update status (separate call)
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='processing',  # Keep processing status
+                    business_id=business_id
+                )
+                logger.info(f"✅ Stored parsed text and metadata in Supabase")
+                
+                # Phase 5: REMOVED duplicate vector creation from classification step
+                # Vector creation now happens in extraction step with proper metadata:
+                # - property_id (from property linking)
+                # - classification_type (from classification)
+                # - address_hash (from extraction)
+                # This eliminates duplicate embeddings and ensures metadata is complete.
+                
+                # Classify using Reducto Extract
                 classification = reducto.classify_document(job_id)
                 
                 # Convert string confidence to numeric for compatibility
@@ -748,40 +858,56 @@ def process_document_classification(self, document_id, file_content, original_fi
                     'method': 'reducto_extract'
                 }
                 
-                # parsed_text already stored above, just update metadata backup
-                if document.metadata_json:
-                    metadata = json.loads(document.metadata_json)
-                else:
-                    metadata = {}
-                metadata['reducto_parsed_text'] = document_text  # backup
-                metadata['reducto_image_urls'] = image_urls
-                if image_blocks_metadata:
-                    metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
-                document.metadata_json = json.dumps(metadata)
-                db.session.commit()
-                
-                # Log text extraction success
-                history_service.log_step_completion(
-                    history_id=history_id,
-                    step_message=f"Text extraction completed: {len(document_text)} characters",
-                    step_metadata={
-                        'text_length': len(document_text),
-                        'provider': 'reducto'
-                    }
+                # parsed_text and job_id already stored above via update_document_summary
+                # Just ensure classification metadata is also stored
+                # Note: reducto_job_id was already stored in update_document_summary call above (line 819-831)
+                doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=business_id,
+                    updates={
+                        'reducto_parsed_text': document_text,  # backup
+                        'reducto_image_urls': image_urls,
+                    },
+                    merge=True  # Merge to preserve reducto_job_id and other fields
                 )
+                if image_blocks_metadata:
+                    doc_storage.update_document_summary(
+                    document_id=str(document_id),
+                    business_id=business_id,
+                        updates={'reducto_image_blocks_metadata': image_blocks_metadata},
+                        merge=True
+                )
+                
+                # Log text extraction success (non-fatal if history_id is None)
+                if history_id:
+                    history_service.log_step_completion(
+                        history_id=history_id,
+                        step_message=f"Text extraction completed: {len(document_text)} characters",
+                        step_metadata={
+                            'text_length': len(document_text),
+                            'provider': 'reducto'
+                        }
+                    )
                 
             except Exception as e:
                 logger.error(f"Reducto extraction failed: {e}")
                 # Use fallback text extraction
                 document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
-                document.parsed_text = document_text
+                # Store fallback text in Supabase
+                doc_storage.update_document_extraction(
+                    document_id=str(document_id),
+                    parsed_text=document_text,
+                    extracted_json={},
+                    business_id=business_id
+                )
                 
-                # Log text extraction with fallback
-                history_service.log_step_completion(
-                    history_id=history_id,
-                    step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
-                    step_metadata={
-                        'text_length': len(document_text),
+                # Log text extraction with fallback (non-fatal if history_id is None)
+                if history_id:
+                    history_service.log_step_completion(
+                        history_id=history_id,
+                        step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
+                        step_metadata={
+                            'text_length': len(document_text),
                         'fallback_used': True,
                         'extraction_error': str(e),
                         'provider': 'reducto'
@@ -796,42 +922,61 @@ def process_document_classification(self, document_id, file_content, original_fi
             if classification_result is None:
                 raise ValueError("Classification failed: classification_result is None")
             
-            # Classes the document with classification results
-            document.classification_type = classification_result['type']
-            document.classification_confidence = classification_result['confidence']
-            document.classification_reasoning = classification_result['reasoning']
-            document.classification_timestamp = datetime.utcnow()
-            document.status = DocumentStatus.COMPLETED
-            db.session.commit()
-            
-            # Sync classification to Supabase
-            try:
-                from .services.supabase_document_service import SupabaseDocumentService
-                doc_service = SupabaseDocumentService()
-                
-                additional_data = {
-                'classification_type': classification_result['type'],
-                'classification_confidence': classification_result['confidence'],
-                'classification_timestamp': document.classification_timestamp.isoformat()
-                }
-                
-                doc_service.update_document_status(str(document_id), 'completed', additional_data)
-                logger.info(f"✅ Updated classification in Supabase: {document_id}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to sync classification to Supabase: {e}")
-            
-            # Log classification completion
-            history_service.log_step_completion(
-                history_id=history_id,
-                step_message=f"Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}",
-                step_metadata={
-                    'classification_type': classification_result['type'],
-                    'classification_confidence': classification_result['confidence'],
-                    'classification_reasoning': classification_result['reasoning']
-                }
+            # Store classification results in Supabase
+            doc_storage.update_document_classification(
+                document_id=str(document_id),
+                classification_type=classification_result['type'],
+                classification_confidence=classification_result['confidence'],
+                business_id=business_id
             )
             
+            # Update status to completed
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='completed',
+                business_id=business_id,
+                additional_data={
+                    'classification_timestamp': datetime.utcnow().isoformat()
+                }
+            )
+            logger.info(f"✅ Updated classification and status in Supabase: {document_id}")
+            
+            # Log classification completion (non-fatal if history_id is None)
+            if history_id:
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}",
+                    step_metadata={
+                        'classification_type': classification_result['type'],
+                        'classification_confidence': classification_result['confidence'],
+                        'classification_reasoning': classification_result['reasoning']
+                    }
+                )
+            
             logger.info(f"✅ Document classified as '{classification_result['type']}' with confidence {classification_result['confidence']:.2f}")
+            
+            # Get job_id from classification parse result to pass directly to extraction
+            # This avoids read-after-write consistency issues
+            # Use the job_id from the parse_result that was just stored (line 770)
+            job_id_for_extraction = None
+            try:
+                # The job_id is already in memory from the parse_result above (line 770)
+                # Use it directly instead of reading from database
+                if 'job_id' in locals() and job_id:
+                    job_id_for_extraction = job_id
+                    logger.info(f"✅ Using job_id from classification parse: {job_id_for_extraction}")
+                else:
+                    # Fallback: try to get from document_summary (may not be committed yet)
+                    document_summary = get_document_summary_safe(document)
+                    job_id_for_extraction = document_summary.get('reducto_job_id')
+                    if job_id_for_extraction:
+                        logger.info(f"✅ Retrieved job_id from document_summary: {job_id_for_extraction}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not retrieve job_id from classification: {e}")
+            
+            # Brief wait for Supabase replication (reduced since we're passing job_id directly)
+            time.sleep(1.0)  # Reduced from 2.0s since we're passing job_id directly
+            logger.info(f"⏳ Waited 1.0s for Supabase replication before triggering extraction")
             
             # Trigger appropriate extraction pipeline based on classification
             if classification_result['type'] in ['valuation_report', 'market_appraisal']:
@@ -840,12 +985,15 @@ def process_document_classification(self, document_id, file_content, original_fi
                 logger.info(f"   Document ID: {document_id}")
                 logger.info(f"   Business ID: {business_id}")
                 logger.info(f"   Filename: {original_filename}")
+                if job_id_for_extraction:
+                    logger.info(f"   Job ID: {job_id_for_extraction} (passed directly)")
                 
                 task = process_document_with_dual_stores.delay(
                     document_id=document_id,
                     file_content=file_content,
                     original_filename=original_filename,
-                    business_id=business_id
+                    business_id=business_id,
+                    job_id=job_id_for_extraction  # ✅ Pass job_id directly
                 )
                 
                 logger.info(f"✅ EXTRACTION TASK QUEUED: {task.id}")
@@ -853,12 +1001,15 @@ def process_document_classification(self, document_id, file_content, original_fi
             else:
                 logger.info(f"🎯 CLASSIFICATION COMPLETE: {classification_result['type']}")
                 logger.info(f"🔄 TRIGGERING MINIMAL EXTRACTION: process_document_minimal_extraction")
+                if job_id_for_extraction:
+                    logger.info(f"   Job ID: {job_id_for_extraction} (passed directly)")
                 
                 task = process_document_minimal_extraction.delay(
                     document_id=document_id,
                     file_content=file_content,
                     original_filename=original_filename,
-                    business_id=business_id
+                    business_id=business_id,
+                    job_id=job_id_for_extraction  # ✅ Pass job_id directly
                 )
                 
                 logger.info(f"✅ MINIMAL EXTRACTION TASK QUEUED: {task.id}")
@@ -884,10 +1035,14 @@ def process_document_classification(self, document_id, file_content, original_fi
                 )
             
             try:
-                document.status = DocumentStatus.FAILED
-                db.session.commit()
-            except:
-                pass
+                # Update status to failed in Supabase
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_error:
+                logger.error(f"Failed to update document status to failed: {status_error}")
             return {"error": str(e)}
         
         finally:
@@ -899,7 +1054,7 @@ def process_document_classification(self, document_id, file_content, original_fi
                 pass
 
 @shared_task(bind=True)
-def process_document_minimal_extraction(self, document_id, file_content, original_filename, business_id):
+def process_document_minimal_extraction(self, document_id, file_content, original_filename, business_id, job_id=None):
     """
     Minimal extraction pipeline for non-valuation documents.
     Only extracts basic property information if available, and document metadata.
@@ -908,16 +1063,23 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
     from .models import db, Document, DocumentStatus
     from .services.processing_history_service import ProcessingHistoryService
     from .services.extraction_schemas import MINIMAL_EXTRACTION_SCHEMA
+    from .services.document_storage_service import DocumentStorageService
     import tempfile
     import os
 
     app = create_app()
 
     with app.app_context():
-        document = Document.query.get(document_id)
-        if not document:
-            logger.error(f"Document with id {document_id} not found.")
-            return {'error': 'Document not found'}
+        # Fetch document from Supabase (not local PostgreSQL)
+        doc_storage = DocumentStorageService()
+        success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
+        
+        if not success or not document_dict:
+            logger.error(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            return {'error': f'Document not found: {error}'}
+        
+        logger.info(f"✅ Retrieved document {document_id} from Supabase")
+        document = document_dict  # document is now a dict from Supabase
 
         # Initialise processing history service 
         history_service = ProcessingHistoryService()
@@ -936,9 +1098,12 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 }
             )
 
-            # update the document status
-            document.status = DocumentStatus.PROCESSING
-            db.session.commit()
+            # update the document status in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='processing',
+                business_id=business_id
+            )
 
             # save file temporarily for parsing
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
@@ -946,7 +1111,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 temp_file_path = temp_file.name
             
             # Initialize variables that might be needed in exception handler
-            classification_type = document.classification_type or 'other_documents'
+            classification_type = document.get('classification_type') or 'other_documents'
             document_text = ""
             extracted_data = None
             
@@ -957,23 +1122,35 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 
                 logger.info(f"🎯 Using extraction schema for: {classification_type}")
                 
-                # REDUCTO PATH: Use Reducto for minimal extraction
-                logger.info(f"🔄 Using Reducto for minimal extraction: {original_filename}")
+                # REDUCTO PATH: Use Reducto for minimal extraction (section-based chunking)
+                logger.info(f"🔄 Using Reducto for minimal extraction (section-based chunking): {original_filename}")
                 from .services.reducto_service import ReductoService
                 
                 reducto = ReductoService()
                 
-                # Check if we already have job_id from classification step
-                job_id = None
+                # Use job_id passed from classification task (avoids read-after-write consistency issues)
+                # Fallback to database lookup if not provided
+                document_text = document.get('parsed_text') or ""
                 
-                if document.metadata_json:
-                    metadata = json.loads(document.metadata_json)
-                    job_id = metadata.get('reducto_job_id')
-                    document_text = document.parsed_text or ""
+                # Use job_id passed from classification task (avoids read-after-write consistency issues)
+                if not job_id or not isinstance(job_id, str) or not job_id.strip():
+                    # Fallback: Try to retrieve from database (with retry for race conditions)
+                    logger.info(f"🔍 Job_id not provided, attempting to retrieve from database...")
+                    document_summary = get_document_summary_safe(document)
+                    job_id = get_job_id_with_retry(doc_storage, str(document_id), business_id, max_retries=3)
+                else:
+                    # Job_id was passed, use it directly
+                    logger.info(f"✅ Using job_id passed from classification task: {job_id}")
+                    document_summary = get_document_summary_safe(document)
                 
-                # If no job_id, parse now (shouldn't happen but safe fallback)
-                if not job_id:
-                    logger.info("⚠️ No job_id found in metadata, parsing document now...")
+                # Validate job_id before proceeding
+                if job_id and isinstance(job_id, str) and job_id.strip():
+                    job_id = job_id.strip()
+                    logger.info(f"✅ Using job_id: {job_id}")
+                else:
+                    logger.error(f"❌ Invalid job_id: {job_id}. Cannot proceed with extraction without valid job_id.")
+                    # If no job_id after retries, only then parse (shouldn't happen in normal flow)
+                    logger.warning("⚠️ No job_id found, parsing document now (this should be rare)...")
                     file_size_mb = len(file_content) / (1024 * 1024)
                     use_async = file_size_mb > 1.0
                     
@@ -985,20 +1162,34 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                     job_id = parse_result['job_id']
                     document_text = parse_result['document_text']
                     
-                    # Store in metadata
-                    if document.metadata_json:
-                        metadata = json.loads(document.metadata_json)
-                    else:
-                        metadata = {}
-                    metadata['reducto_job_id'] = job_id
-                    document.metadata_json = json.dumps(metadata)
-                    document.parsed_text = document_text
-                    db.session.commit()
-                else:
-                    logger.info(f"✅ Using existing job_id: {job_id}")
+                    # Store in document_summary (Supabase JSONB)
+                    # Refresh document_summary after parse to ensure we have the latest
+                    document_summary = get_document_summary_safe(document)
+                    document_summary['reducto_job_id'] = job_id
+                    
+                    # Store parsed text and metadata in Supabase
+                    doc_storage.update_document_extraction(
+                        document_id=str(document_id),
+                        parsed_text=document_text,
+                        extracted_json={},
+                        business_id=business_id
+                    )
+                    
+                    # Update document_summary
+                    doc_storage.update_document_status(
+                        document_id=str(document_id),
+                        status='processing',
+                        business_id=business_id,
+                        additional_data={'document_summary': document_summary}
+                    )
+                
+                # Validate job_id before extraction (after potential re-parsing)
+                if not job_id or not isinstance(job_id, str) or not job_id.strip():
+                    logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
+                    raise ValueError(f"job_id must be a non-empty string, got: {type(job_id)} = {job_id}")
                         
-                # Extract with schema using Reducto
-                logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type}")
+                # Extract with schema using Reducto (uses jobid://{job_id} format internally)
+                logger.info(f"🔄 Extracting minimal data with Reducto schema for: {classification_type} (job_id: {job_id})")
                 extraction = reducto.extract_with_schema(
                     job_id=job_id,
                                 schema=extraction_schema,
@@ -1012,16 +1203,23 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 logger.error(f"⚠️ Reducto extraction failed: {e}, using fallback")
                 # Ensure document_text is available for fallback
                 if not document_text:
-                    document_text = document.parsed_text or ""
+                    document_text = document.get('parsed_text') or ""
                 extracted_data = _fallback_text_extraction(document_text, original_filename)
 
-            # Store extracted data (for both success and failure cases)
-            document.extracted_json = json.dumps(extracted_data)
-            document.status = DocumentStatus.COMPLETED
-            db.session.commit()
-                
-            # Sync completion to Supabase
-            sync_document_to_supabase(document_id, 'completed')
+            # Store extracted data in Supabase (for both success and failure cases)
+            doc_storage.update_document_extraction(
+                document_id=str(document_id),
+                parsed_text=document_text,
+                extracted_json=extracted_data,
+                business_id=business_id
+            )
+            
+            # Update status to completed in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='completed',
+                business_id=business_id
+            )
 
             # ========================================================================
             # PROPERTY LINKING FOR MINIMAL EXTRACTION (MOVED OUTSIDE EXCEPT BLOCK)
@@ -1032,14 +1230,15 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             # Handle different extraction data formats
             extracted_properties = []
             
-            if classification_type == 'other_documents' and 'subject_property' in extracted_data:
-                # New format: subject_property object
+            # Check for subject_property format (used by letter_of_offer, other_documents, etc.)
+            if extracted_data and 'subject_property' in extracted_data:
+                # New format: subject_property object (used by OTHER_DOCUMENTS_EXTRACTION_SCHEMA)
                 subject_prop = extracted_data['subject_property']
                 if subject_prop and subject_prop.get('property_address'):
                     extracted_properties = [subject_prop]
-                    logger.info(f"📍 Found subject property in other_documents format")
-            elif 'properties' in extracted_data:
-                # Legacy format: properties array
+                    logger.info(f"📍 Found subject property in subject_property format (classification: {classification_type})")
+            elif extracted_data and 'properties' in extracted_data:
+                # Legacy format: properties array (used by MINIMAL_EXTRACTION_SCHEMA)
                 extracted_properties = extracted_data.get('properties', [])
                 logger.info(f"📍 Found {len(extracted_properties)} properties in legacy format")
             
@@ -1107,27 +1306,174 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             else:
                 logger.info("ℹ️ No properties found in minimal extraction - skipping property linking")
 
-            # log history completion
-            history_service.log_step_completion(
-                history_id=history_id,
-                step_message=f"Minimal extraction completed with property linking",
-                step_metadata={
-                    'extracted_properties': len(extracted_data.get('properties', [])) if extracted_data else 0,
-                    'text_length': len(document_text),
-                    'property_linking_attempted': len(extracted_properties) > 0
-                }
-            )
+            # ========================================================================
+            # CHUNKING AND EMBEDDING FOR MINIMAL EXTRACTION
+            # Same strategy as full extraction - use stored chunks or retrieve from Reducto
+            # ========================================================================
+            logger.info("🔄 Starting document vector embedding for minimal extraction...")
+            
+            document_vectors_stored = 0
+            business_uuid = business_id  # Use business_id directly (already UUID format)
+            
+            try:
+                from .services.vector_service import SupabaseVectorService
+                vector_service = SupabaseVectorService()
+                
+                # Get property_id from property linking if available
+                property_id = None
+                if extracted_properties:
+                    # Try to get property_id from the first linked property
+                    try:
+                        from .services.supabase_property_hub_service import SupabasePropertyHubService
+                        hub_service = SupabasePropertyHubService()
+                        # Get relationship to find property_id
+                        from .services.supabase_client_factory import get_supabase_client
+                        supabase = get_supabase_client()
+                        rel_result = supabase.table('document_relationships').select('property_id').eq(
+                            'document_id', str(document_id)
+                        ).limit(1).execute()
+                        if rel_result.data and len(rel_result.data) > 0:
+                            property_id = rel_result.data[0].get('property_id')
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not retrieve property_id: {e}")
+                
+                if document_text:
+                    try:
+                        # PRIORITY 1: Get chunks from stored document_summary (has bbox metadata)
+                        reducto_chunks = None
+                        chunk_metadata_list = None
+                        
+                        document_summary = get_document_summary_safe(document)
+                        if document_summary:
+                            try:
+                                stored_chunks = document_summary.get('reducto_chunks', [])
+                                if stored_chunks:
+                                    reducto_chunks = stored_chunks
+                                    logger.info(f"✅ Retrieved {len(reducto_chunks)} section-based chunks from stored metadata (with bbox)")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not parse stored chunks: {e}")
+                        
+                        # PRIORITY 2: Fallback to Reducto API if metadata doesn't have chunks
+                        if not reducto_chunks and job_id:
+                            try:
+                                logger.info(f"🔄 Attempting to retrieve chunks from Reducto API (job_id may have expired)...")
+                                parse_result = reducto.get_parse_result_from_job_id(
+                                    job_id=job_id,
+                                    return_images=["figure", "table"]
+                                )
+                                reducto_chunks = parse_result.get('chunks', [])
+                                logger.info(f"✅ Retrieved {len(reducto_chunks)} section-based chunks from Reducto API")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not retrieve Reducto chunks from API: {e}")
+                                logger.info(f"   This is expected if job_id has expired (>12 hours)")
+                        
+                        # Use Reducto chunks if available, otherwise chunk manually
+                        if reducto_chunks:
+                            # Extract chunk texts for embedding (use embed if available, fallback to content)
+                            chunk_texts = []
+                            chunk_metadata_list = []
+                            
+                            for chunk in reducto_chunks:
+                                # Prefer embed (optimized for embeddings), fallback to content
+                                embed_text = chunk.get('embed', '')
+                                content_text = chunk.get('content', '')
+                                
+                                # Choose text to embed
+                                text_to_embed = embed_text if embed_text else content_text
+                                
+                                if text_to_embed:
+                                    chunk_texts.append(text_to_embed)
+                                    
+                                    # Extract chunk metadata with bbox
+                                    chunk_bbox = chunk.get('bbox')
+                                    # Use robust page number extraction
+                                    chunk_page = extract_page_number_from_chunk(chunk)
+                                    chunk_meta = {
+                                        'bbox': chunk_bbox,  # Chunk-level bbox
+                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
+                                        'page': chunk_page  # Robustly extracted page number
+                                    }
+                                    chunk_metadata_list.append(chunk_meta)
+                            
+                            chunks = chunk_texts
+                            logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
+                        else:
+                            # Fallback: Chunk the document text manually (no bbox metadata)
+                            chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=None)
+                            chunk_metadata_list = None
+                            logger.info(f"⚠️ Using manual chunking (no bbox metadata): {len(chunks)} chunks")
+                        
+                        # Prepare metadata
+                        metadata = {
+                            'business_id': business_uuid,
+                            'document_id': str(document_id),
+                            'property_id': str(property_id) if property_id else None,
+                            'classification_type': classification_type or 'other_documents',
+                            'address_hash': None  # Will be set if available
+                        }
+                        
+                        # Store document vectors with immediate embedding (same as full extraction)
+                        success = vector_service.store_document_vectors(
+                            str(document_id), 
+                            chunks, 
+                            metadata,
+                            chunk_metadata_list=chunk_metadata_list,
+                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
+                        )
+                        
+                        if success:
+                            document_vectors_stored = len(chunks)
+                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
+                        else:
+                            logger.error(f"❌ Failed to store document vectors")
+                            
+                    except Exception as e:
+                        logger.error(f"⚠️ Error chunking/storing document vectors: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    logger.warning("⚠️ No document text available for chunking/embedding")
+                    
+            except Exception as e:
+                logger.error(f"❌ Vector service failed: {e}")
+                import traceback
+                traceback.print_exc()
+                logger.warning("⚠️ Continuing without vector storage...")
+            
+            logger.info(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
+
+            # log history completion (non-fatal if history_id is None)
+            if history_id:
+                history_service.log_step_completion(
+                    history_id=history_id,
+                    step_message=f"Minimal extraction completed with property linking and vector embedding",
+                    step_metadata={
+                        'extracted_properties': len(extracted_data.get('properties', [])) if extracted_data else 0,
+                        'text_length': len(document_text),
+                        'property_linking_attempted': len(extracted_properties) > 0,
+                        'vectors_stored': document_vectors_stored
+                    }
+                )
 
             return {
                 'status': 'completed',
                 'properties': extracted_data.get('properties', []) if extracted_data else [],
-                'history_id': history_id
+                'history_id': history_id,
+                'vectors_stored': document_vectors_stored
             }
 
         except Exception as e:
             logger.error(f"Error in minimal extraction: {e}")
-            document.status = DocumentStatus.FAILED
-            db.session.commit()
+            
+            # Update status to failed in Supabase
+            try:
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_error:
+                logger.error(f"Failed to update document status to failed: {status_error}")
 
             if 'history_id' in locals():
                 history_service.log_step_failure(
@@ -1146,7 +1492,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                 pass
 
 @shared_task(bind=True)
-def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id):
+def process_document_with_dual_stores(self, document_id, file_content, original_filename, business_id, job_id=None):
     """
     Celery task to process an uploaded document:
     1. Receives file content directly.
@@ -1178,16 +1524,28 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
         print(f"   File size: {len(file_content)} bytes")
         print("=" * 80)
         
-        document = Document.query.get(document_id)
-        if not document:
-            print(f"❌ Document with id {document_id} not found.")
+        # Fetch document from Supabase (not local PostgreSQL)
+        from .services.document_storage_service import DocumentStorageService
+        doc_storage = DocumentStorageService()
+        success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
+        
+        if not success or not document_dict:
+            print(f"❌ Document with id {document_id} not found in Supabase. Error: {error}")
             return
+        
+        print(f"✅ Retrieved document {document_id} from Supabase")
+        document = document_dict  # document is now a dict from Supabase
 
         temp_dir = None
         try:
             print(f"🔄 Starting direct content processing for document_id: {document_id}")
-            document.status = DocumentStatus.PROCESSING
-            db.session.commit()
+            
+            # Update status to processing in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='processing',
+                business_id=business_id
+            )
 
             # --- 1. Save received file content to a temporary file ---
             temp_dir = tempfile.mkdtemp()
@@ -1203,8 +1561,8 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             print(f"Image extraction directory: {temp_image_dir}")
         
             # --- 2. Parse with Reducto ---
-            # REDUCTO PATH: Parse + Extract + Images
-            print("🔄 Using Reducto for document processing...")
+            # REDUCTO PATH: Parse + Extract + Images (section-based chunking)
+            print("🔄 Using Reducto for document processing (section-based chunking)...")
             
             from .services.reducto_service import ReductoService
             from .services.reducto_image_service import ReductoImageService
@@ -1213,19 +1571,37 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             reducto = ReductoService()
             image_service = ReductoImageService()
 
-            # Check if we already have job_id from classification step
-            job_id = None
+            # Initialize variables
             image_urls = []
             document_text = ""
             
-            if document.metadata_json:
-                metadata = json.loads(document.metadata_json)
-                job_id = metadata.get('reducto_job_id')
-                image_urls = metadata.get('reducto_image_urls', [])
+            # Get document_summary (JSONB) from Supabase document
+            # Use helper function to safely parse document_summary
+            document_summary = get_document_summary_safe(document)
+            image_urls = document_summary.get('reducto_image_urls', [])
             
-            # If no job_id, parse now (shouldn't happen but safe fallback)
+            # Use job_id passed from classification task (avoids read-after-write consistency issues)
+            # Fallback to database lookup if not provided
+            # Note: job_id is a function parameter (from line 1344), don't overwrite it
+            if job_id and isinstance(job_id, str) and job_id.strip():
+                job_id = job_id.strip()
+                logger.info(f"✅ Using job_id passed from classification task: {job_id}")
+            else:
+                # Fallback: Try to retrieve from database (with retry for race conditions)
+                logger.info(f"🔍 Job_id not provided, attempting to retrieve from database...")
+                retrieved_job_id = get_job_id_with_retry(doc_storage, str(document_id), business_id, max_retries=3)
+                
+                if retrieved_job_id and isinstance(retrieved_job_id, str) and retrieved_job_id.strip():
+                    job_id = retrieved_job_id.strip()
+                    logger.info(f"✅ Retrieved job_id from database: {job_id}")
+                else:
+                    logger.warning("⚠️ No valid job_id found, will need to parse document")
+                    job_id = None
+            
+            # If no job_id after retries, only then parse (shouldn't happen in normal flow)
+            # Now uses section-based chunking to maintain document structure
             if not job_id:
-                print("⚠️ No job_id found in metadata, parsing document now...")
+                logger.warning("⚠️ No job_id found after retries, parsing document now...")
                 file_size_mb = len(file_content) / (1024 * 1024)
                 use_async = file_size_mb > 1.0
                 
@@ -1241,25 +1617,76 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 document_text = parse_result['document_text']
                 image_urls = parse_result['image_urls']
                 image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                chunks = parse_result.get('chunks', [])
                 
-                # Store in metadata
-                if document.metadata_json:
-                    metadata = json.loads(document.metadata_json)
-                else:
-                    metadata = {}
-                metadata['reducto_job_id'] = job_id
-                metadata['reducto_image_urls'] = image_urls
+                # Store in document_summary (Supabase JSONB)
+                # Refresh document_summary after parse to ensure we have the latest
+                document_summary = get_document_summary_safe(document)
+                document_summary['reducto_job_id'] = job_id
+                document_summary['reducto_image_urls'] = image_urls
                 # Store image blocks metadata for filtering (if available)
                 if image_blocks_metadata:
-                    metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
-                document.metadata_json = json.dumps(metadata)
-                db.session.commit()
-            else:
-                # Get document text from stored parsed_text
-                document_text = document.parsed_text or ""
+                    document_summary['reducto_image_blocks_metadata'] = image_blocks_metadata
                 
-                # FALLBACK: If parsed_text is empty or no images, retrieve from Reducto using job_id
-                if (not document_text or not image_urls) and job_id:
+                # CRITICAL FIX: Store chunks with bbox metadata for later retrieval
+                # This ensures bbox data is available even if Reducto job_id expires
+                if chunks:
+                    chunks_data = []
+                    for chunk in chunks:
+                        chunks_data.append({
+                            'content': chunk.get('content', ''),
+                            'embed': chunk.get('embed', ''),
+                            'enriched': chunk.get('enriched'),
+                            'bbox': chunk.get('bbox'),
+                            'blocks': chunk.get('blocks', [])
+                        })
+                    document_summary['reducto_chunks'] = chunks_data
+                    document_summary['reducto_chunk_count'] = len(chunks)
+                    logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata in document_summary")
+                
+                # Store parsed text and metadata in Supabase
+                doc_storage.update_document_extraction(
+                    document_id=str(document_id),
+                    parsed_text=document_text,
+                    extracted_json={},
+                    business_id=business_id
+                )
+                
+                # Update document_summary
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='processing',
+                    business_id=business_id,
+                    additional_data={'document_summary': document_summary}
+                )
+            else:
+                logger.info(f"✅ Using existing job_id from classification: {job_id}")
+                # Get document text from stored parsed_text
+                document_text = document.get('parsed_text') or ""
+                
+                # PRIORITY 1: Check if we have stored chunks in document_summary (from classification)
+                # This avoids re-parsing or retrieving from Reducto if we already have the data
+                stored_chunks = document_summary.get('reducto_chunks', [])
+                
+                if stored_chunks:
+                    logger.info(f"✅ Found {len(stored_chunks)} chunks in document_summary, using stored data")
+                    # Use stored chunks directly - reconstruct document_text if needed
+                    if not document_text:
+                        document_text = '\n\n'.join([
+                            chunk.get('content', '') for chunk in stored_chunks if isinstance(chunk, dict)
+                        ])
+                        logger.info(f"✅ Reconstructed document text from stored chunks ({len(document_text)} chars)")
+                    
+                    # Get image_blocks_metadata from stored chunks if available
+                    image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
+                    
+                    # Extract chunks list for later use (vector embedding)
+                    chunks = stored_chunks
+                    
+                    logger.info(f"✅ Using stored chunks from classification - no Reducto retrieval needed")
+                
+                # PRIORITY 2: FALLBACK - If no stored chunks, retrieve from Reducto using job_id
+                elif (not document_text or not image_urls) and job_id:
                     logger.warning(f"⚠️ parsed_text or images missing, retrieving from Reducto for job {job_id}")
                     try:
                         # Retrieve parse result from Reducto using job_id
@@ -1271,7 +1698,6 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         # Update document_text and image_urls from retrieved result
                         if parse_result['document_text']:
                             document_text = parse_result['document_text']
-                            document.parsed_text = document_text
                             logger.info(f"✅ Retrieved parsed text from Reducto ({len(document_text)} chars)")
                         
                         if parse_result['image_urls']:
@@ -1280,43 +1706,63 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Get image blocks metadata for filtering
                         image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
+                        chunks = parse_result.get('chunks', [])
                             
-                        # Store in metadata as backup
-                        if document.metadata_json:
-                            metadata = json.loads(document.metadata_json)
-                        else:
-                            metadata = {}
-                        metadata['reducto_parsed_text'] = document_text
-                        metadata['reducto_image_urls'] = image_urls
+                        # Store in document_summary as backup (Supabase JSONB)
+                        document_summary['reducto_parsed_text'] = document_text
+                        document_summary['reducto_image_urls'] = image_urls
                         if image_blocks_metadata:
-                            metadata['reducto_image_blocks_metadata'] = image_blocks_metadata
-                        document.metadata_json = json.dumps(metadata)
+                            document_summary['reducto_image_blocks_metadata'] = image_blocks_metadata
                         
-                        # Commit updates
-                        db.session.commit()
+                        # CRITICAL FIX: Store chunks with bbox metadata for later retrieval
+                        # This ensures bbox data is available even if Reducto job_id expires
+                        if chunks:
+                            chunks_data = []
+                            for chunk in chunks:
+                                chunks_data.append({
+                                    'content': chunk.get('content', ''),
+                                    'embed': chunk.get('embed', ''),
+                                    'enriched': chunk.get('enriched'),
+                                    'bbox': chunk.get('bbox'),
+                                    'blocks': chunk.get('blocks', [])
+                                })
+                            document_summary['reducto_chunks'] = chunks_data
+                            document_summary['reducto_chunk_count'] = len(chunks)
+                            logger.info(f"✅ Stored {len(chunks_data)} chunks with bbox metadata from Reducto API")
+                        
+                        # Store parsed text and metadata in Supabase
+                        doc_storage.update_document_extraction(
+                            document_id=str(document_id),
+                            parsed_text=document_text,
+                            extracted_json={},
+                            business_id=business_id
+                        )
+                        
+                        # Update document_summary
+                        doc_storage.update_document_status(
+                            document_id=str(document_id),
+                            status='processing',
+                            business_id=business_id,
+                            additional_data={'document_summary': document_summary}
+                        )
                         
                     except Exception as e:
                         logger.error(f"Failed to retrieve parse result from Reducto job_id: {e}")
-                        # Fallback to metadata backup
-                        if document.metadata_json:
+                        # Fallback to document_summary backup (Supabase JSONB)
+                        if document_summary:
                             try:
-                                metadata = json.loads(document.metadata_json)
-                                stored_text = metadata.get('reducto_parsed_text', '')
-                                stored_image_urls = metadata.get('reducto_image_urls', [])
+                                stored_text = document_summary.get('reducto_parsed_text', '')
+                                stored_image_urls = document_summary.get('reducto_image_urls', [])
                                 
                                 if stored_text and not document_text:
                                     document_text = stored_text
-                                    document.parsed_text = stored_text
-                                    logger.info(f"✅ Retrieved parsed text from metadata backup ({len(document_text)} chars)")
+                                    logger.info(f"✅ Retrieved parsed text from document_summary backup ({len(document_text)} chars)")
                                 
                                 if stored_image_urls and not image_urls:
                                     image_urls = stored_image_urls
-                                    logger.info(f"✅ Retrieved {len(image_urls)} image URLs from metadata backup")
-                                
-                                if (stored_text and not document_text) or (stored_image_urls and not image_urls):
-                                    db.session.commit()
+                                    logger.info(f"✅ Retrieved {len(image_urls)} image URLs from document_summary backup")
                             except Exception as e2:
-                                logger.error(f"Failed to retrieve parse result from metadata: {e2}")
+                                logger.error(f"Failed to retrieve parse result from document_summary: {e2}")
                 
                 print(f"✅ Using existing job_id: {job_id}")
                 
@@ -1324,11 +1770,10 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 if 'image_blocks_metadata' not in locals() or image_blocks_metadata is None:
                     image_blocks_metadata = []
                 
-                # Try to get image_blocks_metadata from metadata if not already retrieved
-                if not image_blocks_metadata and document.metadata_json:
+                # Try to get image_blocks_metadata from document_summary if not already retrieved
+                if not image_blocks_metadata and document_summary:
                     try:
-                        metadata = json.loads(document.metadata_json)
-                        image_blocks_metadata = metadata.get('reducto_image_blocks_metadata', [])
+                        image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
                     except:
                         pass
             
@@ -1341,53 +1786,88 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 # Try to get from parse_result if available
                 if 'parse_result' in locals() and isinstance(parse_result, dict):
                     image_blocks_metadata = parse_result.get('image_blocks_metadata', [])
-                # Fallback to metadata
-                elif document.metadata_json:
+                # Fallback to document_summary
+                elif document_summary:
                     try:
-                        metadata = json.loads(document.metadata_json)
-                        image_blocks_metadata = metadata.get('reducto_image_blocks_metadata', [])
+                        image_blocks_metadata = document_summary.get('reducto_image_blocks_metadata', [])
                     except:
                         pass
             
-            # Process images immediately (24h expiration) with filtering
+            # ========================================================================
+            # PHASE 3: PARALLEL OPERATIONS - Run images, classification, and extraction in parallel
+            # ========================================================================
+            
+            # Check if classification is already done
+            classification_type = document.get('classification_type')
+            needs_classification = not classification_type
+            
+            # Phase 3: Run images and classification (if needed) in parallel
             processed_images = []
-            if image_urls:
-                print(f"🔄 Processing and filtering {len(image_urls)} images...")
-                image_result = image_service.process_parsed_images(
-                    image_urls=image_urls,
-                    document_id=str(document_id),
-                    business_id=business_id,
-                    property_id=None,
-                    image_blocks_metadata=image_blocks_metadata,
-                    document_text=document_text
-                )
+            if needs_classification:
+                logger.info(f"⚡ Starting parallel operations: images + classification")
+            else:
+                logger.info(f"⚡ Starting parallel operations: images + extraction")
+            
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                # Task 1: Process images in parallel (with parallel downloads inside)
+                future_images = None
+                if image_urls:
+                    future_images = executor.submit(
+                        image_service.process_parsed_images,
+                        image_urls=image_urls,
+                        document_id=str(document_id),
+                        business_id=business_id,
+                        property_id=None,
+                        image_blocks_metadata=image_blocks_metadata,
+                        document_text=document_text
+                    )
+                    logger.info(f"🚀 Started parallel image processing ({len(image_urls)} images)")
                 
-                processed_images = image_result['images']
-                filter_stats = image_result.get('filter_stats', {})
-                print(f"✅ Filtered {image_result['total']} → {filter_stats.get('total_filtered', 0)} property-relevant images")
-                print(f"✅ Uploaded {image_result['processed']}/{filter_stats.get('total_filtered', 0)} filtered images")
-                if image_result['errors']:
-                    print(f"⚠️ Image processing errors: {len(image_result['errors'])}")
-            
-            # Get classification if not already done
-            classification_type = document.classification_type
-            if not classification_type:
-                # Re-classify if needed
-                classification = reducto.classify_document(job_id)
-                classification_type = classification['document_type']
-                print(f"📋 Document classified as: {classification_type}")
-            
-            # Extract with appropriate schema
-            schema = get_extraction_schema(classification_type)
-            
-            print(f"🔄 Extracting property data with schema for: {classification_type}")
-            extraction = reducto.extract_with_schema(
-                job_id=job_id,
-                schema=schema,
-                system_prompt="Be precise and thorough. Extract all property details."
-            )
-            
-            extracted_data = extraction['data']
+                # Task 2: Get classification if needed
+                future_classification = None
+                if needs_classification:
+                    future_classification = executor.submit(
+                        reducto.classify_document,
+                        job_id
+                    )
+                    logger.info(f"🚀 Started parallel classification")
+                
+                # Wait for classification to complete (needed for extraction)
+                if future_classification:
+                    classification = future_classification.result()
+                    classification_type = classification['document_type']
+                    logger.info(f"✅ Parallel classification completed: {classification_type}")
+                
+                # Task 3: Extract with appropriate schema (after classification ready)
+                # Validate job_id before extraction
+                if not job_id or not isinstance(job_id, str) or not job_id.strip():
+                    logger.error(f"❌ Cannot extract: job_id is invalid: {job_id}")
+                    raise ValueError(f"job_id must be a non-empty string for extraction, got: {type(job_id)} = {job_id}")
+                
+                schema = get_extraction_schema(classification_type)
+                logger.info(f"🚀 Starting parallel extraction with schema: {classification_type} (job_id: {job_id})")
+                future_extraction = executor.submit(
+                    reducto.extract_with_schema,
+                    job_id=job_id.strip(),  # Ensure job_id is clean
+                    schema=schema,
+                    system_prompt="Be precise and thorough. Extract all property details."
+                )
+                logger.info(f"🚀 Started parallel extraction with schema: {classification_type}")
+                
+                # Wait for both images and extraction to complete
+                if future_images:
+                    image_result = future_images.result()
+                    processed_images = image_result['images']
+                    filter_stats = image_result.get('filter_stats', {})
+                    logger.info(f"✅ Parallel image processing completed: {image_result['processed']}/{filter_stats.get('total_filtered', 0)} images uploaded")
+                    if image_result['errors']:
+                        logger.warning(f"⚠️ Image processing errors: {len(image_result['errors'])}")
+                else:
+                    logger.info(f"ℹ️ No images to process")
+                
+                extraction = future_extraction.result()
+                extracted_data = extraction['data']
+                logger.info(f"✅ Parallel extraction completed")
             
             # Transform to match existing structure
             # Reducto returns: {'data': {'subject_property': {...}}}
@@ -1397,7 +1877,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 # Handle other schemas (OTHER_DOCUMENTS_EXTRACTION_SCHEMA, MINIMAL_EXTRACTION_SCHEMA)
                 subject_property = extracted_data.get('subject_property', extracted_data)
             
-            print(f"✅ Reducto extraction completed")
+            logger.info(f"✅ All parallel operations completed: images, classification, extraction")
             
             # Add images to subject_property structure
             if processed_images:
@@ -1450,16 +1930,18 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             manual_property_id = None
             skip_property_updates = False
             
-            if document.property_id:
+            property_id = document.get('property_id')
+            if property_id:
                 # Document already has a property_id - check if it's a manual upload
                 try:
-                    if document.metadata_json:
-                        metadata = json.loads(document.metadata_json)
-                        if metadata.get('upload_source') == 'property_card' and metadata.get('manually_linked_to_property_id'):
-                            is_manual_upload = True
-                            manual_property_id = str(document.property_id)
-                            print(f"📌 Document is manually linked to property: {manual_property_id}")
-                            print(f"   Upload source: property_card")
+                    # Use helper function to safely parse document_summary
+                    document_summary = get_document_summary_safe(document)
+                    
+                    if document_summary.get('upload_source') == 'property_card' and document_summary.get('manually_linked_to_property_id'):
+                        is_manual_upload = True
+                        manual_property_id = str(property_id)
+                        print(f"📌 Document is manually linked to property: {manual_property_id}")
+                        print(f"   Upload source: property_card")
                 except Exception as e:
                     print(f"⚠️  Error checking manual upload metadata: {e}")
             
@@ -1470,17 +1952,18 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             
             # Priority 1: Try to use filename address if available
             try:
-                if document.metadata_json:
-                    metadata = json.loads(document.metadata_json)
-                    filename_address = metadata.get('filename_address')
-                    
-                    if filename_address:
-                        property_address = filename_address
-                        address_source = 'filename'
-                        print(f"🎯 Using address from FILENAME: '{property_address}'")
-                        print(f"   Confidence: {metadata.get('filename_address_confidence', 0.0):.2f}")
+                # Use helper function to safely parse document_summary
+                document_summary = get_document_summary_safe(document)
+                
+                filename_address = document_summary.get('filename_address')
+                
+                if filename_address:
+                    property_address = filename_address
+                    address_source = 'filename'
+                    print(f"🎯 Using address from FILENAME: '{property_address}'")
+                    print(f"   Confidence: {document_summary.get('filename_address_confidence', 0.0):.2f}")
             except Exception as e:
-                print(f"⚠️  Error parsing document metadata: {e}")
+                print(f"⚠️  Error parsing document_summary: {e}")
             
             # Priority 2: Use extracted subject property address if filename didn't have one
             if not property_address and subject_property:
@@ -1543,6 +2026,9 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                     print(f"   📌 Will proceed with normal property creation")
             
             # Step 3: Process address and link to property node
+            # Phase 7: Initialize geocoding cache to store results for reuse
+            cached_geocoding_map = {}
+            
             if property_address:
                 print(f"📍 Processing property linking for address: '{property_address}'")
                 print(f"   Address source: {address_source}")
@@ -1569,6 +2055,19 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         'geocoder_used': geocoding_result.get('geocoder', 'none'),
                         'address_source': address_source
                     }
+                    
+                    # Phase 7: Cache geocoding result for reuse later (avoid duplicate API calls)
+                    cached_result = {
+                        'latitude': geocoding_result.get('latitude'),
+                        'longitude': geocoding_result.get('longitude'),
+                        'formatted_address': geocoding_result.get('formatted_address') or geocoding_result.get('geocoded_address'),
+                        'status': geocoding_result.get('status', 'success'),
+                        'confidence': geocoding_result.get('confidence', 0.9),
+                        'normalized_address': normalized,
+                        'address_hash': address_hash
+                    }
+                    cached_geocoding_map[property_address] = cached_result
+                    logger.info(f"✅ Cached geocoding result for reuse: {property_address}")
                     
                     # CRITICAL: Check if property already exists with user-set pin location (geocoding_status: 'manual')
                     # If property has geocoding_status: 'manual', DO NOT update coordinates from document geocoding
@@ -1685,10 +2184,27 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
             # --- 5. Store structured data in Supabase ---
             print("Storing structured data in Supabase...")
             
-            # Get geocoding results for all properties (reuse from parallel processing)
+            # Phase 7: Get geocoding results for all properties (reuse cached results from property linking)
             addresses = [prop.get('property_address', '') for prop in subject_properties]
-            geocoding_results = geocode_address_parallel(addresses, max_workers=3)
-            geocoding_map = {addr: result for addr, result in geocoding_results}
+            
+            # Start with cached geocoding results from property linking phase
+            geocoding_map = cached_geocoding_map.copy() if cached_geocoding_map else {}
+            
+            # Check which addresses still need geocoding
+            addresses_to_geocode = []
+            for addr in addresses:
+                if addr and addr not in geocoding_map:
+                    addresses_to_geocode.append(addr)
+            
+            # Only geocode addresses that weren't cached
+            if addresses_to_geocode:
+                logger.info(f"🔄 Geocoding {len(addresses_to_geocode)} addresses that weren't cached...")
+                geocoding_results = geocode_address_parallel(addresses_to_geocode, max_workers=3)
+                # Add newly geocoded results to map
+                for addr, result in geocoding_results:
+                    geocoding_map[addr] = result
+            else:
+                logger.info(f"✅ All addresses already geocoded (cached from property linking), skipping parallel geocoding")
             
             # Add debug logging before Supabase storage
             print(f"🔍 DEBUG: About to store in Supabase:")
@@ -1735,23 +2251,28 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         )
                         if parse_result.get('document_text'):
                             document_text = parse_result['document_text']
-                            document.parsed_text = document_text
-                            db.session.commit()
+                            # Store parsed text in Supabase
+                            doc_storage.update_document_extraction(
+                                document_id=str(document_id),
+                                parsed_text=document_text,
+                                extracted_json={},
+                                business_id=business_id
+                            )
                             logger.info(f"✅ Retrieved document text from Reducto ({len(document_text)} chars)")
                     except Exception as e:
                         logger.error(f"Failed to retrieve document text from Reducto: {e}")
-                        # Fallback: try to get from document metadata
-                        if document.metadata_json:
+                        # Fallback: try to get from document_summary
+                        # Use helper function to safely parse document_summary
+                        document_summary = get_document_summary_safe(document)
+                        
+                        if document_summary:
                             try:
-                                metadata = json.loads(document.metadata_json)
-                                stored_text = metadata.get('reducto_parsed_text', '')
+                                stored_text = document_summary.get('reducto_parsed_text', '')
                                 if stored_text:
                                     document_text = stored_text
-                                    document.parsed_text = stored_text
-                                    db.session.commit()
-                                    logger.info(f"✅ Retrieved document text from metadata backup ({len(document_text)} chars)")
+                                    logger.info(f"✅ Retrieved document text from document_summary backup ({len(document_text)} chars)")
                             except Exception as e2:
-                                logger.error(f"Failed to retrieve from metadata: {e2}")
+                                logger.error(f"Failed to retrieve from document_summary: {e2}")
                 
                 if document_text:
                     try:
@@ -1760,14 +2281,16 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         reducto_chunks = None
                         chunk_metadata_list = None
                         
-                        # PRIORITY 1: Get chunks from stored metadata (always available, has bbox)
-                        if document.metadata_json:
+                        # PRIORITY 1: Get chunks from stored document_summary (always available, has bbox)
+                        # Use helper function to safely parse document_summary
+                        document_summary = get_document_summary_safe(document)
+                        
+                        if document_summary:
                             try:
-                                metadata_json = json.loads(document.metadata_json)
-                                stored_chunks = metadata_json.get('reducto_chunks', [])
+                                stored_chunks = document_summary.get('reducto_chunks', [])
                                 if stored_chunks:
                                     reducto_chunks = stored_chunks
-                                    logger.info(f"✅ Retrieved {len(reducto_chunks)} chunks from stored metadata (with bbox)")
+                                    logger.info(f"✅ Retrieved {len(reducto_chunks)} section-based chunks from stored metadata (with bbox)")
                             except Exception as e:
                                 logger.warning(f"⚠️ Could not parse metadata_json: {e}")
                         
@@ -1780,7 +2303,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                     return_images=["figure", "table"]
                                 )
                                 reducto_chunks = parse_result.get('chunks', [])
-                                logger.info(f"✅ Retrieved {len(reducto_chunks)} chunks from Reducto API")
+                                logger.info(f"✅ Retrieved {len(reducto_chunks)} section-based chunks from Reducto API")
                             except Exception as e:
                                 logger.warning(f"⚠️ Could not retrieve Reducto chunks from API: {e}")
                                 logger.info(f"   This is expected if job_id has expired (>12 hours)")
@@ -1806,18 +2329,21 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                     
                                     # Extract chunk metadata with bbox
                                     chunk_bbox = chunk.get('bbox')
+                                    # Phase 4: Use robust page number extraction
+                                    chunk_page = extract_page_number_from_chunk(chunk)
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
                                         'blocks': chunk.get('blocks', []),  # All blocks with bbox
-                                        'page': chunk_bbox.get('page') if chunk_bbox and isinstance(chunk_bbox, dict) else None
+                                        'page': chunk_page  # Robustly extracted page number
                                     }
                                     chunk_metadata_list.append(chunk_meta)
                             
                             chunks = chunk_texts
-                            logger.info(f"✅ Using Reducto chunks with bbox metadata: {len(chunks)} chunks")
+                            logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
-                            chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=180)
+                            # Use dynamic overlap (None = auto-calculate based on content density)
+                            chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=None)
                             chunk_metadata_list = None
                             logger.info(f"⚠️ Using manual chunking (no bbox metadata): {len(chunks)} chunks")
                         
@@ -1830,17 +2356,19 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             'address_hash': None  # Will be set if available
                         }
                         
-                        # Store document vectors with bbox metadata if available
+                        # Store document vectors with bbox metadata and generate embeddings immediately
+                        # Immediate embedding: generates embeddings synchronously for simpler RAG architecture
                         success = vector_service.store_document_vectors(
                             str(document_id), 
                             chunks, 
                             metadata,
                             chunk_metadata_list=chunk_metadata_list,
-                            lazy_embedding=False  # Immediate embedding after parsing (faster queries)
+                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
                         )
                         
                         if success:
                             document_vectors_stored = len(chunks)
+                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
                             
                     except Exception as e:
                         print(f"⚠️ Error chunking/storing document vectors: {e}")
@@ -1922,33 +2450,26 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 traceback.print_exc()
                 print("⚠️ Continuing without property vector storage...")
 
-            # Check if document still exists before updating status
-            document = Document.query.get(document_id)
-            if document:
-                document.status = DocumentStatus.COMPLETED
-                db.session.commit()
-                
-                # Sync completion to Supabase
-                sync_document_to_supabase(document_id, 'completed')
-                
-                print(f"Document processing completed for document_id: {document_id}")
-            else:
-                print(f"Document {document_id} no longer exists - processing completed but document was deleted")
+            # Update status to completed in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='completed',
+                business_id=business_id
+            )
+            print(f"✅ Document processing completed for document_id: {document_id}")
 
         except Exception as e:
             print(f"Error processing document {document_id}: {e}", file=sys.stderr)
             try:
-                # Check if document still exists before updating status
-                document = Document.query.get(document_id)
-                if document:
-                    document.status = DocumentStatus.FAILED
-                    db.session.commit()
-                    print(f"Updated document status to FAILED for document_id: {document_id}")
-                else:
-                    print(f"Document {document_id} no longer exists - skipping status update")
+                # Update status to failed in Supabase
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+                print(f"✅ Updated document status to FAILED for document_id: {document_id}")
             except Exception as status_error:
                 print(f"Error updating document status: {status_error}", file=sys.stderr)
-                db.session.rollback()
         
         finally:
             if temp_dir and os.path.exists(temp_dir):
@@ -1962,20 +2483,28 @@ def process_document_simple(self, document_id, file_content, original_filename, 
     without heavy AI processing to avoid memory issues
     """
     from . import create_app
-    from .models import db, Document, DocumentStatus
+    from .services.document_storage_service import DocumentStorageService
     
     app = create_app()
     
     with app.app_context():
-        document = Document.query.get(document_id)
-        if not document:
-            print(f"Document with id {document_id} not found.")
-            return
+        # Fetch document from Supabase
+        doc_storage = DocumentStorageService()
+        success, document_dict, error = doc_storage.get_document(str(document_id), business_id)
+        
+        if not success or not document_dict:
+            print(f"Document with id {document_id} not found in Supabase. Error: {error}")
+            return f"Error: Document not found: {error}"
 
         try:
             print(f"Starting simplified processing for document_id: {document_id}")
-            document.status = DocumentStatus.PROCESSING
-            db.session.commit()
+            
+            # Update status to processing in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='processing',
+                business_id=business_id
+            )
             
             # Basic processing - just store the file info and mark as completed
             print(f"Processing document: {original_filename}")
@@ -1986,9 +2515,12 @@ def process_document_simple(self, document_id, file_content, original_filename, 
             import time
             time.sleep(2)
             
-            # Update document status to completed
-            document.status = DocumentStatus.COMPLETED
-            db.session.commit()
+            # Update document status to completed in Supabase
+            doc_storage.update_document_status(
+                document_id=str(document_id),
+                status='completed',
+                business_id=business_id
+            )
             
             print(f"✅ Simplified document processing completed for document_id: {document_id}")
             return "Document processed successfully"
@@ -1996,10 +2528,13 @@ def process_document_simple(self, document_id, file_content, original_filename, 
         except Exception as e:
             print(f"❌ Error in simplified document processing: {e}")
             try:
-                document.status = DocumentStatus.FAILED
-                db.session.commit()
-            except:
-                pass
+                doc_storage.update_document_status(
+                    document_id=str(document_id),
+                    status='failed',
+                    business_id=business_id
+                )
+            except Exception as status_error:
+                print(f"Failed to update document status to failed: {status_error}")
             return f"Error: {e}"
 
 @shared_task(bind=True)
@@ -2202,16 +2737,17 @@ def process_document_fast_task(
                         'validation': bbox_validation
                     })
                     
-                    # Log bbox validation reasoning
+                    # Log bbox validation reasoning (only failures to reduce noise)
                     if not bbox_validation['valid']:
                         logger.warning(f"⚠️ Chunk {i} bbox validation failed: {bbox_validation['reasoning']}")
-                    else:
-                        logger.debug(f"✅ Chunk {i} bbox validated: {bbox_validation['reasoning']}")
+                    # Removed debug logging for successful bbox validation to reduce terminal noise
                     
+                    # Phase 4: Use robust page number extraction
+                    chunk_page = extract_page_number_from_chunk(chunk)
                     chunk_meta = {
                         'bbox': chunk_bbox,
                         'blocks': chunk.get('blocks', []),
-                        'page': chunk_bbox.get('page') if chunk_bbox and isinstance(chunk_bbox, dict) else None,
+                        'page': chunk_page,  # Robustly extracted page number
                         'bbox_valid': bbox_validation['valid'],
                         'bbox_validation_reasoning': bbox_validation['reasoning']
                     }
@@ -2397,12 +2933,13 @@ def embed_chunk_on_demand(self, chunk_id: str, document_id: str):
     """
     try:
         from .services.supabase_client_factory import get_supabase_client
-        from .services.local_embedding_service import LocalEmbeddingService
+        from .services.vector_service import SupabaseVectorService
         from datetime import datetime
         import json
         
         supabase = get_supabase_client()
-        embedding_service = LocalEmbeddingService()
+        # Use SupabaseVectorService which correctly uses Voyage AI when configured
+        vector_service = SupabaseVectorService()
         
         # Fetch chunk data
         result = supabase.table('document_vectors').select('*').eq('id', chunk_id).execute()
@@ -2438,20 +2975,21 @@ def embed_chunk_on_demand(self, chunk_id: str, document_id: str):
             'embedding_queued_at': datetime.utcnow().isoformat()
         }).eq('id', chunk_id).execute()
         
-        # Generate embedding using local service (or OpenAI fallback)
+        # Generate embedding using Voyage AI (via SupabaseVectorService)
         try:
-            embeddings = embedding_service.embed_chunks([text_to_embed])
+            embeddings = vector_service.create_embeddings([text_to_embed])
             embedding = embeddings[0] if embeddings else None
             
             if not embedding:
                 raise ValueError("Embedding generation returned empty result")
             
             # Update chunk with embedding
+            # Use the actual model name from vector_service (Voyage AI or OpenAI)
             update_data = {
                 'embedding': embedding,
                 'embedding_status': 'embedded',
                 'embedding_completed_at': datetime.utcnow().isoformat(),
-                'embedding_model': 'bge-small-en-v1.5' if embedding_service.is_local_available() else 'text-embedding-3-small',
+                'embedding_model': vector_service.embedding_model,
                 'embedding_error': None
             }
             
@@ -2494,12 +3032,13 @@ def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal')
     """
     try:
         from .services.supabase_client_factory import get_supabase_client
-        from .services.local_embedding_service import LocalEmbeddingService
+        from .services.vector_service import SupabaseVectorService
         from datetime import datetime
         import json
         
         supabase = get_supabase_client()
-        embedding_service = LocalEmbeddingService()
+        # Use SupabaseVectorService which correctly uses Voyage AI when configured
+        vector_service = SupabaseVectorService()
         
         # Fetch all pending chunks for this document
         result = supabase.table('document_vectors').select('*').eq(
@@ -2511,10 +3050,10 @@ def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal')
             return True
         
         chunks = result.data
-        logger.info(f"Embedding {len(chunks)} pending chunks for document {document_id}")
+        logger.info(f"Embedding {len(chunks)} pending chunks for document {document_id} using {vector_service.embedding_model}")
         
-        # Process in batches (local embedding server handles batching)
-        batch_size = 32  # Good batch size for local CPU models
+        # Process in batches (Voyage AI can handle 100 chunks per batch)
+        batch_size = 100  # Voyage AI batch size
         embedded_count = 0
         failed_count = 0
         
@@ -2532,7 +3071,7 @@ def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal')
                 if not chunk_text:
                     continue
                 
-                # Combine context + chunk
+                # Combine context + chunk (enrich for better embeddings)
                 if chunk_context:
                     text_to_embed = f"{chunk_context}\n\n{chunk_text}"
                 else:
@@ -2551,15 +3090,24 @@ def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal')
                     'embedding_queued_at': datetime.utcnow().isoformat()
                 }).eq('id', chunk_id).execute()
             
-            # Generate embeddings in batch
+            # Generate embeddings in batch using Voyage AI (via SupabaseVectorService)
+            # Rate limiting is handled inside create_embeddings, but we add extra delay between batches here
             try:
-                embeddings = embedding_service.embed_chunks(texts_to_embed)
+                # Add rate limiting delay between batches (20s to stay under 3 RPM)
+                if i > 0:  # Don't delay first batch
+                    import time
+                    wait_time = 20
+                    logger.info(f"⏳ Rate limiting: waiting {wait_time}s before batch {i//batch_size + 1}")
+                    time.sleep(wait_time)
+                
+                embeddings = vector_service.create_embeddings(texts_to_embed)
                 
                 if len(embeddings) != len(chunk_ids):
                     raise ValueError(f"Embedding count mismatch: {len(embeddings)} vs {len(chunk_ids)}")
                 
                 # Update chunks with embeddings
-                model_name = 'bge-small-en-v1.5' if embedding_service.is_local_available() else 'text-embedding-3-small'
+                # Use the actual model name from vector_service (Voyage AI or OpenAI)
+                model_name = vector_service.embedding_model
                 
                 for chunk_id, embedding in zip(chunk_ids, embeddings):
                     supabase.table('document_vectors').update({
@@ -2574,14 +3122,27 @@ def embed_document_chunks_lazy(self, document_id: str, priority: str = 'normal')
                 logger.info(f"✅ Embedded batch {i//batch_size + 1} ({len(chunk_ids)} chunks)")
                 
             except Exception as batch_error:
-                # Mark batch as failed
-                error_msg = str(batch_error)[:500]
+                error_msg = str(batch_error)
+                # Check if it's a rate limit error
+                if "rate limit" in error_msg.lower() or "RPM" in error_msg or "TPM" in error_msg or "payment method" in error_msg.lower():
+                    logger.warning(f"⚠️ Voyage API rate limit error in batch {i//batch_size + 1}: {error_msg[:200]}")
+                    # Mark chunks as queued (not failed) so they can be retried later
+                    import time
+                    for chunk_id in chunk_ids:
+                        supabase.table('document_vectors').update({
+                            'embedding_status': 'queued',  # Keep as queued for retry
+                            'embedding_error': f"Rate limit: {error_msg[:200]}"
+                        }).eq('id', chunk_id).execute()
+                    logger.info(f"⏳ Marked {len(chunk_ids)} chunks as queued for retry after rate limit")
+                    failed_count += len(chunk_ids)  # Count as failed for this attempt
+                else:
+                    # Mark batch as failed for non-rate-limit errors
+                    error_msg_short = error_msg[:500]
                 for chunk_id in chunk_ids:
                     supabase.table('document_vectors').update({
                         'embedding_status': 'failed',
-                        'embedding_error': error_msg
+                            'embedding_error': error_msg_short
                     }).eq('id', chunk_id).execute()
-                
                 failed_count += len(chunk_ids)
                 logger.error(f"Failed to embed batch {i//batch_size + 1}: {batch_error}")
         

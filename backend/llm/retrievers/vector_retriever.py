@@ -5,8 +5,10 @@ Vector similarity search retriever using Supabase pgvector.
 from typing import Optional, List
 from backend.llm.types import RetrievedDocument
 from backend.llm.config import config 
+from backend.llm.utils import batch_expand_chunks, merge_expanded_chunks
 from langchain_openai import OpenAIEmbeddings
 import logging 
+import os
 
 from backend.services.supabase_client_factory import get_supabase_client
 
@@ -16,10 +18,27 @@ class VectorDocumentRetriever:
     """Query supabase pgvector using semantic similarity search."""
      
     def __init__(self):
-        self.embeddings = OpenAIEmbeddings(
-            api_key=config.openai_api_key,
-            model=config.openai_embedding_model,
-        )
+        use_voyage = os.environ.get('USE_VOYAGE_EMBEDDINGS', 'true').lower() == 'true'
+        
+        if use_voyage:
+            # Use Voyage AI for query embeddings
+            from voyageai import Client
+            voyage_api_key = os.environ.get('VOYAGE_API_KEY')
+            if not voyage_api_key:
+                raise ValueError("VOYAGE_API_KEY required when USE_VOYAGE_EMBEDDINGS=true")
+            
+            self.voyage_client = Client(api_key=voyage_api_key)
+            self.voyage_model = os.environ.get('VOYAGE_EMBEDDING_MODEL', 'voyage-law-2')
+            self.use_voyage = True
+            logger.info(f"Using Voyage AI for query embeddings: {self.voyage_model}")
+        else:
+            # Use OpenAI (existing code)
+            self.embeddings = OpenAIEmbeddings(
+                api_key=config.openai_api_key,
+                model=config.openai_embedding_model,
+            )
+            self.use_voyage = False
+        
         self.supabase = get_supabase_client()
 
     def _get_adaptive_threshold(self, query: str) -> float:
@@ -80,7 +99,17 @@ class VectorDocumentRetriever:
 
         try:
             # step one: embed the query 
-            query_embedding = self.embeddings.embed_query(user_query)
+            if self.use_voyage:
+                # Use Voyage AI for query embedding
+                response = self.voyage_client.embed(
+                    texts=[user_query],
+                    model=self.voyage_model,
+                    input_type='query'  # Use 'query' for query embeddings
+                )
+                query_embedding = response.embeddings[0]
+            else:
+                # Use OpenAI
+                query_embedding = self.embeddings.embed_query(user_query)
 
             def _fetch(match_threshold: float):
                 payload = {
@@ -145,10 +174,48 @@ class VectorDocumentRetriever:
             # Cache document summaries to avoid repeated queries
             document_summaries_cache = {}
             
+            # NEW: Batch expand chunks if enabled (more efficient than expanding one-by-one)
+            expanded_chunks_cache = {}
+            if config.chunk_expansion_enabled and rows:
+                # Prepare list of chunks that need expansion
+                chunks_to_expand = []
+                for row in rows:
+                    doc_id = row.get("document_id")
+                    chunk_index = row.get("chunk_index")
+                    if doc_id and chunk_index is not None:
+                        chunks_to_expand.append({
+                            'doc_id': doc_id,
+                            'chunk_index': chunk_index
+                        })
+                
+                # Batch expand all chunks in one go (efficient)
+                if chunks_to_expand:
+                    try:
+                        expanded_chunks_cache = batch_expand_chunks(
+                            chunk_list=chunks_to_expand,
+                            expand_left=config.chunk_expansion_size,
+                            expand_right=config.chunk_expansion_size,
+                            supabase_client=self.supabase
+                        )
+                        logger.debug(f"Batch expanded {len(expanded_chunks_cache)}/{len(chunks_to_expand)} chunks")
+                    except Exception as e:
+                        logger.warning(f"Chunk expansion failed, falling back to original chunks: {e}")
+                        expanded_chunks_cache = {}
+            
             for row in rows:
                 doc_id = row.get("document_id")
+                chunk_index = row.get("chunk_index", 0)
                 chunk_text = row.get("chunk_text", "")
                 chunk_context = row.get("chunk_context", "")  # Legacy per-chunk context (may be empty)
+                
+                # NEW: Use expanded chunks if expansion is enabled and available
+                if config.chunk_expansion_enabled:
+                    expanded_chunks = expanded_chunks_cache.get((doc_id, chunk_index))
+                    if expanded_chunks:
+                        # Use expanded chunks (merge with separator for LLM)
+                        chunk_text = merge_expanded_chunks(expanded_chunks)
+                        logger.debug(f"Using expanded chunks for doc {doc_id[:8]}, chunk {chunk_index} ({len(expanded_chunks)} chunks)")
+                    # If expansion failed or not available, fall back to original chunk_text
                 
                 # Get document summary if available (for document-level contextualization)
                 document_summary = None

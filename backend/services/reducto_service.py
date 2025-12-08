@@ -23,7 +23,10 @@ class ReductoService:
 
     def parse_document(self, file_path: str, return_images: List[str] = None, use_async: bool = False) -> Dict[str, Any]:
         """
-        Parse a document and return job_id, text, chunks, and image URLs
+        Parse a document with section-based chunking and return job_id, text, chunks, and image URLs.
+        
+        Uses section-based chunking (chunk_mode: "section") to maintain document structure by 
+        page titles/sections, ensuring better semantic boundaries for improved retrieval accuracy.
         
         Args:
             file_path: Path to the document file
@@ -31,7 +34,7 @@ class ReductoService:
             use_async: If True, use async job-based processing (recommended for large files)
             
         Returns:
-            Dict with keys: job_id, document_text, chunks, image_urls
+            Dict with keys: job_id, document_text, chunks (section-based), image_urls
         """
         try: 
             if return_images is None:
@@ -53,7 +56,13 @@ class ReductoService:
                 submission = self.client.parse.run_job(
                     input=upload,
                     settings={
-                        "return_images": return_images
+                        "retrieval": {
+                            "chunking": {
+                                "chunk_mode": "section"  # Section-based chunking (by page titles/sections)
+                            }
+                        },
+                        "return_images": return_images,
+                        "ocr_system": "standard"  # Standard OCR (faster, still high quality)
                     }
                 )
                 
@@ -109,7 +118,13 @@ class ReductoService:
             parse_result = self.client.parse.run(
                 input=upload,
                 settings={
-                    "return_images": return_images
+                    "retrieval": {
+                        "chunking": {
+                            "chunk_mode": "section"  # Section-based chunking (by page titles/sections)
+                        }
+                    },
+                    "return_images": return_images,
+                    "ocr_system": "standard"  # Standard OCR (faster, still high quality)
                 }
             )
 

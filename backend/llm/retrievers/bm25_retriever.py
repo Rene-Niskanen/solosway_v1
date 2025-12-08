@@ -7,6 +7,8 @@ making it perfect for lazy embedding scenarios where chunks may not be embedded 
 
 from typing import List, Optional
 from backend.llm.types import RetrievedDocument
+from backend.llm.config import config
+from backend.llm.utils import batch_expand_chunks, merge_expanded_chunks
 from backend.services.supabase_client_factory import get_supabase_client
 import logging
 import json
@@ -119,6 +121,34 @@ class BM25DocumentRetriever:
             # Cache document summaries to avoid repeated queries
             document_summaries_cache = {}
             
+            # NEW: Batch expand chunks if enabled (more efficient than expanding one-by-one)
+            expanded_chunks_cache = {}
+            if config.chunk_expansion_enabled and result.data:
+                # Prepare list of chunks that need expansion
+                chunks_to_expand = []
+                for row in result.data:
+                    doc_id = row.get('document_id')
+                    chunk_index = row.get('chunk_index')
+                    if doc_id and chunk_index is not None:
+                        chunks_to_expand.append({
+                            'doc_id': doc_id,
+                            'chunk_index': chunk_index
+                        })
+                
+                # Batch expand all chunks in one go (efficient)
+                if chunks_to_expand:
+                    try:
+                        expanded_chunks_cache = batch_expand_chunks(
+                            chunk_list=chunks_to_expand,
+                            expand_left=config.chunk_expansion_size,
+                            expand_right=config.chunk_expansion_size,
+                            supabase_client=self.supabase
+                        )
+                        logger.debug(f"Batch expanded {len(expanded_chunks_cache)}/{len(chunks_to_expand)} chunks (BM25)")
+                    except Exception as e:
+                        logger.warning(f"Chunk expansion failed in BM25, falling back to original chunks: {e}")
+                        expanded_chunks_cache = {}
+            
             for row in result.data:
                 # Parse bbox if it's a JSON string
                 bbox = row.get('bbox')
@@ -131,8 +161,18 @@ class BM25DocumentRetriever:
                     bbox = None
                 
                 doc_id = row.get('document_id')
+                chunk_index = row.get('chunk_index', 0)
                 chunk_text = row.get('chunk_text', '')
                 chunk_context = row.get('chunk_context', '')  # Legacy per-chunk context
+                
+                # NEW: Use expanded chunks if expansion is enabled and available
+                if config.chunk_expansion_enabled:
+                    expanded_chunks = expanded_chunks_cache.get((doc_id, chunk_index))
+                    if expanded_chunks:
+                        # Use expanded chunks (merge with separator for LLM)
+                        chunk_text = merge_expanded_chunks(expanded_chunks)
+                        logger.debug(f"Using expanded chunks for doc {doc_id[:8]}, chunk {chunk_index} ({len(expanded_chunks)} chunks) [BM25]")
+                    # If expansion failed or not available, fall back to original chunk_text
                 
                 # Get document summary if available (for document-level contextualization)
                 document_summary = None
