@@ -86,7 +86,7 @@ const preloadDocumentCover = async (doc: {
   download_url?: string;
   original_filename?: string | null;
   classification_type?: string;
-}) => {
+}): Promise<void> => {
   if (!doc.doc_id) return;
   
   // Skip if already cached (check for complete cache with thumbnailUrl for PDFs)
@@ -116,21 +116,25 @@ const preloadDocumentCover = async (doc: {
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
     let fetchUrl: string;
     
-    if (doc.download_url) {
-      fetchUrl = doc.download_url.startsWith('http') ? doc.download_url : `${backendUrl}${doc.download_url}`;
-    } else if (doc.s3_path) {
+    // Prioritize s3_path for faster downloads (direct S3 access)
+    if (doc.s3_path) {
       fetchUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+    } else if (doc.download_url) {
+      fetchUrl = doc.download_url.startsWith('http') ? doc.download_url : `${backendUrl}${doc.download_url}`;
     } else {
       fetchUrl = `${backendUrl}/api/files/download?document_id=${doc.doc_id}`;
     }
     
-    console.log(`🔄 Preloading document: ${displayName}`);
+    console.log(`🔄 [Preload] Starting: ${displayName}`);
     
     const response = await fetch(fetchUrl, {
       credentials: 'include'
     });
     
-    if (!response.ok) return;
+    if (!response.ok) {
+      console.warn(`⚠️ [Preload] Failed to fetch ${displayName}: ${response.status}`);
+      return;
+    }
     
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -153,7 +157,7 @@ const preloadDocumentCover = async (doc: {
             type: blob.type,
             timestamp: Date.now()
           };
-          console.log(`✅ Preloaded PDF with thumbnail: ${displayName}`);
+          console.log(`✅ [Preload] PDF thumbnail ready: ${displayName}`);
         } else {
           // Fallback - at least cache the URL
           (window as any).__preloadedDocumentCovers[doc.doc_id] = {
@@ -161,10 +165,10 @@ const preloadDocumentCover = async (doc: {
             type: blob.type,
             timestamp: Date.now()
           };
-          console.log(`⚠️ Preloaded PDF (no thumbnail): ${displayName}`);
+          console.log(`⚠️ [Preload] PDF cached (no thumbnail): ${displayName}`);
         }
       } catch (pdfError) {
-        console.warn('Failed to generate PDF thumbnail during preload:', pdfError);
+        console.warn(`⚠️ [Preload] PDF thumbnail generation failed for ${displayName}:`, pdfError);
         (window as any).__preloadedDocumentCovers[doc.doc_id] = {
           url: url,
           type: blob.type,
@@ -178,7 +182,7 @@ const preloadDocumentCover = async (doc: {
         type: blob.type,
         timestamp: Date.now()
       };
-      console.log(`✅ Preloaded image: ${displayName}`);
+      console.log(`✅ [Preload] Image ready: ${displayName}`);
     } else {
       // For other files, just cache the URL
       (window as any).__preloadedDocumentCovers[doc.doc_id] = {
@@ -186,10 +190,10 @@ const preloadDocumentCover = async (doc: {
         type: blob.type,
         timestamp: Date.now()
       };
-      console.log(`✅ Preloaded document: ${displayName}`);
+      console.log(`✅ [Preload] Document cached: ${displayName}`);
     }
   } catch (error) {
-    console.warn(`Failed to preload document: ${displayName}`, error);
+    console.warn(`❌ [Preload] Failed: ${displayName}`, error);
     // Silently fail - preview will load on demand
   }
 };
@@ -210,11 +214,19 @@ interface ReasoningStepsProps {
   onDocumentClick?: (metadata: DocumentMetadata) => void;
 }
 
-// Reading step that transitions from "Reading" -> "Read" after a delay
-// "Reading" text and preview card appear TOGETHER
-// Preview card REMAINS visible after reading completes
-const READING_DURATION = 2500; // How long each document is actively "read" (ms)
-const READING_GAP = 400; // Gap between documents for smooth flow
+// Reading step - always shows "Reading" animation briefly before "Read" for natural feel
+// Backend emits reading steps when documents are actually processed
+// We show a brief "Reading" animation (300ms) then transition to "Read" - this happens 100% of the time
+const READING_ANIMATION_DURATION = 300; // Brief animation to show "Reading" state (always happens)
+
+/**
+ * Monochromatic color scheme - actions in lighter shade, details in darker shade
+ * Actions (like "Searching", "Found", "Ranking") are light gray
+ * Details (like "for value", "1 documents:", "results") are darker gray
+ */
+const ACTION_COLOR = '#9CA3AF'; // Light gray for main actions (the circled parts)
+const DETAIL_COLOR = '#374151'; // Dark gray for details and other text
+const LIGHT_DETAIL_COLOR = '#6B7280'; // Medium gray for secondary details
 
 const ReadingStepWithTransition: React.FC<{
   filename: string;
@@ -224,7 +236,9 @@ const ReadingStepWithTransition: React.FC<{
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   isTransitioning?: boolean; // New prop to indicate transition phase
   showPreview?: boolean; // Whether to show the preview card (first time only)
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true }) => {
+  isLastReadingStep?: boolean; // Is this the last reading step?
+  hasNextStep?: boolean; // Is there a step after this reading step?
+}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true, isLastReadingStep = false, hasNextStep = false }) => {
   // Debug: Log preview state
   React.useEffect(() => {
     if (docMetadata) {
@@ -237,85 +251,103 @@ const ReadingStepWithTransition: React.FC<{
       });
     }
   }, [showPreview, docMetadata, filename]);
-  const [phase, setPhase] = useState<'waiting' | 'reading' | 'read'>('waiting');
   
+  const [phase, setPhase] = useState<'reading' | 'read'>('reading');
+  const [showReadAnimation, setShowReadAnimation] = useState(false); // Track if "Read" should show animation
+  
+  // ALWAYS show "Reading" animation first, then transition to "Read"
+  // Check step details.status to see if backend has marked it as "read"
+  // This happens 100% of the time for natural feel
   useEffect(() => {
-    // If not loading anymore (response complete), skip animations and show final state
-    if (!isLoading) {
+    // Check if step details indicate it's already been read
+    const stepStatus = docMetadata?.status || (onDocumentClick ? undefined : 'reading');
+    
+    let readTimer: NodeJS.Timeout | null = null;
+    let animationTimer: NodeJS.Timeout | null = null;
+    
+    if (stepStatus === 'read') {
+      // Backend has completed processing - show "Read" with animation
       setPhase('read');
-      return;
+      setShowReadAnimation(true); // Show animation when "Read" first appears
+      
+      // Remove animation after it completes (500ms to match shimmer duration)
+      animationTimer = setTimeout(() => {
+        setShowReadAnimation(false);
+      }, 500);
+    } else {
+      // Start in "reading" phase and show animation
+      setPhase('reading');
+      setShowReadAnimation(false);
+      
+      // After brief animation, transition to "read" (unless backend updates it first)
+      readTimer = setTimeout(() => {
+        setPhase('read');
+        setShowReadAnimation(true); // Show animation when transitioning to "Read"
+        
+        // Remove animation after it completes
+        animationTimer = setTimeout(() => {
+          setShowReadAnimation(false);
+        }, 500);
+      }, READING_ANIMATION_DURATION);
     }
     
-    // Calculate delay based on reading index - each step waits for previous ones
-    const startDelay = readingIndex * (READING_DURATION + READING_GAP);
-    
-    // "Reading" text and preview appear TOGETHER
-    const startTimer = setTimeout(() => {
-      setPhase('reading');
-    }, startDelay);
-    
-    // Transition to "Read" after READING_DURATION (preview stays visible)
-    const readTimer = setTimeout(() => {
-      setPhase('read');
-    }, startDelay + READING_DURATION);
-    
     return () => {
-      clearTimeout(startTimer);
-      clearTimeout(readTimer);
+      if (readTimer) clearTimeout(readTimer);
+      if (animationTimer) clearTimeout(animationTimer);
     };
-  }, [readingIndex, isLoading]);
+  }, [docMetadata, onDocumentClick]); // Re-run if docMetadata changes (backend updates status)
   
   const actionStyle: React.CSSProperties = {
-    color: '#374151',
+    color: ACTION_COLOR,
     fontWeight: 500
   };
-  
-  // During waiting phase while loading, render an invisible placeholder
-  // to avoid returning null inside AnimatePresence children
-  // Note: The key here doesn't matter since this span is inside a motion.div with its own key
-  if (phase === 'waiting' && isLoading) {
-    return <span style={{ display: 'none' }} aria-hidden />;
-  }
-  
-  // If not loading, show static (no animation)
-  if (!isLoading) {
-    return (
-      <div style={{ marginBottom: '4px' }}>
-        <span style={actionStyle}>
-          Read {filename}
-        </span>
-        {showPreview && docMetadata && docMetadata.doc_id && (
-          <DocumentPreviewCard 
-            key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, 'static')}
-            metadata={docMetadata} 
-            onClick={onDocumentClick ? () => onDocumentClick(docMetadata) : undefined}
-          />
-        )}
-      </div>
-    );
-  }
-  
+
+  // ALWAYS show "Reading" animation, then transition to "Read"
+  // This happens 100% of the time for natural feel
   return (
     <motion.div 
       key={generateUniqueKey('ReadingStepWithTransition', readingIndex, docMetadata?.doc_id || filename)}
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: [0.25, 0.1, 0.25, 1] }}
+      initial={{ opacity: 0, y: 2, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
       style={{ marginBottom: '4px' }}
     >
       <span>
         {phase === 'reading' ? (
-          <span className="reading-shimmer-active">
-            Reading {filename}
+          <span>
+            {/* "Reading" with green flow animation (only if still active - no next step yet) */}
+            {isLastReadingStep && isLoading && !hasNextStep ? (
+              <>
+                <span className="reading-shimmer-active">Reading{' '}</span>
+                <span className="reading-shimmer-active">{filename}</span>
+              </>
+            ) : (
+              <>
+                <span style={actionStyle}>Reading{' '}</span>
+                <span style={{ color: DETAIL_COLOR }}>{filename}</span>
+              </>
+            )}
           </span>
         ) : (
-          <span style={actionStyle}>
-            Read {filename}
+          <span>
+            {/* "Read" with flow animation when it first appears */}
+            {showReadAnimation ? (
+              <>
+                <span className="reading-shimmer-active">Read</span>
+                <span className="reading-shimmer-active"> {filename}</span>
+              </>
+            ) : (
+              <>
+                {/* "Read" in light gray (action) */}
+                <span style={actionStyle}>Read</span>
+                {/* filename in dark gray (detail) */}
+                <span style={{ color: DETAIL_COLOR }}> {filename}</span>
+              </>
+            )}
           </span>
         )}
       </span>
-      {/* Preview card appears with "Reading" text and stays visible - only on first appearance */}
-      {/* Add collapse animation when transitioning */}
+      {/* Preview card appears immediately with "Reading" text */}
       {showPreview && docMetadata && docMetadata.doc_id && (
         <motion.div
           animate={isTransitioning ? {
@@ -330,16 +362,15 @@ const ReadingStepWithTransition: React.FC<{
             scale: 1
           }}
           transition={{
-            duration: 0.4,
-            ease: [0.34, 1.56, 0.64, 1], // Bouncy collapse
-            delay: readingIndex * 0.05 // Stagger the collapse
+            duration: 0.3,
+            ease: [0.25, 0.1, 0.25, 1]
           }}
           style={{
             overflow: 'hidden'
           }}
         >
           <DocumentPreviewCard 
-            key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, 'reading')}
+            key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, phase)}
             metadata={docMetadata} 
             onClick={onDocumentClick ? () => onDocumentClick(docMetadata) : undefined}
           />
@@ -378,27 +409,28 @@ const StepRenderer: React.FC<{
   shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
 }> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false, shownDocumentsRef }) => {
   const actionStyle: React.CSSProperties = {
-    color: '#374151',
+    color: ACTION_COLOR, // Light gray for main actions (the circled parts)
     fontWeight: 500
   };
 
   const targetStyle: React.CSSProperties = {
-    color: '#6B7280'
+    color: DETAIL_COLOR // Dark gray for targets/details
   };
 
   const highlightStyle: React.CSSProperties = {
-    color: '#4B5563',
+    color: DETAIL_COLOR, // Dark gray for highlights
     fontWeight: 400
   };
 
-  // Style for document names - light grey
+  // Style for document names - dark gray for details
   const docNameStyle: React.CSSProperties = {
-    color: '#9CA3AF',
+    color: DETAIL_COLOR,
     fontWeight: 400
   };
 
-  // Animation delay for sequential reveal (0.8s per reading step)
-  const revealDelay = readingStepIndex * 0.8;
+  // PERFORMANCE OPTIMIZATION: Reduced animation delay for faster UI
+  // REAL-TIME: No animation delays - show steps immediately when received
+  const revealDelay = 0;
 
   switch (step.action_type) {
     case 'planning':
@@ -412,24 +444,63 @@ const StepRenderer: React.FC<{
       // Show document names as bullet points below
       // Note: Document previews are NOT shown here - only shown during reading steps
       
-      // Parse the message to extract document names
+      // Use the same filename logic as DocumentPreviewCard:
+      // original_filename -> classification_type label -> "Document"
+      const getDisplayFilename = (doc: any): string => {
+        const originalFilename = doc?.original_filename;
+        const classificationType = doc?.classification_type || '';
+        const classificationLabel = classificationType 
+          ? classificationType.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
+          : '';
+        return originalFilename || classificationLabel || 'Document';
+      };
+      
+      // Get document names from doc_previews (preferred) or document_names array
+      let docNames: string[] = [];
+      const docPreviews = step.details?.doc_previews || [];
+      
+      if (docPreviews.length > 0) {
+        // Use doc_previews with same logic as DocumentPreviewCard
+        docNames = docPreviews.map(doc => getDisplayFilename(doc));
+      } else {
+        // Fallback to document_names array
+        docNames = step.details?.document_names || [];
+        
+        // If still empty, try parsing from message
+        if (docNames.length === 0) {
+          const colonIndex = step.message.indexOf(': ');
+          if (colonIndex > -1) {
+            const namesStr = step.message.substring(colonIndex + 2);
+            docNames = namesStr.split(', ').filter(name => name.trim().length > 0);
+          }
+        }
+      }
+      
+      // Parse the message to extract prefix
       // Format: "Found X documents: name1, name2, name3"
       const colonIndex = step.message.indexOf(': ');
       let prefix = step.message;
-      let docNames: string[] = [];
-      
       if (colonIndex > -1) {
         prefix = step.message.substring(0, colonIndex);
-        const namesStr = step.message.substring(colonIndex + 2);
-        docNames = namesStr.split(', ');
       }
+      
+      // Split "Found X documents:" - "Found" is action (light), rest is detail (dark)
+      const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
       
       return (
         <div>
-          {/* Render prefix text */}
-          <span style={actionStyle}>{prefix}:</span>
-          {/* Document names as bullet points below */}
-          {docNames.length > 0 && (
+          {foundMatch ? (
+            <>
+              {/* "Found" in light gray (action) */}
+              <span style={actionStyle}>{foundMatch[1]}</span>
+              {/* " X documents:" in dark gray (detail) */}
+              <span style={{ color: DETAIL_COLOR }}> {foundMatch[2]}:</span>
+            </>
+          ) : (
+            <span style={actionStyle}>{prefix}:</span>
+          )}
+          {/* Document names as bullet points below - styled like DocumentPreviewCard */}
+          {docNames.length > 0 ? (
             <ul style={{ 
               margin: '4px 0 0 0', 
               paddingLeft: '16px',
@@ -437,30 +508,71 @@ const StepRenderer: React.FC<{
             }}>
               {docNames.map((name, i) => (
                 <li key={`doc-name-${name}-${i}`} style={{ 
-                  ...docNameStyle,
-                  marginBottom: '2px',
-                  lineHeight: '1.4'
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#888888',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  letterSpacing: '-0.01em',
+                  lineHeight: '1.4',
+                  marginBottom: '2px'
                 }}>
                   {name}
                 </li>
               ))}
             </ul>
+          ) : (
+            // If no document names found, show a placeholder
+            <div style={{ 
+              marginTop: '4px',
+              color: DETAIL_COLOR,
+              fontStyle: 'italic',
+              fontSize: '11px'
+            }}>
+              (document names not available)
+            </div>
           )}
         </div>
       );
     
     case 'searching':
-      // "Searching for price in Highlands documents" - display full message
+      // "Searching for price in Highlands documents" - split action from details
+      // "Searching" is action with flowing gradient animation (only if this is the current active step)
+      // Animation stops when next step (exploring/analyzing/reading) appears
+      const searchingMatch = step.message.match(/^(Searching)\s+(.+)$/);
+      const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
+      const isSearchingActive = !nextStep || nextStep.action_type === 'searching';
+      
       return (
         <span>
-          <span style={actionStyle}>{step.message}</span>
+          {searchingMatch ? (
+            <>
+              {/* "Searching" with flowing gradient animation (only if active) */}
+              {isSearchingActive ? (
+                <span className="searching-shimmer-active">{searchingMatch[1]}</span>
+              ) : (
+                <span style={actionStyle}>{searchingMatch[1]}</span>
+              )}
+              {/* " for price..." in dark gray (detail) */}
+              <span style={{ color: DETAIL_COLOR }}> {searchingMatch[2]}</span>
+            </>
+          ) : (
+            isSearchingActive ? (
+              <span className="searching-shimmer-active">{step.message}</span>
+            ) : (
+              <span style={actionStyle}>{step.message}</span>
+            )
+          )}
         </span>
       );
     
     case 'reading':
-      // Each reading step transitions from "Reading" -> "Read" after a delay
-      // This is handled by the ReadingStepWithTransition component
+      // Each reading step transitions from "Reading" -> "Read" 
+      // Backend emits "reading" step when processing starts, then "read" step when complete
+      // Frontend shows animation and updates when "read" step is received
       const docMetadata = step.details?.doc_metadata;
+      const stepStatus = step.details?.status; // 'reading' or 'read' from backend
       
       // Build filename from multiple sources - original_filename, classification_type, or fallback
       const rawFilename = step.details?.filename || docMetadata?.original_filename || '';
@@ -489,7 +601,7 @@ const StepRenderer: React.FC<{
         shouldShowPreview = previousReadingStepsWithSameDoc.length === 0;
         
         if (shouldShowPreview) {
-          console.log('✅ [ReasoningSteps] Will show preview card for:', displayFilename, 'docId:', docId);
+          console.log('✅ [ReasoningSteps] Will show preview card for:', displayFilename, 'docId:', docId, 'status:', stepStatus);
         } else {
           console.log('⏭️ [ReasoningSteps] Skipping preview (shown in earlier step):', displayFilename, 'docId:', docId);
         }
@@ -502,29 +614,46 @@ const StepRenderer: React.FC<{
         });
       }
       
+      // Pass step status to component so it knows if backend has completed
+      const docMetadataWithStatus = docMetadata ? { ...docMetadata, status: stepStatus } : docMetadata;
+      
+      // Check if there's a step after this reading step
+      const hasNextStepAfterReading = stepIndex < allSteps.length - 1;
+      
       return (
         <ReadingStepWithTransition 
           filename={truncatedFilename}
-          docMetadata={docMetadata}
+          docMetadata={docMetadataWithStatus}
           isLoading={isLoading}
           readingIndex={readingStepIndex}
           onDocumentClick={onDocumentClick}
           isTransitioning={isTransitioning}
           showPreview={shouldShowPreview}
+          isLastReadingStep={isLastReadingStep}
+          hasNextStep={hasNextStepAfterReading}
         />
       );
     
     case 'analyzing':
-      // "Ranking results" or similar
+      // "Ranking results" - entire text with flowing gradient animation (only if this is the current active step)
+      // Animation stops when next step (reading) appears
+      const nextStepAfterAnalyzing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
+      const isRankingActive = !nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analyzing';
+      
       return (
         <span>
-          <span style={actionStyle}>{step.message || 'Analyzing'}</span>
+          {/* Entire "Ranking results" text with flowing gradient animation (only if active) */}
+          {isRankingActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Analyzing'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Analyzing'}</span>
+          )}
         </span>
       );
     
     case 'complete':
       return (
-        <span style={{ color: '#15803D' }}>
+        <span style={{ color: ACTION_COLOR }}>
           ✓ {step.message}
         </span>
       );
@@ -539,7 +668,7 @@ const StepRenderer: React.FC<{
       }
       return (
         <div style={{
-          color: '#374151',
+          color: DETAIL_COLOR,
           fontSize: '13px',
           lineHeight: '1.5',
           marginTop: '0',
@@ -589,20 +718,21 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   const [shouldAnimateStack, setShouldAnimateStack] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   
+  // REAL-TIME: Transition immediately when loading completes (no artificial delays)
   // Detect transition from loading to not loading
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading) {
-      // Just finished loading - start transition
+      // Just finished loading - start transition immediately
       setIsTransitioning(true);
-      // After preview cards collapse, trigger stacking animation
+      // Minimal delay for smooth visual transition (100ms)
       const stackTimer = setTimeout(() => {
         setShouldAnimateStack(true);
         setIsTransitioning(false);
-      }, 400); // Wait for collapse animation to complete
-      // Reset after all animations complete
+      }, 100); // Minimal delay for smooth transition
+      // Reset quickly after animation
       const resetTimer = setTimeout(() => {
         setShouldAnimateStack(false);
-      }, 1400);
+      }, 400); // Fast reset
       return () => {
         clearTimeout(stackTimer);
         clearTimeout(resetTimer);
@@ -656,8 +786,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     return result;
   }, [steps]);
   
-  // Preload document covers during "Planning Next Moves" (when isLoading)
-  // This runs as soon as we receive 'exploring' steps with doc_previews
+  // Preload document covers IMMEDIATELY when documents are found (optimized for instant thumbnail loading)
+  // This runs as soon as we receive 'exploring' steps with doc_previews - don't wait for component re-render
   useEffect(() => {
     if (!isLoading) return;
     
@@ -674,39 +804,53 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     // Combine all documents to preload
     const allDocs = [...docPreviews, ...readingDocs];
     
-    // Preload each document (only if not already started)
+    // Preload each document IMMEDIATELY in parallel (only if not already started)
+    // Use Promise.all for parallel loading to maximize speed
+    const preloadPromises: Promise<void>[] = [];
     allDocs.forEach(doc => {
       if (doc.doc_id && !preloadedDocsRef.current.has(doc.doc_id)) {
         preloadedDocsRef.current.add(doc.doc_id);
-        preloadDocumentCover(doc);
+        // Start preloading immediately - don't await, let them run in parallel
+        preloadPromises.push(
+          preloadDocumentCover(doc).catch(err => {
+            // Silently fail - preview will load on demand
+            console.warn(`Failed to preload document ${doc.doc_id}:`, err);
+          })
+        );
       }
     });
+    
+    // Log preloading start for debugging
+    if (preloadPromises.length > 0) {
+      console.log(`🚀 [ReasoningSteps] Starting parallel preload for ${preloadPromises.length} documents`);
+    }
   }, [steps, isLoading]);
   
-  // Count total reading steps and track indices for sequential animation
+  // Count total reading steps and track indices
   const totalReadingSteps = filteredSteps.filter(s => s.action_type === 'reading').length;
   let readingStepCounter = 0;
   
-  // Calculate total time for all reading steps to complete
-  const totalReadingTimeMs = totalReadingSteps * (READING_DURATION + READING_GAP);
-  
-  // Track when all reading steps are complete - set timer when loading starts
+  // Track when all reading steps are complete (all documents read)
+  // Reading is complete when:
+  // 1. We have reading steps
+  // 2. All reading steps have status 'read' (completed)
+  // 3. OR when loading finishes and we had reading steps
   useEffect(() => {
-    if (!isLoading || totalReadingSteps === 0) {
-      setAllReadingComplete(true);
+    if (totalReadingSteps === 0) {
+      setAllReadingComplete(false);
       return;
     }
     
-    // Reset when starting a new query
-    setAllReadingComplete(false);
+    // Check if all reading steps are marked as 'read' (completed)
+    const readingSteps = filteredSteps.filter(s => s.action_type === 'reading');
+    const allRead = readingSteps.length > 0 && 
+                    readingSteps.every(step => step.details?.status === 'read');
     
-    // Set timer for when all reading will be complete
-    const timer = setTimeout(() => {
-      setAllReadingComplete(true);
-    }, totalReadingTimeMs);
+    // Also consider complete if loading finished and we have reading steps
+    const isComplete = allRead || (!isLoading && totalReadingSteps > 0);
     
-    return () => clearTimeout(timer);
-  }, [isLoading, totalReadingSteps, totalReadingTimeMs]);
+    setAllReadingComplete(isComplete);
+  }, [isLoading, totalReadingSteps, filteredSteps]);
   
   // Pre-compute animated steps array using useMemo to avoid IIFE issues
   const animatedSteps = useMemo(() => {
@@ -716,7 +860,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     
     let readingCounter = 0;
     let hasSeenReading = false;
-    const totalReadingTime = totalReadingSteps * (READING_DURATION + READING_GAP);
     
     return filteredSteps
       .filter((step) => step != null && step !== undefined)
@@ -743,13 +886,13 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           step.action_type || 'unknown'
         );
         
-        let stepDelay = 0;
+        // Sequential flow: each step appears after the previous one completes
+        // More pronounced sequential reveal for better flow
+        let stepDelay = idx * 0.15; // 150ms stagger - each step waits for previous to appear
         if (step.action_type === 'reading') {
-          stepDelay = 0;
+          stepDelay = idx * 0.12; // Slightly faster for reading steps (120ms)
         } else if (hasSeenReading) {
-          stepDelay = (totalReadingTime / 1000) + 0.3;
-        } else {
-          stepDelay = idx * 0.03;
+          stepDelay = idx * 0.10; // Faster for steps after reading (100ms)
         }
         
         return {
@@ -766,6 +909,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   // Don't render if no steps
   if (!filteredSteps || filteredSteps.length === 0) {
     // Show planning indicator when loading but no steps yet
+    // This will stop shimmering when first step appears (handled by component unmounting)
     if (isLoading) {
       return (
         <div style={{
@@ -785,7 +929,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: shimmer-full 2s ease-in-out infinite;
+              animation: shimmer-full 1.2s ease-in-out infinite;
               font-weight: 500;
             }
             
@@ -801,7 +945,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               animation-fill-mode: forwards;
             }
             
-            /* Active reading - sleek Cursor-style emerald wave animation */
+            /* Active reading - green flow animation for "Reading" and document name */
             .reading-shimmer-active {
               font-weight: 500;
               background: linear-gradient(
@@ -819,6 +963,51 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-text-fill-color: transparent;
               background-clip: text;
               animation: reading-glow 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            }
+            
+            /* Searching - flowing gradient animation (cyan/blue) */
+            .searching-shimmer-active {
+              font-weight: 500;
+              background: linear-gradient(
+                90deg, 
+                #0891B2 0%,      /* cyan-600 - deep base */
+                #06B6D4 15%,     /* cyan-500 */
+                #22D3EE 35%,     /* cyan-400 - main accent */
+                #67E8F9 50%,     /* cyan-300 - peak highlight */
+                #22D3EE 65%,     /* cyan-400 */
+                #06B6D4 85%,     /* cyan-500 */
+                #0891B2 100%     /* cyan-600 - deep base */
+              );
+              background-size: 200% 100%;
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+              animation: searching-glow 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            }
+            
+            @keyframes searching-glow {
+              0% { 
+                background-position: 100% 0;
+                filter: brightness(1);
+              }
+              50% {
+                filter: brightness(1.1);
+              }
+              100% { 
+                background-position: -100% 0;
+                filter: brightness(1);
+              }
+            }
+            
+            /* Ranking - flowing gradient animation (same as planning) */
+            .ranking-shimmer-active {
+              font-weight: 500;
+              background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+              background-size: 300% 100%;
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+              animation: shimmer-full 2s ease-in-out infinite;
             }
             
             @keyframes reading-glow {
@@ -883,6 +1072,16 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     return null;
   }
 
+  // Determine if we should show planning indicator
+  // 1. Show initially when loading but no steps yet (handled in early return above)
+  // 2. Hide when first step appears
+  // 3. Show again after all reading steps complete, before response
+  const hasSteps = animatedSteps.length > 0;
+  const shouldShowPlanningAfterReading = isLoading && hasSteps && allReadingComplete && totalReadingSteps > 0;
+  
+  // Check if planning indicator should animate (only if it's the current active step)
+  const isPlanningActive = shouldShowPlanningAfterReading;
+  
   return (
     <div style={{
       marginBottom: '8px',
@@ -902,10 +1101,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             return (
               <motion.div
                 key={finalStepKey}
-                initial={{ opacity: 0, x: -8 }}
+                initial={{ opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ 
                   opacity: 1, 
-                  x: 0,
+                  y: 0,
+                  scale: 1,
                   // Add collapse animation for reading steps during transition
                   ...(isTransitioning && hasPreview ? {
                     height: 'auto',
@@ -914,7 +1114,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 }}
                 exit={{ 
                   opacity: 0, 
-                  x: -8,
+                  y: -2,
+                  scale: 0.98,
                   // Collapse preview cards when exiting
                   ...(isReadingStep && hasPreview ? {
                     height: 0,
@@ -923,15 +1124,15 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   } : {})
                 }}
                 transition={{ 
-                  duration: isTransitioning && hasPreview ? 0.4 : 0.2,
+                  duration: isTransitioning && hasPreview ? 0.4 : 0.3,
                   delay: isTransitioning ? 0 : stepDelay,
                   ease: isTransitioning && hasPreview 
                     ? [0.34, 1.56, 0.64, 1] // Bouncy collapse
-                    : [0.25, 0.1, 0.25, 1]
+                    : [0.16, 1, 0.3, 1] // Smooth ease-out (Cursor-style)
                 }}
                 style={{
                   fontSize: '12px',
-                  color: '#6B7280',
+                  color: DETAIL_COLOR, // Dark gray for container (details will be darker)
                   padding: '2px 0',
                   lineHeight: 1.5,
                   overflow: isTransitioning && hasPreview ? 'hidden' : 'visible'
@@ -989,7 +1190,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                       key={finalStepKey}
                       style={{
                         fontSize: '12px',
-                        color: '#6B7280',
+                        color: DETAIL_COLOR, // Dark gray for container (details will be darker)
                         padding: '2px 0',
                         lineHeight: 1.5
                       }}
@@ -1016,11 +1217,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     {/* Show "Read X documents" summary */}
                     <div style={{
                       fontSize: '12px',
-                      color: '#374151',
+                      color: DETAIL_COLOR, // Dark gray for container text
                       fontWeight: 500,
                       marginBottom: '4px'
                     }}>
-                      Read {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}
+                      <span style={{ color: ACTION_COLOR }}>Read</span> {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}
                     </div>
                     
                     {/* Stacked document previews */}
@@ -1039,17 +1240,26 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         </div>
       )}
       
-      {/* Show planning indicator only AFTER all reading steps are complete */}
-      {isLoading && filteredSteps.length > 0 && allReadingComplete && (
-        <motion.div
-          key={generateUniqueKey('PlanningIndicator', 'after-reading', filteredSteps.length)}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.3 }}
-          style={{ padding: '0', marginTop: '4px' }}
-        >
-          <PlanningIndicator />
-        </motion.div>
+      {/* Show planning indicator after reading steps complete, before response (at the bottom) */}
+      {shouldShowPlanningAfterReading && (
+        <AnimatePresence>
+          <motion.div
+            key="planning-indicator-after-reading"
+            initial={{ opacity: 0, y: 2, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -2 }}
+            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+            style={{ marginTop: '8px' }}
+          >
+            {isPlanningActive ? (
+              <PlanningIndicator />
+            ) : (
+              <div style={{ fontSize: '12px', color: ACTION_COLOR, fontWeight: 500 }}>
+                Planning next moves
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       )}
       
       {/* CSS for shimmer animations - sequential reveal and green flash for reading */}
@@ -1064,6 +1274,28 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           font-weight: 500;
         }
         
+        /* Searching - flowing gradient animation (same as planning) */
+        .searching-shimmer-active {
+          font-weight: 500;
+          background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+          background-size: 300% 100%;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          animation: shimmer-full 2s ease-in-out infinite;
+        }
+        
+        /* Ranking - flowing gradient animation (same as planning) */
+        .ranking-shimmer-active {
+          font-weight: 500;
+          background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+          background-size: 300% 100%;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          animation: shimmer-full 2s ease-in-out infinite;
+        }
+        
         .reading-step-reveal {
           opacity: 0;
           animation: reveal-step 0.3s ease-out forwards;
@@ -1076,39 +1308,61 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           animation-fill-mode: forwards;
         }
         
-        /* Active reading - sleek Cursor-style emerald wave animation */
-        .reading-shimmer-active {
-          font-weight: 500;
-          background: linear-gradient(
-            90deg, 
-            #047857 0%,      /* emerald-700 - deep base */
-            #059669 15%,     /* emerald-600 */
-            #10B981 35%,     /* emerald-500 - main accent */
-            #34D399 50%,     /* emerald-400 - peak highlight */
-            #10B981 65%,     /* emerald-500 */
-            #059669 85%,     /* emerald-600 */
-            #047857 100%     /* emerald-700 - deep base */
-          );
-          background-size: 200% 100%;
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-          animation: reading-glow 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        }
-        
-        @keyframes reading-glow {
-          0% { 
-            background-position: 100% 0;
-            filter: brightness(1);
-          }
-          50% {
-            filter: brightness(1.1);
-          }
-          100% { 
-            background-position: -100% 0;
-            filter: brightness(1);
-          }
-        }
+            /* Active reading - green flow animation for "Reading" and document name */
+            .reading-shimmer-active {
+              font-weight: 500;
+              background: linear-gradient(
+                90deg, 
+                #047857 0%,      /* emerald-700 - deep base */
+                #059669 15%,     /* emerald-600 */
+                #10B981 35%,     /* emerald-500 - main accent */
+                #34D399 50%,     /* emerald-400 - peak highlight */
+                #10B981 65%,     /* emerald-500 */
+                #059669 85%,     /* emerald-600 */
+                #047857 100%     /* emerald-700 - deep base */
+              );
+              background-size: 200% 100%;
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+              animation: reading-glow 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            }
+            
+            /* Searching - flowing gradient animation (same as planning) */
+            .searching-shimmer-active {
+              font-weight: 500;
+              background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+              background-size: 300% 100%;
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+              animation: shimmer-full 2s ease-in-out infinite;
+            }
+            
+            /* Ranking - flowing gradient animation (same as planning) */
+            .ranking-shimmer-active {
+              font-weight: 500;
+              background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
+              background-size: 300% 100%;
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+              animation: shimmer-full 2s ease-in-out infinite;
+            }
+            
+            @keyframes reading-glow {
+              0% { 
+                background-position: 100% 0;
+                filter: brightness(1);
+              }
+              50% {
+                filter: brightness(1.1);
+              }
+              100% { 
+                background-position: -100% 0;
+                filter: brightness(1);
+              }
+            }
         
         @keyframes shimmer-full {
           0% { background-position: 100% 0; }

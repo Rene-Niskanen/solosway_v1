@@ -302,6 +302,7 @@ def get_summary_human_content(
      - Synonyms or related terms
      - Different phrasings or formats
    - Do **not** introduce additional information or context not in the extracts, unless the user explicitly asked.
+   - **CRITICAL**: If you see technical field names like "KEY_VALUES:", "PARTY_NAMES:", "DOCUMENT:", or "PROPERTY:" in the document extracts, extract the actual information but **do NOT include these field names in your response**. Use only natural language.
 
 3. **Use Verified Property Details First**  
    - If any document excerpt includes a **"PROPERTY DETAILS (VERIFIED FROM DATABASE)"** section, treat that as authoritative for attribute-based questions (e.g., bedrooms, bathrooms, price).  
@@ -309,12 +310,18 @@ def get_summary_human_content(
      `Found in: [document name] — This property has …`
 
 4. **Structure & Clarity**  
-   - Use a **brief explanation** of the reasoning (chain-of-thought) to show how you arrived at the final answer:  
-     1. Identify which document(s) or excerpt(s) are relevant  
-     2. Search for synonyms and related terms if the exact term isn't found
-     3. Summarize the relevant facts or figures  
-     4. Synthesize into a final, concise answer  
-   - Then **state the final answer** on its own, clearly, so a real estate professional can read it quickly.
+   - **Start directly with the final answer** - do not show your internal reasoning process
+   - Provide a **concise, direct answer** that a real estate professional can read quickly
+   - Do NOT include:
+     - "Relevant document:" sections
+     - "Searched the extract" descriptions  
+     - "Extracted facts:" breakdowns
+     - Step-by-step reasoning processes
+     - Internal chain-of-thought explanations
+     - Technical field names like "KEY_VALUES", "PARTY_NAMES", or any other internal metadata field names
+     - Technical section identifiers or field labels
+   - Simply state the answer clearly and naturally, using only natural language
+   - If you see technical field names in the document extracts (like "KEY_VALUES:", "PARTY_NAMES:"), extract the actual information but do NOT mention the field names in your response
 
 5. **Cite Document Sources**  
    - For any factual claim, name the document(s) (by filename or identifier) where you found the information.  

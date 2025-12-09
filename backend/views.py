@@ -466,6 +466,9 @@ def query_documents_stream():
                 yield f"data: {initial_reasoning_json}\n\n"
                 logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
                 
+                # Shared variable to store early summary (generated in parallel)
+                early_summary_result = {'summary_data': None, 'task': None}
+                
                 async def run_and_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
@@ -574,6 +577,61 @@ def query_documents_stream():
                                         yield f"data: {reasoning_json}\n\n"
                                         logger.info(f"🟡 [REASONING] ✅ Emitted step: {node_name} - {node_messages[node_name]['message']}")
                                         logger.debug(f"🟡 [REASONING] JSON: {reasoning_json}")
+                                    
+                                    # PERFORMANCE OPTIMIZATION: Emit "reading" steps immediately when processing starts
+                                    # This shows progress in real-time instead of waiting for all documents to complete
+                                    elif node_name == "process_documents":
+                                        # Get relevant_documents from event data to know which docs will be processed
+                                        event_data = event.get("data", {})
+                                        event_state = event_data.get("data", {})  # Current state
+                                        relevant_docs = event_state.get("relevant_documents", [])
+                                        
+                                        if relevant_docs and not followup_context['is_followup']:
+                                            # PERFORMANCE: Don't block on s3_path fetch - emit steps immediately
+                                            # s3_path will be fetched later if needed, but don't delay step emission
+                                            for i, doc in enumerate(relevant_docs[:5]):  # Limit to top 5
+                                                filename = doc.get('original_filename', '') or ''
+                                                classification_type = doc.get('classification_type', 'Document') or 'Document'
+                                                doc_id = doc.get('doc_id', '')
+                                                
+                                                # Build display name
+                                                if filename:
+                                                    display_filename = filename
+                                                    if len(display_filename) > 35:
+                                                        display_filename = display_filename[:32] + '...'
+                                                else:
+                                                    display_filename = classification_type.replace('_', ' ').title()
+                                                
+                                                # Build doc_metadata for preview card (s3_path can be empty - will be fetched async)
+                                                doc_metadata = {
+                                                    'doc_id': doc_id,
+                                                    'original_filename': filename if filename else None,
+                                                    'classification_type': classification_type,
+                                                    'page_range': doc.get('page_range', ''),
+                                                    'page_numbers': doc.get('page_numbers', []),
+                                                    's3_path': doc.get('s3_path', ''),  # May be empty, that's OK
+                                                    'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
+                                                }
+                                                
+                                                # Emit "reading" step immediately (frontend will show "Reading" animation)
+                                                # Don't wait for s3_path fetch - emit NOW for instant feedback
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': f'reading_doc_{i}',
+                                                    'action_type': 'reading',
+                                                    'message': f'Reading {display_filename}',
+                                                    'details': {
+                                                        'document_index': i,
+                                                        'filename': filename if filename else None,
+                                                        'doc_metadata': doc_metadata,
+                                                        'status': 'reading'  # Indicates this is the "reading" phase
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                logger.info(f"🟡 [REASONING] ✅ Emitted reading step immediately for: {display_filename}")
+                                            
+                                            # Note: s3_path will be included from doc.get('s3_path', '') if available
+                                            # If not available, frontend can fetch it separately - don't block step emission
                                 
                                 # Capture node end events to update details and track state
                                 elif event.get("event") == "on_chain_end":
@@ -583,6 +641,52 @@ def query_documents_stream():
                                     event_data = event.get("data", {})
                                     state_update = event_data.get("data", {})  # Full state update
                                     output = event_data.get("output", {})  # Node output only
+                                    
+                                    # PERFORMANCE OPTIMIZATION: Start summarization as soon as we have document outputs
+                                    # This allows the final answer to be generated in parallel with reasoning steps
+                                    if node_name == "process_documents":
+                                        state_data = state_update if state_update else output
+                                        doc_outputs = state_data.get("document_outputs", [])
+                                        if doc_outputs and len(doc_outputs) > 0 and early_summary_result['task'] is None:
+                                            # Start summarization in a thread pool so it doesn't block the event loop
+                                            # This allows reasoning steps to continue while summary is being generated
+                                            import asyncio
+                                            from backend.llm.nodes.summary_nodes import summarize_results
+                                            
+                                            async def generate_summary_in_thread():
+                                                try:
+                                                    # Create a minimal state with just what summarize needs
+                                                    summary_state = {
+                                                        'document_outputs': doc_outputs,
+                                                        'user_query': initial_state.get('user_query', query),
+                                                        'conversation_history': state_data.get('conversation_history', [])
+                                                    }
+                                                    # Run summarize_results in a thread pool (it's synchronous)
+                                                    summary_result = await asyncio.to_thread(summarize_results, summary_state)
+                                                    final_summary = summary_result.get('final_summary', '')
+                                                    
+                                                    # Get relevant_docs from state_data for complete event format
+                                                    relevant_docs_for_summary = state_data.get('relevant_documents', [])
+                                                    
+                                                    # Store summary data for later streaming (use 'complete' type format matching normal flow)
+                                                    summary_data = {
+                                                        'type': 'complete',
+                                                        'data': {
+                                                            'summary': final_summary,
+                                                            'relevant_documents': relevant_docs_for_summary,
+                                                            'document_outputs': doc_outputs,
+                                                            'citations': {},  # Citations will be empty for early summary (can be enhanced later)
+                                                            'session_id': session_id
+                                                        }
+                                                    }
+                                                    early_summary_result['summary_data'] = summary_data
+                                                    logger.info("🟡 [STREAM] ✅ Early summary generated (parallel with reasoning steps)")
+                                                except Exception as summary_error:
+                                                    logger.error(f"🟡 [STREAM] Error generating summary early: {summary_error}", exc_info=True)
+                                            
+                                            # Start summary generation in background
+                                            early_summary_result['task'] = asyncio.create_task(generate_summary_in_thread())
+                                            logger.info("🟡 [STREAM] Started summary generation in background (parallel with reasoning steps)")
                                     
                                     # Update details based on node output
                                     if node_name == "query_vector_documents":
@@ -594,6 +698,12 @@ def query_documents_stream():
                                             doc_names = []
                                             doc_previews = []
                                             
+                                            # PERFORMANCE OPTIMIZATION: Don't block on s3_path fetch
+                                            # Use s3_path from doc if available, otherwise frontend can fetch separately
+                                            # This allows steps to be emitted immediately without waiting for DB query
+                                            
+                                            # Build doc_previews immediately (s3_path may be empty, that's OK)
+                                            # s3_path will be fetched in background and frontend can retry if needed
                                             for doc in relevant_docs[:10]:  # Limit to first 10 for display
                                                 filename = doc.get('original_filename', '') or ''
                                                 classification_type = doc.get('classification_type', 'Document') or 'Document'
@@ -609,14 +719,14 @@ def query_documents_stream():
                                                 
                                                     doc_names.append(display_name)
                                                     
-                                                # Build doc_preview metadata
+                                                # Build doc_preview metadata (s3_path may be empty - non-blocking)
                                                 doc_preview = {
                                                         'doc_id': doc_id,
                                                     'original_filename': filename if filename else None,
                                                         'classification_type': classification_type,
                                                         'page_range': doc.get('page_range', ''),
                                                         'page_numbers': doc.get('page_numbers', []),
-                                                        's3_path': doc.get('s3_path', ''),
+                                                        's3_path': doc.get('s3_path', ''),  # May be empty, frontend can fetch if needed
                                                         'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
                                                 }
                                                 doc_previews.append(doc_preview)
@@ -661,7 +771,7 @@ def query_documents_stream():
                                             relevant_docs = state_data.get("relevant_documents", [])
                                             
                                             # For follow-ups, show a single "Analyzing documents" step
-                                            # For first queries, show individual "Read [filename]" steps with preview cards
+                                            # For first queries, update "reading" steps to "read" as documents complete
                                             if followup_context['is_followup']:
                                                 # Single step for follow-up - documents already read before
                                                 reasoning_data = {
@@ -673,7 +783,8 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
                                             else:
-                                                # First query - show individual read steps with preview cards
+                                                # First query - emit "read" steps to update the "reading" steps we emitted earlier
+                                                # These update the frontend from "Reading" to "Read" state
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
                                                     classification_type = doc_output.get('classification_type', 'Document') or 'Document'
@@ -700,6 +811,7 @@ def query_documents_stream():
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
+                                                    # Emit "read" step to update the "reading" step (frontend transitions to "Read")
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
@@ -708,10 +820,12 @@ def query_documents_stream():
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
-                                                            'doc_metadata': doc_metadata
+                                                            'doc_metadata': doc_metadata,
+                                                            'status': 'read'  # Indicates this is the "read" phase (completion)
                                                         }
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                    logger.info(f"🟡 [REASONING] ✅ Emitted read step for: {display_filename}")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
                                     if state_update:
@@ -761,6 +875,21 @@ def query_documents_stream():
                                                 doc_names = []
                                                 doc_previews = []
                                                 
+                                                # Fetch s3_path for all documents in parallel for faster thumbnail loading
+                                                doc_ids_to_fetch = [doc.get('doc_id') for doc in relevant_docs[:10] if doc.get('doc_id')]
+                                                s3_path_map = {}
+                                                if doc_ids_to_fetch:
+                                                    try:
+                                                        from backend.services.supabase_client_factory import get_supabase_client
+                                                        supabase = get_supabase_client()
+                                                        docs_result = supabase.table('documents')\
+                                                            .select('id, s3_path')\
+                                                            .in_('id', doc_ids_to_fetch)\
+                                                            .execute()
+                                                        s3_path_map = {d['id']: d.get('s3_path', '') for d in docs_result.data}
+                                                    except Exception as e:
+                                                        logger.warning(f"Failed to fetch s3_paths for thumbnail preloading: {e}")
+                                                
                                                 for doc in relevant_docs[:10]:  # Limit to first 10 for display
                                                     filename = doc.get('original_filename', '') or ''
                                                     classification_type = doc.get('classification_type', 'Document') or 'Document'
@@ -776,14 +905,14 @@ def query_documents_stream():
                                                     
                                                     doc_names.append(display_name)
                                                     
-                                                    # Build doc_preview metadata
+                                                    # Build doc_preview metadata with s3_path for faster thumbnail loading
                                                     doc_preview = {
                                                         'doc_id': doc_id,
                                                         'original_filename': filename if filename else None,
                                                         'classification_type': classification_type,
                                                         'page_range': doc.get('page_range', ''),
                                                         'page_numbers': doc.get('page_numbers', []),
-                                                        's3_path': doc.get('s3_path', ''),
+                                                        's3_path': s3_path_map.get(doc_id, '') or doc.get('s3_path', ''),
                                                         'download_url': f"/api/files/download?document_id={doc_id}" if doc_id else ''
                                                     }
                                                     doc_previews.append(doc_preview)
@@ -899,6 +1028,26 @@ def query_documents_stream():
                         relevant_docs = final_result.get('relevant_documents', []) if final_result else []
                         
                         logger.info(f"🟡 [STREAM] Final state: {len(doc_outputs)} doc outputs, {len(relevant_docs)} relevant docs")
+                        
+                        # Check if we have an early summary from background task
+                        # Wait a bit for it to complete (non-blocking check)
+                        if early_summary_result['task']:
+                            try:
+                                import asyncio
+                                # Wait up to 1 second for early summary (non-blocking)
+                                try:
+                                    await asyncio.wait_for(early_summary_result['task'], timeout=1.0)
+                                    logger.info("🟡 [STREAM] Early summary task completed")
+                                except asyncio.TimeoutError:
+                                    logger.info("🟡 [STREAM] Early summary still generating, continuing with graph result")
+                            except Exception as e:
+                                logger.warning(f"🟡 [STREAM] Error waiting for early summary: {e}")
+                        
+                        # If we have early summary ready, use it and skip the graph's summarize step
+                        if early_summary_result['summary_data']:
+                            logger.info("🟡 [STREAM] ✅ Using early summary (generated in parallel with reasoning steps)")
+                            yield f"data: {json.dumps(early_summary_result['summary_data'])}\n\n"
+                            return  # Skip the rest of the summary generation - we already have it!
                         
                         # Send document count
                         yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"

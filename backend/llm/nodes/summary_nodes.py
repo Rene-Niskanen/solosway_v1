@@ -3,6 +3,7 @@ Summarization code - create final unified answer from all document outputs.
 """
 
 import logging
+import os
 from datetime import datetime
 
 from langchain_openai import ChatOpenAI
@@ -109,6 +110,17 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         temperature=0,
     )
 
+    # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization to reduce token usage
+    # Process top documents first (already ranked by relevance)
+    max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY", "7"))
+    if len(doc_outputs) > max_docs_for_summary:
+        logger.info(
+            "[SUMMARIZE_RESULTS] Limiting summary to top %d documents (out of %d) for faster processing",
+            max_docs_for_summary,
+            len(doc_outputs)
+        )
+        doc_outputs = doc_outputs[:max_docs_for_summary]
+    
     # Format outputs with natural names (filename and address)
     # Also include search source information to help LLM understand how documents were found
     formatted_outputs = []

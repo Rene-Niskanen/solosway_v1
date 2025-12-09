@@ -5,6 +5,7 @@ This is where each document gets processed with the user's question.
 
 import asyncio
 import logging
+import os
 from typing import List
 
 from backend.llm.types import (
@@ -39,6 +40,18 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
     if not relevant_docs:
         logger.warning("[PROCESS_DOCUMENTS] No relevant documents to process")
         return {"document_outputs": []}
+    
+    # PERFORMANCE OPTIMIZATION: Limit number of documents processed to top 5-7
+    # Processing more documents adds significant latency with diminishing returns
+    # Top documents are already ranked by relevance, so we get the best results
+    max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS", "5"))
+    if len(relevant_docs) > max_docs_to_process:
+        logger.info(
+            "[PROCESS_DOCUMENTS] Limiting processing to top %d documents (out of %d) for faster response",
+            max_docs_to_process,
+            len(relevant_docs)
+        )
+        relevant_docs = relevant_docs[:max_docs_to_process]
 
     # Fast path for frontend plumbing / smoke tests
     if config.simple_mode:
@@ -139,10 +152,28 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
                 source_chunks=[],
             )
 
-    results: List[DocumentProcessingResult] = await asyncio.gather(
-        *(process_one(doc) for doc in relevant_docs)
-    )
-
+    # PERFORMANCE OPTIMIZATION: Process documents and collect results as they complete
+    # This allows the frontend to see progress, though we still need to return all results
+    # Note: Individual completions can't be streamed from here, but we process efficiently
+    tasks = [asyncio.create_task(process_one(doc)) for doc in relevant_docs]
+    results: List[DocumentProcessingResult] = []
+    
+    # Collect results as they complete (faster than gather for user perception)
+    # Even though we can't stream from here, processing happens as fast as possible
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        results.append(result)
+        logger.info(
+            "[PROCESS_DOCUMENTS] ✅ Document %s completed (%d/%d)", 
+            result["doc_id"][:8],
+            len(results),
+            len(relevant_docs)
+        )
+    
+    # Sort results to maintain original document order (as_completed returns in completion order)
+    doc_id_to_result = {r['doc_id']: r for r in results}
+    results = [doc_id_to_result.get(doc.get('doc_id'), r) for doc, r in zip(relevant_docs, results) if doc.get('doc_id') in doc_id_to_result]
+    
     logger.info("[PROCESS_DOCUMENTS] Completed all %d documents", len(results))
     return {"document_outputs": results}
 

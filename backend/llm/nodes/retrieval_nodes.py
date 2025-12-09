@@ -4,6 +4,7 @@ Retrieval nodes: Query classification, vector search, SQL search, deduplication,
 
 import json
 import logging
+import os
 from typing import Optional, List, Dict
 
 from langchain_openai import ChatOpenAI
@@ -52,9 +53,12 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
         logger.info("[REWRITE_QUERY] No conversation history, using original query")
         return {}  # No changes to state
     
+    # PERFORMANCE OPTIMIZATION: Use faster/cheaper model for query rewriting
+    # gpt-3.5-turbo is much faster and cheaper than gpt-4 for this task
+    rewrite_model = os.getenv("OPENAI_REWRITE_MODEL", "gpt-3.5-turbo")
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
-        model=config.openai_model,
+        model=rewrite_model,  # Use faster model for rewriting
         temperature=0,
     )
     
@@ -136,15 +140,37 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     """
     
     original_query = state['user_query']
+    query_lower = original_query.lower().strip()
     
-    # Skip expansion for very specific/long queries (already clear)
-    if len(original_query.split()) > 15:
-        logger.info("[EXPAND_QUERY] Query already specific, skipping expansion")
+    # PERFORMANCE OPTIMIZATION: Skip expansion for:
+    # 1. Very specific/long queries (already clear)
+    # 2. Short queries (< 3 words) - too simple to benefit
+    # 3. Queries with specific property identifiers (addresses, IDs) - already specific
+    # 4. Questions starting with "what is" or "show me" - usually clear enough
+    word_count = len(original_query.split())
+    has_specific_terms = any(term in query_lower for term in [
+        'property', 'address', 'bedroom', 'bathroom', 'price', 'valuation', 
+        'document', 'report', 'page', 'id:', 'property_id'
+    ])
+    
+    if word_count > 15:
+        logger.info("[EXPAND_QUERY] Query already specific (>15 words), skipping expansion")
         return {"query_variations": [original_query]}
     
+    if word_count < 3:
+        logger.info("[EXPAND_QUERY] Query too short (<3 words), skipping expansion")
+        return {"query_variations": [original_query]}
+    
+    if has_specific_terms and word_count > 5:
+        logger.info("[EXPAND_QUERY] Query contains specific terms, skipping expansion for speed")
+        return {"query_variations": [original_query]}
+    
+    # PERFORMANCE OPTIMIZATION: Use faster/cheaper model for query expansion
+    # gpt-3.5-turbo is much faster and cheaper than gpt-4 for this task
+    expansion_model = os.getenv("OPENAI_EXPANSION_MODEL", "gpt-3.5-turbo")
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
-        model=config.openai_model,
+        model=expansion_model,  # Use faster model for expansion
         temperature=0.4,  # Slight creativity for variations
     )
     
@@ -626,15 +652,15 @@ This information has been verified and extracted from the property database, inc
                 
                 supabase = get_supabase_client()  # Get supabase client for LLM SQL queries
                 
-                # Create the tool
-                property_tool = create_property_query_tool(business_id=business_id)
+                # Create the tool instance
+                sql_tool = SQLQueryTool(business_id=business_id)
                 
                 # Create LLM with tool binding (agent can invoke tool directly)
                 llm = ChatOpenAI(
                     api_key=config.openai_api_key,
                     model=config.openai_model,
                     temperature=0.3,
-                ).bind_tools([property_tool])
+                )
                 
                 # Use centralized prompt
                 # Get system prompt for SQL query task
@@ -1068,31 +1094,63 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             f"{doc.get('page_range', 'unknown')} | {doc.get('chunk_count', 0)} chunks"
         )
     
-    # If only a few documents, skip reranking (not worth the cost/latency)
-    if len(merged_docs) <= 3:
-        logger.info("[CLARIFY] Only %d documents, skipping re-ranking", len(merged_docs))
+    # PERFORMANCE OPTIMIZATION: Skip reranking for small result sets or when Cohere is disabled
+    # Reranking adds latency and isn't necessary when we have few documents or high confidence
+    max_docs_for_reranking = int(os.getenv("MAX_DOCS_FOR_RERANKING", "8"))
+    if len(merged_docs) <= max_docs_for_reranking:
+        logger.info(
+            "[CLARIFY] Only %d documents (threshold: %d), skipping re-ranking for speed",
+            len(merged_docs),
+            max_docs_for_reranking
+        )
+        return {"relevant_documents": merged_docs}
+    
+    # Also skip if documents have very high similarity scores (already well-ranked)
+    high_confidence_docs = [doc for doc in merged_docs if doc.get('similarity_score', 0) > 0.8]
+    if len(high_confidence_docs) >= len(merged_docs) * 0.7:  # 70% have high confidence
+        logger.info(
+            "[CLARIFY] %d%% of documents have high confidence scores (>0.8), skipping re-ranking",
+            int(len(high_confidence_docs) / len(merged_docs) * 100)
+        )
         return {"relevant_documents": merged_docs}
 
     # Step 3: Cohere reranking (replaces expensive LLM reranking)
+    # PERFORMANCE OPTIMIZATION: Only rerank if we have many documents and Cohere is enabled
     try:
         from backend.llm.retrievers.cohere_reranker import CohereReranker
         
         reranker = CohereReranker()
         
-        if reranker.is_enabled() and config.cohere_rerank_enabled:
+        # Only rerank if we have enough documents to justify the latency
+        min_docs_for_reranking = int(os.getenv("MIN_DOCS_FOR_RERANKING", "6"))
+        should_rerank = (
+            reranker.is_enabled() 
+            and config.cohere_rerank_enabled 
+            and len(merged_docs) >= min_docs_for_reranking
+        )
+        
+        if should_rerank:
             logger.info("[CLARIFY] Using Cohere reranker for %d documents", len(merged_docs))
             
-            # Rerank documents using Cohere
+            # Rerank documents using Cohere (limit to reasonable number for speed)
+            max_rerank = min(len(merged_docs), 15)  # Reduced from 20 for speed
             reranked_docs = reranker.rerank(
                 query=state['user_query'],
                 documents=merged_docs,
-                top_n=min(len(merged_docs), 20)  # Limit to top 20
+                top_n=max_rerank
             )
             
             logger.info("[CLARIFY] Cohere reranked %d documents", len(reranked_docs))
             return {"relevant_documents": reranked_docs}
         else:
-            logger.info("[CLARIFY] Cohere reranker disabled, using original order")
+            if not reranker.is_enabled() or not config.cohere_rerank_enabled:
+                logger.info("[CLARIFY] Cohere reranker disabled, using original order")
+            else:
+                logger.info(
+                    "[CLARIFY] Only %d documents (threshold: %d), skipping Cohere reranking for speed",
+                    len(merged_docs),
+                    min_docs_for_reranking
+                )
             return {"relevant_documents": merged_docs}
             
     except ImportError:

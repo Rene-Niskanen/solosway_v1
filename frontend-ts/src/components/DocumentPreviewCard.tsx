@@ -135,26 +135,52 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
   const isImage = fileToCheck?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
   const isPDF = fileToCheck?.toLowerCase().endsWith('.pdf') || classification_type === 'valuation_report' || classification_type?.includes('pdf');
   
-  // Fetch document and generate preview
+  // Fetch document and generate preview - optimized to use cache immediately
   useEffect(() => {
     if (!doc_id) {
       setLoading(false);
       return;
     }
     
-    // Check cache first
+    // Check cache first - this is the critical optimization for instant thumbnail display
     const cached = (window as any).__preloadedDocumentCovers?.[doc_id];
-    if (cached?.thumbnailUrl) {
-      console.log('📄 Using cached PDF thumbnail for:', original_filename);
-      setPdfThumbnail(cached.thumbnailUrl);
-      setLoading(false);
-      return;
-    }
-    if (cached?.url && isImage) {
-      console.log('🖼️ Using cached image for:', original_filename);
-      setPreviewUrl(cached.url);
-      setLoading(false);
-      return;
+    if (cached) {
+      // PDF with pre-generated thumbnail - instant display!
+      if (cached.thumbnailUrl) {
+        console.log('⚡ [DocumentPreviewCard] Using cached PDF thumbnail (instant):', original_filename);
+        setPdfThumbnail(cached.thumbnailUrl);
+        setLoading(false);
+        return;
+      }
+      // Image with cached blob URL - instant display!
+      if (cached.url && isImage) {
+        console.log('⚡ [DocumentPreviewCard] Using cached image (instant):', original_filename);
+        setPreviewUrl(cached.url);
+        setLoading(false);
+        return;
+      }
+      // PDF without thumbnail but with blob URL - use it while generating thumbnail
+      if (cached.url && isPDF) {
+        console.log('📄 [DocumentPreviewCard] Using cached PDF blob, generating thumbnail:', original_filename);
+        // Use cached blob to generate thumbnail faster
+        fetch(cached.url)
+          .then(res => res.blob())
+          .then(blob => blob.arrayBuffer())
+          .then(arrayBuffer => renderPdfThumbnail(arrayBuffer))
+          .then(thumbnailUrl => {
+            if (thumbnailUrl) {
+              setPdfThumbnail(thumbnailUrl);
+              // Update cache with thumbnail for next time
+              (window as any).__preloadedDocumentCovers[doc_id].thumbnailUrl = thumbnailUrl;
+            }
+            setLoading(false);
+          })
+          .catch(err => {
+            console.warn('Failed to generate thumbnail from cached blob:', err);
+            setLoading(false);
+          });
+        return;
+      }
     }
     
     // Fetch the document

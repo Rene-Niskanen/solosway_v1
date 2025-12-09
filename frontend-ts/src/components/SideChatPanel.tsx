@@ -2107,10 +2107,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
+                      const now = Date.now();
+                      
+                      // PERFORMANCE OPTIMIZATION: Update existing "reading" steps to "read" instead of creating duplicates
+                      // Match by doc_id to link "reading_doc_X" with "read_doc_X"
+                      if (step.action_type === 'reading' && step.details?.doc_metadata?.doc_id) {
+                        const docId = step.details.doc_metadata.doc_id;
+                        const stepStatus = step.details?.status; // 'reading' or 'read'
+                        
+                        // Find existing reading step for this doc_id
+                        const existingReadingIndex = existingSteps.findIndex(s => 
+                          s.action_type === 'reading' && 
+                          s.details?.doc_metadata?.doc_id === docId &&
+                          s.details?.status === 'reading' // Only match "reading" status steps
+                        );
+                        
+                        if (existingReadingIndex >= 0 && stepStatus === 'read') {
+                          // Update existing "reading" step to "read" status
+                          const updatedSteps = [...existingSteps];
+                          updatedSteps[existingReadingIndex] = {
+                            ...updatedSteps[existingReadingIndex],
+                            message: step.message, // Update message from "Reading" to "Read"
+                            details: {
+                              ...updatedSteps[existingReadingIndex].details,
+                              status: 'read' // Mark as read
+                            },
+                            timestamp: now
+                          };
+                          return { ...msg, reasoningSteps: updatedSteps };
+                        }
+                      }
+                      
                       // Use step + message as unique key to allow different messages for same step type
                       // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
                       const stepKey = `${step.step}:${step.message}`;
-                      const now = Date.now();
                       const existingIndex = existingSteps.findIndex(s => 
                         `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
                       );
