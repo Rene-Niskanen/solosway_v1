@@ -149,6 +149,28 @@ class BM25DocumentRetriever:
                         logger.warning(f"Chunk expansion failed in BM25, falling back to original chunks: {e}")
                         expanded_chunks_cache = {}
             
+            # Batch fetch document metadata (original_filename) for all documents
+            document_metadata_cache = {}
+            if result.data:
+                unique_doc_ids = list(set([row.get('document_id') for row in result.data if row.get('document_id')]))
+                if unique_doc_ids:
+                    try:
+                        metadata_results = self.supabase.table('documents')\
+                            .select('id, original_filename')\
+                            .in_('id', unique_doc_ids)\
+                            .execute()
+                        
+                        for doc_row in metadata_results.data:
+                            doc_id = doc_row.get('id')
+                            if doc_id:
+                                document_metadata_cache[doc_id] = {
+                                    'original_filename': doc_row.get('original_filename'),
+                                }
+                        
+                        logger.debug(f"Fetched metadata for {len(document_metadata_cache)} documents (BM25)")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch document metadata in BM25: {e}")
+            
             for row in result.data:
                 # Parse bbox if it's a JSON string
                 bbox = row.get('bbox')
@@ -254,6 +276,13 @@ class BM25DocumentRetriever:
                 # Get embedding status (for lazy embedding trigger)
                 embedding_status = row.get('embedding_status', 'unknown')
                 
+                # Get original_filename from cache if available
+                doc_metadata = document_metadata_cache.get(doc_id, {})
+                original_filename = doc_metadata.get('original_filename')
+                
+                # Get property_address from row or property table if needed
+                property_address = row.get('property_address') or row.get('formatted_address')
+                
                 # Create document with embedding status stored as extra metadata
                 doc = RetrievedDocument(
                     vector_id=row['id'],
@@ -268,6 +297,8 @@ class BM25DocumentRetriever:
                     source="bm25",  # Mark as BM25 result
                     address_hash=row.get('address_hash'),
                     business_id=row.get('business_uuid'),
+                    original_filename=original_filename,
+                    property_address=property_address,
                 )
                 
                 # Store embedding status as attribute (not in TypedDict, but accessible)

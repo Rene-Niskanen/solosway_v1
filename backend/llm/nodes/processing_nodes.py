@@ -107,6 +107,8 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
             
             # Add metadata from original doc (page numbers, classification, filename, address)
+            # Ensure doc_id comes from original doc (subgraph may not preserve it)
+            result['doc_id'] = doc.get('doc_id', '')
             result['classification_type'] = doc.get('classification_type', 'Unknown')
             result['page_range'] = doc.get('page_range', 'unknown')
             result['page_numbers'] = doc.get('page_numbers', [])

@@ -3754,6 +3754,8 @@ export const MainContent = ({
         }}
         isMapVisible={isMapVisible}
         isSidebarCollapsed={isSidebarCollapsed}
+        chatPanelWidth={chatPanelWidth}
+        sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
       />
       
       {/* Drag and Drop Overlay - Full Screen */}

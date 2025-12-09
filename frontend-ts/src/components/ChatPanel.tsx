@@ -246,11 +246,18 @@ export const ChatPanel = ({
             {showChatHistory && (
               <div className="flex-1 overflow-y-auto px-4 py-1 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70">
                 <AnimatePresence mode="popLayout">
-                  {displayedChats.map((chat) => {
+                  {displayedChats
+                    .filter(chat => chat) // Filter out any null/undefined chats
+                    .map((chat, idx) => {
+                    // Ensure key is never empty
+                    const chatKey = (chat.id && typeof chat.id === 'string' && chat.id.trim().length > 0)
+                      ? chat.id
+                      : `chat-item-${idx}`;
+                      
                     const isEditing = editingChatId === chat.id;
                     return (
                       <motion.div 
-                        key={`chat-${chat.id}`}
+                        key={chatKey}
                         layout 
                         initial={{
                           opacity: 0,

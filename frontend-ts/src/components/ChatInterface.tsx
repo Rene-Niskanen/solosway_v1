@@ -1115,7 +1115,9 @@ const ChatInterface = forwardRef<{ handleFileDrop: (file: File) => void }, ChatI
               // Check if this is a property-related assistant message
               const isPropertyResponse = message.role === 'assistant' && propertyQueries.has(message.id);
               
-              return <motion.div key={message.id} initial={isFromHistory ? { opacity: 1, y: 0, scale: 1 } : {
+              // Use message.id as primary key, with index fallback for missing IDs
+              const messageKey = message.id || `chat-msg-${index}`;
+              return <motion.div key={messageKey} initial={isFromHistory ? { opacity: 1, y: 0, scale: 1 } : {
               opacity: 0,
               y: 6,
               scale: 0.98

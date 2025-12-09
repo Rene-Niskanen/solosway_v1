@@ -995,13 +995,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   width: '100%'
                 }}
               >
-                {propertyAttachments.map((property) => (
-                  <PropertyAttachment
-                    key={property.id}
-                    attachment={property}
-                    onRemove={removePropertyAttachment}
-                  />
-                ))}
+                {propertyAttachments.map((property, idx) => {
+                  const propertyKey = (property.id && String(property.id).length > 0) 
+                    ? String(property.id) 
+                    : `property-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+                  return (
+                    <PropertyAttachment
+                      key={propertyKey}
+                      attachment={property}
+                      onRemove={removePropertyAttachment}
+                    />
+                  );
+                })}
               </div>
             )}
             
@@ -1011,9 +1016,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   style={{ height: 'auto' }}
                   className="mb-4 flex flex-wrap gap-2 justify-start"
                 >
-                  {attachedFiles.map((file) => (
+                  {attachedFiles.map((file, idx) => {
+                  const fileKey = (file.id && String(file.id).length > 0) 
+                    ? String(file.id) 
+                    : `file-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+                  return (
                   <FileAttachment
-                      key={file.id}
+                      key={fileKey}
                       attachment={file}
                     onRemove={handleRemoveFile}
                     onPreview={(file) => {
@@ -1021,7 +1030,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       addPreviewFile(file);
                     }}
                   />
-                  ))}
+                  );
+                })}
                 </div>
               )}
             
