@@ -60,11 +60,12 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
     // If we have a thumbnail URL, use it
     if (lastFile.thumbnail) {
       return (
-        <div className="w-full h-full overflow-hidden">
+        <div className="w-full h-full overflow-hidden" style={{ margin: 0, padding: 0 }}>
           <img 
             src={lastFile.thumbnail} 
             alt="Project preview"
             className="w-full h-full object-cover"
+            style={{ display: 'block', margin: 0, padding: 0 }}
             onError={(e) => {
               e.currentTarget.src = '/placeholder.svg';
             }}
@@ -120,7 +121,7 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'new') {
     return (
-      <div className="border transition-all duration-75 flex flex-col cursor-pointer w-full" style={{ 
+      <div className="transition-all duration-75 flex flex-col cursor-pointer w-full" style={{ 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`, 
         maxWidth: `${cardWidth}px`, 
@@ -131,7 +132,6 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
         background: 'rgba(255, 255, 255, 0.9)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255, 255, 255, 0.4)',
         borderRadius: '6px',
         boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
         overflow: 'hidden'
@@ -159,7 +159,7 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
 
   if (type === 'blank') {
     return (
-      <div className="bg-white border border-gray-200 overflow-hidden flex flex-col opacity-40 w-full" style={{ 
+      <div className="bg-white overflow-hidden flex flex-col opacity-40 w-full" style={{ 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`, 
         maxWidth: `${cardWidth}px`, 
@@ -183,7 +183,7 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
   }
 
   return (
-    <div className="border transition-all duration-75 flex flex-col w-full" style={{ 
+    <div className="transition-all duration-75 flex flex-col w-full" style={{ 
       width: `${cardWidth}px`, 
       minWidth: `${cardWidth}px`, 
       maxWidth: `${cardWidth}px`, 
@@ -194,13 +194,15 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       background: 'rgba(255, 255, 255, 0.9)',
       backdropFilter: 'blur(20px)',
       WebkitBackdropFilter: 'blur(20px)',
-      border: '1px solid rgba(255, 255, 255, 0.4)',
       borderRadius: '4px',
       boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
       overflow: 'hidden'
     }}>
-      {/* Preview Image - 2/3 of card height */}
-      <div className="flex-[2] overflow-hidden" style={{ flexShrink: 0 }}>
+      {/* Preview Image - 2/3 of card height - Infinity Pool Style (no borders, extends to edges) */}
+      <div className="flex-[2] overflow-hidden" style={{ 
+        flexShrink: 0,
+        borderRadius: '4px 4px 0 0' // Only round top corners
+      }}>
         {renderPreviewImage()}
       </div>
       

@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
 import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
@@ -14,6 +16,7 @@ import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
+import { ReasoningSteps } from './ReasoningSteps';
 
 // Component for displaying property thumbnail in search results
 const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
@@ -59,6 +62,366 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
       )}
     </div>
   );
+};
+
+// Document Preview Overlay - Shows document preview when clicking reasoning step cards
+const DocumentPreviewOverlay: React.FC<{
+  document: {
+    doc_id: string;
+    original_filename?: string | null;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  };
+  isFullscreen: boolean;
+  onClose: () => void;
+  onToggleFullscreen: () => void;
+}> = ({ document, isFullscreen, onClose, onToggleFullscreen }) => {
+  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [blobType, setBlobType] = React.useState<string | null>(null);
+  
+  // Determine file type from filename or classification_type
+  const fileName = document.original_filename || '';
+  const classType = document.classification_type?.toLowerCase() || '';
+  const isPDF = fileName.toLowerCase().endsWith('.pdf') || 
+                classType.includes('valuation') || 
+                classType.includes('report') ||
+                classType.includes('pdf');
+  const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i.test(fileName);
+  const isDOCX = /\.(doc|docx)$/i.test(fileName);
+  
+  React.useEffect(() => {
+    const fetchDocument = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        let fetchUrl: string;
+        
+        if (document.download_url) {
+          fetchUrl = document.download_url.startsWith('http') 
+            ? document.download_url 
+            : `${backendUrl}${document.download_url}`;
+        } else if (document.s3_path) {
+          fetchUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(document.s3_path)}`;
+        } else {
+          fetchUrl = `${backendUrl}/api/files/download?document_id=${document.doc_id}`;
+        }
+        
+        console.log('📄 Fetching document for preview:', fileName, fetchUrl);
+        
+        const response = await fetch(fetchUrl, { credentials: 'include' });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to load document: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setBlobType(blob.type);
+        setPreviewUrl(url);
+        setLoading(false);
+        
+        console.log('✅ Document loaded for preview:', fileName, 'Type:', blob.type);
+      } catch (err: any) {
+        console.error('❌ Error loading document:', err);
+        setError(err.message || 'Failed to load document');
+        setLoading(false);
+      }
+    };
+    
+    fetchDocument();
+    
+    // Cleanup blob URL on unmount
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [document.doc_id]);
+  
+  // Handle escape key to close
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isFullscreen) {
+          onToggleFullscreen();
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen, onClose, onToggleFullscreen]);
+  
+  const containerClass = isFullscreen 
+    ? "fixed inset-0 bg-white flex flex-col z-[10000]" 
+    : "fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4";
+  
+  const contentClass = isFullscreen
+    ? "w-full h-full flex flex-col"
+    : "bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-w-4xl w-full max-h-[90vh]";
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className={containerClass}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isFullscreen) {
+          onClose();
+        }
+      }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        className={contentClass}
+      >
+        {/* Header */}
+        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
+              {isPDF ? <FileText size={16} className="text-slate-700" /> : 
+               isImage ? <ImageIcon size={16} className="text-purple-500" /> : 
+               isDOCX ? <FileText size={16} className="text-blue-600" /> :
+               <FileIcon size={16} className="text-gray-400" />}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <h3 className="text-sm font-medium text-gray-900 truncate">{fileName}</h3>
+              <span className="text-xs text-gray-500">{document.classification_type || 'Document'}</span>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {/* Fullscreen Toggle */}
+            <button
+              onClick={onToggleFullscreen}
+              className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+              title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4" />
+              ) : (
+                <Fullscreen className="w-4 h-4" />
+              )}
+            </button>
+            
+            <div className="w-px h-4 bg-gray-200 mx-1" />
+            
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-red-50 hover:text-red-500 rounded-lg text-gray-400 transition-colors"
+              title="Close Preview"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        
+        {/* Content Area */}
+        <div className="flex-1 overflow-hidden bg-gray-50 relative">
+          {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white">
+              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+            </div>
+          )}
+          
+          {error && (
+            <div className="flex items-center justify-center h-full text-red-500 gap-2">
+              <span className="text-sm">{error}</span>
+            </div>
+          )}
+          
+          {previewUrl && !loading && !error && (
+            <div className="w-full h-full flex items-center justify-center">
+              {isPDF ? (
+                <iframe
+                  src={previewUrl}
+                  className="w-full h-full border-0"
+                  title={fileName}
+                />
+              ) : isImage ? (
+                <img
+                  src={previewUrl}
+                  alt={fileName}
+                  className="max-w-full max-h-full object-contain p-4"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                  <div className="w-20 h-20 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center mb-4">
+                    <FileText className="w-8 h-8 text-gray-400" />
+                  </div>
+                  <p className="text-sm font-medium text-gray-900 mb-1">{fileName}</p>
+                  <p className="text-xs text-gray-500 mb-6">Preview not available for this file type</p>
+                  <a
+                    href={previewUrl}
+                    download={fileName}
+                    className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-xs font-medium shadow-sm"
+                  >
+                    Download File
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+// Citation link component - renders clickable citation buttons [1], [2], etc.
+interface CitationChunkData {
+  doc_id?: string;
+  content?: string;
+  chunk_index?: number;
+  page_number?: number;
+  match_reason?: string;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+  vector_id?: string;
+  similarity?: number;
+}
+
+interface CitationDataType {
+  doc_id: string;
+  original_filename?: string | null; // Can be null when backend doesn't have filename
+  property_address: string;
+  page_range: string;
+  classification_type: string;
+  chunk_index?: number;
+  page_number?: number;
+  source_chunks_metadata?: CitationChunkData[];
+  candidate_chunks_metadata?: CitationChunkData[];
+  matched_chunk_metadata?: CitationChunkData;
+  chunk_metadata?: CitationChunkData;
+  match_reason?: string;
+}
+
+const CitationLink: React.FC<{
+  citationNumber: string;
+  citationData: CitationDataType;
+  onClick: (data: CitationDataType) => void;
+}> = ({ citationNumber, citationData, onClick }) => {
+  // Build display name with fallbacks
+  const displayName = citationData.original_filename || 
+    (citationData.classification_type ? citationData.classification_type.replace(/_/g, ' ') : 'Document');
+  
+  return (
+    <button
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick(citationData);
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: '2px',
+        marginRight: '2px',
+        width: '18px',
+        height: '18px',
+        fontSize: '10px',
+        fontWeight: 600,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: 'rgba(0, 0, 0, 0.06)',
+        borderRadius: '50%',
+        border: 'none',
+        cursor: 'pointer',
+        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+        verticalAlign: 'middle',
+        position: 'relative',
+        top: '-1px',
+        lineHeight: 1,
+        letterSpacing: '-0.02em',
+        boxShadow: '0 0 0 0 rgba(0, 0, 0, 0)',
+        transform: 'scale(1)',
+        flexShrink: 0
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.12)';
+        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.9)';
+        e.currentTarget.style.transform = 'scale(1.1)';
+        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.15)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.06)';
+        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.7)';
+        e.currentTarget.style.transform = 'scale(1)';
+        e.currentTarget.style.boxShadow = '0 0 0 0 rgba(0, 0, 0, 0)';
+      }}
+      onMouseDown={(e) => {
+        e.currentTarget.style.transform = 'scale(0.95)';
+      }}
+      onMouseUp={(e) => {
+        e.currentTarget.style.transform = 'scale(1.1)';
+      }}
+      title={`Source: ${displayName}`}
+      aria-label={`Citation ${citationNumber} - ${displayName}`}
+    >
+      {citationNumber}
+    </button>
+  );
+};
+
+// Helper function to render text with clickable citation links
+const renderTextWithCitations = (
+  text: string, 
+  citations: Record<string, CitationDataType> | undefined,
+  onCitationClick: (data: CitationDataType) => void
+): React.ReactNode => {
+  // Debug: Log when this function is called
+  console.log('🔗 renderTextWithCitations called:', { 
+    textLength: text?.length, 
+    hasCitations: !!citations,
+    citationKeys: citations ? Object.keys(citations) : [],
+    textPreview: text?.substring(0, 100)
+  });
+  
+  if (!citations || Object.keys(citations).length === 0) {
+    return text;
+  }
+  
+  // Split text by citation pattern [N]
+  const parts = text.split(/(\[\d+\])/g);
+  
+  return parts.map((part, idx) => {
+    const match = part.match(/\[(\d+)\]/);
+    if (match) {
+      const citNum = match[1];
+      const citData = citations[citNum];
+      if (citData) {
+        return (
+          <CitationLink 
+            key={`cit-${idx}-${citNum}`} 
+            citationNumber={citNum} 
+            citationData={citData} 
+            onClick={onCitationClick} 
+          />
+        );
+      }
+    }
+    return part;
+  });
 };
 
 // Component for displaying property attachment in query bubble
@@ -397,6 +760,43 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onQuickStartToggle,
   isQuickStartBarVisible = false // Default to false
 }, ref) => {
+  // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
+  // This prevents artifacts from showing during streaming
+  const cleanResponseText = (text: string): string => {
+    if (!text) return text;
+    
+    let cleaned = text;
+    
+    // First, remove complete EVIDENCE_FEEDBACK tags (including content between tags)
+    const feedbackStartIdx = cleaned.indexOf('<EVIDENCE_FEEDBACK>');
+    if (feedbackStartIdx !== -1) {
+      const feedbackEndIdx = cleaned.indexOf('</EVIDENCE_FEEDBACK>', feedbackStartIdx);
+      if (feedbackEndIdx !== -1) {
+        // Remove the entire tag and its content
+        cleaned = cleaned.substring(0, feedbackStartIdx) + cleaned.substring(feedbackEndIdx + '</EVIDENCE_FEEDBACK>'.length);
+      } else {
+        // No end tag found, remove from start tag onwards
+        cleaned = cleaned.substring(0, feedbackStartIdx);
+      }
+    }
+    
+    // Remove partial EVIDENCE_FEEDBACK tags that might appear during streaming
+    // Match incomplete tags at the end of the string (e.g., "<EVIDENCE_FEEDBACK" or "<EVIDENCE_FEEDBACK>")
+    cleaned = cleaned.replace(/<EVIDENCE_FEEDBACK[^>]*$/g, '');
+    
+    // Remove complete [CHUNK:X] markers (including with PAGE:Y)
+    // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
+    cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
+    
+    // Remove partial CHUNK markers that might appear during streaming
+    // These appear at the end of the string as tokens arrive incrementally
+    // Match patterns like: "[CHUNK:", "[CHUNK:1", "[CHUNK:12", "[CHUNK:1:", "[CHUNK:1:PAGE:1", etc.
+    // Only match if it's at the end of the string (incomplete marker)
+    cleaned = cleaned.replace(/\[CHUNK:\d*(?::PAGE?:\d*)?$/g, '');
+    
+    return cleaned.trim();
+  };
+
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
@@ -557,6 +957,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
+  
+  // State for reasoning trace toggle - persisted to localStorage
+  const [showReasoningTrace, setShowReasoningTrace] = React.useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('showReasoningTrace');
+      if (saved === null) return true; // Default ON
+      const parsed = JSON.parse(saved);
+      return parsed === true; // Ensure it's exactly boolean true
+    } catch {
+      return true; // Default ON if parsing fails
+    }
+  });
+  
+  // Persist reasoning trace toggle to localStorage when changed
+  React.useEffect(() => {
+    localStorage.setItem('showReasoningTrace', JSON.stringify(showReasoningTrace));
+  }, [showReasoningTrace]);
   
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
@@ -732,11 +1149,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       
-      // Mark the current loading message as stopped
+      // Mark the current loading message as stopped (preserve reasoning steps)
       setChatMessages(prev => {
         const updated = prev.map(msg => 
           msg.isLoading 
-            ? { ...msg, isLoading: false }
+            ? { ...msg, isLoading: false, reasoningSteps: msg.reasoningSteps || [] }
             : msg
         );
         persistedChatMessagesRef.current = updated;
@@ -798,31 +1215,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Store messages (both queries and responses)
   interface ReasoningStep {
     step: string;
+    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'complete' | 'context';
     message: string;
+    count?: number;
+    target?: string;
+    line_range?: string;
     details: any;
     timestamp: number;
   }
 
   interface CitationData {
     doc_id: string;
-    original_filename: string;
+    original_filename?: string | null;
     property_address: string;
     page_range: string;
     classification_type: string;
-    source_chunks_metadata: Array<{
-      content: string;
-      chunk_index: number;
+    chunk_index?: number;
       page_number?: number;
-      bbox?: {
-        left: number;
-        top: number;
-        width: number;
-        height: number;
-        page: number;
-      };
-      vector_id?: string;
-      similarity?: number;
-    }>;
+    source_chunks_metadata?: CitationChunkData[];
+    candidate_chunks_metadata?: CitationChunkData[];
+    matched_chunk_metadata?: CitationChunkData;
+    chunk_metadata?: CitationChunkData;
+    match_reason?: string;
   }
 
   interface ChatMessage {
@@ -840,6 +1254,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  
+  // Document preview state for reasoning step card clicks
+  const [previewDocument, setPreviewDocument] = React.useState<{
+    doc_id: string;
+    original_filename?: string | null;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  } | null>(null);
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = React.useState(false);
+  
   // Persist chat messages across panel open/close
   const persistedChatMessagesRef = React.useRef<ChatMessage[]>([]);
   // Track message IDs that existed when panel was last opened (for animation control)
@@ -853,9 +1280,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [chatMessages, onMessagesUpdate]);
   
-  // Track which reasoning blocks are expanded (message ID -> boolean)
-  const [expandedReasoningBlocks, setExpandedReasoningBlocks] = React.useState<Record<string, boolean>>({});
-  const currentQueryIdRef = React.useRef<string | null>(null); // Track which query is currently processing
+  // Track which query is currently processing (for reasoning steps)
+  const currentQueryIdRef = React.useRef<string | null>(null);
   
   // Use property selection context
   const { 
@@ -929,7 +1355,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
         
         // Add query message to chat (similar to handleSubmit)
-        const queryId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness
+        const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
@@ -947,7 +1374,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
         
         // Add loading response message
-        const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const loadingMessage: ChatMessage = {
           id: loadingResponseId,
           type: 'response',
@@ -991,38 +1419,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               messageHistory,
               `session_${Date.now()}`,
               // onToken: Stream each token as it arrives
+              // Don't update state during streaming - just accumulate text locally
+              // This prevents laggy re-renders and ensures smooth final response
               (token: string) => {
                 accumulatedText += token;
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: accumulatedText,
-                  isLoading: true  // Still loading while streaming
-                };
-                
-                setChatMessages(prev => {
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? responseMessage
-                      : msg
-                  );
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                // No state update during streaming - text will appear only when complete
               },
               // onComplete: Final response received
               (data: any) => {
-                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false,
-                  citations: data.citations || {} // NEW: Store citations
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                    citations: data.citations || {} // NEW: Store citations
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1036,14 +1454,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error:', error);
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: error || 'Sorry, I encountered an error processing your query.',
-                  isLoading: false
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? errorMessage
@@ -1057,32 +1477,60 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               abortController.signal, // abortSignal
               documentIdsArray, // documentIds
               // onReasoningStep: Handle reasoning step events
-              (step: { step: string; message: string; details: any }) => {
+              (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
                 console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      // Use step + message as unique key to allow different messages for same step type
+                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                      const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
+                      const existingIndex = existingSteps.findIndex(s => 
+                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                      );
+                      
+                      // Skip if this exact step was added very recently (deduplication)
+                      if (existingIndex >= 0) {
+                        return msg;
+                      }
+                      
                       const newStep: ReasoningStep = {
-                        ...step,
-                        timestamp: Date.now()
+                        step: step.step,
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        message: step.message,
+                        count: step.count,
+                        details: step.details,
+                        timestamp: now
                       };
                       
-                      if (existingIndex >= 0) {
-                        // Update existing step
-                        const updatedSteps = [...existingSteps];
-                        updatedSteps[existingIndex] = newStep;
-                        return { ...msg, reasoningSteps: updatedSteps };
-                      } else {
-                        // Add new step - keep reasoning block expanded while adding steps
-                        setExpandedReasoningBlocks(prev => ({
-                          ...prev,
-                          [loadingResponseId]: true
-                        }));
-                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                      }
+                      // Add new step
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onReasoningContext: Handle LLM-generated contextual narration
+              (context: { message: string; moment: string }) => {
+                console.log('🟢 SideChatPanel: Received reasoning context:', context);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const contextStep: ReasoningStep = {
+                        step: `context_${context.moment}`,
+                        action_type: 'context',
+                        message: context.message,
+                        details: { moment: context.moment },
+                        timestamp: Date.now()
+                      };
+                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
                     }
                     return msg;
                   });
@@ -1100,7 +1548,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             setChatMessages(prev => {
               const updated = prev.map(msg => 
                 msg.id === loadingResponseId
-                  ? { ...msg, text: 'Sorry, I encountered an error processing your query.', isLoading: false }
+                  ? { ...msg, text: 'Sorry, I encountered an error processing your query.', isLoading: false, reasoningSteps: msg.reasoningSteps || [] }
                   : msg
               );
               persistedChatMessagesRef.current = updated;
@@ -1128,6 +1576,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleCitationClick = React.useCallback(async (citationData: CitationData) => {
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      
+      console.groupCollapsed('📚 [CITATION] handleCitationClick');
+      console.log('Raw citation payload:', citationData);
+      console.log('Matched chunk metadata:', citationData.matched_chunk_metadata);
+      console.groupEnd();
+
       const docId = citationData.doc_id;
       
       if (!docId) {
@@ -1141,6 +1595,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
 
       console.log('📎 Opening document from citation:', citationData.original_filename, 'doc_id:', docId);
+      console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
+      console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
 
       // Fetch document using document_id
       const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
@@ -1172,29 +1628,68 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         size: blob.size
       };
 
-      // Extract highlight metadata from citation (first chunk with bbox)
-      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
-      
-      if (citationData.source_chunks_metadata && citationData.source_chunks_metadata.length > 0) {
-        // Find first chunk with valid bbox
-        const chunkWithBbox = citationData.source_chunks_metadata.find(
-          (chunk) => chunk.bbox && chunk.bbox.page && chunk.bbox.left !== undefined
+      // Extract highlight metadata using matched evidence feedback first, then fallbacks
+      const hasValidBbox = (chunk?: CitationChunkData | null): chunk is CitationChunkData & { bbox: NonNullable<CitationChunkData['bbox']> } =>
+        !!(chunk && chunk.bbox && typeof chunk.bbox.left === 'number' && typeof chunk.bbox.top === 'number' && typeof chunk.bbox.width === 'number' && typeof chunk.bbox.height === 'number');
+
+      const candidateChunks = citationData.candidate_chunks_metadata?.length
+        ? [...citationData.candidate_chunks_metadata]
+        : [];
+      const sourceChunks = citationData.source_chunks_metadata?.length
+        ? [...citationData.source_chunks_metadata]
+        : [];
+
+      const priorityList: Array<{ chunk?: CitationChunkData; reason: string }> = [
+        { chunk: citationData.matched_chunk_metadata, reason: 'matched_chunk_metadata' },
+        { chunk: citationData.chunk_metadata, reason: 'chunk_metadata' },
+        { chunk: candidateChunks.find((chunk) => hasValidBbox(chunk)), reason: 'candidate_chunks_metadata' },
+        { chunk: sourceChunks.find((chunk) => hasValidBbox(chunk)), reason: 'source_chunks_metadata' },
+      ];
+
+      const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
+      const highlightChunk = highlightSource?.chunk;
+      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string; chunks?: CitationChunkData[] } | undefined;
+
+      if (highlightChunk && highlightChunk.bbox) {
+        const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page_number || 1;
+        let overlayChunks: CitationChunkData[] = candidateChunks.length ? candidateChunks : sourceChunks;
+
+        // Make sure the highlight chunk is part of the overlay set for debugging overlays
+        const chunkAlreadyIncluded = overlayChunks.some(
+          (chunk) =>
+            chunk.chunk_index === highlightChunk.chunk_index &&
+            chunk.page_number === highlightChunk.page_number &&
+            chunk.bbox?.left === highlightChunk.bbox?.left
         );
-        
-        if (chunkWithBbox && chunkWithBbox.bbox) {
+        if (!chunkAlreadyIncluded) {
+          overlayChunks = [...overlayChunks, highlightChunk];
+        }
+
           highlightData = {
             fileId: docId,
             bbox: {
-              left: chunkWithBbox.bbox.left,
-              top: chunkWithBbox.bbox.top,
-              width: chunkWithBbox.bbox.width,
-              height: chunkWithBbox.bbox.height,
-              page: chunkWithBbox.bbox.page || chunkWithBbox.page_number || 1
-            }
-          };
-          console.log('📎 Highlight data extracted:', highlightData);
-        }
+            left: highlightChunk.bbox.left,
+            top: highlightChunk.bbox.top,
+            width: highlightChunk.bbox.width,
+            height: highlightChunk.bbox.height,
+            page: highlightPage
+          },
+          chunks: overlayChunks
+        };
+
+        console.log('🎯 [CITATION] Highlight chunk selected', {
+          reason: highlightSource?.reason,
+          chunk_index: highlightChunk.chunk_index,
+          page_number: highlightChunk.page_number,
+          bbox: highlightChunk.bbox,
+          candidate_count: candidateChunks.length,
+          source_count: sourceChunks.length
+        });
+      } else {
+        console.warn('⚠️ [CITATION] Unable to determine highlight chunk from feedback. Falling back to no highlight.');
       }
+
+      console.log('📚 [CITATION] Highlight payload prepared for preview:', highlightData);
 
       // Open document in preview modal with highlight
       addPreviewFile(fileData, highlightData);
@@ -1209,7 +1704,75 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
     }
   }, [addPreviewFile, toast]);
-
+  
+  // Handle document preview click from reasoning step cards
+  // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
+  const handleDocumentPreviewClick = React.useCallback(async (metadata: {
+    doc_id: string;
+    original_filename?: string | null;
+    classification_type: string;
+    page_range?: string;
+    page_numbers?: number[];
+    s3_path?: string;
+    download_url?: string;
+  }) => {
+    console.log('📄 Opening document preview from reasoning step:', metadata.original_filename);
+    
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      let downloadUrl: string;
+      
+      // Determine download URL from available metadata
+      if (metadata.download_url) {
+        downloadUrl = metadata.download_url.startsWith('http') 
+          ? metadata.download_url 
+          : `${backendUrl}${metadata.download_url}`;
+      } else if (metadata.s3_path) {
+        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(metadata.s3_path)}`;
+      } else {
+        downloadUrl = `${backendUrl}/api/files/download?document_id=${metadata.doc_id}`;
+      }
+      
+      // Fetch the document
+      const response = await fetch(downloadUrl, { credentials: 'include' });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch document: ${response.status}`);
+      }
+      
+      const blob = await response.blob();
+      
+      // Build display filename with fallbacks
+      const displayFilename = metadata.original_filename || 
+        (metadata.classification_type ? metadata.classification_type.replace(/_/g, ' ') : 'document.pdf');
+      
+      // Create a File object from the blob
+      const file = new File([blob], displayFilename, { 
+        type: blob.type || 'application/pdf'
+      });
+      
+      // Convert to FileAttachmentData format for DocumentPreviewModal
+      const fileData: FileAttachmentData = {
+        id: metadata.doc_id,
+        file: file,
+        name: displayFilename,
+        type: blob.type || 'application/pdf',
+        size: blob.size
+      };
+      
+      // Use shared preview context to add file (same as PropertyDetailsPanel)
+      addPreviewFile(fileData);
+      
+    } catch (error) {
+      console.error('❌ Error opening document from reasoning step:', error);
+      toast({
+        title: "Error opening document",
+        description: "Failed to load the document preview. Please try again.",
+        variant: "destructive",
+      });
+    }
+  }, [addPreviewFile, toast]);
+  
   // Initialize textarea height on mount
   React.useEffect(() => {
     if (inputRef.current) {
@@ -1295,14 +1858,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         const chat = getChatById(restoreChatId);
         if (chat && chat.messages) {
           // Convert history messages to ChatMessage format
-          const restoredMessages: ChatMessage[] = chat.messages.map((msg: any) => ({
-            id: `restored-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            type: msg.role === 'user' ? 'query' : 'response',
-            text: msg.content || '',
-            attachments: msg.attachments || [],
-            propertyAttachments: msg.propertyAttachments || [],
-            isLoading: false
-          }));
+          // CRITICAL: Use index in map to ensure unique IDs even if Date.now() is the same
+          const restoredMessages: ChatMessage[] = chat.messages.map((msg: any, idx: number) => {
+            // Use index + timestamp + random to guarantee uniqueness
+            const uniqueId = `restored-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+            return {
+              id: uniqueId,
+              type: msg.role === 'user' ? 'query' : 'response',
+              text: msg.content || '',
+              attachments: msg.attachments || [],
+              propertyAttachments: msg.propertyAttachments || [],
+              isLoading: false
+            };
+          });
           
           setChatMessages(restoredMessages);
           persistedChatMessagesRef.current = restoredMessages;
@@ -1342,7 +1910,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Initialize with new query if provided
       if (query && query.trim()) {
         const queryText = query.trim();
-        const queryId = `query-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness
+        const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         // Include property attachments from context if they exist
         // Create a deep copy to ensure they persist even if context is cleared
@@ -1404,7 +1973,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
         
         // Add loading response message
-        const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const loadingMessage: ChatMessage = {
           id: loadingResponseId,
           type: 'response',
@@ -1455,28 +2025,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               [], // No message history for initial query
               `session_${Date.now()}`,
               // onToken: Stream each token as it arrives
+              // Don't update state during streaming - just accumulate text locally
+              // This prevents laggy re-renders and ensures smooth final response
               (token: string) => {
                 accumulatedText += token;
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: accumulatedText,
-                  isLoading: true  // Still loading while streaming
-                };
-                
-                setChatMessages(prev => {
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? responseMessage
-                      : msg
-                  );
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                // No state update during streaming - text will appear only when complete
               },
               // onComplete: Final response received
               (data: any) => {
-                const finalText = data.summary || accumulatedText || "I found some information for you.";
+                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
                 
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
@@ -1484,15 +2042,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   citations: data.citations ? Object.keys(data.citations).length : 0
                 });
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: finalText,
-                  isLoading: false,
-                  citations: data.citations || {} // NEW: Store citations
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                    citations: data.citations || {} // NEW: Store citations
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? responseMessage
@@ -1506,14 +2066,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error for initial query:', error);
                 
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
                   text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
-                  isLoading: false
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
                 
-                setChatMessages(prev => {
                   const updated = prev.map(msg => 
                     msg.id === loadingResponseId 
                       ? errorMessage
@@ -1538,32 +2100,60 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // documentIds: Pass selected document IDs to filter search
               initialDocumentIds,
               // onReasoningStep: Handle reasoning step events
-              (step: { step: string; message: string; details: any }) => {
+              (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
                 console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                      // Use step + message as unique key to allow different messages for same step type
+                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                      const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
+                      const existingIndex = existingSteps.findIndex(s => 
+                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                      );
+                      
+                      // Skip if this exact step was added very recently (deduplication)
+                      if (existingIndex >= 0) {
+                        return msg;
+                      }
+                      
                       const newStep: ReasoningStep = {
-                        ...step,
-                        timestamp: Date.now()
+                        step: step.step,
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        message: step.message,
+                        count: step.count,
+                        details: step.details,
+                        timestamp: now
                       };
                       
-                      if (existingIndex >= 0) {
-                        // Update existing step
-                        const updatedSteps = [...existingSteps];
-                        updatedSteps[existingIndex] = newStep;
-                        return { ...msg, reasoningSteps: updatedSteps };
-                      } else {
-                        // Add new step - keep reasoning block expanded while adding steps
-                        setExpandedReasoningBlocks(prev => ({
-                          ...prev,
-                          [loadingResponseId]: true
-                        }));
-                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                      }
+                      // Add new step
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
+                });
+              },
+              // onReasoningContext: Handle LLM-generated contextual narration
+              (context: { message: string; moment: string }) => {
+                console.log('🟢 SideChatPanel: Received reasoning context:', context);
+                
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const contextStep: ReasoningStep = {
+                        step: `context_${context.moment}`,
+                        action_type: 'context',
+                        message: context.message,
+                        details: { moment: context.moment },
+                        timestamp: Date.now()
+                      };
+                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
                     }
                     return msg;
                   });
@@ -1583,14 +2173,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }
             
             // Show error message instead of mock response
+            setChatMessages(prev => {
+              const existingMessage = prev.find(msg => msg.id === loadingResponseId);
             const errorMessage: ChatMessage = {
               id: `response-${Date.now()}`,
               type: 'response',
               text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              isLoading: false
+                isLoading: false,
+                reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
             };
             
-            setChatMessages(prev => {
               const updated = prev.map(msg => 
                 msg.id === loadingResponseId 
                   ? errorMessage
@@ -1795,7 +2387,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
       
       // Add loading response message
-      const loadingResponseId = `response-loading-${Date.now()}`;
+        // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
+        const loadingResponseId = `response-loading-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const loadingMessage: ChatMessage = {
         id: loadingResponseId,
         type: 'response',
@@ -1811,11 +2404,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // Initialize reasoning steps tracking for this query
       currentQueryIdRef.current = loadingResponseId;
-      // Expand reasoning block by default for new queries
-      setExpandedReasoningBlocks(prev => ({
-        ...prev,
-        [loadingResponseId]: true
-      }));
       
       // Call LLM API to query documents
       (async () => {
@@ -1861,48 +2449,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             messageHistory,
             `session_${Date.now()}`,
             // onToken: Stream each token as it arrives
+            // Don't update state during streaming - just accumulate text locally
+            // This prevents laggy re-renders and ensures smooth final response
             (token: string) => {
               accumulatedText += token;
-              setChatMessages(prev => {
-                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: accumulatedText,
-                  isLoading: true,  // Still loading while streaming
-                  reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                
-                const updated = prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? responseMessage
-                    : msg
-                );
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
+              // No state update during streaming - text will appear only when complete
             },
             // onComplete: Final response received
             (data: any) => {
-              const finalText = data.summary || accumulatedText || "I found some information for you.";
+              // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+              const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
               
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
-                citations: data.citations ? Object.keys(data.citations).length : 0
+                citationCount: data.citations ? Object.keys(data.citations).length : 0,
+                citationKeys: data.citations ? Object.keys(data.citations) : []
               });
+              // Log full citations with source_chunks_metadata for bbox debugging
+              if (data.citations) {
+                Object.entries(data.citations).forEach(([key, citData]) => {
+                  console.log(`📍 Citation [${key}]:`, {
+                    doc_id: (citData as any).doc_id,
+                    filename: (citData as any).original_filename,
+                    source_chunks_count: (citData as any).source_chunks_metadata?.length,
+                    source_chunks_metadata: (citData as any).source_chunks_metadata
+                  });
+                });
+              }
               
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: finalText,
+              const responseMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: finalText,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                   citations: data.citations || {} // NEW: Store citations with bbox metadata
-                };
-                
+              };
+              
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? responseMessage
@@ -1921,14 +2507,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const errorMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+              const errorMessage: ChatMessage = {
+                id: loadingResponseId,
+                type: 'response',
+                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                
+              };
+              
                 const updated = prev.map(msg => 
                   msg.id === loadingResponseId 
                     ? errorMessage
@@ -1954,44 +2540,64 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // documentIds: Pass selected document IDs to filter search
             documentIdsArray,
             // onReasoningStep: Handle reasoning step events
-            (step: { step: string; message: string; details: any }) => {
+            (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
               console.log('🟡 SideChatPanel: Received reasoning step:', step);
-              console.log('🟡 SideChatPanel: Looking for message with ID:', loadingResponseId);
               
               // Store reasoning steps in the message itself
               setChatMessages(prev => {
-                console.log('🟡 SideChatPanel: Current messages:', prev.map(m => ({ id: m.id, hasReasoning: !!m.reasoningSteps })));
-                
                 const updated = prev.map(msg => {
                   if (msg.id === loadingResponseId) {
-                    console.log('🟡 SideChatPanel: Found matching message, updating reasoning steps');
                     const existingSteps = msg.reasoningSteps || [];
-                    const existingIndex = existingSteps.findIndex(s => s.step === step.step);
+                    // Use step + message as unique key to allow different messages for same step type
+                    // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                    const stepKey = `${step.step}:${step.message}`;
+                    const now = Date.now();
+                    const existingIndex = existingSteps.findIndex(s => 
+                      `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                    );
+                    
+                    // Skip if this exact step was added very recently (deduplication)
+                    if (existingIndex >= 0) {
+                      return msg;
+                    }
+                    
                     const newStep: ReasoningStep = {
-                      ...step,
-                      timestamp: Date.now()
+                      step: step.step,
+                      action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                      message: step.message,
+                      count: step.count,
+                      details: step.details,
+                      timestamp: now
                     };
                     
-                    if (existingIndex >= 0) {
-                      // Update existing step
-                      const updatedSteps = [...existingSteps];
-                      updatedSteps[existingIndex] = newStep;
-                      console.log('🟡 SideChatPanel: Updated existing reasoning step:', step.step);
-                      return { ...msg, reasoningSteps: updatedSteps };
-                    } else {
-                      // Add new step - keep reasoning block expanded while adding steps
-                      setExpandedReasoningBlocks(prev => ({
-                        ...prev,
-                        [loadingResponseId]: true
-                      }));
-                      console.log('🟡 SideChatPanel: Added new reasoning step:', step.step, 'Total steps:', existingSteps.length + 1);
-                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                    }
+                    // Add new step
+                    return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                   }
                   return msg;
                 });
                 
-                console.log('🟡 SideChatPanel: Updated messages with reasoning steps');
+                return updated;
+              });
+            },
+            // onReasoningContext: Handle LLM-generated contextual narration
+            (context: { message: string; moment: string }) => {
+              console.log('🟢 SideChatPanel: Received reasoning context:', context);
+              
+              setChatMessages(prev => {
+                const updated = prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    const existingSteps = msg.reasoningSteps || [];
+                    const contextStep: ReasoningStep = {
+                      step: `context_${context.moment}`,
+                      action_type: 'context',
+                      message: context.message,
+                      details: { moment: context.moment },
+                      timestamp: Date.now()
+                    };
+                    return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
+                  }
+                  return msg;
+                });
                 return updated;
               });
             }
@@ -2007,14 +2613,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }
           
           // Show error message instead of mock response
+          setChatMessages(prev => {
+            const existingMessage = prev.find(msg => msg.id === loadingResponseId);
           const errorMessage: ChatMessage = {
             id: `response-${Date.now()}`,
             type: 'response',
             text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            isLoading: false
+              isLoading: false,
+              reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
           };
           
-          setChatMessages(prev => {
             const updated = prev.map(msg => 
               msg.id === loadingResponseId 
                 ? errorMessage
@@ -2060,6 +2668,130 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   };
   
   const hasContent = inputValue.trim().length > 0;
+  
+  // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
+  // This fixes "Rendered more hooks than during the previous render" error
+  const renderedMessages = useMemo(() => {
+    const validMessages = (Array.isArray(chatMessages) ? chatMessages : [])
+      .map((message, idx) => ({ message, idx }))
+      .filter(({ message }) => message && typeof message === 'object');
+    
+    if (validMessages.length === 0) return [];
+    
+    return validMessages.map(({ message, idx }) => {
+      const finalKey = message.id || `msg-${idx}`;
+      const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
+      
+      if (message.type === 'query') {
+        return (
+          <div key={finalKey} style={{
+            alignSelf: 'flex-start', maxWidth: '85%', width: 'fit-content',
+            marginTop: '8px', marginLeft: isExpanded ? '0' : '12px',
+            display: 'flex', flexDirection: 'column', gap: '6px'
+          }}>
+            {message.selectedDocumentIds?.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
+                <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
+                <span style={{ fontWeight: 400 }}>
+                  {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
+                    ? message.selectedDocumentNames[0]
+                    : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
+                </span>
+              </div>
+            )}
+            <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: '1px solid rgba(0, 0, 0, 0.08)', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', wordWrap: 'break-word', display: 'inline-block', maxWidth: '100%' }}>
+              {message.attachments?.length > 0 && (
+                <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {message.attachments.map((attachment, i) => (
+                    <QueryAttachment key={attachment.id || attachment.name || `att-${i}`} attachment={attachment} />
+                  ))}
+                </div>
+              )}
+              {message.propertyAttachments?.length > 0 && (
+                <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {message.propertyAttachments.map((prop, i) => (
+                    <QueryPropertyAttachment 
+                      key={prop.id ?? prop.property?.id ?? prop.address ?? `prop-${i}`}
+                      attachment={prop}
+                      onOpenProperty={(att) => onOpenProperty?.(att.address, att.property?.latitude && att.property?.longitude ? { lat: att.property.latitude, lng: att.property.longitude } : undefined, att.property?.id || att.propertyId)}
+                    />
+                  ))}
+                </div>
+              )}
+              {message.text && (
+                <div style={{ color: '#0D0D0D', fontSize: '13px', lineHeight: '19px', margin: 0, padding: 0, textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box' }}>
+                  <ReactMarkdown components={{
+                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
+                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
+                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
+                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
+                    li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
+                    strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                    em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                  }}>{message.text}</ReactMarkdown>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      
+      // Response message
+      return (
+        <div key={finalKey} style={{ width: '100%', padding: '0', margin: '0', marginTop: '8px', paddingLeft: isExpanded ? '0' : '12px', paddingRight: isExpanded ? '0' : '20px', wordWrap: 'break-word' }}>
+          {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
+          )}
+          {/* Only show text when streaming is complete - no spinner, no partial text during streaming */}
+          {message.text && !message.isLoading && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+              style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}
+            >
+              <ReactMarkdown components={{
+                p: ({ children }) => {
+                  // Process children to find and replace citation patterns [1], [2], etc.
+                  const processedChildren = React.Children.map(children, child => {
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
+                    return child;
+                  });
+                  return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
+                },
+                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                h2: () => null, h3: () => null,
+                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+                li: ({ children }) => {
+                  // Also process citations in list items
+                  const processedChildren = React.Children.map(children, child => {
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
+                    return child;
+                  });
+                  return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
+                },
+                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
+                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+              }}>{message.text}</ReactMarkdown>
+            </motion.div>
+          )}
+        </div>
+      );
+    }).filter(Boolean);
+  }, [chatMessages, isExpanded, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty]);
+
   return (
     <AnimatePresence>
       {isVisible && (
@@ -2157,6 +2889,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       New chat
                     </span>
                   </motion.button>
+                  
+                  {/* Reasoning trace toggle */}
+                  <div 
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 bg-white/70 rounded-md"
+                    title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
+                  >
+                    <span className="text-slate-600 text-xs">Trace</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowReasoningTrace(!showReasoningTrace)}
+                      className={`relative w-7 h-4 rounded-full transition-colors ${
+                        showReasoningTrace ? 'bg-emerald-500' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
+                        showReasoningTrace ? 'translate-x-3' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+                  
                   <button
                     type="button"
                     onClick={() => {
@@ -2202,547 +2954,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             >
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
                 <AnimatePresence>
-                  {chatMessages.map((message) => {
-                    // Check if this is a restored message (existed when panel was opened)
-                    // For restored messages, don't animate - they should appear instantly
-                    const isRestored = restoredMessageIdsRef.current.has(message.id);
-                    const shouldAnimate = !isRestored;
-                    
-                    return message.type === 'query' ? (
-                      // Query message container - ChatGPT style with attachments above
-                      <div
-                        key={message.id}
-                        style={{
-                          alignSelf: 'flex-start',
-                          maxWidth: '85%',
-                          width: 'fit-content',
-                          marginTop: '8px',
-                          marginLeft: isExpanded ? '0' : '12px', // Align with chat bar when expanded
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '6px'
-                        }}
-                      >
-                        {/* Display selected documents indicator above bubble (ChatGPT style) */}
-                        {message.selectedDocumentIds && message.selectedDocumentIds.length > 0 && (
-                          <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '6px',
-                            padding: '4px 8px',
-                            backgroundColor: 'transparent',
-                            borderRadius: '6px',
-                            fontSize: '11px',
-                            color: '#6B7280',
-                            marginBottom: '2px'
-                          }}>
-                            <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
-                            <span style={{ fontWeight: 400 }}>
-                              {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames && message.selectedDocumentNames.length > 0
-                                ? message.selectedDocumentNames[0]
-                                : `${message.selectedDocumentIds.length} ${message.selectedDocumentIds.length === 1 ? 'document' : 'documents'} selected`}
-                            </span>
-                          </div>
-                        )}
-                        
-                        {/* Query bubble */}
-                        <div
-                          style={{
-                            backgroundColor: '#F5F5F5', // Light grey background
-                            borderRadius: '8px',
-                            padding: '4px 10px', // Tighter horizontal padding
-                            border: '1px solid rgba(0, 0, 0, 0.08)', // Subtle border
-                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', // Very subtle shadow
-                            width: 'fit-content', // Fit container tightly around content
-                            wordWrap: 'break-word',
-                            display: 'inline-block', // Ensure container fits content
-                            maxWidth: '100%' // Prevent overflow
-                          }}
-                        >
-                          {/* Display file attachments if any */}
-                          {message.attachments && message.attachments.length > 0 && (
-                            <div style={{ marginBottom: (message.text || (message.propertyAttachments && message.propertyAttachments.length > 0)) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                              {message.attachments.map((attachment) => (
-                                <QueryAttachment key={attachment.id} attachment={attachment} />
-                              ))}
-                            </div>
-                          )}
-                          
-                          {/* Display property attachments if any */}
-                          {message.propertyAttachments && message.propertyAttachments.length > 0 ? (
-                              <div style={{ marginBottom: message.text ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                                {message.propertyAttachments.map((property) => (
-                                    <QueryPropertyAttachment 
-                                      key={property.id} 
-                                      attachment={property}
-                                      onOpenProperty={(attachment) => {
-                                        console.log('🔍 QueryPropertyAttachment onOpenProperty called:', attachment);
-                                        if (onOpenProperty) {
-                                          const property = attachment.property;
-                                          console.log('📋 Property data:', property);
-                                          const coordinates = property.latitude && property.longitude
-                                            ? { lat: property.latitude, lng: property.longitude }
-                                            : undefined;
-                                          const propertyId = property.id || attachment.propertyId;
-                                          console.log('📍 Coordinates:', coordinates, 'PropertyId:', propertyId);
-                                          onOpenProperty(attachment.address, coordinates, propertyId);
-                                        } else {
-                                          console.warn('⚠️ SideChatPanel onOpenProperty prop not provided');
-                                        }
-                                      }}
-                                    />
-                                  ))}
-                              </div>
-                            ) : null}
-                          
-                          {/* Display query text */}
-                          {message.text && (
-                            <div style={{
-                              color: '#0D0D0D',
-                              fontSize: '13px',
-                              lineHeight: '19px',
-                              margin: 0,
-                              padding: 0,
-                              textAlign: 'left',
-                              fontFamily: 'system-ui, -apple-system, sans-serif',
-                              width: 'fit-content',
-                              maxWidth: '100%',
-                              boxSizing: 'border-box'
-                            }}>
-                              <ReactMarkdown
-                              components={{
-                                p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
-                                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                                h2: () => null, // Remove h2 titles from query responses
-                                h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
-                                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
-                                li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
-                                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                table: ({ children }) => (
-                                  <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                      {children}
-                                    </table>
-                                  </div>
-                                ),
-                                thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                tbody: ({ children }) => <tbody>{children}</tbody>,
-                                tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                              }}
-                            >
-                              {message.text}
-                            </ReactMarkdown>
-                          </div>
-                        )}
-                        </div>
-                      </div>
-                    ) : (
-                      // Response message - full width, no bubble (Cursor AI style)
-                      <div
-                        key={message.id}
-                        style={{
-                          width: '100%',
-                          padding: '0',
-                          margin: '0',
-                          marginTop: '8px',
-                          paddingLeft: isExpanded ? '0' : '20px', // Align with chat bar when expanded
-                          paddingRight: isExpanded ? '0' : '20px', // Align with chat bar when expanded
-                          wordWrap: 'break-word'
-                        }}
-                      >
-                        {/* Display reasoning steps in expandable block (persists after completion) */}
-                        {message.reasoningSteps && message.reasoningSteps.length > 0 && (
-                          <div style={{
-                            marginBottom: '12px',
-                            padding: '8px 12px',
-                            backgroundColor: '#F3F4F6',
-                            borderRadius: '8px',
-                            border: '1px solid #E5E7EB',
-                            cursor: 'pointer'
-                          }}
-                          onClick={() => {
-                            setExpandedReasoningBlocks(prev => ({
-                              ...prev,
-                              [message.id]: !prev[message.id]
-                            }));
-                          }}
-                          >
-                            <div style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              fontSize: '11px',
-                              fontWeight: 500,
-                              color: '#6B7280',
-                              textTransform: 'uppercase',
-                              letterSpacing: '0.5px',
-                              userSelect: 'none'
-                            }}>
-                              <span>Velora Reasoning ({message.reasoningSteps.length} steps)</span>
-                              <span style={{
-                                fontSize: '14px',
-                                transition: 'transform 0.2s',
-                                transform: expandedReasoningBlocks[message.id] ? 'rotate(180deg)' : 'rotate(0deg)'
-                              }}>
-                                ▼
-                              </span>
-                            </div>
-                            {expandedReasoningBlocks[message.id] && (
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                exit={{ opacity: 0, height: 0 }}
-                                transition={{ duration: 0.2 }}
-                                style={{
-                                  marginTop: '8px',
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '4px',
-                                  overflow: 'hidden'
-                                }}
-                              >
-                                {message.reasoningSteps.map((step, idx) => (
-                                  <motion.div
-                                    key={`${step.step}-${idx}`}
-                                    initial={{ opacity: 0, x: -8 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    transition={{ duration: 0.2, delay: idx * 0.05 }}
-                                    style={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: '8px',
-                                      fontSize: '12px',
-                                      color: '#374151',
-                                      padding: '4px 0'
-                                    }}
-                                  >
-                                    <div style={{
-                                      width: '6px',
-                                      height: '6px',
-                                      borderRadius: '50%',
-                                      backgroundColor: '#3B82F6',
-                                      flexShrink: 0
-                                    }} />
-                                    <span style={{ fontStyle: 'italic' }}>{step.message}</span>
-                                  </motion.div>
-                                ))}
-                              </motion.div>
-                            )}
-                          </div>
-                        )}
-                        
-                        {/* Display loading state for responses - Globe with rotating ring (atom-like) */}
-                        {message.isLoading && (
-                          <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center',
-                            padding: '4px 0',
-                            position: 'relative',
-                            width: '28px',
-                            height: '28px',
-                            perspective: '150px',
-                            perspectiveOrigin: 'center center',
-                            overflow: 'visible'
-                          }}>
-                            {/* Atom container - rotates globe and ring together */}
-                            <div style={{
-                              position: 'absolute',
-                              width: '28px',
-                              height: '28px',
-                              top: '50%',
-                              left: '50%',
-                              marginTop: '-14px',
-                              marginLeft: '-14px',
-                              animation: 'rotateAtom 0.65s linear infinite',
-                              transformOrigin: 'center center',
-                              transformStyle: 'preserve-3d',
-                              overflow: 'visible'
-                            }}>
-                              {/* Tilted ring - diagonal spiral */}
-                              <div style={{
-                                position: 'absolute',
-                                width: '16px',
-                                height: '16px',
-                                top: '50%',
-                                left: '50%',
-                                marginTop: '-8px',
-                                marginLeft: '-8px',
-                                borderRadius: '50%',
-                                border: '1px solid rgba(212, 175, 55, 0.5)',
-                                borderTopColor: 'rgba(212, 175, 55, 0.9)',
-                                borderRightColor: 'rgba(212, 175, 55, 0.7)',
-                                boxShadow: '0 0 6px rgba(212, 175, 55, 0.4), 0 0 3px rgba(212, 175, 55, 0.2)',
-                                animation: 'rotateRing 1.5s linear infinite',
-                                transformOrigin: 'center center',
-                                transformStyle: 'preserve-3d',
-                                willChange: 'transform',
-                                backfaceVisibility: 'visible',
-                                WebkitBackfaceVisibility: 'visible'
-                              }} />
-                              {/* Central globe - True 3D sphere using canvas */}
-                              <Globe3D />
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Display response text - rendered markdown with citations */}
-                        {message.text && (() => {
-                          // NEW: Custom component to render citations
-                          const CitationComponent: React.FC<{ citationNum: string }> = ({ citationNum }) => {
-                            const citationData = message.citations?.[citationNum];
-                            return (
-                              <span
-                                style={{
-                                  display: 'inline-block',
-                                  backgroundColor: '#E5E7EB', // Light grey background
-                                  color: '#374151', // Darker text color for better visibility
-                                  borderRadius: '4px',
-                                  padding: '2px 6px',
-                                  fontSize: '11px',
-                                  fontWeight: 500,
-                                  lineHeight: '1.2',
-                                  marginLeft: '2px',
-                                  marginRight: '2px',
-                                  verticalAlign: 'baseline',
-                                  cursor: citationData ? 'pointer' : 'default',
-                                  transition: 'background-color 0.2s',
-                                }}
-                                onMouseEnter={(e) => {
-                                  if (citationData) {
-                                    e.currentTarget.style.backgroundColor = '#D1D5DB';
-                                  }
-                                }}
-                                onMouseLeave={(e) => {
-                                  if (citationData) {
-                                    e.currentTarget.style.backgroundColor = '#E5E7EB';
-                                  }
-                                }}
-                                onClick={(e) => {
-                                  if (citationData) {
-                                    e.stopPropagation();
-                                    console.log('📎 Citation clicked:', citationNum, citationData);
-                                    // Phase 1: Open document in viewer
-                                    handleCitationClick(citationData);
-                                  }
-                                }}
-                                title={citationData ? `${citationData.original_filename} - ${citationData.property_address}` : undefined}
-                              >
-                                {citationNum}
-                              </span>
-                            );
-                          };
-
-                          // Parse text into parts (text segments and citations)
-                          // Also deduplicate consecutive or nearby identical citations
-                          const citationPattern = /\[(\d+)\]/g;
-                          const parts: Array<{ type: 'text' | 'citation'; content: string; citationNum?: string }> = [];
-                          let lastIndex = 0;
-                          let match;
-                          const citationMatches: Array<{ index: number; num: string; fullMatch: string }> = [];
-                          
-                          // First, collect all citation matches
-                          while ((match = citationPattern.exec(message.text)) !== null) {
-                            citationMatches.push({
-                              index: match.index,
-                              num: match[1],
-                              fullMatch: match[0]
-                            });
-                          }
-                          
-                          // Deduplicate citations that appear too close together (within 50 characters or same sentence)
-                          const deduplicatedCitations = citationMatches.filter((citation, idx) => {
-                            if (idx === 0) return true; // Always keep first
-                            
-                            const prevCitation = citationMatches[idx - 1];
-                            const distance = citation.index - (prevCitation.index + prevCitation.fullMatch.length);
-                            
-                            // Keep citation if:
-                            // 1. It's a different citation number, OR
-                            // 2. It's the same citation but far enough apart (>50 chars) and separated by sentence boundary
-                            if (citation.num !== prevCitation.num) {
-                              return true; // Different citation, keep it
-                            }
-                            
-                            // Same citation - only keep if far apart (>50 chars) or sentence boundary
-                            const textBetween = message.text.substring(
-                              prevCitation.index + prevCitation.fullMatch.length,
-                              citation.index
-                            );
-                            
-                            // Check if there's a sentence boundary (period, exclamation, question mark)
-                            const hasSentenceBoundary = /[.!?]\s/.test(textBetween);
-                            
-                            // Keep if distance > 50 chars OR has sentence boundary
-                            return distance > 50 || hasSentenceBoundary;
-                          });
-                          
-                          // Build parts array with deduplicated citations
-                          for (let i = 0; i < deduplicatedCitations.length; i++) {
-                            const citation = deduplicatedCitations[i];
-                            
-                            // Add text before citation
-                            if (citation.index > lastIndex) {
-                              parts.push({
-                                type: 'text',
-                                content: message.text.substring(lastIndex, citation.index)
-                              });
-                            }
-                            
-                            // Add citation
-                            parts.push({
-                              type: 'citation',
-                              content: citation.fullMatch,
-                              citationNum: citation.num
-                            });
-                            
-                            lastIndex = citation.index + citation.fullMatch.length;
-                          }
-                          
-                          // Add remaining text
-                          if (lastIndex < message.text.length) {
-                            parts.push({
-                              type: 'text',
-                              content: message.text.substring(lastIndex)
-                            });
-                          }
-
-                          // If no citations found, render normally
-                          if (parts.length === 1 && parts[0].type === 'text') {
-                            return (
-                              <div style={{
-                                color: '#374151',
-                                fontSize: '13px',
-                                lineHeight: '19px',
-                                margin: 0,
-                                padding: '4px 0',
-                                paddingLeft: 0,
-                                paddingRight: 0,
-                                textAlign: 'left',
-                                fontFamily: 'system-ui, -apple-system, sans-serif',
-                                fontWeight: 400,
-                                textIndent: 0
-                              }}>
-                                <ReactMarkdown
-                                  components={{
-                                    p: ({ children }) => <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
-                                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827', textAlign: 'left', paddingLeft: 0 }}>{children}</h1>,
-                                    h2: () => null, // Remove h2 titles from query responses
-                                    h3: () => null, // Remove h3 titles from query responses
-                                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
-                                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
-                                    li: ({ children }) => <li style={{ marginBottom: '4px', textAlign: 'left', paddingLeft: 0, textIndent: 0 }}>{children}</li>,
-                                    strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
-                                    em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
-                                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                                    table: ({ children }) => (
-                                      <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                          {children}
-                                        </table>
-                                      </div>
-                                    ),
-                                    thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                                    tbody: ({ children }) => <tbody>{children}</tbody>,
-                                    tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                                    th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                                    td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                                  }}
-                                >
-                                  {message.text}
-                                </ReactMarkdown>
-                              </div>
-                            );
-                          }
-
-                          // Render with citations - split text and render markdown for each segment
-                          return (
-                            <div style={{
-                              color: '#374151',
-                              fontSize: '13px',
-                              lineHeight: '19px',
-                              margin: 0,
-                              padding: '4px 0',
-                              paddingLeft: 0,
-                              paddingRight: 0,
-                              textAlign: 'left',
-                              fontFamily: 'system-ui, -apple-system, sans-serif',
-                              fontWeight: 400,
-                              textIndent: 0
-                            }}>
-                              {parts.map((part, idx) => {
-                                if (part.type === 'citation') {
-                                  return <CitationComponent key={`citation-${idx}-${part.citationNum}`} citationNum={part.citationNum!} />;
-                                } else {
-                                  // Render text segment with ReactMarkdown
-                                  return (
-                                    <ReactMarkdown
-                                      key={`text-${idx}`}
-                                      components={{
-                                        p: ({ children }) => <span style={{ display: 'inline' }}>{children}</span>,
-                                        strong: ({ children }) => <strong>{children}</strong>,
-                                        em: ({ children }) => <em>{children}</em>,
-                                        code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                                      }}
-                                    >
-                                      {part.content}
-                                    </ReactMarkdown>
-                                  );
-                                }
-                              })}
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    );
-                  })}
+                  {renderedMessages}
                 </AnimatePresence>
               </div>
             </div>
+            
             
             {/* Chat Input at Bottom - Condensed SearchBar design */}
             <div 
               ref={chatInputContainerRef}
               style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px', position: 'relative', overflow: 'visible' }}
-            >
-              {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
-              {isQuickStartBarVisible && (
-                <div
+                >
+                  {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
+                  {isQuickStartBarVisible && (
+                    <div
                   ref={quickStartBarWrapperRef}
-                  style={{
-                    position: 'absolute',
+                      style={{
+                        position: 'absolute',
                     bottom: quickStartBarBottom, // Dynamically calculated position
                     left: '58%',
                     transform: quickStartBarTransform, // Dynamically adjusted for smallest view
-                    zIndex: 10000,
+                        zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
                     maxWidth: isExpanded ? '85%' : '100%', // Initial maxWidth, will be updated by layout effect
                     display: 'flex',
                     justifyContent: 'center'
-                  }}
-                >
-                  <QuickStartBar
-                    onDocumentLinked={(propertyId, documentId) => {
-                      console.log('Document linked:', { propertyId, documentId });
-                      // Optionally close QuickStartBar after successful link
-                      if (onQuickStartToggle) {
-                        onQuickStartToggle();
-                      }
-                    }}
-                    onPopupVisibilityChange={() => {}}
-                    isInChatPanel={true}
-                  />
-                </div>
-              )}
+                      }}
+                    >
+                      <QuickStartBar
+                        onDocumentLinked={(propertyId, documentId) => {
+                          console.log('Document linked:', { propertyId, documentId });
+                          // Optionally close QuickStartBar after successful link
+                          if (onQuickStartToggle) {
+                            onQuickStartToggle();
+                          }
+                        }}
+                        onPopupVisibilityChange={() => {}}
+                        isInChatPanel={true}
+                      />
+                    </div>
+                  )}
               <form 
                 ref={chatFormRef}
                 onSubmit={handleSubmit} 
@@ -2783,6 +3034,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <AnimatePresence mode="wait">
                       {attachedFiles.length > 0 && (
                         <motion.div 
+                          key="file-attachments"
                           initial={false}
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
@@ -2794,9 +3046,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="flex flex-wrap gap-2 justify-start"
                           layout={false}
                         >
-                          {attachedFiles.map((file) => (
+                          {attachedFiles.map((file, attachmentIdx) => (
                             <FileAttachment
-                              key={file.id}
+                              key={generateAnimatePresenceKey(
+                                'FileAttachment',
+                                attachmentIdx,
+                                file.id || file.name,
+                                'file'
+                              )}
                               attachment={file}
                               onRemove={handleRemoveFile}
                               onPreview={(file) => {
@@ -2817,20 +3074,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </motion.div>
                       )}
                       
-                      {/* Property Attachments Display */}
+                      {/* Property Attachments Display - Must be motion.div for AnimatePresence */}
                       {propertyAttachments.length > 0 && (
-                        <div 
+                        <motion.div 
+                          key={generateUniqueKey('PropertyAttachmentsContainer', 'main', propertyAttachments.length)}
+                          initial={false}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ 
+                            duration: 0.1,
+                            ease: "easeOut"
+                          }}
                           style={{ height: 'auto', marginBottom: '12px' }}
                           className="flex flex-wrap gap-2 justify-start"
+                          layout={false}
                         >
-                          {propertyAttachments.map((property) => (
+                          {propertyAttachments.map((property, propertyIdx) => {
+                            const primaryId = property.id ?? property.property?.id;
+                            const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                            return (
                             <PropertyAttachment
-                              key={property.id}
+                              key={generateAnimatePresenceKey(
+                                'PropertyAttachment',
+                                propertyIdx,
+                                primaryKey || property.address,
+                                'property'
+                              )}
                               attachment={property}
                               onRemove={removePropertyAttachment}
                             />
-                          ))}
-                        </div>
+                          );
+                          })}
+                        </motion.div>
                       )}
                     </AnimatePresence>
                     
@@ -2914,9 +3189,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               width: '100%'
                             }}
                           >
-                            {propertySearchResults.map((property, index) => (
+                            {propertySearchResults.map((property, index) => {
+                              const primaryId = property.id;
+                              const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                              return (
                               <div
-                                key={property.id}
+                                key={
+                                  primaryKey && primaryKey.length > 0
+                                    ? `search-result-${primaryKey}`
+                                    : property.address && property.address.length > 0
+                                      ? `search-result-${property.address}-${index}`
+                                      : `search-result-${index}`
+                                }
                                 onClick={() => handlePropertySelect(property)}
                                 style={{
                                   padding: '10px 14px',
@@ -2963,7 +3247,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   )}
                                 </div>
                               </div>
-                            ))}
+                            );
+                            })}
                           </div>
                         )}
                       </div>
@@ -3180,7 +3465,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       )}
       
       {/* Delete Bin Icon - Bottom Right Corner */}
-      <AnimatePresence>
+      <AnimatePresence key="delete-bin-presence">
         {isDraggingFile && (
           <motion.div
             key="delete-bin"
@@ -3277,6 +3562,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               />
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {/* Document Preview Overlay - Opens when clicking on reasoning step document cards */}
+      <AnimatePresence key="document-preview-presence">
+        {previewDocument && (
+          <DocumentPreviewOverlay
+            key="document-preview-overlay"
+            document={previewDocument}
+            isFullscreen={isPreviewFullscreen}
+            onClose={() => setPreviewDocument(null)}
+            onToggleFullscreen={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
+          />
         )}
       </AnimatePresence>
     </AnimatePresence>

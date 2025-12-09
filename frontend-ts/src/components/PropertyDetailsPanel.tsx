@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -11,6 +11,7 @@ import { FileAttachmentData } from './FileAttachment';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
+import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -632,6 +633,11 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [isSelectionMode, isChatSelectionMode, isLocalSelectionMode, selectedDocumentIds.size]);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Reprocess state
+  const [isReprocessing, setIsReprocessing] = useState(false);
+  const [reprocessingDocumentId, setReprocessingDocumentId] = useState<string | null>(null);
+  const [reprocessDropdownOpen, setReprocessDropdownOpen] = useState(false);
+  const [reprocessResult, setReprocessResult] = useState<{ success: boolean; message: string } | null>(null);
   // Filter state
   const [activeFilter, setActiveFilter] = useState<'all' | 'images' | 'pdfs'>('all');
   
@@ -832,13 +838,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
     
     // CRITICAL: Save property pin location (user-set final coordinates from Create Property Card), not document-extracted coordinates
-    // This is where the user placed/confirmed the pin. Only use coordinates if geocoding_status === 'manual'
-    const geocodingStatus = propertyToSave.geocoding_status;
-    const isPinLocation = geocodingStatus === 'manual';
-    const pinLatitude = isPinLocation ? (propertyToSave.latitude || originalPinCoordsRef.current?.lat) : originalPinCoordsRef.current?.lat;
-    const pinLongitude = isPinLocation ? (propertyToSave.longitude || originalPinCoordsRef.current?.lng) : originalPinCoordsRef.current?.lng;
+    // This is where the user placed/confirmed the pin. Prioritize explicitly provided coordinates
+    const pinLatitude = originalPinCoordsRef.current?.lat || propertyToSave.latitude;
+    const pinLongitude = originalPinCoordsRef.current?.lng || propertyToSave.longitude;
     
-    const lastProperty = {
+    // Use the utility function to save to array
+    import('../utils/recentProjects').then((module) => {
+      module.saveToRecentProjects({
       id: propertyToSave.id,
       address: propertyToSave.address,
       latitude: pinLatitude, // Property pin location (user-set), not document-extracted coordinates
@@ -846,12 +852,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       primary_image_url: propertyToSave.primary_image_url || propertyToSave.image,
       documentCount: docCount,
       timestamp: new Date().toISOString()
-    };
-    
-    localStorage.setItem('lastInteractedProperty', JSON.stringify(lastProperty));
-    // Dispatch custom event to update RecentProjectsSection in the same tab
-    window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
-    console.log('💾 Saved property to recent projects after interaction:', lastProperty.address, `(${docCount} docs)`);
+      });
+    }).catch((error) => {
+      console.error('Error saving to recent projects:', error);
+    });
   }, [documents.length]);
   
   // State for cached property card data
@@ -1427,6 +1431,68 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   };
 
+  // Handle reprocessing selected documents for BBOX extraction
+  const handleReprocessSelected = async (mode: 'full' | 'bbox_only') => {
+    if (localSelectedDocumentIds.size === 0) {
+      return;
+    }
+    
+    setIsReprocessing(true);
+    setReprocessDropdownOpen(false);
+    setReprocessResult(null);
+    
+    const documentIds = Array.from(localSelectedDocumentIds);
+    let successCount = 0;
+    let failCount = 0;
+    
+    try {
+      console.log(`🔄 Reprocessing ${documentIds.length} document(s) in ${mode} mode...`);
+      
+      for (const docId of documentIds) {
+        try {
+          // Set the current document being processed (for progress monitor)
+          setReprocessingDocumentId(docId);
+          
+          const result = await backendApi.reprocessDocument(docId, mode);
+          if (result.success) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch (error) {
+          console.error(`❌ Failed to reprocess document ${docId}:`, error);
+          failCount++;
+        }
+      }
+      
+      // Clear the reprocessing document ID
+      setReprocessingDocumentId(null);
+      
+      if (successCount > 0) {
+        setReprocessResult({
+          success: true,
+          message: `Successfully reprocessed ${successCount} document(s)`
+        });
+      } else {
+        setReprocessResult({
+          success: false,
+          message: `Failed to reprocess ${failCount} document(s)`
+        });
+      }
+    } catch (error) {
+      setReprocessingDocumentId(null);
+      setReprocessResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+      console.error('❌ Reprocess error:', error);
+    } finally {
+      setIsReprocessing(false);
+      // Clear result message after 5 seconds
+      setTimeout(() => setReprocessResult(null), 5000);
+    }
+  };
+
   const handleDocumentDragStart = (e: React.DragEvent, document: Document) => {
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
     
@@ -1819,7 +1885,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
   if (!isVisible) return null;
 
-  return createPortal(
+  return (
+    <>
+      {createPortal(
     <AnimatePresence>
       {isVisible && (
         <div 
@@ -1833,16 +1901,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           {/* Main Window - Compact Grid Layout (Artboard Style) */}
           <motion.div
             layout={selectedCardIndex === null} // Only enable layout animations when preview is NOT open
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            initial={{ opacity: 1, scale: 1, y: 0 }}
             animate={{ 
               opacity: 1, 
               scale: 1, 
               y: 0
             }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            exit={{ opacity: 0, scale: 0.99, y: 5 }}
             transition={{ 
-              duration: selectedCardIndex === null ? 0.4 : 0.2, // Faster transition when preview is open
-              ease: [0.25, 0.8, 0.25, 1],
+              duration: 0, // Instant appearance - no opening transition
+              ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: { duration: 0.3 } // Smooth layout transitions
             }}
             className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
@@ -2635,7 +2703,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                               >
                                 {propertyImages.map((img: any, idx: number) => (
                                   <div
-                                    key={idx}
+                                    key={`img-${idx}-${img.url || img.id || img}`}
                                     className="aspect-[4/3] bg-gray-100 overflow-hidden relative group cursor-pointer focus:outline-none"
                                     style={{ width: '100%', height: 'auto', outline: 'none', border: 'none', boxShadow: 'none' }}
                                     onClick={() => {
@@ -3231,6 +3299,62 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   >
                     <span className="font-medium text-sm">{localSelectedDocumentIds.size} selected</span>
                     <div className="h-4 w-px bg-gray-700"></div>
+                    
+                    {/* Reprocess Button with Dropdown */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setReprocessDropdownOpen(!reprocessDropdownOpen)}
+                        className={`text-blue-400 hover:text-blue-300 font-medium text-sm flex items-center gap-1.5 transition-colors ${isReprocessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        disabled={isReprocessing}
+                        title="Reprocess documents for citation highlighting"
+                      >
+                        {isReprocessing ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={14} />
+                        )}
+                        Reprocess
+                        <ChevronDown size={12} className="opacity-70" />
+                      </button>
+                      
+                      {/* Dropdown Menu */}
+                      {reprocessDropdownOpen && !isReprocessing && (
+                        <div 
+                          className="absolute bottom-full left-0 mb-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+                          onMouseLeave={() => setReprocessDropdownOpen(false)}
+                        >
+                          <button
+                            onClick={() => handleReprocessSelected('full')}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5 text-gray-800"
+                          >
+                            <span className="font-medium">Full Reprocess</span>
+                            <span className="text-xs text-gray-500">Re-embed & extract BBOX (slower)</span>
+                          </button>
+                          <button
+                            onClick={() => handleReprocessSelected('bbox_only')}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5 text-gray-800"
+                          >
+                            <span className="font-medium">Update BBOX Only</span>
+                            <span className="text-xs text-gray-500">Keep embeddings, add BBOX (faster)</span>
+                          </button>
+                        </div>
+                      )}
+                      
+                      {/* Result Toast */}
+                      {reprocessResult && (
+                        <div 
+                          className={`absolute bottom-full left-0 mb-2 px-3 py-2 rounded-lg shadow-lg text-sm whitespace-nowrap z-50 ${
+                            reprocessResult.success 
+                              ? 'bg-green-50 text-green-800 border border-green-200' 
+                              : 'bg-red-50 text-red-800 border border-red-200'
+                          }`}
+                        >
+                          {reprocessResult.message}
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="h-4 w-px bg-gray-700"></div>
                     <button 
                       onClick={() => setShowDeleteConfirm(true)}
                       className="text-red-400 hover:text-red-300 font-medium text-sm flex items-center gap-1.5 transition-colors"
@@ -3366,5 +3490,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
           )}
         </AnimatePresence>,
         document.body
+      )}
+      
+      {/* Progress monitor for document reprocessing */}
+      <ReprocessProgressMonitor
+        documentId={reprocessingDocumentId}
+        isActive={isReprocessing && reprocessingDocumentId !== null}
+        onComplete={(success) => {
+          console.log('Reprocess completed:', success);
+        }}
+        onClose={() => {
+          setIsReprocessing(false);
+          setReprocessingDocumentId(null);
+        }}
+      />
+    </>
   );
 };

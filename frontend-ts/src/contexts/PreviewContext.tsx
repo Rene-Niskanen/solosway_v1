@@ -4,6 +4,19 @@ import * as React from "react";
 import { FileAttachmentData } from "../components/FileAttachment";
 
 // Highlight metadata for citation-based document viewing
+export interface CitationChunkMetadata {
+  chunk_index?: number;
+  page_number?: number;
+  content?: string;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+}
+
 export interface CitationHighlight {
   fileId: string;  // Match file.id in previewFiles array
   bbox: {
@@ -13,6 +26,7 @@ export interface CitationHighlight {
     height: number;
     page: number;
   };
+  chunks?: CitationChunkMetadata[];
 }
 
 interface PreviewContextType {
@@ -57,6 +71,11 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         
         // Set highlight if provided
         if (highlight) {
+          console.log('🖼️ [PreviewContext] Applying highlight to existing tab:', {
+            fileId: file.id,
+            bbox: highlight.bbox,
+            chunks: highlight.chunks?.length
+          });
           setHighlightCitation({
             ...highlight,
             fileId: file.id
@@ -84,6 +103,11 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         
         // Set highlight if provided
         if (highlight) {
+          console.log('🖼️ [PreviewContext] Applying highlight to new tab:', {
+            fileId: file.id,
+            bbox: highlight.bbox,
+            chunks: highlight.chunks?.length
+          });
           setHighlightCitation({
             ...highlight,
             fileId: file.id

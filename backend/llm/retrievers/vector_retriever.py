@@ -22,7 +22,7 @@ class VectorDocumentRetriever:
         
         if use_voyage:
             # Use Voyage AI for query embeddings
-            from voyageai import Client
+            from voyageai import Client  # type: ignore
             voyage_api_key = os.environ.get('VOYAGE_API_KEY')
             if not voyage_api_key:
                 raise ValueError("VOYAGE_API_KEY required when USE_VOYAGE_EMBEDDINGS=true")
@@ -202,6 +202,33 @@ class VectorDocumentRetriever:
                         logger.warning(f"Chunk expansion failed, falling back to original chunks: {e}")
                         expanded_chunks_cache = {}
             
+            # Batch fetch missing filenames for documents that don't have original_filename from RPC
+            document_filenames_cache = {}
+            doc_ids_missing_filename = []
+            for row in rows:
+                doc_id = row.get("document_id")
+                if doc_id and not row.get("original_filename"):
+                    doc_ids_missing_filename.append(doc_id)
+            
+            if doc_ids_missing_filename:
+                try:
+                    # Batch fetch filenames for documents missing them
+                    unique_doc_ids = list(set(doc_ids_missing_filename))
+                    filename_results = self.supabase.table('documents')\
+                        .select('id, original_filename')\
+                        .in_('id', unique_doc_ids)\
+                        .execute()
+                    
+                    for doc_row in filename_results.data:
+                        doc_id = doc_row.get('id')
+                        filename = doc_row.get('original_filename')
+                        if doc_id and filename:
+                            document_filenames_cache[doc_id] = filename
+                    
+                    logger.debug(f"Fetched {len(document_filenames_cache)} missing filenames from documents table")
+                except Exception as e:
+                    logger.warning(f"Could not fetch missing filenames: {e}")
+            
             for row in rows:
                 doc_id = row.get("document_id")
                 chunk_index = row.get("chunk_index", 0)
@@ -302,6 +329,11 @@ class VectorDocumentRetriever:
                 # Combine all parts
                 full_content = "\n\n".join(content_parts)
                 
+                # Get original_filename from row, or fallback to cache if missing
+                original_filename = row.get("original_filename")
+                if not original_filename and doc_id:
+                    original_filename = document_filenames_cache.get(doc_id)
+                
                 results.append(
                     RetrievedDocument(
                         vector_id=row["id"],
@@ -316,7 +348,7 @@ class VectorDocumentRetriever:
                         source="vector",
                         address_hash=row.get("address_hash"),
                         business_id=row.get("business_uuid"),
-                        original_filename=row.get("original_filename"),
+                        original_filename=original_filename,
                         property_address=row.get("property_address") or row.get("formatted_address"),
                     )
                 )
