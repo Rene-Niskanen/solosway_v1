@@ -3,9 +3,19 @@
 import * as React from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Globe, Plus } from "lucide-react";
+import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Globe, Plus, RefreshCw, ChevronDown, Loader2 } from "lucide-react";
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview, CitationHighlight } from '../contexts/PreviewContext';
+import { backendApi } from '../services/backendApi';
+
+// PDF.js for canvas-based PDF rendering with precise highlight positioning
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+// Vite handles this import and returns the correct URL for the worker
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Set worker source immediately at module load time
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface DocumentPreviewModalProps {
   files: FileAttachmentData[];
@@ -18,6 +28,8 @@ interface DocumentPreviewModalProps {
   onAddAttachment?: () => void;
   isMapVisible?: boolean;
   isSidebarCollapsed?: boolean;
+  chatPanelWidth?: number; // Width of the SideChatPanel in pixels
+  sidebarWidth?: number; // Width of the sidebar in pixels
 }
 
 export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
@@ -30,7 +42,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   onTabReorder,
   onAddAttachment,
   isMapVisible = false,
-  isSidebarCollapsed = false
+  isSidebarCollapsed = false,
+  chatPanelWidth = 0,
+  sidebarWidth = 56
 }) => {
   const file = files[activeTabIndex] || null;
   const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
@@ -50,12 +64,111 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     }
     return null;
   }, [highlightCitation, file]);
+  
+  // Expand small BBOXes to ensure citations are always visible
+  // The stored BBOX may only cover a single block (e.g., 8% x 3% of page)
+  // We expand it to a minimum readable size while keeping the center position
+  const expandedBbox = React.useMemo(() => {
+    if (!fileHighlight?.bbox) return null;
+    
+    const bbox = fileHighlight.bbox;
+    
+    // IMPROVED: Use tighter minimum dimensions for precise highlighting
+    // Small BBOXes are often CORRECT (e.g., just "£2,300,000")
+    const MIN_WIDTH = 0.12;   // Minimum 12% of page width (enough for a price)
+    const MIN_HEIGHT = 0.025; // Minimum 2.5% of page height (one line of text)
+    
+    // Add small padding around precise values for better visibility
+    const PADDING_X = 0.02;  // 2% horizontal padding
+    const PADDING_Y = 0.01;  // 1% vertical padding
+    
+    let { left, top, width, height, page } = bbox;
+    const original_page = (bbox as any).original_page; // Optional field, may not be in type
+    
+    // Only expand if the BBOX is tiny (likely a rendering issue, not a precise match)
+    const isTooSmall = width < 0.02 || height < 0.005;
+    
+    if (isTooSmall) {
+      console.log('📐 [BBOX] Expanding tiny bbox:', { 
+        original: { left, top, width, height },
+        reason: 'too small to be visible'
+      });
+      
+      // Expand to minimum visible size
+      const centerX = left + width / 2;
+      const centerY = top + height / 2;
+      
+      width = Math.max(width, MIN_WIDTH);
+      height = Math.max(height, MIN_HEIGHT);
+      
+      // Re-center around original position
+      left = Math.max(0, centerX - width / 2);
+      top = Math.max(0, centerY - height / 2);
+      
+      // Ensure within bounds
+      if (left + width > 1) left = 1 - width;
+      if (top + height > 1) top = 1 - height;
+      
+      console.log('📐 [BBOX] Expanded to:', { left, top, width, height });
+    } else {
+      // Add slight padding for better visibility of precise matches
+      const paddedLeft = Math.max(0, left - PADDING_X);
+      const paddedTop = Math.max(0, top - PADDING_Y);
+      const paddedWidth = Math.min(width + PADDING_X * 2, 1 - paddedLeft);
+      const paddedHeight = Math.min(height + PADDING_Y * 2, 1 - paddedTop);
+      
+      left = paddedLeft;
+      top = paddedTop;
+      width = paddedWidth;
+      height = paddedHeight;
+      
+      console.log('📐 [BBOX] Using precise bbox with padding:', { left, top, width, height });
+    }
+    
+    return { left, top, width, height, page, ...(original_page !== undefined && { original_page }) };
+  }, [fileHighlight?.bbox]);
+  
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
   const [imageNaturalWidth, setImageNaturalWidth] = React.useState<number | null>(null);
   const [imageRenderedHeight, setImageRenderedHeight] = React.useState<number | null>(null);
   const [imageRenderedWidth, setImageRenderedWidth] = React.useState<number | null>(null);
   const [forceUpdate, setForceUpdate] = React.useState(0);
   const [headerHeight, setHeaderHeight] = React.useState(50);
+  
+  // PDF.js state for canvas-based rendering with precise highlight positioning
+  const [pdfDocument, setPdfDocument] = React.useState<PDFDocumentProxy | null>(null);
+  const [pdfPageRendering, setPdfPageRendering] = React.useState(false);
+  const [pdfCanvasDimensions, setPdfCanvasDimensions] = React.useState<{ width: number; height: number } | null>(null);
+  const pdfCanvasRef = React.useRef<HTMLCanvasElement>(null);
+  
+  // Reprocess document state
+  const [isReprocessing, setIsReprocessing] = React.useState(false);
+  const [reprocessDropdownOpen, setReprocessDropdownOpen] = React.useState(false);
+  const [reprocessResult, setReprocessResult] = React.useState<{ success: boolean; message: string } | null>(null);
+  const [showAllChunkBboxes, setShowAllChunkBboxes] = React.useState(false);
+
+  React.useEffect(() => {
+    if (fileHighlight) {
+      console.log('📄 fileHighlight updated', {
+        fileId: file?.id,
+        page: fileHighlight.bbox.page,
+        bbox: fileHighlight.bbox,
+        chunkCount: fileHighlight.chunks?.length ?? 0
+      });
+    }
+  }, [fileHighlight, file?.id]);
+
+  React.useEffect(() => {
+    if (!expandedBbox) return;
+    console.log('🎯 [PreviewHighlight] render state', {
+      fileId: file?.id,
+      highlightPage: expandedBbox.page,
+      visibleOnCurrentPage: expandedBbox.page === currentPage,
+      originalBbox: fileHighlight?.bbox,
+      expandedBbox,
+      currentPage
+    });
+  }, [expandedBbox, fileHighlight?.bbox, currentPage, file?.id]);
   
   // Set initial dimensions immediately based on file type (no shrinking effect)
   // Calculate dimensions synchronously before state initialization
@@ -237,6 +350,37 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                  file?.type === 'application/msword' ||
                  (file?.name && (file.name.toLowerCase().endsWith('.docx') || file.name.toLowerCase().endsWith('.doc')));
 
+  // Reset debug overlays when document or modal state changes
+  React.useEffect(() => {
+    if (!isOpen) {
+      setShowAllChunkBboxes(false);
+    }
+  }, [isOpen, file?.id]);
+
+  // Keyboard shortcut: Shift + D toggles debug chunk overlays
+  React.useEffect(() => {
+    if (!isOpen) return;
+    
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'd' && event.shiftKey) {
+        event.preventDefault();
+        setShowAllChunkBboxes(prev => !prev);
+        console.log(`[📄 Preview Debug] Chunk overlay ${!showAllChunkBboxes ? 'enabled' : 'disabled'} (Shift + D)`);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, showAllChunkBboxes]);
+
+  const chunkOverlaysForPage = React.useMemo(() => {
+    if (!showAllChunkBboxes || !fileHighlight?.chunks) return [];
+    return fileHighlight.chunks.filter(chunk => {
+      const bboxPage = chunk?.bbox?.page ?? chunk?.page_number ?? fileHighlight?.bbox?.page;
+      return bboxPage === currentPage && chunk?.bbox;
+    });
+  }, [showAllChunkBboxes, fileHighlight, currentPage]);
+
   // Navigate to correct page when highlight is set (for PDFs)
   React.useEffect(() => {
     if (fileHighlight && isPDF && fileHighlight.bbox.page) {
@@ -247,6 +391,101 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
     }
   }, [fileHighlight, isPDF, currentPage]);
+
+  // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
+  React.useEffect(() => {
+    if (!isPDF || !file?.file || !isOpen) {
+      setPdfDocument(null);
+      return;
+    }
+
+    let cancelled = false;
+    
+    const loadPdf = async () => {
+      try {
+        console.log('📄 Loading PDF with PDF.js for canvas rendering...');
+        const arrayBuffer = await file.file.arrayBuffer();
+        const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        
+        if (cancelled) {
+          pdf.destroy();
+          return;
+        }
+        
+        console.log('📄 PDF loaded successfully, pages:', pdf.numPages);
+        setPdfDocument(pdf);
+        setTotalPages(pdf.numPages);
+      } catch (error) {
+        console.error('❌ Failed to load PDF with PDF.js:', error);
+      }
+    };
+    
+    loadPdf();
+    
+    return () => {
+      cancelled = true;
+      // Cleanup: destroy the PDF document when unmounting
+      if (pdfDocument) {
+        pdfDocument.destroy();
+      }
+    };
+  }, [isPDF, file?.file, isOpen]);
+
+  // Render current PDF page to canvas with zoom level
+  React.useEffect(() => {
+    if (!pdfDocument || !pdfCanvasRef.current || !isOpen) return;
+    
+    let cancelled = false;
+    
+    const renderPage = async () => {
+      try {
+        setPdfPageRendering(true);
+        console.log('📄 Rendering PDF page', currentPage, 'at zoom', zoomLevel, '%');
+        
+        const page = await pdfDocument.getPage(currentPage);
+        
+        if (cancelled) return;
+        
+        const scale = zoomLevel / 100;
+        const viewport = page.getViewport({ scale, rotation });
+        
+        const canvas = pdfCanvasRef.current;
+        if (!canvas) return;
+        
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        // Set canvas dimensions to match the viewport
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        
+        // Store dimensions for highlight positioning
+        setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
+        
+        // Render the page
+        await page.render({
+          canvasContext: context,
+          viewport,
+          canvas
+        } as any).promise;
+        
+        if (!cancelled) {
+          console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
+          setPdfPageRendering(false);
+        }
+      } catch (error) {
+        console.error('❌ Failed to render PDF page:', error);
+        setPdfPageRendering(false);
+      }
+    };
+    
+    renderPage();
+    
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDocument, currentPage, zoomLevel, rotation, isOpen]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -599,6 +838,47 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
   const handleRotate = () => {
     setRotation(prev => (prev + 90) % 360);
+  };
+
+  // Handle document reprocessing for BBOX extraction
+  const handleReprocess = async (mode: 'full' | 'bbox_only') => {
+    if (!file?.id) {
+      console.error('❌ No document ID available for reprocessing');
+      return;
+    }
+    
+    setIsReprocessing(true);
+    setReprocessDropdownOpen(false);
+    setReprocessResult(null);
+    
+    try {
+      console.log(`🔄 Reprocessing document ${file.id} in ${mode} mode...`);
+      const result = await backendApi.reprocessDocument(file.id, mode);
+      
+      if (result.success && result.data) {
+        setReprocessResult({
+          success: true,
+          message: result.data.message || `Successfully reprocessed with ${result.data.chunks_with_bbox || result.data.chunks_updated || 0} chunks containing BBOX`
+        });
+        console.log('✅ Reprocess complete:', result.data);
+      } else {
+        setReprocessResult({
+          success: false,
+          message: result.error || 'Failed to reprocess document'
+        });
+        console.error('❌ Reprocess failed:', result.error);
+      }
+    } catch (error) {
+      setReprocessResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+      console.error('❌ Reprocess error:', error);
+    } finally {
+      setIsReprocessing(false);
+      // Clear result message after 5 seconds
+      setTimeout(() => setReprocessResult(null), 5000);
+    }
   };
 
   const handleZoomIn = () => {
@@ -1123,14 +1403,16 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               ...(isResizing ? { willChange: 'width, height, left, top' } : {}),
               ...(isMapVisible 
                 ? { 
-                    // Calculate left position based on sidebar state or resize position
-                    // Sidebar is 40px (w-10) on mobile, 56px (lg:w-14) on desktop when expanded
-                    // Add spacing after sidebar to match top spacing proportionally (24px to match 16px top)
+                    // Position to the right of the chat panel when chat is open
+                    // Chat panel is positioned at sidebarWidth, with width chatPanelWidth
+                    // Add 16px spacing between chat panel and document preview
                     left: modalPosition?.left !== undefined 
                       ? `${modalPosition.left}px`
-                      : (isSidebarCollapsed 
-                          ? '24px' 
-                          : 'calc(max(40px, 56px) + 24px)'), // Responsive: 40px mobile, 56px desktop + 24px spacing (1.5x top spacing)
+                      : (chatPanelWidth > 0 
+                          ? `${sidebarWidth + chatPanelWidth + 16}px` // Position to the right of chat panel
+                          : (isSidebarCollapsed 
+                              ? '24px' 
+                              : 'calc(max(40px, 56px) + 24px)')), // Fallback: after sidebar
                     top: modalPosition?.top !== undefined 
                       ? `${modalPosition.top}px`
                       : '16px', 
@@ -1531,6 +1813,61 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                 >
                   <Download className="w-4 h-4 text-gray-600" />
                 </button>
+                
+                {/* Reprocess for BBOX - Only show if file has an ID (from backend) */}
+                {file?.id && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setReprocessDropdownOpen(!reprocessDropdownOpen)}
+                      className={`p-1.5 hover:bg-gray-100 rounded transition-colors flex items-center gap-0.5 ${isReprocessing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title="Reprocess document for citation highlighting"
+                      disabled={isReprocessing}
+                    >
+                      {isReprocessing ? (
+                        <Loader2 className="w-4 h-4 text-gray-600 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-4 h-4 text-gray-600" />
+                      )}
+                      <ChevronDown className="w-3 h-3 text-gray-400" />
+                    </button>
+                    
+                    {/* Dropdown Menu */}
+                    {reprocessDropdownOpen && !isReprocessing && (
+                      <div 
+                        className="absolute right-0 top-full mt-1 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+                        onMouseLeave={() => setReprocessDropdownOpen(false)}
+                      >
+                        <button
+                          onClick={() => handleReprocess('full')}
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5"
+                        >
+                          <span className="font-medium text-gray-800">Full Reprocess</span>
+                          <span className="text-xs text-gray-500">Re-embed & extract BBOX (slower)</span>
+                        </button>
+                        <button
+                          onClick={() => handleReprocess('bbox_only')}
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5"
+                        >
+                          <span className="font-medium text-gray-800">Update BBOX Only</span>
+                          <span className="text-xs text-gray-500">Keep embeddings, add BBOX (faster)</span>
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Result Toast */}
+                    {reprocessResult && (
+                      <div 
+                        className={`absolute right-0 top-full mt-1 px-3 py-2 rounded-lg shadow-lg text-sm whitespace-nowrap z-50 ${
+                          reprocessResult.success 
+                            ? 'bg-green-50 text-green-800 border border-green-200' 
+                            : 'bg-red-50 text-red-800 border border-red-200'
+                        }`}
+                      >
+                        {reprocessResult.message}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             
@@ -1574,93 +1911,155 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                     >
                       <div
                         style={{
-                          width: typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : pdfObjectWidth,
-                          height: typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : pdfObjectHeight,
-                          minWidth: zoomLevel > 100 && typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : undefined,
-                          minHeight: zoomLevel > 100 && typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : undefined,
+                          width: pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : (typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : pdfObjectWidth),
+                          height: pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : (typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : pdfObjectHeight),
+                          minWidth: zoomLevel > 100 && pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : (zoomLevel > 100 && typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : undefined),
+                          minHeight: zoomLevel > 100 && pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : (zoomLevel > 100 && typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : undefined),
                           display: 'block',
                           position: 'relative'
                         }}
                       >
-                        <object
-                          ref={iframeRef as React.RefObject<HTMLObjectElement>}
-                          key={`pdf-${file.id}-${blobUrl}-${zoomLevel}`}
-                          data={zoomLevel > 100 
-                            ? `${blobUrl}#page=${currentPage}&zoom=${zoomLevel}` // No view constraint when zoomed - allows free panning
-                            : `${blobUrl}#page=${currentPage}&zoom=page-fit&view=Fit`} // Use Fit when at 100% or less
-                          type="application/pdf"
-                          className="border-0 bg-white"
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            pointerEvents: zoomLevel > 100 ? 'none' : 'auto', // Disable pointer events when zoomed so container handles all scrolling
-                            imageRendering: 'auto',
-                            WebkitFontSmoothing: 'antialiased',
-                            transform: 'translateZ(0)',
-                            backfaceVisibility: 'hidden',
-                            display: 'block',
-                            margin: '0',
-                            padding: '0',
-                            boxSizing: 'border-box',
-                            touchAction: 'none', // Prevent object from interfering with scroll events - let container handle scrolling
-                          }}
-                        title={file.name}
-                        tabIndex={-1}
-                        onLoad={(e) => {
-                          console.log('📄 PDF object loaded');
-                          // Reset scroll position to top-left when PDF loads - use pdfWrapperRef, not previewAreaRef
-                          if (pdfWrapperRef.current) {
-                            pdfWrapperRef.current.scrollLeft = 0;
-                            pdfWrapperRef.current.scrollTop = 0;
-                          }
-                        }}
-                        onError={(e) => {
-                          console.error('❌ PDF object error:', e);
-                        }}
-                      >
-                          <p>PDF cannot be displayed. <a href={blobUrl || undefined} download={file.name}>Download PDF</a></p>
-                        </object>
-                        
-                        {/* Highlight overlay for citations */}
-                        {fileHighlight && fileHighlight.bbox && (() => {
-                          // Calculate highlight position from normalized bbox coordinates (0-1) to pixels
-                          const container = pdfWrapperRef.current;
-                          if (!container) return null;
-                          
-                          const containerWidth = container.clientWidth;
-                          const containerHeight = container.clientHeight;
-                          
-                          // Bbox coordinates are normalized (0-1), convert to pixels
-                          const highlightLeft = containerWidth * fileHighlight.bbox.left;
-                          const highlightTop = containerHeight * fileHighlight.bbox.top;
-                          const highlightWidth = containerWidth * fileHighlight.bbox.width;
-                          const highlightHeight = containerHeight * fileHighlight.bbox.height;
-                          
-                          return (
-                            <div
+                        {/* PDF.js Canvas-based rendering for precise highlight positioning */}
+                        {pdfDocument ? (
+                          <>
+                            <canvas
+                              ref={pdfCanvasRef}
                               style={{
-                                position: 'absolute',
-                                left: `${highlightLeft}px`,
-                                top: `${highlightTop}px`,
-                                width: `${highlightWidth}px`,
-                                height: `${highlightHeight}px`,
-                                backgroundColor: 'rgba(255, 235, 59, 0.3)', // Yellow highlight, 30% opacity
-                                border: '2px solid rgba(255, 193, 7, 0.8)', // Darker yellow border
-                                borderRadius: '2px',
-                                pointerEvents: 'none', // Don't block interactions
-                                zIndex: 10, // Above PDF, below UI controls
-                                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-                                opacity: 0,
-                                animation: 'fadeInHighlight 0.3s ease-in forwards',
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                // Clear highlight on click
-                                clearHighlightCitation();
+                                display: 'block',
+                                margin: '0 auto',
+                                backgroundColor: '#fff',
+                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
                               }}
                             />
-                          );
-                        })()}
+                            
+                            {/* Loading indicator while rendering */}
+                            {pdfPageRendering && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  top: '50%',
+                                  left: '50%',
+                                  transform: 'translate(-50%, -50%)',
+                                  padding: '8px 16px',
+                                  backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                                  color: 'white',
+                                  borderRadius: '4px',
+                                  fontSize: '12px',
+                                  zIndex: 20
+                                }}
+                              >
+                                Loading page...
+                              </div>
+                            )}
+                            
+                            {/* Highlight overlay for citations - positioned using percentage-based coordinates */}
+                            {/* Uses expandedBbox which ensures small BBOXes are enlarged for visibility */}
+                            {expandedBbox && expandedBbox.page === currentPage && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  // Use percentage-based positioning since bbox is normalized 0-1
+                                  left: `${expandedBbox.left * 100}%`,
+                                  top: `${expandedBbox.top * 100}%`,
+                                  width: `${expandedBbox.width * 100}%`,
+                                  height: `${expandedBbox.height * 100}%`,
+                                  backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
+                                  border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
+                                  borderRadius: '2px',
+                                  pointerEvents: 'none',
+                                  zIndex: 10,
+                                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                                  opacity: 0,
+                                  animation: 'fadeInHighlight 0.3s ease-in forwards',
+                                }}
+                              />
+                            )}
+                            
+                            {/* Debug overlay showing all chunk bboxes when enabled */}
+                            {showAllChunkBboxes && chunkOverlaysForPage.length > 0 && chunkOverlaysForPage.map((chunk, idx) => (
+                              <div
+                                key={`debug-bbox-${chunk.chunk_index ?? idx}`}
+                                style={{
+                                  position: 'absolute',
+                                  left: `${(chunk.bbox!.left ?? 0) * 100}%`,
+                                  top: `${(chunk.bbox!.top ?? 0) * 100}%`,
+                                  width: `${(chunk.bbox!.width ?? 0) * 100}%`,
+                                  height: `${(chunk.bbox!.height ?? 0) * 100}%`,
+                                  border: '1.5px dashed rgba(33, 150, 243, 0.9)',
+                                  backgroundColor: 'rgba(33, 150, 243, 0.13)',
+                                  borderRadius: '2px',
+                                  pointerEvents: 'none',
+                                  zIndex: 9,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    top: '-18px',
+                                    left: 0,
+                                    backgroundColor: 'rgba(33, 150, 243, 0.95)',
+                                    color: '#fff',
+                                    fontSize: '10px',
+                                    fontWeight: 600,
+                                    padding: '1px 4px',
+                                    borderRadius: '3px'
+                                  }}
+                                >
+                                  #{chunk.chunk_index ?? idx}
+                                </span>
+                              </div>
+                            ))}
+
+                            {showAllChunkBboxes && chunkOverlaysForPage.length > 0 && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  top: '8px',
+                                  right: '8px',
+                                  padding: '4px 8px',
+                                  backgroundColor: 'rgba(0,0,0,0.65)',
+                                  color: '#fff',
+                                  fontSize: '11px',
+                                  borderRadius: '4px',
+                                  zIndex: 20,
+                                }}
+                              >
+                                Debug overlays: {chunkOverlaysForPage.length} chunk{chunkOverlaysForPage.length === 1 ? '' : 's'} (Shift + D)
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          /* Fallback to object tag if PDF.js hasn't loaded yet */
+                          <object
+                            ref={iframeRef as React.RefObject<HTMLObjectElement>}
+                            key={`pdf-${file.id}-${blobUrl}-${zoomLevel}`}
+                            data={zoomLevel > 100 
+                              ? `${blobUrl}#page=${currentPage}&zoom=${zoomLevel}`
+                              : `${blobUrl}#page=${currentPage}&zoom=page-fit&view=Fit`}
+                            type="application/pdf"
+                            className="border-0 bg-white"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              pointerEvents: zoomLevel > 100 ? 'none' : 'auto',
+                              imageRendering: 'auto',
+                              WebkitFontSmoothing: 'antialiased',
+                              transform: 'translateZ(0)',
+                              backfaceVisibility: 'hidden',
+                              display: 'block',
+                              margin: '0',
+                              padding: '0',
+                              boxSizing: 'border-box',
+                              touchAction: 'none',
+                            }}
+                            title={file.name}
+                            tabIndex={-1}
+                            onLoad={() => console.log('📄 PDF object loaded (fallback)')}
+                            onError={(e) => console.error('❌ PDF object error:', e)}
+                          >
+                            <p>PDF cannot be displayed. <a href={blobUrl || undefined} download={file.name}>Download PDF</a></p>
+                          </object>
+                        )}
                       </div>
                     </div>
                   ) : isImage ? (
