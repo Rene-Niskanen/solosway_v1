@@ -52,9 +52,18 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [rotation, setRotation] = React.useState(0);
   const [currentPage, setCurrentPage] = React.useState(1);
   const [totalPages, setTotalPages] = React.useState(1);
+  const prevFileIdRef = React.useRef<string | null>(null); // Track previous file ID for optimization
   
-  // Get highlight citation from context
-  const { highlightCitation, clearHighlightCitation } = usePreview();
+  // Get highlight citation and PDF cache functions from context
+  const { 
+    highlightCitation, 
+    clearHighlightCitation,
+    getCachedPdfDocument,
+    setCachedPdfDocument,
+    getCachedRenderedPage,
+    setCachedRenderedPage,
+    preloadPdfPage
+  } = usePreview();
   
   // Check if current file has a highlight
   const fileHighlight = React.useMemo(() => {
@@ -344,7 +353,13 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       // For DOCX, don't set zoomLevel here - let the useEffect calculate it
       setRotation(0);
-      setCurrentPage(1);
+      // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
+      // Only reset if it's a different document
+      const isDifferentFile = prevFileIdRef.current !== file.id;
+      if (isDifferentFile) {
+        setCurrentPage(1);
+        prevFileIdRef.current = file.id;
+      }
       setImageNaturalHeight(null); // Reset image height when file changes
       setImageNaturalWidth(null); // Reset image width when file changes
       setImageRenderedHeight(null); // Reset rendered height when file changes
@@ -386,7 +401,17 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setDocxPublicUrl(null); // Reset DOCX public URL
       setZoomLevel(100); // Reset zoom
       setRotation(0); // Reset rotation
-      setCurrentPage(1); // Reset page
+      // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
+      // Only reset if it's a different document
+      if (file) {
+        const isDifferentFile = prevFileIdRef.current !== file.id;
+        if (isDifferentFile) {
+          setCurrentPage(1);
+          prevFileIdRef.current = file.id;
+        }
+      } else {
+        prevFileIdRef.current = null;
+      }
       currentBlobUrlRef.current = null; // Clear ref but don't revoke preloaded URLs
     }
   }, [file, isOpen, isMapVisible, activeTabIndex]);
@@ -430,17 +455,29 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   }, [showAllChunkBboxes, fileHighlight, currentPage]);
 
   // Navigate to correct page when highlight is set (for PDFs)
+  // OPTIMIZATION: Navigate immediately and pre-render page if not cached
   React.useEffect(() => {
-    if (fileHighlight && isPDF && fileHighlight.bbox.page) {
+    if (fileHighlight && isPDF && fileHighlight.bbox.page && file && pdfDocument) {
       const targetPage = fileHighlight.bbox.page;
       if (targetPage !== currentPage) {
         console.log('📄 Navigating to page', targetPage, 'for highlight');
+        
+        // Pre-render target page if not cached (for instant switching)
+        const cached = getCachedRenderedPage?.(file.id, targetPage);
+        if (!cached && preloadPdfPage) {
+          preloadPdfPage(file.id, targetPage, pdfDocument, zoomLevel / 100).catch(err => {
+            console.warn('⚠️ Failed to pre-render page:', err);
+          });
+        }
+        
+        // Set page immediately - if cached, rendering will be instant
         setCurrentPage(targetPage);
       }
     }
-  }, [fileHighlight, isPDF, currentPage]);
+  }, [fileHighlight, isPDF, currentPage, file?.id, pdfDocument, getCachedRenderedPage, preloadPdfPage, zoomLevel]);
 
   // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
+  // OPTIMIZATION: Use cached PDF document if available to avoid reloading when switching
   React.useEffect(() => {
     if (!isPDF || !file?.file || !isOpen) {
       setPdfDocument(null);
@@ -451,6 +488,17 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     const loadPdf = async () => {
       try {
+        // OPTIMIZATION: Check cache first - avoid reloading if already cached
+        const cachedPdf = getCachedPdfDocument?.(file.id);
+        if (cachedPdf) {
+          console.log('⚡ [PDF_CACHE] Using cached PDF document:', file.id);
+          if (!cancelled) {
+            setPdfDocument(cachedPdf);
+            setTotalPages(cachedPdf.numPages);
+          }
+          return;
+        }
+        
         console.log('📄 Loading PDF with PDF.js for canvas rendering...');
         const arrayBuffer = await file.file.arrayBuffer();
         const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
@@ -462,8 +510,23 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         }
         
         console.log('📄 PDF loaded successfully, pages:', pdf.numPages);
-        setPdfDocument(pdf);
-        setTotalPages(pdf.numPages);
+        
+        // OPTIMIZATION: Cache the PDF document for fast switching
+        setCachedPdfDocument?.(file.id, pdf);
+        
+        if (!cancelled) {
+          setPdfDocument(pdf);
+          setTotalPages(pdf.numPages);
+          
+          // OPTIMIZATION: If there's a highlight citation for this document, pre-render that page immediately
+          // This ensures the page is ready when user sees the preview
+          if (fileHighlight && fileHighlight.bbox?.page && preloadPdfPage) {
+            const targetPage = fileHighlight.bbox.page;
+            preloadPdfPage(file.id, targetPage, pdf, 1.0).catch(err => {
+              console.warn('⚠️ Failed to pre-render highlight page:', err);
+            });
+          }
+        }
       } catch (error) {
         console.error('❌ Failed to load PDF with PDF.js:', error);
       }
@@ -473,21 +536,52 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     return () => {
       cancelled = true;
-      // Cleanup: destroy the PDF document when unmounting
-      if (pdfDocument) {
-        pdfDocument.destroy();
-      }
+      // OPTIMIZATION: Don't destroy PDF document - keep it in cache for fast switching
+      // Only destroy if file is being removed from previewFiles (handled in PreviewContext)
     };
-  }, [isPDF, file?.file, isOpen]);
+  }, [isPDF, file?.file, file?.id, isOpen, getCachedPdfDocument, setCachedPdfDocument]);
 
   // Render current PDF page to canvas with zoom level
+  // OPTIMIZATION: Use cached rendered page if available for instant switching
   React.useEffect(() => {
-    if (!pdfDocument || !pdfCanvasRef.current || !isOpen) return;
+    if (!pdfDocument || !pdfCanvasRef.current || !isOpen || !file) return;
     
     let cancelled = false;
+    let animationFrameId: number | null = null;
     
     const renderPage = async () => {
       try {
+        const scale = zoomLevel / 100;
+        
+        // OPTIMIZATION: Check cache first - use cached rendered page if available
+        const cachedImageData = getCachedRenderedPage?.(file.id, currentPage);
+        if (cachedImageData && pdfCanvasRef.current) {
+          const canvas = pdfCanvasRef.current;
+          const context = canvas.getContext('2d');
+          
+          if (context && !cancelled) {
+            // Restore cached page instantly
+            canvas.width = cachedImageData.width;
+            canvas.height = cachedImageData.height;
+            context.putImageData(cachedImageData, 0, 0);
+            
+            // Store dimensions for highlight positioning
+            setPdfCanvasDimensions({ width: canvas.width, height: canvas.height });
+            
+            // Calculate viewport transform (approximate, since we cached at scale 1.0)
+            // For exact positioning, we still need to get the page viewport
+            const page = await pdfDocument.getPage(currentPage);
+            const viewport = page.getViewport({ scale, rotation });
+            const transform = viewport.transform;
+            setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
+            
+            console.log('⚡ [PAGE_CACHE] Restored cached page instantly:', file.id, 'page', currentPage);
+            setPdfPageRendering(false);
+            return;
+          }
+        }
+        
+        // If not cached, render normally
         setPdfPageRendering(true);
         console.log('📄 Rendering PDF page', currentPage, 'at zoom', zoomLevel, '%');
         
@@ -495,7 +589,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         
         if (cancelled) return;
         
-        const scale = zoomLevel / 100;
         const viewport = page.getViewport({ scale, rotation });
         
         const canvas = pdfCanvasRef.current;
@@ -504,28 +597,44 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         const context = canvas.getContext('2d');
         if (!context) return;
         
-        // Set canvas dimensions to match the viewport
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        
-        // Store dimensions for highlight positioning
-        setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
-        
-        // Store viewport transform for highlight positioning (PDF.js transform matrix)
-        const transform = viewport.transform;
-        setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
-        
-        // Render the page
-        await page.render({
-          canvasContext: context,
-          viewport,
-          canvas
-        } as any).promise;
-        
-        if (!cancelled) {
-          console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
-          setPdfPageRendering(false);
-        }
+        // OPTIMIZATION: Use requestAnimationFrame for smoother rendering
+        animationFrameId = requestAnimationFrame(() => {
+          if (cancelled) return;
+          
+          // Set canvas dimensions to match the viewport
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          
+          // Store dimensions for highlight positioning
+          setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
+          
+          // Store viewport transform for highlight positioning (PDF.js transform matrix)
+          const transform = viewport.transform;
+          setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
+          
+          // Render the page
+          page.render({
+            canvasContext: context,
+            viewport,
+            canvas
+          } as any).promise.then(() => {
+            if (!cancelled) {
+              console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
+              
+              // OPTIMIZATION: Cache the rendered page for instant future access
+              if (file && scale === 1.0 && rotation === 0) {
+                // Only cache at default scale/rotation to save memory
+                const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+                setCachedRenderedPage?.(file.id, currentPage, imageData);
+              }
+              
+              setPdfPageRendering(false);
+            }
+          }).catch((error) => {
+            console.error('❌ Failed to render PDF page:', error);
+            setPdfPageRendering(false);
+          });
+        });
       } catch (error) {
         console.error('❌ Failed to render PDF page:', error);
         setPdfPageRendering(false);
@@ -536,8 +645,11 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     return () => {
       cancelled = true;
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
-  }, [pdfDocument, currentPage, zoomLevel, rotation, isOpen]);
+  }, [pdfDocument, currentPage, zoomLevel, rotation, isOpen, file?.id, getCachedRenderedPage, setCachedRenderedPage]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {

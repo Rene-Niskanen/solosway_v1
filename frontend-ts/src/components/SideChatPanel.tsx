@@ -325,6 +325,24 @@ interface CitationDataType {
   match_reason?: string;
 }
 
+interface CitationData {
+  doc_id: string;
+  original_filename?: string | null;
+  page?: number;
+  page_number?: number;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+  matched_chunk_metadata?: CitationChunkData;
+  source_chunks_metadata?: CitationChunkData[];
+  candidate_chunks_metadata?: CitationChunkData[];
+  chunk_metadata?: CitationChunkData;
+}
+
 const CitationLink: React.FC<{
   citationNumber: string;
   citationData: CitationDataType;
@@ -1503,6 +1521,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             let accumulatedText = '';
             const accumulatedCitations: Record<string, CitationDataType> = {};
+            const preloadingDocs = new Set<string>(); // Track documents currently being preloaded to avoid duplicates
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -1733,7 +1752,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   doc_id: citation.data.doc_id,
                   page: citation.data.page || citation.data.page_number || 0,
                   bbox: finalBbox, // Use normalized bbox or default empty bbox
-                  method: citation.data.method // Include method field
+                  method: citation.data.method, // Include method field
+                  original_filename: citation.data.original_filename // Include filename for preloading
                 };
                 
                 console.log('📚 SideChatPanel: Normalized citation stored:', {
@@ -1743,6 +1763,115 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   bbox: normalizedBbox,
                   bboxValid: normalizedBbox && typeof normalizedBbox.left === 'number'
                 });
+                
+                // PRELOAD: Start downloading document in background when citation received
+                // This ensures documents are ready when user clicks citation (instant BBOX highlight)
+                const docId = citation.data.doc_id;
+                if (docId && preloadFile) {
+                  // Check if document is already cached or currently being preloaded
+                  const isCached = previewFiles.some(f => f.id === docId);
+                  const isPreloading = preloadingDocs.has(docId);
+                  
+                  if (!isCached && !isPreloading) {
+                    // Mark as preloading to avoid duplicate downloads
+                    preloadingDocs.add(docId);
+                    
+                    // Start background download (non-blocking, fire-and-forget)
+                    // Use setTimeout to avoid blocking the citation accumulation
+                    setTimeout(() => {
+                      (async () => {
+                        try {
+                          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                          const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+                          
+                          console.log('📥 [PRELOAD] Starting background download for citation:', docId);
+                          
+                          const response = await fetch(downloadUrl, {
+                            credentials: 'include'
+                          });
+                          
+                          if (!response.ok) {
+                            console.warn('⚠️ [PRELOAD] Failed to download document:', response.status);
+                            preloadingDocs.delete(docId); // Remove from set on error
+                            return;
+                          }
+                          
+                          const blob = await response.blob();
+                          const fileType = blob.type || 'application/pdf';
+                          const fileSize = blob.size;
+                          
+                          // Create File object from blob
+                          const file = new File(
+                            [blob], 
+                            citation.data.original_filename || 'document.pdf', 
+                            { type: fileType }
+                          );
+                          
+                          // Convert to FileAttachmentData format
+                          const fileData: FileAttachmentData = {
+                            id: docId,
+                            file: file,
+                            name: citation.data.original_filename || 'document.pdf',
+                            type: fileType,
+                            size: fileSize
+                          };
+                          
+                          // Preload into cache (silent, doesn't open preview)
+                          preloadFile(fileData);
+                          
+                          // OPTIMIZATION: Aggressively pre-render citation pages immediately
+                          // Since probability of clicking citations is extremely high, start pre-rendering ASAP
+                          if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
+                            // Start pre-rendering immediately - don't wait
+                            (async () => {
+                              try {
+                                // Try to get PDF immediately (might be cached from previous load)
+                                let pdf = getCachedPdfDocument(docId);
+                                
+                                if (!pdf) {
+                                  // PDF not loaded yet - wait for it to load, but start checking immediately
+                                  // Poll more aggressively for faster response
+                                  const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
+                                  let attempts = 0;
+                                  
+                                  while (!pdf && attempts < maxAttempts) {
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                    pdf = getCachedPdfDocument(docId);
+                                    attempts++;
+                                  }
+                                }
+                                
+                                if (pdf) {
+                                  // PDF is ready - pre-render the page immediately
+                                  console.log('⚡ [PRELOAD] Pre-rendering citation page immediately:', docId, 'page', citation.data.page);
+                                  await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
+                                  console.log('✅ [PRELOAD] Citation page pre-rendered and cached:', docId, 'page', citation.data.page);
+                                } else {
+                                  console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
+                                }
+                              } catch (error) {
+                                console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
+                              }
+                            })(); // Fire and forget - don't block
+                          }
+                          
+                          // Remove from preloading set after successful cache
+                          preloadingDocs.delete(docId);
+                          
+                          console.log('✅ [PRELOAD] Document cached successfully:', docId, fileData.name);
+                        } catch (error) {
+                          console.warn('⚠️ [PRELOAD] Error preloading document:', error);
+                          preloadingDocs.delete(docId); // Remove from set on error
+                          // Silently fail - user can still click citation and download on-demand
+                        }
+                      })();
+                    }, 0); // Defer to next tick to avoid blocking
+                  } else if (isCached) {
+                    console.log('✅ [PRELOAD] Document already cached:', docId);
+                  } else if (isPreloading) {
+                    console.log('⏳ [PRELOAD] Document already being preloaded:', docId);
+                  }
+                }
                 
                 // #region agent log
                 // Debug: Log citation accumulation for Hypothesis F
@@ -1807,10 +1936,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
   
-  // Use shared preview context
+  // Use shared preview context (moved before handleQuerySubmit to ensure functions are available)
   const {
     addPreviewFile,
-    previewFiles
+    preloadFile,
+    previewFiles,
+    getCachedPdfDocument, // NEW: Get cached PDF document
+    preloadPdfPage // NEW: Pre-render PDF pages
   } = usePreview();
 
   // Phase 1: Handle citation click - fetch document and open in viewer

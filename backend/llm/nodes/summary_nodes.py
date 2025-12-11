@@ -5,6 +5,7 @@ Summarization code - create final unified answer from all document outputs.
 import logging
 import os
 from datetime import datetime
+from typing import List, Dict, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -17,6 +18,129 @@ from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _renumber_citations_by_appearance(summary: str, citations: List[Dict]) -> Tuple[str, List[Dict]]:
+    """
+    Renumber citations based on their order of appearance in the response text.
+    
+    This ensures citations are sequential (1, 2, 3...) based on when they first appear,
+    not based on when they were extracted in Phase 1.
+    
+    Args:
+        summary: The LLM response text with citation superscripts
+        citations: List of citation dictionaries with citation_number, block_id, etc.
+    
+    Returns:
+        Tuple of (renumbered_summary, renumbered_citations)
+    """
+    import re
+    
+    # Map of superscript characters to numbers
+    superscript_to_num = {
+        '¹': 1, '²': 2, '³': 3, '⁴': 4, '⁵': 5, '⁶': 6, '⁷': 7, '⁸': 8, '⁹': 9, '¹⁰': 10,
+        '¹¹': 11, '¹²': 12, '¹³': 13, '¹⁴': 14, '¹⁵': 15, '¹⁶': 16, '¹⁷': 17, '¹⁸': 18, '¹⁹': 19, '²⁰': 20
+    }
+    
+    # Find all citation superscripts in order of appearance
+    # Pattern matches individual superscripts (¹, ², ³) or combined (¹², ¹²³)
+    # We'll handle both individual and combined, but prefer individual
+    citation_pattern = r'[¹²³⁴⁵⁶⁷⁸⁹]+'
+    matches = list(re.finditer(citation_pattern, summary))
+    
+    if not matches:
+        logger.debug("[RENUMBER_CITATIONS] No citation superscripts found in summary")
+        return summary, citations
+    
+    # Extract citation numbers in order of appearance
+    # For combined superscripts like "¹²³", we need to split them
+    appearance_order = []
+    seen_citation_nums = set()
+    
+    for match in matches:
+        superscript_text = match.group()
+        # Handle combined superscripts (e.g., "¹²" = 12, "¹²³" = 123)
+        # But we want individual citations, so split them
+        citation_nums = []
+        
+        # Try to parse as combined first (for backwards compatibility)
+        if superscript_text in superscript_to_num:
+            citation_nums = [superscript_to_num[superscript_text]]
+        else:
+            # Split combined superscripts into individual ones
+            # "¹²" -> [1, 2], "¹²³" -> [1, 2, 3]
+            for char in superscript_text:
+                if char in superscript_to_num:
+                    citation_nums.append(superscript_to_num[char])
+        
+        # Add citation numbers in order, avoiding duplicates
+        for cit_num in citation_nums:
+            if cit_num not in seen_citation_nums:
+                appearance_order.append(cit_num)
+                seen_citation_nums.add(cit_num)
+    
+    if not appearance_order:
+        logger.debug("[RENUMBER_CITATIONS] No valid citation numbers extracted")
+        return summary, citations
+    
+    # Create mapping: old_citation_number -> new_sequential_number
+    old_to_new = {}
+    for new_num, old_num in enumerate(appearance_order, start=1):
+        old_to_new[old_num] = new_num
+    
+    # Create reverse mapping for superscript characters
+    num_to_superscript = {
+        1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹', 10: '¹⁰',
+        11: '¹¹', 12: '¹²', 13: '¹³', 14: '¹⁴', 15: '¹⁵', 16: '¹⁶', 17: '¹⁷', 18: '¹⁸', 19: '¹⁹', 20: '²⁰'
+    }
+    
+    # Replace citation numbers in summary text
+    def replace_citation(match):
+        superscript_text = match.group()
+        # Extract citation numbers from this superscript
+        citation_nums = []
+        if superscript_text in superscript_to_num:
+            citation_nums = [superscript_to_num[superscript_text]]
+        else:
+            for char in superscript_text:
+                if char in superscript_to_num:
+                    citation_nums.append(superscript_to_num[char])
+        
+        # Map to new numbers and format with spaces
+        new_nums = [old_to_new.get(num, num) for num in citation_nums]
+        # Format as individual superscripts with spaces: "¹ ² ³"
+        new_superscripts = ' '.join([num_to_superscript.get(num, str(num)) for num in new_nums])
+        return new_superscripts
+    
+    renumbered_summary = re.sub(citation_pattern, replace_citation, summary)
+    
+    # Renumber citations list
+    # Create lookup: old citation_number -> citation dict
+    citations_by_old_num = {cit.get('citation_number', 0): cit for cit in citations}
+    
+    renumbered_citations = []
+    for new_num, old_num in enumerate(appearance_order, start=1):
+        if old_num in citations_by_old_num:
+            cit = citations_by_old_num[old_num].copy()
+            cit['citation_number'] = new_num
+            renumbered_citations.append(cit)
+    
+    # Add any citations that weren't found in the text (shouldn't happen, but safety)
+    for cit in citations:
+        old_num = cit.get('citation_number', 0)
+        if old_num not in old_to_new:
+            # Assign next available number
+            next_num = len(renumbered_citations) + 1
+            cit_copy = cit.copy()
+            cit_copy['citation_number'] = next_num
+            renumbered_citations.append(cit_copy)
+    
+    logger.info(
+        f"[RENUMBER_CITATIONS] Renumbered {len(renumbered_citations)} citations "
+        f"based on appearance order"
+    )
+    
+    return renumbered_summary, renumbered_citations
 
 
 async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
@@ -443,6 +567,11 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             summary
         )
         summary = summary.strip()
+        
+        # Renumber citations based on order of appearance in response
+        # This ensures citations are sequential (1, 2, 3...) based on when they appear in text
+        if citations_from_state and summary:
+            summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state)
         
         logger.info(
             f"[SUMMARIZE_RESULTS] Phase 2: Generated final summary ({len(summary)} chars, "

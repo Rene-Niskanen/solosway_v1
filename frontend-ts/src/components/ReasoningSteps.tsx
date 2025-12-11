@@ -544,10 +544,10 @@ const StepRenderer: React.FC<{
       
       return (
         <span>
-          {isSearchingActive ? (
-            <span className="searching-shimmer-active">{step.message}</span>
-          ) : (
-            <span style={actionStyle}>{step.message}</span>
+              {isSearchingActive ? (
+              <span className="searching-shimmer-active">{step.message}</span>
+            ) : (
+              <span style={actionStyle}>{step.message}</span>
           )}
         </span>
       );
