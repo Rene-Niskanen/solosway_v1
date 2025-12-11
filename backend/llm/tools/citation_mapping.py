@@ -88,6 +88,26 @@ class CitationTool:
                 f"[CITATION_TOOL] Block ID {block_id} (citation {citation_number}) "
                 f"not found in metadata tables"
             )
+            # #region agent log
+            try:
+                import json
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'D',
+                        'location': 'citation_mapping.py:86',
+                        'message': 'Block ID not found in metadata tables',
+                        'data': {
+                            'block_id': block_id,
+                            'citation_number': citation_number,
+                            'available_doc_ids': list(self.metadata_lookup_tables.keys())[:3] if self.metadata_lookup_tables else []
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except Exception:
+                pass
+            # #endregion
             return f"⚠️ Citation {citation_number} recorded but block {block_id} not found"
         
         # Extract bbox coordinates
@@ -100,6 +120,40 @@ class CitationTool:
         }
         
         page_number = int(block_metadata.get('page', 0))
+        
+        # #region agent log
+        # Debug: Log bbox extraction from metadata for Hypothesis C, D
+        try:
+            is_fallback_bbox = (
+                bbox['left'] == 0.0 and bbox['top'] == 0.0 and
+                bbox['width'] == 1.0 and bbox['height'] == 1.0
+            )
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'C,D',
+                    'location': 'citation_mapping.py:100',
+                    'message': 'Bbox extracted from metadata table',
+                    'data': {
+                        'block_id': block_id,
+                        'citation_number': citation_number,
+                        'bbox': bbox,
+                        'page_number': page_number,
+                        'is_fallback_bbox': is_fallback_bbox,
+                        'bbox_left': block_metadata.get('bbox_left'),
+                        'bbox_top': block_metadata.get('bbox_top'),
+                        'bbox_width': block_metadata.get('bbox_width'),
+                        'bbox_height': block_metadata.get('bbox_height'),
+                        'metadata_page': block_metadata.get('page'),
+                        'doc_id': doc_id[:8] if doc_id else 'unknown'
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         # Create citation object
         citation: Citation = {
@@ -147,23 +201,37 @@ def create_citation_tool(
             citation_number=citation_number
         ),
         name="cite_source",
-        description="""MANDATORY TOOL CALL: You MUST call this tool programmatically for EVERY superscript citation in your answer.
+        description="""⚠️ MANDATORY TOOL CALL - YOU MUST USE THIS TOOL ⚠️
 
-CRITICAL: This tool is bound to your response - you MUST call it when you use superscript citations (¹, ², ³). The tool is executed automatically when you call it - do not write the tool syntax in your text.
+**PHASE 1 USAGE (Citation Extraction):**
+You are in Phase 1: Citation Extraction. You MUST call this tool for EVERY factual claim you find in the documents.
 
-WORKFLOW:
-1. Write your answer with superscript citations as you cite information: "The property is valued at £2,400,000¹"
-2. For EACH superscript, you MUST call this tool BEFORE finishing your response:
-   - block_id: The BLOCK_CITE_ID from the document extract (find it in the <BLOCK> tags)
-   - citation_number: The number matching your superscript (1 for ¹, 2 for ², 3 for ³)
-   - cited_text: The specific sentence from your answer that cites this source
+**WHAT TO CITE:**
+- Every value, price, amount, measurement
+- Every date, time period
+- Every name (valuer, inspector, party)
+- Every address, location
+- Every assessment, opinion, rating
+- Any specific data that answers the user's question
 
-EXAMPLE:
-- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Final valued price: £2,400,000"</BLOCK>
-- You write in response: "The property is valued at £2,400,000¹"
-- You MUST call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="The property is valued at £2,400,000")
+**HOW TO USE:**
+1. Find factual claims in the document extracts (look for <BLOCK> tags)
+2. For EACH factual claim, call this tool:
+   - block_id: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - citation_number: Sequential number (1, 2, 3, 4, 5...)
+   - cited_text: The factual claim (exact text or your paraphrase)
 
-MANDATORY: If you write a superscript (¹, ², ³) without calling this tool, the citation will fail. You MUST call this tool for every superscript you use.""",
+**EXAMPLES:**
+- cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
+- cite_source(block_id="BLOCK_CITE_ID_15", citation_number=2, cited_text="Valuation date: 12th February 2024")
+- cite_source(block_id="BLOCK_CITE_ID_7", citation_number=3, cited_text="Valuer: Sukhbir Tiwana MRICS")
+
+**CRITICAL:**
+- You MUST call this tool multiple times (minimum 3-5 calls for most queries)
+- Use sequential citation numbers starting from 1
+- Find BLOCK_CITE_ID in the <BLOCK> tags from document extracts
+- Do NOT skip citations - cite every relevant factual claim
+- Tool calls are MANDATORY - you cannot proceed without calling this tool""",
         args_schema=CitationInput
     )
     

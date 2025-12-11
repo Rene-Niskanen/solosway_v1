@@ -12,12 +12,14 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
+from backend.llm.utils.block_id_formatter import format_document_with_block_ids
+from backend.llm.tools.citation_mapping import create_citation_tool
 
 logger = logging.getLogger(__name__)
 
 
-def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
+async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     """
     Create a final unified answer from all document outputs.
 
@@ -130,9 +132,9 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         )
         doc_outputs = doc_outputs[:max_docs_for_summary]
     
-    # Format outputs with natural names (filename and address)
-    # Also include search source information to help LLM understand how documents were found
-    formatted_outputs = []
+    # Format outputs with block IDs and build metadata lookup tables (for citation mapping)
+    formatted_outputs_with_ids = []
+    metadata_lookup_tables = {}  # doc_id -> block_id -> metadata
     search_source_summary = {
         'structured_query': 0,
         'llm_sql_query': 0,
@@ -143,6 +145,7 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     }
     
     for idx, output in enumerate(doc_outputs):
+        doc_id = output.get('doc_id', '')
         doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
         filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
         prop_id = output.get('property_id') or 'Unknown'
@@ -150,6 +153,33 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         page_info = output.get('page_range', 'multiple pages')
         search_source = output.get('search_source', 'unknown')
         similarity_score = output.get('similarity_score', 0.0)
+        
+        # #region agent log
+        # Debug: Log source_chunks_metadata before format_document_with_block_ids for Hypothesis A
+        try:
+            source_chunks_metadata = output.get('source_chunks_metadata', [])
+            chunks_with_blocks = sum(1 for chunk in source_chunks_metadata if chunk.get('blocks') and isinstance(chunk.get('blocks'), list) and len(chunk.get('blocks')) > 0) if source_chunks_metadata else 0
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'summary_nodes.py:147',
+                    'message': 'source_chunks_metadata before format_document_with_block_ids',
+                    'data': {
+                        'doc_id': doc_id[:8] if doc_id else 'unknown',
+                        'has_source_chunks_metadata': 'source_chunks_metadata' in output,
+                        'source_chunks_metadata_type': type(source_chunks_metadata).__name__,
+                        'source_chunks_metadata_length': len(source_chunks_metadata) if isinstance(source_chunks_metadata, list) else 0,
+                        'chunks_with_blocks': chunks_with_blocks,
+                        'output_keys': list(output.keys())[:10]
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         # Track search sources
         search_source_summary[search_source] = search_source_summary.get(search_source, 0) + 1
@@ -164,20 +194,61 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             'unknown': 'Unknown source'
         }.get(search_source, search_source)
         
-        # Use address instead of filename to avoid LLM including filenames in response
-        header = f"\n### {doc_type}"
-        if address and address != f"Property {prop_id[:8]}":
-            header += f" - {address}"
-        header += f"\n"
-        header += f"Pages: {page_info}\n"
-        header += f"Found via: {source_display}"
-        if similarity_score > 0:
-            header += f" (relevance: {similarity_score:.2f})"
-        header += f"\n---------------------------------------------\n"
+        # Format document with block IDs (for citation mapping)
+        formatted_content, metadata_table = format_document_with_block_ids(output)
         
-        formatted_outputs.append(header + output.get('output', ''))
+        # Format with document header
+        doc_header = f"\n### {doc_type}"
+        if address and address != f"Property {prop_id[:8]}":
+            doc_header += f" - {address}"
+        doc_header += f"\n"
+        doc_header += f"Pages: {page_info}\n"
+        doc_header += f"Found via: {source_display}"
+        if similarity_score > 0:
+            doc_header += f" (relevance: {similarity_score:.2f})"
+        doc_header += f"\n---------------------------------------------\n"
+        
+        formatted_outputs_with_ids.append(doc_header + formatted_content)
+        
+        # Store metadata lookup table for this document
+        if doc_id and metadata_table:
+            metadata_lookup_tables[doc_id] = metadata_table
+            logger.info(
+                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} with {len(metadata_table)} block IDs"
+            )
+            # #region agent log
+            # Debug: Log metadata lookup table for Hypothesis C
+            try:
+                import json
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'C',
+                        'location': 'summary_nodes.py:188',
+                        'message': 'Metadata lookup table stored',
+                        'data': {
+                            'doc_id': doc_id[:8] if doc_id else 'unknown',
+                            'metadata_table_size': len(metadata_table),
+                            'total_lookup_tables': len(metadata_lookup_tables)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except Exception:
+                pass  # Silently fail instrumentation
+            # #endregion
     
-    formatted_outputs_str = "\n".join(formatted_outputs)
+    # Create citation tool with metadata lookup tables
+    citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
+    
+    formatted_outputs_str = "\n".join(formatted_outputs_with_ids)
+    
+    # Limit total content size to prevent context overflow
+    MAX_CONTENT_LENGTH = 80000  # ~20k tokens, leave room for prompt + metadata + response
+    if len(formatted_outputs_str) > MAX_CONTENT_LENGTH:
+        logger.warning(f"[SUMMARIZE_RESULTS] Truncating formatted outputs from {len(formatted_outputs_str)} to {MAX_CONTENT_LENGTH} chars")
+        formatted_outputs_str = formatted_outputs_str[:MAX_CONTENT_LENGTH]
+        formatted_outputs_str += "\n\n... (content truncated due to length limits) ..."
     
     # Build search summary for LLM context
     search_summary_parts = []
@@ -222,23 +293,161 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Get system prompt for summarize task
     system_msg = get_system_prompt('summarize')
     
-    # Get human message content
-    detail_level = state.get('detail_level', 'concise')
-    logger.info(f"[SUMMARIZE_RESULTS] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
-    human_content = get_summary_human_content(
+    # ============================================================
+    # PHASE 1: CITATION EXTRACTION (MANDATORY TOOL CALLS)
+    # ============================================================
+    logger.info("[SUMMARIZE_RESULTS] Phase 1: Starting citation extraction with block IDs")
+    
+    citation_llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    ).bind_tools(
+        [citation_tool],
+        tool_choice="required"  # Force tool calls
+    )
+    
+    citation_prompt = get_citation_extraction_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
         search_summary=search_summary,
         formatted_outputs=formatted_outputs_str,
-        detail_level=detail_level
+        metadata_lookup_tables=metadata_lookup_tables
     )
     
     try:
-        # Use LangGraph message format
-        messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
-        summary = response.content.strip()
-        logger.info("[SUMMARIZE_RESULTS] Generated final summary")
+        # Phase 1: Extract citations with mandatory tool calls
+        citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
+        citation_response = await citation_llm.ainvoke(citation_messages)
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Response received, checking for tool calls...")
+        
+        # #region agent log
+        # Debug: Log Phase 1 response for Hypothesis B
+        try:
+            has_tool_calls = hasattr(citation_response, 'tool_calls') and citation_response.tool_calls
+            tool_calls_count = len(citation_response.tool_calls) if has_tool_calls else 0
+            finish_reason = citation_response.response_metadata.get('finish_reason') if hasattr(citation_response, 'response_metadata') else 'unknown'
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B',
+                    'location': 'summary_nodes.py:273',
+                    'message': 'Phase 1 LLM response received',
+                    'data': {
+                        'has_tool_calls': has_tool_calls,
+                        'tool_calls_count': tool_calls_count,
+                        'finish_reason': finish_reason,
+                        'response_type': type(citation_response).__name__
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass  # Silently fail instrumentation
+        # #endregion
+        
+        # Execute tool calls from Phase 1
+        citations_extracted = 0
+        if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Executing {len(citation_response.tool_calls)} tool calls...")
+            for tool_call in citation_response.tool_calls:
+                tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
+                if tool_name == 'cite_source':
+                    tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
+                    if isinstance(tool_args, dict):
+                        try:
+                            citation_tool_instance.add_citation(
+                                cited_text=tool_args.get('cited_text', ''),
+                                block_id=tool_args.get('block_id', ''),
+                                citation_number=tool_args.get('citation_number', 0)
+                            )
+                            citations_extracted += 1
+                            logger.info(
+                                f"[SUMMARIZE_RESULTS] Phase 1: ✅ Citation {tool_args.get('citation_number')} extracted: "
+                                f"block_id={tool_args.get('block_id')}"
+                            )
+                        except Exception as tool_error:
+                            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error executing tool call: {tool_error}", exc_info=True)
+        else:
+            logger.warning("[SUMMARIZE_RESULTS] Phase 1: No tool calls found in response")
+        
+        # Get extracted citations
+        citations_from_state = citation_tool_instance.citations
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Extracted {len(citations_from_state)} citations")
+        
+        # #region agent log
+        # Debug: Log citations extracted for Hypothesis B and D
+        try:
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                citations_sample = []
+                for cit in citations_from_state[:3]:  # Sample first 3
+                    citations_sample.append({
+                        'citation_number': cit.get('citation_number'),
+                        'block_id': cit.get('block_id', '')[:20] if cit.get('block_id') else 'none',
+                        'has_bbox': bool(cit.get('bbox')),
+                        'doc_id': cit.get('doc_id', '')[:8] if cit.get('doc_id') else 'none'
+                    })
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B,D',
+                    'location': 'summary_nodes.py:303',
+                    'message': 'Citations extracted from Phase 1',
+                    'data': {
+                        'citations_count': len(citations_from_state),
+                        'citations_sample': citations_sample
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass  # Silently fail instrumentation
+        # #endregion
+        
+        # ============================================================
+        # PHASE 2: GENERATE FINAL ANSWER WITH CITATIONS
+        # ============================================================
+        logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating final answer with citations")
+        
+        final_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
+        # No tool binding needed - citations already collected
+        
+        final_prompt = get_final_answer_prompt(
+            user_query=state['user_query'],
+            conversation_history=history_context,
+            formatted_outputs=formatted_outputs_str,
+            citations=citations_from_state
+        )
+        
+        final_messages = [system_msg, HumanMessage(content=final_prompt)]
+        final_response = await final_llm.ainvoke(final_messages)
+        
+        # Extract summary from Phase 2
+        summary = ''
+        if hasattr(final_response, 'content'):
+            summary = str(final_response.content).strip() if final_response.content else ''
+        elif isinstance(final_response, str):
+            summary = final_response.strip()
+        
+        # Clean up any unwanted text
+        import re
+        summary = re.sub(
+            r'(?i)(I will now proceed.*?\.|I will call.*?\.|Now calling.*?\.)',
+            '',
+            summary
+        )
+        summary = summary.strip()
+        
+        logger.info(
+            f"[SUMMARIZE_RESULTS] Phase 2: Generated final summary ({len(summary)} chars, "
+            f"{len(citations_from_state)} citations available)"
+        )
         
         # Add current exchange to conversation history
         # Include timestamp for checkpoint persistence (as per LangGraph documentation)
@@ -249,10 +458,39 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             "document_ids": [output['doc_id'] for output in doc_outputs[:10]]  # Track which docs were used
         }
         
-        return {
+        # Preserve document_outputs and relevant_documents in state (LangGraph merges, but be explicit)
+        state_update = {
             "final_summary": summary,
-            "conversation_history": [conversation_entry]  # operator.add will append to existing history
+            "citations": citations_from_state,  # NEW: Citations stored in state (with bbox coordinates)
+            "conversation_history": [conversation_entry],  # operator.add will append to existing history
+            # Preserve existing state fields (LangGraph merges by default, but ensure they're not lost)
+            "document_outputs": doc_outputs,  # Preserve document outputs for views.py
+            "relevant_documents": state.get('relevant_documents', [])  # Preserve relevant docs
         }
+        
+        # #region agent log
+        # Debug: Log state update for Hypothesis D
+        try:
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'D',
+                    'location': 'summary_nodes.py:361',
+                    'message': 'State update with citations',
+                    'data': {
+                        'citations_count': len(citations_from_state),
+                        'citations_in_state_update': 'citations' in state_update,
+                        'summary_length': len(summary)
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass  # Silently fail instrumentation
+        # #endregion
+        
+        return state_update
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("[SUMMARIZE_RESULTS] Error creating summary: %s", exc, exc_info=True)
         fallback = ["Summary based on retrieved documents:"]

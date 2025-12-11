@@ -29,6 +29,29 @@ def _build_processing_result(output_state, source_chunks_metadata=None) -> Docum
     # NEW: Store source chunks metadata with bbox for citation/highlighting
     if source_chunks_metadata:
         result['source_chunks_metadata'] = source_chunks_metadata
+        # #region agent log
+        # Debug: Log blocks preservation for Hypothesis A
+        try:
+            chunks_with_blocks = sum(1 for chunk in source_chunks_metadata if chunk.get('blocks') and isinstance(chunk.get('blocks'), list) and len(chunk.get('blocks')) > 0)
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'processing_nodes.py:31',
+                    'message': 'Preserving source_chunks_metadata with blocks',
+                    'data': {
+                        'doc_id': result.get('doc_id', '')[:8] if result.get('doc_id') else 'unknown',
+                        'has_source_chunks_metadata': bool(source_chunks_metadata),
+                        'chunks_count': len(source_chunks_metadata) if source_chunks_metadata else 0,
+                        'chunks_with_blocks': chunks_with_blocks
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass  # Silently fail instrumentation
+        # #endregion
     
     return result
 
@@ -61,6 +84,66 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             detail_level
         )
         relevant_docs = relevant_docs[:max_docs_to_process]
+
+    # NEW: Create source_chunks_metadata for individual chunks when clarify_relevant_docs was skipped
+    # This ensures BBOX highlighting works without affecting LLM response quality (chunks remain individual)
+    if relevant_docs and len(relevant_docs) > 0:
+        first_doc = relevant_docs[0]
+        is_individual_chunks = 'chunk_index' in first_doc
+        
+        if is_individual_chunks:
+            # Import helper function
+            from backend.llm.nodes.retrieval_nodes import create_source_chunks_metadata_for_single_chunk
+            
+            # Count chunks needing metadata
+            chunks_needing_metadata = [chunk for chunk in relevant_docs if not chunk.get('source_chunks_metadata')]
+            
+            if chunks_needing_metadata:
+                logger.info(
+                    "[PROCESS_DOCUMENTS] Creating source_chunks_metadata for %d individual chunks (out of %d total)",
+                    len(chunks_needing_metadata),
+                    len(relevant_docs)
+                )
+                
+                # Process each chunk that needs metadata
+                for chunk in chunks_needing_metadata:
+                    doc_id = chunk.get('doc_id') or chunk.get('document_id')
+                    if not doc_id:
+                        logger.warning(
+                            "[PROCESS_DOCUMENTS] Chunk %s missing doc_id, skipping metadata creation",
+                            chunk.get('chunk_index', 'unknown')
+                        )
+                        # Set empty metadata to avoid retrying
+                        chunk['source_chunks_metadata'] = []
+                        continue
+                    
+                    try:
+                        # Create metadata for this chunk
+                        chunk_metadata = await create_source_chunks_metadata_for_single_chunk(chunk, doc_id)
+                        
+                        # Attach as list (format expected by format_document_with_block_ids)
+                        chunk['source_chunks_metadata'] = [chunk_metadata]
+                        
+                        blocks_count = len(chunk_metadata.get('blocks', [])) if chunk_metadata.get('blocks') else 0
+                        logger.debug(
+                            "[PROCESS_DOCUMENTS] Created metadata for chunk %d (doc %s, %d blocks)",
+                            chunk.get('chunk_index', 0),
+                            doc_id[:8],
+                            blocks_count
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[PROCESS_DOCUMENTS] Failed to create metadata for chunk %s: %s",
+                            chunk.get('chunk_index', 'unknown'),
+                            e
+                        )
+                        # Continue without metadata (will use fallback bbox)
+                        chunk['source_chunks_metadata'] = []
+            else:
+                logger.debug(
+                    "[PROCESS_DOCUMENTS] All %d chunks already have source_chunks_metadata",
+                    len(relevant_docs)
+                )
 
     # Fast path for frontend plumbing / smoke tests
     if config.simple_mode:
@@ -103,6 +186,32 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
     async def process_one(doc) -> DocumentProcessingResult:
         doc_content = doc.get("content", "").strip()
         
+        # #region agent log
+        # Debug: Log source_chunks_metadata in doc before processing for Hypothesis A
+        try:
+            source_chunks_metadata_in_doc = doc.get('source_chunks_metadata')
+            has_source_chunks_metadata = 'source_chunks_metadata' in doc
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'processing_nodes.py:126',
+                    'message': 'source_chunks_metadata in doc before processing',
+                    'data': {
+                        'doc_id': doc.get('doc_id', '')[:8] if doc.get('doc_id') else 'unknown',
+                        'has_source_chunks_metadata': has_source_chunks_metadata,
+                        'source_chunks_metadata_type': type(source_chunks_metadata_in_doc).__name__ if source_chunks_metadata_in_doc else 'None',
+                        'source_chunks_metadata_length': len(source_chunks_metadata_in_doc) if isinstance(source_chunks_metadata_in_doc, list) else 0,
+                        'doc_keys': list(doc.keys())[:15]
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass
+        # #endregion
+        
         # Log content length for debugging
         if not doc_content or len(doc_content) < 50:
             logger.warning(
@@ -128,6 +237,32 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             source_chunks_metadata = doc.get('source_chunks_metadata')
             
             result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
+            
+            # #region agent log
+            # Debug: Log source_chunks_metadata after _build_processing_result for Hypothesis A
+            try:
+                result_has_source_chunks_metadata = 'source_chunks_metadata' in result
+                result_source_chunks_metadata_length = len(result.get('source_chunks_metadata', [])) if isinstance(result.get('source_chunks_metadata'), list) else 0
+                import json
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'processing_nodes.py:153',
+                        'message': 'source_chunks_metadata after _build_processing_result',
+                        'data': {
+                            'doc_id': doc.get('doc_id', '')[:8] if doc.get('doc_id') else 'unknown',
+                            'result_has_source_chunks_metadata': result_has_source_chunks_metadata,
+                            'result_source_chunks_metadata_length': result_source_chunks_metadata_length,
+                            'input_source_chunks_metadata_length': len(source_chunks_metadata) if isinstance(source_chunks_metadata, list) else 0,
+                            'result_keys': list(result.keys())[:15]
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except Exception:
+                pass
+            # #endregion
             
             # Add metadata from original doc (page numbers, classification, filename, address)
             # Ensure doc_id comes from original doc (subgraph may not preserve it)

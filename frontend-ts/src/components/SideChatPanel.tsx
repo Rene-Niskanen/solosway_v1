@@ -9,7 +9,7 @@ import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
-import { usePreview } from '../contexts/PreviewContext';
+import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
@@ -445,7 +445,10 @@ const renderTextWithCitations = (
       const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
       placeholderIndex++;
+      console.log(`🔗 [CITATION] Matched superscript ${match} (${numStr}) with citation data:`, citData);
       return placeholder;
+    } else {
+      console.log(`⚠️ [CITATION] Superscript ${match} (${numStr}) found in text but no citation data available. Available keys:`, Object.keys(citations));
     }
     return match; // Keep original if no citation found
   });
@@ -1528,7 +1531,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 
                 // Use citations from complete event, fallback to accumulated citations
-                const finalCitations = data.citations || accumulatedCitations || {};
+                // Ensure all citation keys are strings (backend may send mixed types)
+                const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
+                  if (!cits || typeof cits !== 'object') return {};
+                  const normalized: Record<string, CitationDataType> = {};
+                  for (const [key, value] of Object.entries(cits)) {
+                    normalized[String(key)] = value as CitationDataType;
+                  }
+                  return normalized;
+                };
+                
+                const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                
+                console.log('📚 [CITATIONS] Final citations for message:', {
+                  fromComplete: !!data.citations,
+                  fromAccumulated: Object.keys(accumulatedCitations).length,
+                  finalCount: Object.keys(finalCitations).length,
+                  finalKeys: Object.keys(finalCitations),
+                  sampleCitation: finalCitations[Object.keys(finalCitations)[0]]
+                });
                 
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -1538,7 +1559,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   text: finalText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: finalCitations // Use final citations
+                    citations: finalCitations // Use final citations (normalized to string keys)
                 };
                 
                   const updated = prev.map(msg => 
@@ -1639,16 +1660,111 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
               },
               // onCitation: Handle citation events during streaming
-              (citation: { citation_number: string; data: any }) => {
+              (citation: { citation_number: string | number; data: any }) => {
                 console.log('📚 SideChatPanel: Received citation:', citation);
+                console.log('📚 SideChatPanel: Citation data structure:', {
+                  hasDocId: !!citation.data.doc_id,
+                  hasPage: !!citation.data.page,
+                  hasPageNumber: !!citation.data.page_number,
+                  hasBbox: !!citation.data.bbox,
+                  bboxType: typeof citation.data.bbox,
+                  bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : [],
+                  bboxValue: citation.data.bbox
+                });
+                
+                // #region agent log
+                // Debug: Log citation reception for Hypothesis E and F
+                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    sessionId: 'debug-session',
+                    runId: 'run1',
+                    hypothesisId: 'E,F',
+                    location: 'SideChatPanel.tsx:1642',
+                    message: 'Citation event received',
+                    data: {
+                      citation_number: citation.citation_number,
+                      hasDocId: !!citation.data.doc_id,
+                      hasPage: !!citation.data.page,
+                      hasBbox: !!citation.data.bbox,
+                      bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : []
+                    },
+                    timestamp: Date.now()
+                  })
+                }).catch(() => {});
+                // #endregion
+                
+                // Convert citation_number to string (backend may send as int)
+                const citationNumStr = String(citation.citation_number);
                 
                 // Accumulate citation with all fields from backend
-                accumulatedCitations[citation.citation_number] = {
+                // CRITICAL: Ensure bbox structure matches CitationDataType interface
+                const citationBbox = citation.data.bbox;
+                let normalizedBbox: { left: number; top: number; width: number; height: number; page?: number } | null = null;
+                
+                if (citationBbox && typeof citationBbox === 'object') {
+                  // Validate bbox has required fields
+                  if (typeof citationBbox.left === 'number' && 
+                      typeof citationBbox.top === 'number' && 
+                      typeof citationBbox.width === 'number' && 
+                      typeof citationBbox.height === 'number') {
+                    normalizedBbox = {
+                      left: citationBbox.left,
+                      top: citationBbox.top,
+                      width: citationBbox.width,
+                      height: citationBbox.height,
+                      page: citationBbox.page ?? citation.data.page ?? citation.data.page_number
+                    };
+                  } else {
+                    console.warn('⚠️ [CITATION] Invalid bbox structure in citation data:', citationBbox);
+                  }
+                }
+                
+                // Ensure bbox always has required fields (even if invalid)
+                const finalBbox = normalizedBbox || { 
+                  left: 0, 
+                  top: 0, 
+                  width: 0, 
+                  height: 0 
+                };
+                
+                accumulatedCitations[citationNumStr] = {
                   doc_id: citation.data.doc_id,
                   page: citation.data.page || citation.data.page_number || 0,
-                  bbox: citation.data.bbox || {},
+                  bbox: finalBbox, // Use normalized bbox or default empty bbox
                   method: citation.data.method // Include method field
                 };
+                
+                console.log('📚 SideChatPanel: Normalized citation stored:', {
+                  citationNumber: citationNumStr,
+                  docId: citation.data.doc_id,
+                  page: accumulatedCitations[citationNumStr].page,
+                  bbox: normalizedBbox,
+                  bboxValid: normalizedBbox && typeof normalizedBbox.left === 'number'
+                });
+                
+                // #region agent log
+                // Debug: Log citation accumulation for Hypothesis F
+                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    sessionId: 'debug-session',
+                    runId: 'run1',
+                    hypothesisId: 'F',
+                    location: 'SideChatPanel.tsx:1700',
+                    message: 'Citation accumulated',
+                    data: {
+                      citation_number: citationNumStr,
+                      doc_id: citation.data.doc_id,
+                      has_bbox: !!normalizedBbox,
+                      bbox_valid: normalizedBbox && typeof normalizedBbox.left === 'number'
+                    },
+                    timestamp: Date.now()
+                  })
+                }).catch(() => {});
+                // #endregion
                 
                 // Update message with citations in real-time
                 setChatMessages(prev => {
@@ -1786,11 +1902,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           return false;
         }
         
-        // Check if bbox is too large (likely wrong selection)
+        // Check if bbox is invalid fallback (covers entire page or is at origin with full size)
         const area = width * height;
-        if (area > 0.5) {  // More than 50% of page
-          console.warn('⚠️ [CITATION] Bbox area too large (likely wrong selection):', { area, bbox });
-          // Don't reject, but log warning
+        const isFallbackBbox = (
+          (left === 0 && top === 0 && width === 1 && height === 1) ||  // Full page fallback
+          area > 0.9  // More than 90% of page (likely fallback)
+        );
+        
+        if (isFallbackBbox) {
+          console.warn('⚠️ [CITATION] Rejecting fallback bbox (covers entire page):', { area, bbox });
+          return false;  // Reject invalid fallback bboxes
+        }
+        
+        // Warn if bbox is large but not full page
+        if (area > 0.5) {
+          console.warn('⚠️ [CITATION] Bbox area large (may be imprecise):', { area, bbox });
         }
         
         return true;
@@ -1798,7 +1924,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
       // Use new minimal citation structure: citationData.bbox and citationData.page
       // Fallback to legacy fields for backward compatibility
-      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
+      let highlightData: CitationHighlight | undefined;
 
       // Priority: Use new structure (citationData.bbox) > legacy structure (source_chunks_metadata)
       if (citationData.bbox && 
@@ -1816,7 +1942,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
           
           highlightData = {
-            fileId: docId,
+            fileId: docId, // CRITICAL: Must match fileData.id below
             bbox: {
               left: citationData.bbox.left,
               top: citationData.bbox.top,
@@ -1827,8 +1953,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           };
 
           console.log('🎯 [CITATION] Using new minimal citation structure', {
+            fileId: docId,
             page: highlightPage,
-            bbox: citationData.bbox
+            bbox: citationData.bbox,
+            fileDataId: fileData.id // Verify they match
           });
         }
       }
@@ -1864,7 +1992,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
             
             highlightData = {
-              fileId: docId,
+              fileId: docId, // CRITICAL: Must match fileData.id below
               bbox: {
                 left: highlightChunk.bbox.left,
                 top: highlightChunk.bbox.top,
@@ -1875,9 +2003,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             };
 
             console.log('🎯 [CITATION] Using legacy citation structure', {
+              fileId: docId,
               reason: highlightSource?.reason,
               page: highlightPage,
-              bbox: highlightChunk.bbox
+              bbox: highlightChunk.bbox,
+              fileDataId: fileData.id // Verify they match
             });
           }
         } else {
@@ -1885,12 +2015,49 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }
 
-      console.log('📚 [CITATION] Highlight payload prepared for preview:', highlightData);
+      console.log('📚 [CITATION] Highlight payload prepared for preview:', {
+        highlightData,
+        fileDataId: fileData.id,
+        highlightFileId: highlightData?.fileId,
+        fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
+      });
+      
+      // #region agent log
+      // Debug: Log citation click for Hypothesis F
+      fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'debug-session',
+          runId: 'run1',
+          hypothesisId: 'F',
+          location: 'SideChatPanel.tsx:2005',
+          message: 'Citation clicked - highlight prepared',
+          data: {
+            hasHighlightData: !!highlightData,
+            fileDataId: fileData.id,
+            highlightFileId: highlightData?.fileId,
+            fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : false,
+            hasBbox: !!highlightData?.bbox,
+            bboxPage: highlightData?.bbox?.page
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion
 
       // Open document in preview modal with highlight
+      // CRITICAL: fileData.id must match highlightData.fileId for highlighting to work
       addPreviewFile(fileData, highlightData);
       
-      console.log('✅ Document opened in viewer:', citationData.original_filename, highlightData ? 'with highlight' : 'without highlight');
+      console.log('✅ Document opened in viewer:', {
+        filename: citationData.original_filename,
+        docId: docId,
+        fileId: fileData.id,
+        hasHighlight: !!highlightData,
+        highlightPage: highlightData?.bbox?.page,
+        highlightBbox: highlightData?.bbox
+      });
     } catch (error: any) {
       console.error('❌ Error opening citation document:', error);
       toast({
@@ -2952,37 +3119,106 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
               style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}
             >
-              <ReactMarkdown components={{
-                p: ({ children }) => {
-                  // Process children to find and replace citation patterns [1], [2], etc.
-                  const processedChildren = React.Children.map(children, child => {
-                    if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
-                    }
-                    return child;
-                  });
-                  return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
-                },
-                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
-                h2: () => null, h3: () => null,
-                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
-                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
-                li: ({ children }) => {
-                  // Also process citations in list items
-                  const processedChildren = React.Children.map(children, child => {
-                    if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
-                    }
-                    return child;
-                  });
-                  return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
-                },
-                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-              }}>{message.text}</ReactMarkdown>
+              <ReactMarkdown 
+                components={{
+                  p: ({ children }) => {
+                    // Recursively process all text nodes to find citations
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          // Recursively process nested children
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    const processedChildren = processChildren(children);
+                    return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
+                  },
+                  h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                  h2: () => null, h3: () => null,
+                  ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+                  ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+                  li: ({ children }) => {
+                    // Recursively process all text nodes to find citations
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    const processedChildren = processChildren(children);
+                    return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
+                  },
+                  strong: ({ children }) => {
+                    // Recursively process citations in strong elements
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
+                  },
+                  em: ({ children }) => {
+                    // Recursively process citations in em elements
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
+                  },
+                  code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                  blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                  hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                }}
+              >
+                {message.text}
+              </ReactMarkdown>
             </motion.div>
           )}
         </div>

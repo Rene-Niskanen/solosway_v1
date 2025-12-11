@@ -21,6 +21,18 @@ class RetrievedDocument(TypedDict):
     business_id: Optional[str]
     original_filename: Optional[str]  # NEW: Document filename
     property_address: Optional[str]  # NEW: Property address
+    blocks: Optional[list[dict]]  # NEW: Block-level metadata for citation mapping
+
+class Citation(TypedDict):
+    """Citation stored in graph state with bbox coordinates"""
+    citation_number: int
+    block_id: str
+    cited_text: str
+    bbox: Optional[dict]  # {'left': float, 'top': float, 'width': float, 'height': float, 'page': int}
+    page_number: int
+    doc_id: str
+    confidence: Optional[str]  # 'high', 'medium', 'low'
+    method: str  # 'block-id-lookup'
 
 class DocumentProcessingResult(TypedDict, total=False):
     """Result from processing a single document with LLM"""
@@ -53,6 +65,7 @@ class MainWorkflowState(TypedDict, total=False):
     session_id: str  # New: unique chat session identifier
     document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
     detail_level: Optional[str]  # NEW: "concise" (default) or "detailed" - controls number of chunks/docs processed
+    citations: Annotated[list[Citation], operator.add]  # NEW: Accumulate citations in graph state (with bbox coordinates)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

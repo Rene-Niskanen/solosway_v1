@@ -1431,7 +1431,7 @@ This information has been verified and extracted from the property database, inc
                                     .select('chunk_text, chunk_index, page_number')\
                                     .eq('document_id', doc['id'])\
                                     .order('chunk_index')\
-                                    .limit(20)\
+                                    .limit(50)\
                                     .execute()
                                 
                                 chunk_texts = [c.get('chunk_text', '').strip() for c in chunks_result.data if c.get('chunk_text', '').strip() and len(c.get('chunk_text', '').strip()) > 10]
@@ -1698,8 +1698,12 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
         # Sort chunks by chunk_index for proper ordering
         group['chunks'].sort(key=lambda x: x['chunk_index'])
         
-        # Merge chunk content (keep top 7 most relevant chunks for better context with 1200-char chunks)
-        top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:7]
+        # Merge chunk content (keep top chunks for better context with 1200-char chunks)
+        # For valuation queries, keep more chunks to ensure valuation pages are included
+        user_query = state.get('user_query', '').lower()
+        is_valuation_query = any(term in user_query for term in ['valuation', 'value', 'price', 'worth', 'cost'])
+        top_n_chunks = 15 if is_valuation_query else 7  # Keep more chunks for valuation queries
+        top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
         merged_content = "\n\n".join([chunk['content'] for chunk in top_chunks])
         
         # Extract page numbers from top chunks (filter out 0 and None)
@@ -1880,4 +1884,105 @@ def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> M
     return {"relevant_documents": reordered}
 
 
+async def create_source_chunks_metadata_for_single_chunk(chunk: Dict[str, Any], doc_id: str) -> Dict[str, Any]:
+    """
+    Create source_chunks_metadata for a single chunk by fetching blocks from database.
+    
+    This function is used when clarify_relevant_docs is skipped and individual chunks
+    need metadata for citation/BBOX functionality.
+    
+    Args:
+        chunk: Chunk dictionary with chunk_index, page_number, content, etc.
+        doc_id: Document ID to fetch blocks from
+        
+    Returns:
+        Dictionary with metadata structure:
+        {
+            'content': str,
+            'chunk_index': int,
+            'page_number': int,
+            'bbox': dict,
+            'blocks': list[dict],
+            'vector_id': str,
+            'similarity': float,
+            'doc_id': str
+        }
+    """
+    from backend.services.supabase_client_factory import get_supabase_client
+    
+    chunk_index = chunk.get('chunk_index', 0)
+    page_number = chunk.get('page_number', 0)
+    content = chunk.get('content', '')
+    similarity_value = chunk.get('similarity') or chunk.get('similarity_score', 0.0)
+    vector_id = chunk.get('vector_id', '')
+    bbox = chunk.get('bbox')
+    
+    # Try to get blocks from chunk first (if already present)
+    blocks = chunk.get('blocks', [])
+    
+    # If blocks not in chunk, fetch from database
+    if not blocks or not isinstance(blocks, list) or len(blocks) == 0:
+        try:
+            supabase = get_supabase_client()
+            
+            # Fetch document to get document_summary with reducto_chunks
+            doc_result = supabase.table('documents')\
+                .select('id, document_summary')\
+                .eq('id', doc_id)\
+                .single()\
+                .execute()
+            
+            if doc_result.data:
+                import json
+                document_summary = doc_result.data.get('document_summary')
+                
+                # Parse document_summary if it's a string
+                if isinstance(document_summary, str):
+                    try:
+                        document_summary = json.loads(document_summary)
+                        if isinstance(document_summary, str):
+                            document_summary = json.loads(document_summary)
+                    except (json.JSONDecodeError, TypeError):
+                        document_summary = None
+                
+                # Extract blocks from reducto_chunks
+                if isinstance(document_summary, dict):
+                    reducto_chunks = document_summary.get('reducto_chunks', [])
+                    if reducto_chunks and isinstance(reducto_chunks, list):
+                        # Find chunk by chunk_index
+                        for rc in reducto_chunks:
+                            rc_index = rc.get('chunk_index')
+                            if rc_index is None:
+                                # Try to match by position if chunk_index not stored
+                                rc_index = reducto_chunks.index(rc)
+                            
+                            if rc_index == chunk_index:
+                                blocks = rc.get('blocks', [])
+                                # Also get bbox if not already set
+                                if not bbox:
+                                    bbox = rc.get('bbox')
+                                break
+            
+            logger.debug(
+                f"[CREATE_METADATA] Fetched {len(blocks) if blocks else 0} blocks for chunk {chunk_index} (doc {doc_id[:8]})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"[CREATE_METADATA] Failed to fetch blocks for chunk {chunk_index} (doc {doc_id[:8]}): {e}"
+            )
+            blocks = []
+    
+    # Create metadata structure
+    metadata = {
+        'content': content,
+        'chunk_index': chunk_index,
+        'page_number': page_number,
+        'bbox': bbox,
+        'blocks': blocks if blocks else [],
+        'vector_id': vector_id,
+        'similarity': similarity_value,
+        'doc_id': doc_id
+    }
+    
+    return metadata
 

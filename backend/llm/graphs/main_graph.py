@@ -15,11 +15,13 @@ logger = logging.getLogger(__name__)
 try:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
     from psycopg_pool import AsyncConnectionPool  # type: ignore
+    from psycopg import AsyncConnection  # type: ignore
     CHECKPOINTER_AVAILABLE = True
 except ImportError:
     CHECKPOINTER_AVAILABLE = False
     AsyncPostgresSaver = None  # Placeholder to avoid NameError
     AsyncConnectionPool = None
+    AsyncConnection = None
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
@@ -76,13 +78,14 @@ async def create_checkpointer_for_current_loop():
             elif 'connect_timeout' not in db_url:
                 conn_params = f"{db_url}&connect_timeout=5"
             
-            # Import psycopg to create connection factory
-            from psycopg import AsyncConnection
-            
             # Create a connection factory that sets prepare_threshold=0 on each connection
+            # AsyncConnection is imported at the top of the file (conditional import)
+            if AsyncConnection is None:
+                raise ImportError("psycopg.AsyncConnection not available")
+            
             async def connection_factory(conninfo):
                 """Factory that creates connections with prepare_threshold=0"""
-                conn = await AsyncConnection.connect(conninfo)
+                conn = await AsyncConnection.connect(conninfo)  # type: ignore
                 conn.prepare_threshold = 0
                 return conn
             

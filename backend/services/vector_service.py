@@ -1093,6 +1093,104 @@ class SupabaseVectorService:
                 # Log bbox extraction for debugging (only in verbose mode)
                 # Removed verbose bbox logging to reduce terminal noise
                 
+                # Clean and prepare blocks for storage (JSONB array)
+                # Each block contains: type, content, bbox, confidence, logprobs_confidence, image_url
+                # Phase 6: Verify block storage structure - ensure blocks have required fields
+                blocks_for_storage = []
+                blocks_validated = 0
+                blocks_invalid = 0
+                
+                if chunk_blocks and isinstance(chunk_blocks, list):
+                    for block_idx, block in enumerate(chunk_blocks):
+                        if isinstance(block, dict):
+                            # Phase 6: Validate block structure - must have content for citation matching
+                            block_content = block.get('content')
+                            block_bbox = block.get('bbox')
+                            
+                            # Validation: Block must have content (required for citation matching)
+                            if not block_content or not isinstance(block_content, str) or not block_content.strip():
+                                blocks_invalid += 1
+                                logger.warning(
+                                    f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} missing or empty content. "
+                                    f"Block will be skipped (required for citation matching)."
+                                )
+                                continue
+                            
+                            # Validation: Block should have bbox (warn if missing, but allow)
+                            if not block_bbox or not isinstance(block_bbox, dict):
+                                logger.warning(
+                                    f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} missing bbox. "
+                                    f"Block will be stored but cannot be used for precise citations."
+                                )
+                            
+                            # Clean block bbox (similar to chunk bbox)
+                            block_bbox_clean = None
+                            if block_bbox and isinstance(block_bbox, dict):
+                                block_bbox_raw = block_bbox
+                                block_bbox_clean = {
+                                    'left': block_bbox_raw.get('left'),
+                                    'top': block_bbox_raw.get('top'),
+                                    'width': block_bbox_raw.get('width'),
+                                    'height': block_bbox_raw.get('height'),
+                                    'page': block_bbox_raw.get('page'),
+                                    'original_page': block_bbox_raw.get('original_page')
+                                }
+                                # Remove None values
+                                block_bbox_clean = {k: v for k, v in block_bbox_clean.items() if v is not None}
+                                
+                                # Validation: Verify bbox has required coordinates
+                                if block_bbox_clean:
+                                    required_bbox_fields = ['left', 'top', 'width', 'height']
+                                    missing_fields = [f for f in required_bbox_fields if f not in block_bbox_clean]
+                                    if missing_fields:
+                                        logger.warning(
+                                            f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} bbox missing fields: {missing_fields}. "
+                                            f"Bbox may be incomplete."
+                                        )
+                                    
+                                    # Validation: Verify bbox values are in valid range (0-1 for normalized coordinates)
+                                    for field in ['left', 'top', 'width', 'height']:
+                                        if field in block_bbox_clean:
+                                            value = block_bbox_clean[field]
+                                            if not isinstance(value, (int, float)) or value < 0 or value > 1:
+                                                logger.warning(
+                                                    f"⚠️ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} bbox.{field} "
+                                                    f"has invalid value: {value} (expected 0-1 for normalized coordinates)"
+                                                )
+                                
+                                if not block_bbox_clean:
+                                    block_bbox_clean = None
+                            
+                            # Build clean block metadata
+                            clean_block = {
+                                'type': block.get('type'),
+                                'content': block_content.strip(),  # Ensure content is trimmed
+                                'bbox': block_bbox_clean,
+                                'confidence': block.get('confidence'),
+                                'logprobs_confidence': block.get('logprobs_confidence'),
+                                'image_url': block.get('image_url')
+                            }
+                            # Remove None values (except bbox which can be None)
+                            clean_block = {k: v for k, v in clean_block.items() if v is not None or k == 'bbox'}
+                            
+                            # Phase 6: Final validation - ensure content is present (critical for citation matching)
+                            if clean_block.get('content'):
+                                blocks_for_storage.append(clean_block)
+                                blocks_validated += 1
+                            else:
+                                blocks_invalid += 1
+                                logger.error(
+                                    f"❌ [BLOCK_VALIDATION] Block {block_idx} in chunk {i} failed final validation: "
+                                    f"content missing after cleaning. Block will not be stored."
+                                )
+                
+                # Log block validation statistics
+                if blocks_validated > 0 or blocks_invalid > 0:
+                    logger.info(
+                        f"📊 [BLOCK_VALIDATION] Chunk {i}: {blocks_validated} blocks validated, "
+                        f"{blocks_invalid} blocks invalid (skipped)"
+                    )
+                
                 record = {
                     'id': str(uuid.uuid4()),
                     'document_id': document_id,
@@ -1107,7 +1205,8 @@ class SupabaseVectorService:
                     'business_id': business_uuid,
                     'page_number': chunk_page,  # Prefer original_page per Reducto recommendation
                     'bbox': bbox_for_storage,  # ✅ FIXED: Store as JSONB dict (not JSON string)
-                    'block_count': len(chunk_blocks),
+                    'blocks': blocks_for_storage if blocks_for_storage else None,  # ✅ CRITICAL: Store validated blocks array for citation mapping
+                    'block_count': len(blocks_for_storage),
                     'embedding_status': embedding_status,  # NEW: Track embedding status
                     'embedding_queued_at': embedding_queued_at,  # NEW: When embedding was queued
                     'embedding_completed_at': embedding_completed_at,  # NEW: When embedding completed

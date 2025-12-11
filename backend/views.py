@@ -281,7 +281,7 @@ def query_documents_stream():
     try:
         logger.info("🔵 [STREAM] Starting request processing")
         from flask import Response, stream_with_context
-        import json
+        # json is already imported at module level (line 23)
         import asyncio
         import time
         from langchain_openai import ChatOpenAI
@@ -766,6 +766,28 @@ def query_documents_stream():
                                         # Extract citations from state (already have bbox coordinates from CitationTool)
                                         citations_from_state = state_data.get('citations', [])
                                         
+                                        # #region agent log
+                                        # Debug: Log citations extraction for Hypothesis E
+                                        try:
+                                            # json is already imported at module level
+                                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    'sessionId': 'debug-session',
+                                                    'runId': 'run1',
+                                                    'hypothesisId': 'E',
+                                                    'location': 'views.py:767',
+                                                    'message': 'Citations extracted from state',
+                                                    'data': {
+                                                        'citations_count': len(citations_from_state) if citations_from_state else 0,
+                                                        'has_citations': bool(citations_from_state),
+                                                        'state_has_citations_key': 'citations' in state_data
+                                                    },
+                                                    'timestamp': int(__import__('time').time() * 1000)
+                                                }) + '\n')
+                                        except Exception:
+                                            pass  # Silently fail instrumentation
+                                        # #endregion
+                                        
                                         if citations_from_state:
                                             logger.info(
                                                 f"🟢 [CITATION_STREAM] Processing {len(citations_from_state)} citations "
@@ -781,12 +803,82 @@ def query_documents_stream():
                                                     citation_num_str = str(citation['citation_number'])
                                                     
                                                     # Format citation data for frontend
+                                                    # CRITICAL: Ensure bbox is included and properly structured
+                                                    citation_bbox = citation.get('bbox')
+                                                    citation_page = citation.get('page_number') or (citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None) or 0
+                                                    
+                                                    # #region agent log
+                                                    # Debug: Log citation data before streaming for Hypothesis E
+                                                    try:
+                                                        is_fallback_bbox = (
+                                                            citation_bbox and isinstance(citation_bbox, dict) and
+                                                            citation_bbox.get('left') == 0.0 and
+                                                            citation_bbox.get('top') == 0.0 and
+                                                            citation_bbox.get('width') == 1.0 and
+                                                            citation_bbox.get('height') == 1.0
+                                                        )
+                                                        # json is already imported at module level
+                                                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                                            f.write(json.dumps({
+                                                                'sessionId': 'debug-session',
+                                                                'runId': 'run1',
+                                                                'hypothesisId': 'E',
+                                                                'location': 'views.py:810',
+                                                                'message': 'Citation data prepared for streaming',
+                                                                'data': {
+                                                                    'citation_number': citation_num_str,
+                                                                    'doc_id': citation.get('doc_id', '')[:8] if citation.get('doc_id') else 'unknown',
+                                                                    'citation_bbox': citation_bbox,
+                                                                    'citation_page': citation_page,
+                                                                    'is_fallback_bbox': is_fallback_bbox,
+                                                                    'has_bbox': bool(citation_bbox),
+                                                                    'page_from_bbox': citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None,
+                                                                    'page_from_citation': citation.get('page_number')
+                                                                },
+                                                                'timestamp': int(__import__('time').time() * 1000)
+                                                            }) + '\n')
+                                                    except Exception:
+                                                        pass
+                                                    # #endregion
+                                                    
                                                     citation_data = {
                                                         'doc_id': citation.get('doc_id'),
-                                                        'page': citation.get('page_number'),
-                                                        'bbox': citation.get('bbox'),
+                                                        'page': citation_page,
+                                                        'bbox': citation_bbox,  # Should already have bbox from CitationTool
                                                         'method': citation.get('method', 'block-id-lookup')
                                                     }
+                                                    
+                                                    logger.info(
+                                                        f"🟢 [CITATION_STREAM] Citation {citation_num_str} data: "
+                                                        f"doc_id={citation_data.get('doc_id', '')[:8]}, "
+                                                        f"page={citation_data.get('page')}, "
+                                                        f"has_bbox={bool(citation_bbox)}, "
+                                                        f"bbox_keys={list(citation_bbox.keys()) if citation_bbox and isinstance(citation_bbox, dict) else 'none'}"
+                                                    )
+                                                    
+                                                    # #region agent log
+                                                    # Debug: Log citation event for Hypothesis E
+                                                    try:
+                                                        # json is already imported at module level
+                                                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                                            f.write(json.dumps({
+                                                                'sessionId': 'debug-session',
+                                                                'runId': 'run1',
+                                                                'hypothesisId': 'E',
+                                                                'location': 'views.py:801',
+                                                                'message': 'Citation event prepared for streaming',
+                                                                'data': {
+                                                                    'citation_number': citation_num_str,
+                                                                    'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'none',
+                                                                    'page': citation_data.get('page'),
+                                                                    'has_bbox': bool(citation_bbox),
+                                                                    'bbox': citation_bbox if citation_bbox and isinstance(citation_bbox, dict) else None
+                                                                },
+                                                                'timestamp': int(__import__('time').time() * 1000)
+                                                            }) + '\n')
+                                                    except Exception:
+                                                        pass  # Silently fail instrumentation
+                                                    # #endregion
                                                     
                                                     processed_citations[citation_num_str] = citation_data
                                                     

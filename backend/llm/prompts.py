@@ -702,6 +702,120 @@ def get_summary_human_content(
 **Now, based on the above, provide your comprehensive answer with all relevant details found, organized clearly and professionally:**"""
 
 
+# ============================================================================
+# CITATION MAPPING PROMPTS
+# ============================================================================
+
+def get_citation_extraction_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    Prompt for Phase 1: Mandatory citation extraction.
+    LLM must call cite_source tool for every factual claim.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Metadata Look-Up Table ---\n"
+        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
+        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 500
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                if 'confidence' in bbox_data:
+                    metadata_section += f", conf={bbox_data['confidence']}"
+                metadata_section += "\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+        
+        metadata_section += f"\n(Total blocks listed: {total_blocks})\n\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### ⚠️ MANDATORY TASK: Extract Citations (REQUIRED TOOL CALLS)
+
+**YOU MUST CALL THE cite_source TOOL. THIS IS NOT OPTIONAL.**
+
+The system is configured to REQUIRE tool calls. You cannot proceed without calling cite_source for every factual claim.
+
+**WHAT IS A FACTUAL CLAIM?**
+Any specific information that answers the user's question, including:
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
+- **Dates**: When something happened, dates of reports, inspection dates
+- **Names**: Valuers, appraisers, inspectors, parties involved
+- **Addresses**: Property addresses, locations
+- **Assessments**: Professional opinions, valuations, conditions, ratings
+- **Details**: Property features, specifications, characteristics
+- **Any specific data point** that directly answers the question
+
+**WORKFLOW (FOLLOW EXACTLY):**
+1. Read through ALL document extracts carefully
+2. Identify EVERY factual claim that is relevant to the user's question
+3. For EACH factual claim, you MUST call cite_source tool with:
+   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - **citation_number**: Sequential number starting from 1 (1, 2, 3, 4, 5...)
+   - **cited_text**: The specific factual claim (the exact text or your paraphrase)
+
+**EXAMPLES:**
+
+Example 1 - Valuation:
+- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,400,000 as of 12th February 2024"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
+
+Example 2 - Names:
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 3 - Multiple Values:
+- You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
+- You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
+- You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
+
+**CRITICAL RULES:**
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...)
+3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
+4. ✅ Extract citations for ALL relevant information, not just one piece
+5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+6. ❌ Do NOT skip citations - if you see multiple values, cite each one
+7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+
+**START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
+
 
 # ============================================================================
 # RICS PROFESSIONAL STANDARDS PROMPTS
@@ -857,4 +971,198 @@ def get_sql_retriever_human_content(user_query: str) -> str:
   "date_from": "<YYYY-MM-DD or null>",
   "date_to": "<YYYY-MM-DD or null>"
 }}```"""
+
+
+# ============================================================================
+# CITATION MAPPING PROMPTS
+# ============================================================================
+
+def get_citation_extraction_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    Prompt for Phase 1: Mandatory citation extraction.
+    LLM must call cite_source tool for every factual claim.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Metadata Look-Up Table ---\n"
+        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
+        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 500
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                if 'confidence' in bbox_data:
+                    metadata_section += f", conf={bbox_data['confidence']}"
+                metadata_section += "\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+        
+        metadata_section += f"\n(Total blocks listed: {total_blocks})\n\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### ⚠️ MANDATORY TASK: Extract Citations (REQUIRED TOOL CALLS)
+
+**YOU MUST CALL THE cite_source TOOL. THIS IS NOT OPTIONAL.**
+
+The system is configured to REQUIRE tool calls. You cannot proceed without calling cite_source for every factual claim.
+
+**WHAT IS A FACTUAL CLAIM?**
+Any specific information that answers the user's question, including:
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
+- **Dates**: When something happened, dates of reports, inspection dates
+- **Names**: Valuers, appraisers, inspectors, parties involved
+- **Addresses**: Property addresses, locations
+- **Assessments**: Professional opinions, valuations, conditions, ratings
+- **Details**: Property features, specifications, characteristics
+- **Any specific data point** that directly answers the question
+
+**WORKFLOW (FOLLOW EXACTLY):**
+1. Read through ALL document extracts carefully
+2. Identify EVERY factual claim that is relevant to the user's question
+3. For EACH factual claim, you MUST call cite_source tool with:
+   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - **citation_number**: Sequential number starting from 1 (1, 2, 3, 4, 5...)
+   - **cited_text**: The specific factual claim (the exact text or your paraphrase)
+
+**EXAMPLES:**
+
+Example 1 - Valuation:
+- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,400,000 as of 12th February 2024"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
+
+Example 2 - Names:
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 3 - Multiple Values:
+- You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
+- You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
+- You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
+
+**CRITICAL RULES:**
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...)
+3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
+4. ✅ Extract citations for ALL relevant information, not just one piece
+5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+6. ❌ Do NOT skip citations - if you see multiple values, cite each one
+7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+
+**START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
+
+
+def get_final_answer_prompt(
+    user_query: str,
+    conversation_history: str,
+    formatted_outputs: str,
+    citations: list
+) -> str:
+    """
+    Prompt for Phase 2: Generate final answer using already-extracted citations.
+    """
+    # Format citations for prompt
+    citation_list = ""
+    if citations:
+        citation_list = "\n--- Extracted Citations ---\n"
+        for citation in sorted(citations, key=lambda x: x.get('citation_number', 0)):
+            cit_num = citation.get('citation_number', 0)
+            cit_text = citation.get('cited_text', '')
+            block_id = citation.get('block_id', '')
+            citation_list += f"{cit_num}. {cit_text} [Block: {block_id}]\n"
+        citation_list += "\n"
+    
+    # Check if this is a valuation query and add valuation extraction instructions
+    is_valuation_query = any(term in user_query.lower() for term in ['valuation', 'value', 'price', 'worth', 'cost'])
+    valuation_instructions = ""
+    if is_valuation_query:
+        valuation_instructions = _get_valuation_extraction_instructions(detail_level='detailed', is_valuation_query=True)
+        valuation_instructions = f"\n{valuation_instructions}\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**DOCUMENT CONTENT EXTRACTS:**  
+{formatted_outputs}
+
+{citation_list}
+{valuation_instructions}
+### TASK: Create Final Answer with Citations
+
+Create a comprehensive answer to the user's question using the document extracts above.
+
+CITATION USAGE (CRITICAL - READ CAREFULLY):
+- Citations have already been extracted (see list above)
+- You MUST use the EXACT citation numbers that were extracted
+- Format: Use individual superscript characters, NOT combined:
+  - For Citation 1 → use ¹ (single character)
+  - For Citation 2 → use ² (single character)  
+  - For Citation 3 → use ³ (single character)
+  - For Citation 4 → use ⁴ (single character)
+  - For Citation 5 → use ⁵ (single character)
+  - etc.
+- IMPORTANT: If you need to cite multiple sources for one fact, use separate superscripts with SPACES: ¹ ² ³ (three separate characters with spaces between them)
+- DO NOT use combined Unicode like ¹² or ¹²³ (which means 12 or 123) - ALWAYS use individual characters with spaces: ¹ ² ³
+- EXAMPLE: "regulated by RICS¹ ² ³" NOT "regulated by RICS¹²³"
+- Place superscripts immediately after the relevant information
+- Every factual claim MUST have a superscript matching its citation number from the list above
+
+INSTRUCTIONS:
+1. **Answer the user's question directly and comprehensively** - the information IS available in the document extracts above
+2. **CRITICAL: If citations were extracted (see list above), the information EXISTS in the documents** - you MUST use it
+3. **NEVER say "information not provided" or "not available"** if citations were extracted - the data is in the document extracts
+4. **For valuation queries, you MUST extract and include:**
+   - **Market Value** (the primary valuation figure)
+   - **All valuation scenarios** (e.g., 90-day, 180-day marketing periods)
+   - **Valuation assumptions** (basis of valuation, assumptions made)
+   - **Valuation date**
+   - **Valuer details** (name, qualifications, firm)
+   - **Any other relevant valuation information**
+5. **Extract and include ALL relevant information**: prices, valuations, amounts, dates, names, addresses, assumptions, etc.
+6. **Include superscript citations** (¹, ², ³, etc.) matching the citation numbers from the extracted citations list above
+7. **Be professional, factual, and detailed** - include all relevant figures, dates, names, and details
+8. **Do NOT repeat the question** - start directly with the answer
+9. **Look carefully in the DOCUMENT CONTENT EXTRACTS section** - search through ALL the content, not just the first few lines
+10. **If you see valuation-related terms** (Market Value, valuation, price, amount, £, assumptions, basis of valuation), extract that information
+
+Answer:"""
 
