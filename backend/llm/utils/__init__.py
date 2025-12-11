@@ -11,11 +11,15 @@ from .chunk_expansion import (
     merge_expanded_chunks
 )
 
+# Import block ID formatter
+from .block_id_formatter import format_document_with_block_ids
+
 __all__ = [
     'reciprocal_rank_fusion',
     'expand_chunk_with_adjacency',
     'batch_expand_chunks',
-    'merge_expanded_chunks'
+    'merge_expanded_chunks',
+    'format_document_with_block_ids'
 ]
 
 

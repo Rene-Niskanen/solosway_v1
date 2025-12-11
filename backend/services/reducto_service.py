@@ -11,6 +11,54 @@ from reducto import Reducto
 
 logger = logging.getLogger(__name__)
 
+def calculate_union_bbox(bbox1: dict, bbox2: dict) -> dict:
+    """
+    Calculate the union bounding box that encompasses both bboxes.
+    
+    Args:
+        bbox1: First bbox dict with left, top, width, height, page, original_page
+        bbox2: Second bbox dict with left, top, width, height, page, original_page
+        
+    Returns:
+        Union bbox dict that contains both input bboxes
+    """
+    if not bbox1:
+        return bbox2.copy() if bbox2 else None
+    if not bbox2:
+        return bbox1.copy()
+    
+    # Calculate right and bottom edges for both bboxes
+    left1 = bbox1.get('left', 0) or 0
+    top1 = bbox1.get('top', 0) or 0
+    width1 = bbox1.get('width', 0) or 0
+    height1 = bbox1.get('height', 0) or 0
+    right1 = left1 + width1
+    bottom1 = top1 + height1
+    
+    left2 = bbox2.get('left', 0) or 0
+    top2 = bbox2.get('top', 0) or 0
+    width2 = bbox2.get('width', 0) or 0
+    height2 = bbox2.get('height', 0) or 0
+    right2 = left2 + width2
+    bottom2 = top2 + height2
+    
+    # Union: min left/top, max right/bottom
+    union_left = min(left1, left2)
+    union_top = min(top1, top2)
+    union_right = max(right1, right2)
+    union_bottom = max(bottom1, bottom2)
+    
+    union_bbox = {
+        'left': union_left,
+        'top': union_top,
+        'width': union_right - union_left,
+        'height': union_bottom - union_top,
+        'page': bbox1.get('page') or bbox2.get('page'),
+        'original_page': bbox1.get('original_page') or bbox2.get('original_page')
+    }
+    
+    return union_bbox
+
 class ReductoService:
     """Service wrapper for reducto API calls"""
 
@@ -43,9 +91,34 @@ class ReductoService:
             # Convert file_path to Path object if it's a string (Reducto requires Path or file-like object)
             file_path_obj = Path(file_path) if isinstance(file_path, str) else file_path
 
-            # Upload the document first
+            # Get file size for logging
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            
+            # Log detailed upload information
             logger.info(f"📤 Uploading document to Reducto: {file_path}")
-            upload = self.client.upload(file=file_path_obj)
+            logger.info(f"   File size: {file_size_mb:.2f}MB ({file_size:,} bytes)")
+            logger.info(f"   API key present: {bool(self.api_key)}")
+            logger.info(f"   API key length: {len(self.api_key) if self.api_key else 0} chars")
+            logger.info(f"   Client timeout: {self.client.timeout if hasattr(self.client, 'timeout') else 'unknown'}s")
+            
+            # Try to get API endpoint if available
+            try:
+                api_endpoint = getattr(self.client, 'base_url', None) or getattr(self.client, '_base_url', None)
+                if api_endpoint:
+                    logger.info(f"   API endpoint: {api_endpoint}")
+            except:
+                pass
+            
+            try:
+                upload = self.client.upload(file=file_path_obj)
+                logger.info(f"✅ Upload successful")
+            except Exception as upload_error:
+                logger.error(f"❌ Upload failed: {type(upload_error).__name__}: {str(upload_error)}")
+                logger.error(f"   File path: {file_path}")
+                logger.error(f"   File exists: {os.path.exists(file_path)}")
+                logger.error(f"   File size: {file_size_mb:.2f}MB")
+                raise
             
             if use_async:
                 # Use async job-based processing (recommended for large files)
@@ -190,9 +263,13 @@ class ReductoService:
                                         'page': getattr(bbox_obj, 'page', None),
                                         'original_page': getattr(bbox_obj, 'original_page', None)
                                     }
-                                    # Use first block's bbox as chunk-level bbox (or aggregate if needed)
+                                    # Calculate chunk-level bbox as union of all blocks (for fallback)
+                                    # But prefer using individual block bboxes for citations
                                     if chunk_bbox_aggregate is None:
                                         chunk_bbox_aggregate = block_bbox.copy()
+                                    else:
+                                        # Union bbox: expand to include all blocks
+                                        chunk_bbox_aggregate = calculate_union_bbox(chunk_bbox_aggregate, block_bbox)
                                 
                                 block_metadata = {
                                     'type': block_type,
@@ -219,7 +296,7 @@ class ReductoService:
                             'embed': chunk_embed,
                             'enriched': chunk_enriched,  # NEW
                             'blocks': chunk_blocks,  # ALL blocks, not just images
-                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (first block's bbox)
+                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (union of all blocks)
                         })
                         document_text += chunk_content + "\n"
                 
@@ -241,20 +318,62 @@ class ReductoService:
             }
 
         except TimeoutError as e:
-            logger.error(f"Reducto parse timeout: {e}")
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            logger.error(f"❌ Reducto parse timeout: {e}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB")
+            logger.error(f"   Timeout setting: {self.client.timeout if hasattr(self.client, 'timeout') else 'unknown'}s")
+            logger.error(f"   Use async: {use_async}")
             raise
         except ConnectionError as e:
-            logger.error(f"Reducto connection error: {e}")
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            logger.error(f"❌ Reducto connection error: {type(e).__name__}: {str(e)}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB ({file_size:,} bytes)")
+            logger.error(f"   API key present: {bool(self.api_key)}")
+            logger.error(f"   API key length: {len(self.api_key) if self.api_key else 0} chars")
+            logger.error(f"   API key prefix: {self.api_key[:10] + '...' if self.api_key and len(self.api_key) > 10 else 'N/A'}")
+            try:
+                api_endpoint = getattr(self.client, 'base_url', None) or getattr(self.client, '_base_url', None)
+                if api_endpoint:
+                    logger.error(f"   API endpoint: {api_endpoint}")
+            except:
+                pass
+            logger.error(f"   Client timeout: {self.client.timeout if hasattr(self.client, 'timeout') else 'unknown'}s")
+            logger.error(f"   Use async: {use_async}")
+            logger.error(f"   Error details: {repr(e)}")
             raise Exception(f"Connection error with Reducto API: {str(e)}. Please check your network connection and try again.")
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Reducto parse failed: {error_msg}")
+            error_type = type(e).__name__
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            
+            logger.error(f"❌ Reducto parse failed: {error_type}: {error_msg}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB ({file_size:,} bytes)")
+            logger.error(f"   File exists: {os.path.exists(file_path)}")
+            logger.error(f"   Use async: {use_async}")
+            logger.error(f"   Error details: {repr(e)}")
             
             # Check for SSL errors
             if "SSL" in error_msg or "EOF" in error_msg:
-                logger.error("SSL/EOF error detected. This may be due to network issues or large file size.")
-                logger.info("💡 Consider using async job-based processing (use_async=True) for large files")
+                logger.error("   SSL/EOF error detected. This may be due to network issues or large file size.")
+                logger.info("   💡 Consider using async job-based processing (use_async=True) for large files")
                 raise Exception(f"Network error during parsing: {error_msg}. Try using async processing for large files.")
+            
+            # Check for file size related errors
+            if "size" in error_msg.lower() or "limit" in error_msg.lower() or "too large" in error_msg.lower():
+                logger.error(f"   File size limit error detected. File size: {file_size_mb:.2f}MB")
+                logger.info("   💡 Reducto may have file size limits. Check your Reducto account limits.")
+            
+            # Check for authentication errors
+            if "auth" in error_msg.lower() or "unauthorized" in error_msg.lower() or "401" in error_msg or "403" in error_msg:
+                logger.error("   Authentication error detected. Check your REDUCTO_API_KEY.")
+                logger.error(f"   API key present: {bool(self.api_key)}")
+                logger.error(f"   API key length: {len(self.api_key) if self.api_key else 0} chars")
             
             raise 
 
@@ -403,9 +522,13 @@ class ReductoService:
                                         'page': getattr(bbox_obj, 'page', None),
                                         'original_page': getattr(bbox_obj, 'original_page', None)
                                     }
-                                    # Use first block's bbox as chunk-level bbox
+                                    # Calculate chunk-level bbox as union of all blocks (for fallback)
+                                    # But prefer using individual block bboxes for citations
                                     if chunk_bbox_aggregate is None:
                                         chunk_bbox_aggregate = block_bbox.copy()
+                                    else:
+                                        # Union bbox: expand to include all blocks
+                                        chunk_bbox_aggregate = calculate_union_bbox(chunk_bbox_aggregate, block_bbox)
                                 
                                 block_metadata = {
                                     'type': block_type,
@@ -447,19 +570,58 @@ class ReductoService:
             }
             
         except TimeoutError as e:
-            logger.error(f"Fast parse timeout: {e}")
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            logger.error(f"❌ Fast parse timeout: {e}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB")
+            logger.error(f"   Timeout setting: {self.client.timeout if hasattr(self.client, 'timeout') else 'unknown'}s")
             raise
         except ConnectionError as e:
-            logger.error(f"Fast parse connection error: {e}")
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            logger.error(f"❌ Fast parse connection error: {type(e).__name__}: {str(e)}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB ({file_size:,} bytes)")
+            logger.error(f"   API key present: {bool(self.api_key)}")
+            logger.error(f"   API key length: {len(self.api_key) if self.api_key else 0} chars")
+            logger.error(f"   API key prefix: {self.api_key[:10] + '...' if self.api_key and len(self.api_key) > 10 else 'N/A'}")
+            try:
+                api_endpoint = getattr(self.client, 'base_url', None) or getattr(self.client, '_base_url', None)
+                if api_endpoint:
+                    logger.error(f"   API endpoint: {api_endpoint}")
+            except:
+                pass
+            logger.error(f"   Client timeout: {self.client.timeout if hasattr(self.client, 'timeout') else 'unknown'}s")
+            logger.error(f"   Error details: {repr(e)}")
             raise Exception(f"Connection error with Reducto API: {str(e)}. Please check your network connection and try again.")
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"Fast parse failed: {error_msg}")
+            error_type = type(e).__name__
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            
+            logger.error(f"❌ Fast parse failed: {error_type}: {error_msg}")
+            logger.error(f"   File: {file_path}")
+            logger.error(f"   File size: {file_size_mb:.2f}MB ({file_size:,} bytes)")
+            logger.error(f"   File exists: {os.path.exists(file_path)}")
+            logger.error(f"   Error details: {repr(e)}")
             
             # Check for SSL errors
             if "SSL" in error_msg or "EOF" in error_msg:
-                logger.error("SSL/EOF error detected. This may be due to network issues or large file size.")
+                logger.error("   SSL/EOF error detected. This may be due to network issues or large file size.")
                 raise Exception(f"Network error during fast parsing: {error_msg}")
+            
+            # Check for file size related errors
+            if "size" in error_msg.lower() or "limit" in error_msg.lower() or "too large" in error_msg.lower():
+                logger.error(f"   File size limit error detected. File size: {file_size_mb:.2f}MB")
+                logger.info("   💡 Reducto may have file size limits. Check your Reducto account limits.")
+            
+            # Check for authentication errors
+            if "auth" in error_msg.lower() or "unauthorized" in error_msg.lower() or "401" in error_msg or "403" in error_msg:
+                logger.error("   Authentication error detected. Check your REDUCTO_API_KEY.")
+                logger.error(f"   API key present: {bool(self.api_key)}")
+                logger.error(f"   API key length: {len(self.api_key) if self.api_key else 0} chars")
             
             raise
 
@@ -527,9 +689,13 @@ class ReductoService:
                                         'page': getattr(bbox_obj, 'page', None),
                                         'original_page': getattr(bbox_obj, 'original_page', None)
                                     }
-                                    # Use first block's bbox as chunk-level bbox (or aggregate if needed)
+                                    # Calculate chunk-level bbox as union of all blocks (for fallback)
+                                    # But prefer using individual block bboxes for citations
                                     if chunk_bbox_aggregate is None:
                                         chunk_bbox_aggregate = block_bbox.copy()
+                                    else:
+                                        # Union bbox: expand to include all blocks
+                                        chunk_bbox_aggregate = calculate_union_bbox(chunk_bbox_aggregate, block_bbox)
                                 
                                 block_metadata = {
                                     'type': block_type,
@@ -556,7 +722,7 @@ class ReductoService:
                             'embed': chunk_embed,
                             'enriched': chunk_enriched,  # NEW
                             'blocks': chunk_blocks,  # ALL blocks, not just images
-                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (first block's bbox)
+                            'bbox': chunk_bbox_aggregate  # Chunk-level bbox (union of all blocks)
                         })
                         document_text += chunk_content
                 # Alternative if chunks are not available, try direct text extraction 

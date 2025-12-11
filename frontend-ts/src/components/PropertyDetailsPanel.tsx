@@ -2415,7 +2415,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     });
                                   } else {
                                     // Chat selection mode - use global context
+                                    console.log('🔄 Calling toggleDocumentSelection with doc.id:', doc.id);
                                     toggleDocumentSelection(doc.id);
+                                    // Log state after a brief delay to see if it updated
+                                    setTimeout(() => {
+                                      console.log('✅ After toggleDocumentSelection - selectedDocumentIds:', Array.from(selectedDocumentIds));
+                                    }, 100);
                                   }
                           } else {
                                   console.log('📖 Selection mode NOT active - opening preview');

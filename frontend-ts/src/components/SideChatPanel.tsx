@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home, Microscope } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -302,12 +302,22 @@ interface CitationChunkData {
 
 interface CitationDataType {
   doc_id: string;
-  original_filename?: string | null; // Can be null when backend doesn't have filename
-  property_address: string;
-  page_range: string;
-  classification_type: string;
+  page: number;  // Primary field for page number
+  bbox: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;  // Optional page in bbox (for compatibility)
+  };
+  method?: string;  // Citation method (e.g., 'block-id-lookup')
+  // Legacy fields (optional for backward compatibility)
+  original_filename?: string | null;
+  property_address?: string;
+  page_range?: string;
+  classification_type?: string;
   chunk_index?: number;
-  page_number?: number;
+  page_number?: number;  // Deprecated, use 'page' instead
   source_chunks_metadata?: CitationChunkData[];
   candidate_chunks_metadata?: CitationChunkData[];
   matched_chunk_metadata?: CitationChunkData;
@@ -384,6 +394,7 @@ const CitationLink: React.FC<{
 };
 
 // Helper function to render text with clickable citation links
+// Supports both superscript (¹, ², ³) and bracket ([1], [2]) formats
 const renderTextWithCitations = (
   text: string, 
   citations: Record<string, CitationDataType> | undefined,
@@ -401,26 +412,72 @@ const renderTextWithCitations = (
     return text;
   }
   
-  // Split text by citation pattern [N]
-  const parts = text.split(/(\[\d+\])/g);
+  // Map superscript characters to numbers
+  const superscriptMap: Record<string, string> = {
+    '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+    '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+  };
+  
+  // Pattern for superscript: ¹, ², ³, etc. (including multi-digit like ¹⁰)
+  const superscriptPattern = /[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g;
+  // Pattern for bracket: [1], [2], etc. (for backward compatibility)
+  const bracketPattern = /\[(\d+)\]/g;
+  
+  // Replace superscript with placeholders
+  let processedText = text;
+  interface CitationPlaceholder {
+    num: string;
+    data: CitationDataType;
+    original: string;
+  }
+  const citationPlaceholders: Record<string, CitationPlaceholder> = {};
+  let placeholderIndex = 0;
+  
+  // Process superscript citations
+  processedText = processedText.replace(superscriptPattern, (match) => {
+    // Convert superscript to number
+    let numStr = '';
+    for (const char of match) {
+      numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
+    }
+    const citData = citations[numStr];
+    if (citData) {
+      const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
+      citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
+      placeholderIndex++;
+      return placeholder;
+    }
+    return match; // Keep original if no citation found
+  });
+  
+  // Process bracket citations
+  processedText = processedText.replace(bracketPattern, (match, num) => {
+    const citData = citations[num];
+    if (citData) {
+      const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
+      citationPlaceholders[placeholder] = { num, data: citData, original: match };
+      placeholderIndex++;
+      return placeholder;
+    }
+    return match; // Keep original if no citation found
+  });
+  
+  // Split by placeholders and render
+  const parts = processedText.split(/(__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__)/g);
   
   return parts.map((part, idx) => {
-    const match = part.match(/\[(\d+)\]/);
-    if (match) {
-      const citNum = match[1];
-      const citData = citations[citNum];
-      if (citData) {
-        return (
-          <CitationLink 
-            key={`cit-${idx}-${citNum}`} 
-            citationNumber={citNum} 
-            citationData={citData} 
-            onClick={onCitationClick} 
-          />
-        );
-      }
+    const placeholder = citationPlaceholders[part];
+    if (placeholder) {
+      return (
+        <CitationLink 
+          key={`cit-${idx}-${placeholder.num}`} 
+          citationNumber={placeholder.num} 
+          citationData={placeholder.data} 
+          onClick={onCitationClick} 
+        />
+      );
     }
-    return part;
+    return <span key={`text-${idx}`}>{part}</span>;
   });
 };
 
@@ -794,13 +851,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Only match if it's at the end of the string (incomplete marker)
     cleaned = cleaned.replace(/\[CHUNK:\d*(?::PAGE?:\d*)?$/g, '');
     
+    // Remove tool call syntax that LLM sometimes outputs as plain text
+    // Pattern: superscript number + space + cite_source(...)
+    // Examples: "¹ cite_source(...)", "² cite_source(...)", etc.
+    // Handle both single-line and multi-line tool calls (using 's' flag for dotall)
+    cleaned = cleaned.replace(/[¹²³⁴⁵⁶⁷⁸⁹]+\s+cite_source\([^)]*\)/gs, '');
+    // Remove any standalone cite_source calls (without superscript prefix)
+    // This handles cases where the LLM outputs tool syntax without the citation number
+    cleaned = cleaned.replace(/cite_source\([^)]*\)/gs, '');
+    
+    // Remove duplicate citation reference lists at the end
+    // Pattern: Numbered list of citations like:
+    // "¹ The property is currently..."
+    // "² Prior to this..."
+    // This happens when LLM adds a reference list after the main text
+    // Match: newline(s) + superscript + space + text + (newline + superscript + space + text)* + end
+    cleaned = cleaned.replace(/\n\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+(?:\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+)*\s*$/g, '');
+    // Also handle single newline case
+    cleaned = cleaned.replace(/\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+(?:\n[¹²³⁴⁵⁶⁷⁸⁹]\s+[^\n]+)*\s*$/g, '');
+    
     return cleaned.trim();
   };
 
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
-  const [isDetailedMode, setIsDetailedMode] = React.useState<boolean>(false); // NEW: Detailed analysis mode toggle
   // Property search state
   const [propertySearchQuery, setPropertySearchQuery] = React.useState<string>("");
   const [propertySearchResults, setPropertySearchResults] = React.useState<PropertyData[]>([]);
@@ -1227,12 +1302,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   interface CitationData {
     doc_id: string;
+    page: number;  // Primary field for page number
+    bbox: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+      page?: number;  // Optional page in bbox (for compatibility)
+    };
+    // Legacy fields (optional for backward compatibility)
     original_filename?: string | null;
-    property_address: string;
-    page_range: string;
-    classification_type: string;
+    property_address?: string;
+    page_range?: string;
+    classification_type?: string;
     chunk_index?: number;
-      page_number?: number;
+    page_number?: number;  // Deprecated, use 'page' instead
     source_chunks_metadata?: CitationChunkData[];
     candidate_chunks_metadata?: CitationChunkData[];
     matched_chunk_metadata?: CitationChunkData;
@@ -1409,10 +1493,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ? Array.from(selectedDocumentIds) 
               : undefined;
             
+            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds));
+            
             const abortController = new AbortController();
             abortControllerRef.current = abortController;
             
             let accumulatedText = '';
+            const accumulatedCitations: Record<string, CitationDataType> = {};
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -1431,6 +1518,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
                 const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
                 
+                // Debug: Log citations received
+                console.log('✅ SideChatPanel: onComplete received:', {
+                  hasDataCitations: !!data.citations,
+                  dataCitationsCount: data.citations ? Object.keys(data.citations).length : 0,
+                  accumulatedCitationsCount: Object.keys(accumulatedCitations).length,
+                  dataCitations: data.citations,
+                  accumulatedCitations: accumulatedCitations
+                });
+                
+                // Use citations from complete event, fallback to accumulated citations
+                const finalCitations = data.citations || accumulatedCitations || {};
+                
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
@@ -1439,7 +1538,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   text: finalText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: data.citations || {} // NEW: Store citations
+                    citations: finalCitations // Use final citations
                 };
                 
                   const updated = prev.map(msg => 
@@ -1539,8 +1638,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return updated;
                 });
               },
-              // detailLevel: Pass detailed mode toggle state
-              isDetailedMode ? "detailed" : undefined
+              // onCitation: Handle citation events during streaming
+              (citation: { citation_number: string; data: any }) => {
+                console.log('📚 SideChatPanel: Received citation:', citation);
+                
+                // Accumulate citation with all fields from backend
+                accumulatedCitations[citation.citation_number] = {
+                  doc_id: citation.data.doc_id,
+                  page: citation.data.page || citation.data.page_number || 0,
+                  bbox: citation.data.bbox || {},
+                  method: citation.data.method // Include method field
+                };
+                
+                // Update message with citations in real-time
+                setChatMessages(prev => {
+                  return prev.map(msg => 
+                    msg.id === loadingResponseId
+                      ? {
+                          ...msg,
+                          citations: { ...accumulatedCitations }
+                        }
+                      : msg
+                  );
+                });
+              }
             );
           } catch (error: any) {
             if (error.name === 'AbortError') {
@@ -1572,7 +1693,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Use shared preview context
   const {
-    addPreviewFile
+    addPreviewFile,
+    previewFiles
   } = usePreview();
 
   // Phase 1: Handle citation click - fetch document and open in viewer
@@ -1601,26 +1723,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
       console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
 
-      // Fetch document using document_id
-      const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+      // Check if document is already loaded in preview context (performance optimization)
+      const existingFile = previewFiles.find(f => f.id === docId);
+      let file: File;
+      let fileType: string;
+      let fileSize: number;
       
-      const response = await fetch(downloadUrl, {
-        credentials: 'include'
-      });
+      if (existingFile && existingFile.file) {
+        // Reuse existing file - no need to download again
+        console.log('✅ [CITATION] Document already loaded, reusing existing file');
+        file = existingFile.file;
+        fileType = existingFile.type || 'application/pdf';
+        fileSize = existingFile.size || 0;
+      } else {
+        // Download document only if not already loaded
+        console.log('📥 [CITATION] Downloading document (not in cache)');
+        const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+        
+        const response = await fetch(downloadUrl, {
+          credentials: 'include'
+        });
 
-      if (!response.ok) {
-        throw new Error(`Failed to download document: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          throw new Error(`Failed to download document: ${response.status} ${response.statusText}`);
+        }
+
+        const blob = await response.blob();
+        
+        // Determine file type from blob or citation data
+        fileType = blob.type || 'application/pdf';
+        fileSize = blob.size;
+        
+        // Create File object from blob
+        file = new File([blob], citationData.original_filename || 'document.pdf', {
+          type: fileType
+        });
       }
-
-      const blob = await response.blob();
-      
-      // Determine file type from blob or citation data
-      const fileType = blob.type || 'application/pdf';
-      
-      // Create File object from blob
-      const file = new File([blob], citationData.original_filename || 'document.pdf', {
-        type: fileType
-      });
 
       // Convert to FileAttachmentData format for DocumentPreviewModal
       const fileData: FileAttachmentData = {
@@ -1628,68 +1766,123 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         file: file,
         name: citationData.original_filename || 'document.pdf',
         type: fileType,
-        size: blob.size
+        size: fileSize
       };
 
-      // Extract highlight metadata using matched evidence feedback first, then fallbacks
-      const hasValidBbox = (chunk?: CitationChunkData | null): chunk is CitationChunkData & { bbox: NonNullable<CitationChunkData['bbox']> } =>
-        !!(chunk && chunk.bbox && typeof chunk.bbox.left === 'number' && typeof chunk.bbox.top === 'number' && typeof chunk.bbox.width === 'number' && typeof chunk.bbox.height === 'number');
-
-      const candidateChunks = citationData.candidate_chunks_metadata?.length
-        ? [...citationData.candidate_chunks_metadata]
-        : [];
-      const sourceChunks = citationData.source_chunks_metadata?.length
-        ? [...citationData.source_chunks_metadata]
-        : [];
-
-      const priorityList: Array<{ chunk?: CitationChunkData; reason: string }> = [
-        { chunk: citationData.matched_chunk_metadata, reason: 'matched_chunk_metadata' },
-        { chunk: citationData.chunk_metadata, reason: 'chunk_metadata' },
-        { chunk: candidateChunks.find((chunk) => hasValidBbox(chunk)), reason: 'candidate_chunks_metadata' },
-        { chunk: sourceChunks.find((chunk) => hasValidBbox(chunk)), reason: 'source_chunks_metadata' },
-      ];
-
-      const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
-      const highlightChunk = highlightSource?.chunk;
-      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string; chunks?: CitationChunkData[] } | undefined;
-
-      if (highlightChunk && highlightChunk.bbox) {
-        const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page_number || 1;
-        let overlayChunks: CitationChunkData[] = candidateChunks.length ? candidateChunks : sourceChunks;
-
-        // Make sure the highlight chunk is part of the overlay set for debugging overlays
-        const chunkAlreadyIncluded = overlayChunks.some(
-          (chunk) =>
-            chunk.chunk_index === highlightChunk.chunk_index &&
-            chunk.page_number === highlightChunk.page_number &&
-            chunk.bbox?.left === highlightChunk.bbox?.left
-        );
-        if (!chunkAlreadyIncluded) {
-          overlayChunks = [...overlayChunks, highlightChunk];
+      // NEW: Validate bbox before using it
+      const validateBbox = (bbox: any): boolean => {
+        if (!bbox || typeof bbox !== 'object') return false;
+        
+        const { left, top, width, height } = bbox;
+        
+        // Check if values are valid (0-1 range for normalized coordinates)
+        if (
+          typeof left !== 'number' || left < 0 || left > 1 ||
+          typeof top !== 'number' || top < 0 || top > 1 ||
+          typeof width !== 'number' || width <= 0 || width > 1 ||
+          typeof height !== 'number' || height <= 0 || height > 1
+        ) {
+          console.warn('⚠️ [CITATION] Invalid bbox values:', bbox);
+          return false;
         }
+        
+        // Check if bbox is too large (likely wrong selection)
+        const area = width * height;
+        if (area > 0.5) {  // More than 50% of page
+          console.warn('⚠️ [CITATION] Bbox area too large (likely wrong selection):', { area, bbox });
+          // Don't reject, but log warning
+        }
+        
+        return true;
+      };
 
+      // Use new minimal citation structure: citationData.bbox and citationData.page
+      // Fallback to legacy fields for backward compatibility
+      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
+
+      // Priority: Use new structure (citationData.bbox) > legacy structure (source_chunks_metadata)
+      if (citationData.bbox && 
+          typeof citationData.bbox.left === 'number' && 
+          typeof citationData.bbox.top === 'number' && 
+          typeof citationData.bbox.width === 'number' && 
+          typeof citationData.bbox.height === 'number') {
+        
+        // Validate bbox before using it
+        if (!validateBbox(citationData.bbox)) {
+          console.warn('⚠️ [CITATION] Invalid bbox in new structure, falling back to legacy structure or no highlight');
+          // Will fall through to legacy structure check below
+        } else {
+          // New minimal structure - use bbox directly
+          const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
+          
           highlightData = {
             fileId: docId,
             bbox: {
-            left: highlightChunk.bbox.left,
-            top: highlightChunk.bbox.top,
-            width: highlightChunk.bbox.width,
-            height: highlightChunk.bbox.height,
-            page: highlightPage
-          },
-          chunks: overlayChunks
-        };
+              left: citationData.bbox.left,
+              top: citationData.bbox.top,
+              width: citationData.bbox.width,
+              height: citationData.bbox.height,
+              page: highlightPage
+            }
+          };
 
-        console.log('🎯 [CITATION] Highlight chunk selected', {
-          reason: highlightSource?.reason,
-          chunk_index: highlightChunk.chunk_index,
-          page_number: highlightChunk.page_number,
-          bbox: highlightChunk.bbox,
-          candidate_count: candidateChunks.length,
-          source_count: sourceChunks.length
-        });
-      } else {
-        console.warn('⚠️ [CITATION] Unable to determine highlight chunk from feedback. Falling back to no highlight.');
+          console.log('🎯 [CITATION] Using new minimal citation structure', {
+            page: highlightPage,
+            bbox: citationData.bbox
+          });
+        }
+      }
+      
+      // If new structure didn't work, try legacy structure
+      if (!highlightData) {
+        // Fallback to legacy structure for backward compatibility
+        const hasValidBbox = (chunk?: CitationChunkData | null): chunk is CitationChunkData & { bbox: NonNullable<CitationChunkData['bbox']> } =>
+          !!(chunk && chunk.bbox && typeof chunk.bbox.left === 'number' && typeof chunk.bbox.top === 'number' && typeof chunk.bbox.width === 'number' && typeof chunk.bbox.height === 'number');
+
+        const candidateChunks = citationData.candidate_chunks_metadata?.length
+          ? [...citationData.candidate_chunks_metadata]
+          : [];
+        const sourceChunks = citationData.source_chunks_metadata?.length
+          ? [...citationData.source_chunks_metadata]
+          : [];
+
+        const priorityList: Array<{ chunk?: CitationChunkData; reason: string }> = [
+          { chunk: citationData.matched_chunk_metadata, reason: 'matched_chunk_metadata' },
+          { chunk: citationData.chunk_metadata, reason: 'chunk_metadata' },
+          { chunk: candidateChunks.find((chunk) => hasValidBbox(chunk)), reason: 'candidate_chunks_metadata' },
+          { chunk: sourceChunks.find((chunk) => hasValidBbox(chunk)), reason: 'source_chunks_metadata' },
+        ];
+
+        const highlightSource = priorityList.find((entry) => hasValidBbox(entry.chunk));
+        const highlightChunk = highlightSource?.chunk;
+
+        if (highlightChunk && highlightChunk.bbox) {
+          // Validate legacy bbox before using it
+          if (!validateBbox(highlightChunk.bbox)) {
+            console.warn('⚠️ [CITATION] Invalid bbox in legacy structure, falling back to no highlight');
+          } else {
+            const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
+            
+            highlightData = {
+              fileId: docId,
+              bbox: {
+                left: highlightChunk.bbox.left,
+                top: highlightChunk.bbox.top,
+                width: highlightChunk.bbox.width,
+                height: highlightChunk.bbox.height,
+                page: highlightPage
+              }
+            };
+
+            console.log('🎯 [CITATION] Using legacy citation structure', {
+              reason: highlightSource?.reason,
+              page: highlightPage,
+              bbox: highlightChunk.bbox
+            });
+          }
+        } else {
+          console.warn('⚠️ [CITATION] Unable to determine highlight from citation data. Falling back to no highlight.');
+        }
       }
 
       console.log('📚 [CITATION] Highlight payload prepared for preview:', highlightData);
@@ -2110,40 +2303,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      const now = Date.now();
-                      
-                      // PERFORMANCE OPTIMIZATION: Update existing "reading" steps to "read" instead of creating duplicates
-                      // Match by doc_id to link "reading_doc_X" with "read_doc_X"
-                      if (step.action_type === 'reading' && step.details?.doc_metadata?.doc_id) {
-                        const docId = step.details.doc_metadata.doc_id;
-                        const stepStatus = step.details?.status; // 'reading' or 'read'
-                        
-                        // Find existing reading step for this doc_id
-                        const existingReadingIndex = existingSteps.findIndex(s => 
-                          s.action_type === 'reading' && 
-                          s.details?.doc_metadata?.doc_id === docId &&
-                          s.details?.status === 'reading' // Only match "reading" status steps
-                        );
-                        
-                        if (existingReadingIndex >= 0 && stepStatus === 'read') {
-                          // Update existing "reading" step to "read" status
-                          const updatedSteps = [...existingSteps];
-                          updatedSteps[existingReadingIndex] = {
-                            ...updatedSteps[existingReadingIndex],
-                            message: step.message, // Update message from "Reading" to "Read"
-                            details: {
-                              ...updatedSteps[existingReadingIndex].details,
-                              status: 'read' // Mark as read
-                            },
-                            timestamp: now
-                          };
-                          return { ...msg, reasoningSteps: updatedSteps };
-                        }
-                      }
-                      
                       // Use step + message as unique key to allow different messages for same step type
                       // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
                       const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
                       const existingIndex = existingSteps.findIndex(s => 
                         `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
                       );
@@ -2472,8 +2635,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             ? Array.from(selectedDocumentIds) 
             : undefined;
           
+          console.log('📤 SideChatPanel (handleSubmit): Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds));
+          
           if (documentIdsArray && documentIdsArray.length > 0) {
-            console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s)`);
+            console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s):`, documentIdsArray);
           }
           
           await backendApi.queryDocumentsStreamFetch(
@@ -2633,9 +2798,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 return updated;
               });
-            },
-            // detailLevel: Pass detailed mode toggle state
-            isDetailedMode ? "detailed" : undefined
+            }
           );
           
           // Clear abort controller on completion
@@ -3403,42 +3566,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         >
                           <Mic className="w-[18px] h-[18px]" strokeWidth={1.5} />
                         </button>
-                        
-                        {/* Detailed Mode Toggle (Microscope Icon) */}
-                        <motion.button
-                          type="button"
-                          onClick={() => setIsDetailedMode(!isDetailedMode)}
-                          className="flex items-center justify-center relative focus:outline-none outline-none"
-                          style={{
-                            width: '32px',
-                            height: '32px',
-                            minWidth: '32px',
-                            minHeight: '32px',
-                            borderRadius: '50%',
-                            flexShrink: 0,
-                            marginLeft: '4px'
-                          }}
-                          animate={{
-                            backgroundColor: isDetailedMode ? '#415C85' : '#F3F4F6'
-                          }}
-                          whileHover={{
-                            scale: 1.05
-                          }}
-                          whileTap={{
-                            scale: 0.95
-                          }}
-                          transition={{
-                            duration: 0.2,
-                            ease: [0.16, 1, 0.3, 1]
-                          }}
-                          title={isDetailedMode ? "Detailed analysis mode (RICS-level professional answers) - Click to disable" : "Detailed analysis mode (RICS-level professional answers) - Click to enable"}
-                        >
-                          <Microscope 
-                            className="w-4 h-4" 
-                            strokeWidth={2.5} 
-                            style={{ color: isDetailedMode ? '#ffffff' : '#4B5563' }} 
-                          />
-                        </motion.button>
                         
                         {/* Send button or Stop button (when streaming) */}
                         {(() => {

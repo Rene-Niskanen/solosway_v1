@@ -20,10 +20,13 @@ export const DocumentSelectionProvider: React.FC<{ children: ReactNode }> = ({ c
   const toggleDocumentSelection = useCallback((documentId: string) => {
     setSelectedDocumentIds(prev => {
       const newSet = new Set(prev);
-      if (newSet.has(documentId)) {
+      const wasSelected = newSet.has(documentId);
+      if (wasSelected) {
         newSet.delete(documentId);
+        console.log('📄 DocumentSelectionContext: Removed document', documentId, 'from selection. New set:', Array.from(newSet));
       } else {
         newSet.add(documentId);
+        console.log('📄 DocumentSelectionContext: Added document', documentId, 'to selection. New set:', Array.from(newSet));
       }
       return newSet;
     });

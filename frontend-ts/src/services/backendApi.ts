@@ -216,10 +216,20 @@ class BackendApiService {
     documentIds?: string[],
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
     onReasoningContext?: (context: { message: string; moment: string }) => void,
-    detailLevel?: "concise" | "detailed"  // NEW: Optional detail level override
+    onCitation?: (citation: { citation_number: string; data: any }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
+    
+    const requestBody = {
+      query,
+      propertyId,
+      messageHistory,
+      sessionId: sessionId || `session_${Date.now()}`,
+      documentIds: documentIds || undefined
+    };
+    
+    console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'full body:', requestBody);
     
     try {
       const response = await fetch(url, {
@@ -229,14 +239,7 @@ class BackendApiService {
         },
         credentials: 'include',
         signal: abortSignal, // Add abort signal support
-        body: JSON.stringify({
-          query,
-          propertyId,
-          messageHistory,
-          sessionId: sessionId || `session_${Date.now()}`,
-          documentIds: documentIds || undefined,
-          detailLevel: detailLevel || undefined  // NEW: Pass detail level to backend
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -310,6 +313,15 @@ class BackendApiService {
                     onReasoningContext({
                       message: data.message,
                       moment: data.moment
+                    });
+                  }
+                  break;
+                case 'citation':
+                  console.log('📚 BackendApi: Received citation event:', data);
+                  if (onCitation) {
+                    onCitation({
+                      citation_number: String(data.citation_number),
+                      data: data.data
                     });
                   }
                   break;
@@ -844,27 +856,18 @@ class BackendApiService {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const response = JSON.parse(xhr.responseText);
-              console.log(`📥 [UPLOAD] Response received:`, response);
-              
-              if (response.success) {
-                console.log(`✅ General document upload successful: ${file.name}`);
+      if (response.success) {
+        console.log(`✅ General document upload successful: ${file.name}`);
                 console.log(`🔄 Full processing pipeline queued (classification → extraction → embedding)`);
-                // Backend returns {success: true, document_id: ...} directly
-                // Ensure document_id is accessible in response.data
-                const documentId = response.document_id || (response.data && response.data.document_id);
-                console.log(`📄 Document ID: ${documentId}`);
-                
                 // Don't set to 100% here - let frontend handle it when file appears in UI
+                // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
-                  success: true,
-                  data: {
-                    document_id: documentId,
-                    ...response // Include all response fields
-                  }
+          success: true,
+          data: response.data || response // Use response.data if exists, otherwise use response itself
                 });
-              } else {
-                throw new Error(response.error || 'Upload failed');
-              }
+      } else {
+        throw new Error(response.error || 'Upload failed');
+      }
             } catch (parseError) {
               console.error(`❌ Failed to parse response: ${parseError}`);
               resolve({
