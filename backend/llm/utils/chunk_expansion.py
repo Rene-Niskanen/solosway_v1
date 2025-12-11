@@ -39,15 +39,18 @@ def expand_chunk_with_adjacency(
     """
     Fetch adjacent chunks for a given chunk and return ordered list of chunk texts.
     
+    NEW: Section-aware expansion - if chunk has a section header, expands to include
+    all chunks in the same section (until next section header), not just ±N chunks.
+    
     Retrieves chunks within range [chunk_index - expand_left, chunk_index + expand_right]
-    and returns them as an ordered list. Missing chunks are skipped (e.g., if chunk_index
-    is at document start, left chunks won't exist).
+    OR all chunks in the same section if section header is detected.
+    Missing chunks are skipped (e.g., if chunk_index is at document start, left chunks won't exist).
     
     Args:
         doc_id: Document ID to fetch chunks from
         chunk_index: The center chunk index (the chunk that matched the query)
-        expand_left: Number of chunks to fetch before chunk_index (default: 2)
-        expand_right: Number of chunks to fetch after chunk_index (default: 2)
+        expand_left: Number of chunks to fetch before chunk_index (default: 2, used if no section header)
+        expand_right: Number of chunks to fetch after chunk_index (default: 2, used if no section header)
         supabase_client: Supabase client instance (will be created if None)
         
     Returns:
@@ -74,6 +77,88 @@ def expand_chunk_with_adjacency(
         supabase_client = get_supabase_client()
     
     try:
+        # First, fetch the center chunk to check for section header
+        center_result = supabase_client.table('document_vectors')\
+            .select('chunk_index, chunk_text, metadata')\
+            .eq('document_id', doc_id)\
+            .eq('chunk_index', chunk_index)\
+            .execute()
+        
+        if not center_result.data:
+            logger.warning(
+                f"Center chunk {chunk_index} not found in document {doc_id[:8]}"
+            )
+            return []
+        
+        center_chunk = center_result.data[0]
+        center_metadata = center_chunk.get('metadata') or {}
+        
+        # Check if center chunk has a section header
+        has_section_header = center_metadata.get('has_section_header', False)
+        section_header = center_metadata.get('section_header')
+        normalized_header = center_metadata.get('normalized_header')
+        
+        if has_section_header and (section_header or normalized_header):
+            # Section-aware expansion: find all chunks in the same section
+            logger.debug(
+                f"Chunk {chunk_index} has section header '{section_header}', expanding to full section"
+            )
+            
+            # Fetch all chunks for this document to find section boundaries
+            all_chunks_result = supabase_client.table('document_vectors')\
+                .select('chunk_index, chunk_text, metadata')\
+                .eq('document_id', doc_id)\
+                .order('chunk_index', desc=False)\
+                .execute()
+            
+            if not all_chunks_result.data:
+                return []
+            
+            # Find section boundaries
+            section_start = None
+            section_end = None
+            
+            for i, chunk in enumerate(all_chunks_result.data):
+                chunk_idx = chunk.get('chunk_index')
+                chunk_meta = chunk.get('metadata') or {}
+                
+                # Check if this chunk is in the same section
+                chunk_header = chunk_meta.get('section_header')
+                chunk_normalized = chunk_meta.get('normalized_header')
+                
+                # Match by normalized_header (more flexible) or exact section_header
+                in_same_section = (
+                    (normalized_header and chunk_normalized == normalized_header) or
+                    (section_header and chunk_header == section_header)
+                )
+                
+                if in_same_section:
+                    if section_start is None:
+                        section_start = chunk_idx
+                    section_end = chunk_idx
+                elif section_start is not None and chunk_idx > chunk_index:
+                    # We've passed the section, stop
+                    break
+            
+            if section_start is not None and section_end is not None:
+                # Fetch all chunks in the section
+                section_result = supabase_client.table('document_vectors')\
+                    .select('chunk_index, chunk_text')\
+                    .eq('document_id', doc_id)\
+                    .gte('chunk_index', section_start)\
+                    .lte('chunk_index', section_end)\
+                    .order('chunk_index', desc=False)\
+                    .execute()
+                
+                if section_result.data:
+                    expanded_chunks = [item['chunk_text'] for item in section_result.data]
+                    logger.debug(
+                        f"Section-aware expansion: chunk {chunk_index} expanded to section "
+                        f"[{section_start}, {section_end}] = {len(expanded_chunks)} chunks"
+                    )
+                    return expanded_chunks
+        
+        # Fallback to standard ±N expansion if no section header
         # Calculate chunk index range
         min_index = max(0, chunk_index - expand_left)  # Don't go below 0
         max_index = chunk_index + expand_right
@@ -101,13 +186,6 @@ def expand_chunk_with_adjacency(
         # Build ordered list of chunk texts
         # Create a dict for O(1) lookup: {chunk_index: chunk_text}
         chunks_dict = {item['chunk_index']: item['chunk_text'] for item in result.data}
-        
-        # Check if center chunk exists (required)
-        if chunk_index not in chunks_dict:
-            logger.warning(
-                f"Center chunk {chunk_index} not found in document {doc_id[:8]}"
-            )
-            return []
         
         # Build ordered list: left chunks → center chunk → right chunks
         expanded_chunks = []

@@ -537,32 +537,17 @@ const StepRenderer: React.FC<{
       );
     
     case 'searching':
-      // "Searching for price in Highlands documents" - split action from details
-      // "Searching" is action with flowing gradient animation (only if this is the current active step)
+      // Entire "Searching for value" (or whatever the message is) gets flowing gradient animation
       // Animation stops when next step (exploring/analyzing/reading) appears
-      const searchingMatch = step.message.match(/^(Searching)\s+(.+)$/);
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSearchingActive = !nextStep || nextStep.action_type === 'searching';
       
       return (
         <span>
-          {searchingMatch ? (
-            <>
-              {/* "Searching" with flowing gradient animation (only if active) */}
-              {isSearchingActive ? (
-                <span className="searching-shimmer-active">{searchingMatch[1]}</span>
-              ) : (
-                <span style={actionStyle}>{searchingMatch[1]}</span>
-              )}
-              {/* " for price..." in dark gray (detail) */}
-              <span style={{ color: DETAIL_COLOR }}> {searchingMatch[2]}</span>
-            </>
+          {isSearchingActive ? (
+            <span className="searching-shimmer-active">{step.message}</span>
           ) : (
-            isSearchingActive ? (
-              <span className="searching-shimmer-active">{step.message}</span>
-            ) : (
-              <span style={actionStyle}>{step.message}</span>
-            )
+            <span style={actionStyle}>{step.message}</span>
           )}
         </span>
       );

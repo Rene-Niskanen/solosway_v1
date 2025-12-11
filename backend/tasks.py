@@ -1388,11 +1388,24 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                                     chunk_bbox = chunk.get('bbox')
                                     # Use robust page number extraction
                                     chunk_page = extract_page_number_from_chunk(chunk)
+                                    
+                                    # NEW: Detect section header from chunk content
+                                    from backend.llm.utils.section_header_detector import detect_section_header
+                                    header_info = detect_section_header(content_text if content_text else text_to_embed)
+                                    
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
                                         'blocks': chunk.get('blocks', []),  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
+                                    
+                                    # Add section header metadata if detected
+                                    if header_info:
+                                        chunk_meta.update(header_info)
+                                        logger.debug(f"Detected section header: '{header_info.get('section_header')}' in chunk")
+                                    else:
+                                        chunk_meta['has_section_header'] = False
+                                    
                                     chunk_metadata_list.append(chunk_meta)
                             
                             chunks = chunk_texts
@@ -2314,6 +2327,9 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             chunk_texts = []
                             chunk_metadata_list = []
                             
+                            # Import section header detector
+                            from backend.llm.utils.section_header_detector import detect_section_header
+                            
                             MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin
                             
                             for chunk in reducto_chunks:
@@ -2331,11 +2347,24 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                     chunk_bbox = chunk.get('bbox')
                                     # Phase 4: Use robust page number extraction
                                     chunk_page = extract_page_number_from_chunk(chunk)
+                                    
+                                    # NEW: Detect section header from chunk content
+                                    # Use content_text (original) for header detection, not embed_text (optimized)
+                                    header_info = detect_section_header(content_text if content_text else text_to_embed)
+                                    
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
                                         'blocks': chunk.get('blocks', []),  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
+                                    
+                                    # Add section header metadata if detected
+                                    if header_info:
+                                        chunk_meta.update(header_info)
+                                        logger.debug(f"Detected section header: '{header_info.get('section_header')}' in chunk")
+                                    else:
+                                        chunk_meta['has_section_header'] = False
+                                    
                                     chunk_metadata_list.append(chunk_meta)
                             
                             chunks = chunk_texts

@@ -181,24 +181,32 @@ Return ONLY a single word: "semantic", "structured", or "hybrid".""",
 
     'rewrite': """Task: Rewrite vague follow-up queries to be self-contained using conversation context.
 
+**CRITICAL**: If conversation history exists, ALWAYS extract and include the property name/address from the previous conversation in the rewritten query. This ensures the query targets the correct property.
+
 If the current query contains vague references like:
 - "the document", "that report", "this file", "it"
 - "the property", "that building", "this place", "there"
 - "those", "these", "them"
+- Or if it's a follow-up question without property context
 
 Then rewrite the query to be self-contained by including specific details from the conversation:
-- Property addresses (e.g., "Highlands, Berden Road, Bishop's Stortford")
+- Property addresses (e.g., "Highlands, Berden Road, Bishop's Stortford") - MANDATORY if conversation history exists
+- Property names (e.g., "Highlands") - MANDATORY if conversation history exists
+- Postcodes (e.g., "CM23 1AB") - include if mentioned in conversation
 - Document names (e.g., "Highlands_Berden_Bishops_Stortford valuation report")
 - Property features (e.g., "5 bedroom, 5 bathroom property")
 - Prices or values mentioned (e.g., "£2,400,000 property")
 
-If the query is already specific and complete, return it UNCHANGED.
+**CRITICAL**: For follow-up questions, ALWAYS include the property identifier from the conversation history, even if the current query doesn't mention it. This prevents retrieving information about the wrong property.
+
+If the query is already specific and complete AND already includes the property name/address, return it UNCHANGED.
 
 IMPORTANT: 
 - Return ONLY the rewritten query text
 - No explanations, quotes, or extra formatting
 - Keep the query concise (under 200 words)
-- Preserve the user's intent and tone""",
+- Preserve the user's intent and tone
+- ALWAYS include property context from conversation history for follow-up questions""",
 
     'expand': """Task: Generate 2 alternative search queries for better recall.
 
@@ -226,6 +234,21 @@ Return ONLY a JSON array of document IDs in order of relevance:
 Guidelines:
 - Answer ONLY from document content
 - Do NOT repeat the user's question as a heading or title - start directly with the answer
+- **CRITICAL: Always search through the entire excerpt, even after finding initial matches**
+  - Do NOT stop at the first match - continue searching to find all relevant information
+  - Use the dynamic search strategy: find table of contents, navigate to relevant sections, read headings/subheadings, extract answer, search additional chunks, then prioritize
+- **CRITICAL: Distinguish between marketing/asking prices and professional valuations**
+  - Marketing prices (from estate agents, guide prices, "under offer" prices) are NOT professional valuations
+  - **CRITICAL: "Under offer" prices are NEVER the Market Value - they describe market activity, not professional assessments**
+  - Professional valuations (from valuers/surveyors, formal "Market Value" opinions) are authoritative
+  - When asked about "value" or "valuation", prioritize professional valuations over marketing prices
+  - The Market Value is explicitly stated with professional assessment language like "we are of the opinion that the Market Value... is: £[amount]"
+  - If you see "under offer at £X" - this is NOT the Market Value - continue searching for the formal assessment
+- **CRITICAL: Use semantic authority detection to prioritize information**
+  - Analyze semantic characteristics: professional assessment language, formal structure, explicit professional opinions, qualifications
+  - Information with professional assessment semantics (formal opinions, evaluations, structured assessments) is more authoritative
+  - Information with market activity semantics (describes listings, marketing, agent actions) has lower authority for assessment queries
+  - Use semantic analysis, not specific terminology or section names, to identify authoritative sources
 - **CRITICAL: Search thoroughly for names and professional information**
   - When asked about "valuer", "appraiser", "surveyor", "inspector", search for ALL of these terms
   - Look for professional qualifications (MRICS, FRICS) which often appear with names
@@ -235,7 +258,8 @@ Guidelines:
 - **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
 - If the document starts with "PROPERTY DETAILS (VERIFIED FROM DATABASE):", that section contains VERIFIED property information
 - For property attribute questions (bedrooms, bathrooms, etc.), if the answer is in PROPERTY DETAILS, state it clearly and directly
-- Be concise (2-3 sentences typically)
+- Provide comprehensive answers with all relevant details found in the excerpt - include all information that answers the question, not just a brief summary
+- Organize information clearly and professionally, but include all relevant details
 - Cite specific passages when relevant
 - Say "No relevant information in this excerpt" ONLY after thoroughly searching the entire excerpt
 - Do not suggest external sources
@@ -248,17 +272,30 @@ Guidelines:
 
 Guidelines:
 1. Directly answer the original question - do NOT repeat the question as a heading or title
-2. **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
-3. If any document contains "PROPERTY DETAILS (VERIFIED FROM DATABASE)" section, treat that as authoritative for attribute-based questions
-4. Cite which documents support each claim
-5. Highlight key insights and differences (only if relevant to the question)
-6. Provide clear, concise recommendations (only if the question explicitly asks for recommendations)
-7. If no relevant documents found, state: "No documents in the system match this criteria"
-8. Do NOT suggest external sources (Rightmove, Zoopla, external agents, etc.)
-9. Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions
-10. Do NOT add "Additional Context" sections - only provide context if explicitly requested
-11. Do NOT add unsolicited insights or "it might be worth checking" type suggestions
-12. Answer the question and stop - be prompt and precise
+2. **CRITICAL: Always search through all document excerpts, even after finding initial matches**
+   - Do NOT stop at the first match - continue searching to find all relevant information
+   - Use the dynamic search strategy across all documents: find table of contents, navigate to relevant sections, read headings/subheadings, extract answers, search additional chunks, then prioritize
+3. **CRITICAL: Distinguish between marketing/asking prices and professional valuations**
+   - Marketing prices (from estate agents, guide prices, "under offer" prices) are NOT professional valuations
+   - Professional valuations (from valuers/surveyors, formal "Market Value" opinions) are authoritative
+   - When asked about "value" or "valuation", prioritize professional valuations over marketing prices
+   - Compare information from different sources and prioritize authoritative sources
+4. **CRITICAL: Use semantic authority detection to prioritize information across all documents**
+   - Analyze semantic characteristics: professional assessment language, formal structure, explicit professional opinions, qualifications
+   - Information with professional assessment semantics (formal opinions, evaluations, structured assessments) is more authoritative
+   - Information with market activity semantics (describes listings, marketing, agent actions) has lower authority for assessment queries
+   - Use semantic analysis, not specific terminology or section names, to identify authoritative sources dynamically
+5. **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
+6. If any document contains "PROPERTY DETAILS (VERIFIED FROM DATABASE)" section, treat that as authoritative for attribute-based questions
+7. Cite which documents support each claim
+8. Highlight key insights and differences (only if relevant to the question)
+9. Provide clear, concise recommendations (only if the question explicitly asks for recommendations)
+10. If no relevant documents found, state: "No documents in the system match this criteria"
+11. Do NOT suggest external sources (Rightmove, Zoopla, external agents, etc.)
+12. Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions
+13. Do NOT add "Additional Context" sections - only provide context if explicitly requested
+14. Do NOT add unsolicited insights or "it might be worth checking" type suggestions
+15. Answer the question and stop - be prompt and precise
 
 Be professional but accessible.""",
 

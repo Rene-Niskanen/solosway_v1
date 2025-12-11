@@ -52,14 +52,16 @@ class MainWorkflowState(TypedDict, total=False):
     conversation_history: Annotated[list[dict], operator.add]  # New: stores Q&A history
     session_id: str  # New: unique chat session identifier
     document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
+    detail_level: Optional[str]  # NEW: "concise" (default) or "detailed" - controls number of chunks/docs processed
 
-class DocumentQAState(TypedDict):
+class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""
     doc_type: str
     property_id: Optional[str]  # Some documents may not be linked to a property
     doc_content: str
     user_query: str
     answer: str
+    detail_level: Optional[str]  # NEW: "concise" or "detailed" - controls prompt instructions
 
 
 

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home, Microscope } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -800,6 +800,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
+  const [isDetailedMode, setIsDetailedMode] = React.useState<boolean>(false); // NEW: Detailed analysis mode toggle
   // Property search state
   const [propertySearchQuery, setPropertySearchQuery] = React.useState<string>("");
   const [propertySearchResults, setPropertySearchResults] = React.useState<PropertyData[]>([]);
@@ -1537,7 +1538,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   persistedChatMessagesRef.current = updated;
                   return updated;
                 });
-              }
+              },
+              // detailLevel: Pass detailed mode toggle state
+              isDetailedMode ? "detailed" : undefined
             );
           } catch (error: any) {
             if (error.name === 'AbortError') {
@@ -2630,7 +2633,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 return updated;
               });
-            }
+            },
+            // detailLevel: Pass detailed mode toggle state
+            isDetailedMode ? "detailed" : undefined
           );
           
           // Clear abort controller on completion
@@ -3398,6 +3403,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         >
                           <Mic className="w-[18px] h-[18px]" strokeWidth={1.5} />
                         </button>
+                        
+                        {/* Detailed Mode Toggle (Microscope Icon) */}
+                        <motion.button
+                          type="button"
+                          onClick={() => setIsDetailedMode(!isDetailedMode)}
+                          className="flex items-center justify-center relative focus:outline-none outline-none"
+                          style={{
+                            width: '32px',
+                            height: '32px',
+                            minWidth: '32px',
+                            minHeight: '32px',
+                            borderRadius: '50%',
+                            flexShrink: 0,
+                            marginLeft: '4px'
+                          }}
+                          animate={{
+                            backgroundColor: isDetailedMode ? '#415C85' : '#F3F4F6'
+                          }}
+                          whileHover={{
+                            scale: 1.05
+                          }}
+                          whileTap={{
+                            scale: 0.95
+                          }}
+                          transition={{
+                            duration: 0.2,
+                            ease: [0.16, 1, 0.3, 1]
+                          }}
+                          title={isDetailedMode ? "Detailed analysis mode (RICS-level professional answers) - Click to disable" : "Detailed analysis mode (RICS-level professional answers) - Click to enable"}
+                        >
+                          <Microscope 
+                            className="w-4 h-4" 
+                            strokeWidth={2.5} 
+                            style={{ color: isDetailedMode ? '#ffffff' : '#4B5563' }} 
+                          />
+                        </motion.button>
                         
                         {/* Send button or Stop button (when streaming) */}
                         {(() => {

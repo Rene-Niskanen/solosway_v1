@@ -215,7 +215,8 @@ class BackendApiService {
     abortSignal?: AbortSignal,
     documentIds?: string[],
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
-    onReasoningContext?: (context: { message: string; moment: string }) => void
+    onReasoningContext?: (context: { message: string; moment: string }) => void,
+    detailLevel?: "concise" | "detailed"  // NEW: Optional detail level override
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -233,7 +234,8 @@ class BackendApiService {
           propertyId,
           messageHistory,
           sessionId: sessionId || `session_${Date.now()}`,
-          documentIds: documentIds || undefined
+          documentIds: documentIds || undefined,
+          detailLevel: detailLevel || undefined  // NEW: Pass detail level to backend
         }),
       });
 
@@ -842,18 +844,27 @@ class BackendApiService {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const response = JSON.parse(xhr.responseText);
-      if (response.success) {
-        console.log(`✅ General document upload successful: ${file.name}`);
+              console.log(`📥 [UPLOAD] Response received:`, response);
+              
+              if (response.success) {
+                console.log(`✅ General document upload successful: ${file.name}`);
                 console.log(`🔄 Full processing pipeline queued (classification → extraction → embedding)`);
+                // Backend returns {success: true, document_id: ...} directly
+                // Ensure document_id is accessible in response.data
+                const documentId = response.document_id || (response.data && response.data.document_id);
+                console.log(`📄 Document ID: ${documentId}`);
+                
                 // Don't set to 100% here - let frontend handle it when file appears in UI
-                // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
-          success: true,
-          data: response.data || response // Use response.data if exists, otherwise use response itself
+                  success: true,
+                  data: {
+                    document_id: documentId,
+                    ...response // Include all response fields
+                  }
                 });
-      } else {
-        throw new Error(response.error || 'Upload failed');
-      }
+              } else {
+                throw new Error(response.error || 'Upload failed');
+              }
             } catch (parseError) {
               console.error(`❌ Failed to parse response: ${parseError}`);
               resolve({

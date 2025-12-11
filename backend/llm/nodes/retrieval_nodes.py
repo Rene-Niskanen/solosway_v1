@@ -5,7 +5,9 @@ Retrieval nodes: Query classification, vector search, SQL search, deduplication,
 import json
 import logging
 import os
-from typing import Optional, List, Dict
+import re
+import time
+from typing import Optional, List, Dict, Any
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -29,12 +31,462 @@ from backend.llm.prompts import (
 logger = logging.getLogger(__name__)
 
 
+def _rewrite_query_keywords(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
+    """
+    Rule-based query rewriting using keyword patterns.
+    Handles common property query patterns without LLM overhead.
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    rewritten = query
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Extract property name from query (capitalized words, excluding common words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where'}
+    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+    
+    # Expand value/price queries for better retrieval
+    if any(term in query_lower for term in ['value', 'worth', 'valuation']):
+        if 'market value' not in query_lower and 'valuation' not in query_lower:
+            # Add synonyms for better BM25/vector matching
+            rewritten = rewritten.replace('value', 'value valuation market value price worth')
+        elif 'market value' not in query_lower:
+            rewritten = rewritten.replace('valuation', 'valuation market value')
+    
+    # Expand bedroom/bathroom abbreviations (handles "5 bed" → "5 bedroom bedrooms")
+    rewritten = re.sub(r'(\d+)\s+bed\b', r'\1 bedroom bedrooms bed', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+bath\b', r'\1 bathroom bathrooms bath', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+br\b', r'\1 bedroom bedrooms', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+ba\b', r'\1 bathroom bathrooms', rewritten, flags=re.IGNORECASE)
+    
+    # Normalize UK postcodes (AB12CD → AB1 2CD)
+    postcode_pattern = r'\b([A-Z]{1,2}\d{1,2})\s?(\d[A-Z]{2})\b'
+    def format_postcode(match):
+        return f"{match.group(1)} {match.group(2)}"
+    rewritten = re.sub(postcode_pattern, format_postcode, rewritten, flags=re.IGNORECASE)
+    
+    # Expand address-related queries
+    if 'address' in query_lower and 'location' not in query_lower:
+        rewritten = rewritten.replace('address', 'address location property address')
+    
+    # CRITICAL: Add property name/address from conversation history for follow-up questions
+    # This ensures we don't retrieve information about the wrong property
+    if conversation_history:
+        # Extract from last assistant response and previous user query
+        last_exchange = conversation_history[-1] if conversation_history else {}
+        last_response = ''
+        last_query = ''
+        
+        if isinstance(last_exchange, dict):
+            if 'summary' in last_exchange:
+                last_response = last_exchange['summary']
+            elif 'content' in last_exchange and last_exchange.get('role') == 'assistant':
+                last_response = last_exchange['content']
+            if 'query' in last_exchange:
+                last_query = last_exchange['query']
+            elif 'content' in last_exchange and last_exchange.get('role') == 'user':
+                last_query = last_exchange['content']
+        
+        # Also check previous exchanges for property context
+        property_context = ''
+        for exchange in reversed(conversation_history[-3:]):  # Check last 3 exchanges
+            if isinstance(exchange, dict):
+                text_to_search = ''
+                if 'summary' in exchange:
+                    text_to_search = exchange['summary']
+                elif 'content' in exchange:
+                    text_to_search = exchange['content']
+                elif 'query' in exchange:
+                    text_to_search = exchange['query']
+                
+                if text_to_search:
+                    # Look for property addresses (common patterns)
+                    # Pattern for UK addresses: "Property Name, Street, City, Postcode"
+                    address_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Road|Street|Lane|Drive|Avenue|Close|Way|Place)),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+                    address_match = re.search(address_pattern, text_to_search)
+                    if address_match:
+                        property_context = ' '.join(address_match.groups())
+                        break
+                    
+                    # Look for property names (capitalized words that aren't common words)
+                    words = text_to_search.split()
+                    property_names_found = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+                    if property_names_found and not property_context:
+                        # Prefer longer property names
+                        property_context = max(property_names_found, key=len)
+                    
+                    # Look for postcodes (UK format: letters, numbers, space, letters, numbers)
+                    postcode_pattern = r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}'
+                    postcode_match = re.search(postcode_pattern, text_to_search)
+                    if postcode_match:
+                        if property_context:
+                            property_context = f"{property_context} {postcode_match.group()}"
+                        else:
+                            property_context = postcode_match.group()
+        
+        # If we found property context and it's not already in the query, add it
+        if property_context and property_context.lower() not in query_lower:
+            rewritten = f"{rewritten} {property_context}"
+            logger.info(f"[REWRITE_QUERY] Added property context from history: {property_context}")
+    
+    # Clean up multiple spaces
+    rewritten = ' '.join(rewritten.split())
+    return rewritten.strip()
+
+
+def _needs_llm_rewrite(query: str, conversation_history: List[Dict[str, Any]] = None) -> bool:
+    """
+    Determine if LLM-based rewrite is necessary.
+    Returns False for most queries (use keyword rewrite), True only for complex cases.
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Skip LLM for queries with specific terms (these are already clear)
+    specific_terms = ['value', 'price', 'worth', 'valuation', 'bedroom', 'bathroom', 'bed', 'bath', 
+                      'address', 'postcode', 'epc', 'energy', 'size', 'sqft', 'square', 'footage',
+                      'buyer', 'seller', 'valuer', 'surveyor', 'agent', 'owner']
+    if any(term in query_lower for term in specific_terms):
+        return False
+    
+    # Skip LLM for property name queries (capitalized words indicate specific property)
+    if any(len(w) > 3 and w[0].isupper() and w[1:].islower() for w in words):
+        return False
+    
+    # Skip LLM for postcode queries (UK format: AB1 2CD or AB12CD)
+    if re.search(r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}', query, re.IGNORECASE):
+        return False
+    
+    # Skip LLM for short specific queries (< 6 words with question words)
+    if len(words) < 6 and any(term in query_lower for term in ['what', 'how much', 'where', 'when', 'who']):
+        return False
+    
+    # Skip LLM for queries with numbers (specific values, counts, etc.)
+    if re.search(r'\d+', query):
+        return False
+    
+    # Use LLM for vague queries that need context expansion
+    vague_terms = ['tell me about', 'what can you', 'find information', 'show me', 'describe', 
+                   'give me details', 'what do you know', 'explain']
+    if any(term in query_lower for term in vague_terms):
+        return True
+    
+    # Use LLM if query references previous conversation without context
+    if conversation_history and any(ref in query_lower for ref in ['it', 'that', 'the property', 'the document', 'this', 'those']):
+        return True
+    
+    # Use LLM for complex multi-concept queries
+    complex_indicators = ['and', 'or', 'but', 'also', 'including', 'except']
+    if len(words) > 8 and sum(1 for term in complex_indicators if term in query_lower) >= 2:
+        return True
+    
+    # Default: skip LLM (keyword rewrite is sufficient for most queries)
+    return False
+
+
+def _should_expand_query(query: str) -> bool:
+    """
+    Determine if query expansion is necessary.
+    
+    Returns False (skip expansion) for:
+    - Queries with property names (capitalized words > 3 chars)
+    - Specific value queries ("£2.3m", "value of X", "price")
+    - Short queries (< 5 words) with specific terms
+    - Queries with postcodes (UK format: "AB1 2CD" or "AB12CD")
+    - Queries with exact property identifiers (addresses, IDs)
+    - Queries with numbers (specific counts, values)
+    
+    Returns True (require expansion) for:
+    - Vague queries ("tell me about", "what can you find")
+    - Conceptual queries ("foundation issues", "structural problems")
+    - Multi-concept queries requiring synonyms
+    - Queries with abstract terms needing expansion
+    """
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Skip expansion for queries with property names (capitalized words indicate specific property)
+    if any(len(w) > 3 and w[0].isupper() and w[1:].islower() for w in words):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains property name")
+        return False
+    
+    # Skip expansion for postcode queries (UK format: AB1 2CD or AB12CD)
+    if re.search(r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}', query, re.IGNORECASE):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains postcode")
+        return False
+    
+    # Skip expansion for short specific queries (< 5 words with specific terms)
+    specific_terms = ['value', 'price', 'worth', 'valuation', 'bedroom', 'bathroom', 'bed', 'bath',
+                      'address', 'postcode', 'epc', 'energy', 'size', 'sqft', 'square', 'footage',
+                      'buyer', 'seller', 'valuer', 'surveyor', 'agent', 'owner', 'date', 'when']
+    if len(words) < 5 and any(term in query_lower for term in specific_terms):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - short query with specific term")
+        return False
+    
+    # Skip expansion for queries with numbers (specific values, counts, etc.)
+    if re.search(r'\d+', query):
+        # Check if number is part of a specific query pattern
+        number_patterns = [
+            r'\d+\s*(bedroom|bed|bathroom|bath|br|ba)',  # "5 bedroom"
+            r'£\s*\d+',  # "£2.3m" or "£2300000"
+            r'\d+\s*(million|m|thousand|k)',  # "2.3 million"
+            r'\d+\s*(sqft|sq\s*ft|square\s*feet)',  # "2500 sqft"
+        ]
+        if any(re.search(pattern, query, re.IGNORECASE) for pattern in number_patterns):
+            logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains specific number pattern")
+            return False
+    
+    # Skip expansion for queries with exact identifiers (UUIDs, IDs)
+    uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    if re.search(uuid_pattern, query, re.IGNORECASE):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains UUID")
+        return False
+    
+    # Require expansion for vague queries that need context
+    vague_terms = ['tell me about', 'what can you', 'find information', 'show me', 'describe',
+                   'give me details', 'what do you know', 'explain', 'what information',
+                   'what details', 'what can you tell']
+    if any(term in query_lower for term in vague_terms):
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - vague query detected")
+        return True
+    
+    # Require expansion for conceptual queries (benefit from synonym expansion)
+    conceptual_terms = ['issue', 'problem', 'defect', 'damage', 'condition', 'quality',
+                        'feature', 'amenity', 'characteristic', 'aspect', 'detail']
+    if any(term in query_lower for term in conceptual_terms):
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - conceptual query detected")
+        return True
+    
+    # Require expansion for multi-concept queries (need synonym coverage)
+    complex_indicators = ['and', 'or', 'but', 'also', 'including', 'except', 'plus']
+    if len(words) > 6 and sum(1 for term in complex_indicators if term in query_lower) >= 2:
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - complex multi-concept query")
+        return True
+    
+    # Default: skip expansion for most queries (keyword-based retrieval is sufficient)
+    # Only expand when we're confident it will help
+    logger.debug(f"[EXPAND_QUERY] Default: skipping expansion for query")
+    return False
+
+
+def check_cached_documents(state: MainWorkflowState) -> MainWorkflowState:
+    """
+    Node: Check for Cached Documents from Previous Conversation Turns
+    
+    For follow-up questions about the same property, reuse previously retrieved documents
+    instead of performing a new search. This dramatically speeds up follow-up queries.
+    
+    Logic:
+    1. Check if there are cached documents from previous conversation turns (via checkpointer)
+    2. Extract property context from current query and conversation history
+    3. If property context matches, reuse cached documents
+    4. If property context differs or no cache exists, clear cache and proceed with normal retrieval
+    
+    Args:
+        state: MainWorkflowState with user_query, conversation_history, and potentially cached relevant_documents
+        
+    Returns:
+        Updated state with cached documents if applicable, or empty dict to proceed with normal retrieval
+    """
+    conversation_history = state.get('conversation_history', []) or []
+    user_query = state.get('user_query', '')
+    
+    # Check if there are cached documents from previous state (loaded from checkpointer)
+    cached_docs = state.get('relevant_documents', [])
+    
+    # If no conversation history AND no cached docs, proceed with normal retrieval
+    if (not conversation_history or len(conversation_history) == 0) and (not cached_docs or len(cached_docs) == 0):
+        logger.debug("[CHECK_CACHED_DOCS] No conversation history and no cached documents - proceeding with normal retrieval")
+        return {}  # No changes, proceed with normal flow
+    
+    # If no cached docs but we have history, proceed with normal retrieval
+    if not cached_docs or len(cached_docs) == 0:
+        logger.debug("[CHECK_CACHED_DOCS] No cached documents found - proceeding with normal retrieval")
+        return {}  # No cached docs, proceed with normal retrieval
+    
+    logger.info(f"[CHECK_CACHED_DOCS] Found {len(cached_docs)} cached documents from previous conversation")
+    
+    # Extract property context from current query
+    current_property_context = _extract_property_context(user_query, conversation_history)
+    
+    # Extract property context from previous conversation
+    previous_property_context = _extract_property_context_from_history(conversation_history)
+    
+    # Check if property contexts match (same property)
+    if current_property_context and previous_property_context:
+        # Normalize for comparison (case-insensitive, whitespace-insensitive)
+        current_normalized = ' '.join(current_property_context.lower().split())
+        previous_normalized = ' '.join(previous_property_context.lower().split())
+        
+        # Check if they match (allowing for partial matches)
+        if current_normalized in previous_normalized or previous_normalized in current_normalized:
+            logger.info(f"[CHECK_CACHED_DOCS] ✅ Property context matches - reusing {len(cached_docs)} cached documents")
+            logger.info(f"[CHECK_CACHED_DOCS] Current context: '{current_property_context}', Previous: '{previous_property_context}'")
+            return {"relevant_documents": cached_docs}  # Return cached documents
+        else:
+            logger.info(f"[CHECK_CACHED_DOCS] ❌ Property context differs - clearing cache and proceeding with new retrieval")
+            logger.info(f"[CHECK_CACHED_DOCS] Current: '{current_property_context}', Previous: '{previous_property_context}'")
+            return {"relevant_documents": []}  # Clear cache, proceed with normal retrieval
+    elif current_property_context:
+        # Current query has property context but previous doesn't - check if current matches cached docs
+        logger.info(f"[CHECK_CACHED_DOCS] Current query has property context: '{current_property_context}'")
+        # Check if cached docs are about the current property by examining document metadata
+        if _documents_match_property(cached_docs, current_property_context):
+            logger.info(f"[CHECK_CACHED_DOCS] ✅ Cached documents match current property context - reusing {len(cached_docs)} documents")
+            return {"relevant_documents": cached_docs}
+        else:
+            logger.info(f"[CHECK_CACHED_DOCS] ❌ Cached documents don't match current property - clearing cache and proceeding with new retrieval")
+            return {"relevant_documents": []}  # Clear cache
+    elif previous_property_context:
+        # Previous had property context but current doesn't - likely same conversation, reuse cache
+        logger.info(f"[CHECK_CACHED_DOCS] ✅ No property context in current query, but previous had context - reusing {len(cached_docs)} cached documents")
+        return {"relevant_documents": cached_docs}
+    else:
+        # No property context in either - likely same conversation, reuse cache
+        logger.info(f"[CHECK_CACHED_DOCS] ✅ No property context in query or history - reusing {len(cached_docs)} cached documents (likely same conversation)")
+        return {"relevant_documents": cached_docs}
+
+
+def _extract_property_context(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
+    """
+    Extract property name/address/postcode from query and conversation history.
+    
+    Returns:
+        Property context string (name, address, or postcode) or empty string
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    context_parts = []
+    
+    # Extract from current query
+    query_lower = query.lower()
+    
+    # Look for postcodes (UK format)
+    postcode_pattern = r'\b[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}\b'
+    postcode_matches = re.findall(postcode_pattern, query, re.IGNORECASE)
+    if postcode_matches:
+        context_parts.extend(postcode_matches)
+    
+    # Look for property names (capitalized words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where', 'property', 'value', 'valuation', 'market'}
+    words = query.split()
+    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+    if property_names:
+        context_parts.extend(property_names[:2])  # Take first 2 property name words
+    
+    # Extract from conversation history if not found in query
+    if not context_parts and conversation_history:
+        for exchange in reversed(conversation_history[-3:]):  # Check last 3 exchanges
+            if isinstance(exchange, dict):
+                text_to_search = ''
+                if 'summary' in exchange:
+                    text_to_search = exchange['summary']
+                elif 'content' in exchange:
+                    text_to_search = exchange['content']
+                elif 'query' in exchange:
+                    text_to_search = exchange['query']
+                
+                if text_to_search:
+                    # Look for addresses
+                    address_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Road|Street|Lane|Drive|Avenue|Close|Way|Place)),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+                    address_match = re.search(address_pattern, text_to_search)
+                    if address_match:
+                        context_parts.append(' '.join(address_match.groups()))
+                        break
+                    
+                    # Look for postcodes
+                    postcode_matches = re.findall(postcode_pattern, text_to_search, re.IGNORECASE)
+                    if postcode_matches:
+                        context_parts.extend(postcode_matches)
+                        break
+                    
+                    # Look for property names
+                    words = text_to_search.split()
+                    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+                    if property_names:
+                        context_parts.append(max(property_names, key=len))  # Take longest property name
+                        break
+    
+    return ' '.join(context_parts[:3]) if context_parts else ''  # Return first 3 context parts
+
+
+def _extract_property_context_from_history(conversation_history: List[Dict[str, Any]]) -> str:
+    """
+    Extract property context from conversation history (previous queries/responses).
+    
+    Returns:
+        Property context string or empty string
+    """
+    if not conversation_history:
+        return ''
+    
+    # Check last few exchanges for property context
+    for exchange in reversed(conversation_history[-3:]):
+        if isinstance(exchange, dict):
+            text_to_search = ''
+            if 'summary' in exchange:
+                text_to_search = exchange['summary']
+            elif 'content' in exchange:
+                text_to_search = exchange['content']
+            elif 'query' in exchange:
+                text_to_search = exchange['query']
+            
+            if text_to_search:
+                context = _extract_property_context(text_to_search, [])
+                if context:
+                    return context
+    
+    return ''
+
+
+def _documents_match_property(documents: List[RetrievedDocument], property_context: str) -> bool:
+    """
+    Check if cached documents are about the specified property.
+    
+    Args:
+        documents: List of cached RetrievedDocument objects
+        property_context: Property name/address/postcode to match
+        
+    Returns:
+        True if documents match the property, False otherwise
+    """
+    if not documents or not property_context:
+        return False
+    
+    property_lower = property_context.lower()
+    
+    # Check document metadata for property matches
+    for doc in documents[:5]:  # Check first 5 documents
+        # Check document ID/filename
+        doc_id = str(doc.get('document_id', '')).lower()
+        doc_metadata = doc.get('metadata', {})
+        filename = doc_metadata.get('original_filename', '').lower()
+        source = doc_metadata.get('source', '').lower()
+        
+        # Check if property context appears in document identifiers
+        if property_lower in doc_id or property_lower in filename or property_lower in source:
+            return True
+        
+        # Check document content (first 500 chars)
+        content = str(doc.get('content', ''))[:500].lower()
+        if property_lower in content:
+            return True
+    
+    return False
+
+
 def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Query Rewriting with Conversation Context
     
-    Rewrites vague follow-up queries to be self-contained using conversation history.
-    This ensures vector search understands references like "the document", "that property".
+    Uses keyword-based rewriting for most queries (fast, no LLM).
+    Falls back to LLM rewriting only for complex/vague queries.
     
     Examples:
         "What's the price?" → "What's the price for Highlands, Berden Road property?"
@@ -47,9 +499,24 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         Updated state with rewritten user_query (or unchanged if no context needed)
     """
+    conversation_history = state.get('conversation_history', []) or []
+    user_query = state.get('user_query', '')
     
-    # Skip if no conversation history
-    if not state.get('conversation_history') or len(state['conversation_history']) == 0:
+    # Check if LLM rewrite is needed
+    if not _needs_llm_rewrite(user_query, conversation_history):
+        # Use fast keyword-based rewrite
+        rewritten = _rewrite_query_keywords(user_query, conversation_history)
+        if rewritten != user_query:
+            logger.info(f"[REWRITE_QUERY] Keyword rewrite: '{user_query[:50]}...' -> '{rewritten[:50]}...'")
+            return {"user_query": rewritten}
+        logger.debug(f"[REWRITE_QUERY] No rewrite needed for query: '{user_query[:50]}...'")
+        return {}  # No changes needed
+    
+    # Proceed with LLM rewrite for complex queries (existing code below)
+    logger.info(f"[REWRITE_QUERY] Using LLM rewrite for complex query: '{user_query[:50]}...'")
+    
+    # Skip if no conversation history (original query is fine)
+    if not conversation_history or len(conversation_history) == 0:
         logger.info("[REWRITE_QUERY] No conversation history, using original query")
         return {}  # No changes to state
     
@@ -124,7 +591,7 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     Node: Query Expansion for Better Recall
     
     Generates query variations to catch different phrasings and synonyms.
-    This dramatically improves recall for ambiguous queries.
+    Now uses smart heuristics to skip expansion for simple, specific queries.
     
     Examples:
         "foundation issues" → ["foundation issues", "foundation damage and structural problems", 
@@ -140,30 +607,13 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     """
     
     original_query = state['user_query']
-    query_lower = original_query.lower().strip()
     
-    # PERFORMANCE OPTIMIZATION: Skip expansion for:
-    # 1. Very specific/long queries (already clear)
-    # 2. Short queries (< 3 words) - too simple to benefit
-    # 3. Queries with specific property identifiers (addresses, IDs) - already specific
-    # 4. Questions starting with "what is" or "show me" - usually clear enough
-    word_count = len(original_query.split())
-    has_specific_terms = any(term in query_lower for term in [
-        'property', 'address', 'bedroom', 'bathroom', 'price', 'valuation', 
-        'document', 'report', 'page', 'id:', 'property_id'
-    ])
+    # Check if expansion is needed using smart heuristics
+    enable_smart_expansion = os.getenv("ENABLE_SMART_EXPANSION", "true").lower() == "true"
     
-    if word_count > 15:
-        logger.info("[EXPAND_QUERY] Query already specific (>15 words), skipping expansion")
-        return {"query_variations": [original_query]}
-    
-    if word_count < 3:
-        logger.info("[EXPAND_QUERY] Query too short (<3 words), skipping expansion")
-        return {"query_variations": [original_query]}
-    
-    if has_specific_terms and word_count > 5:
-        logger.info("[EXPAND_QUERY] Query contains specific terms, skipping expansion for speed")
-        return {"query_variations": [original_query]}
+    if enable_smart_expansion and not _should_expand_query(original_query):
+        logger.info(f"[EXPAND_QUERY] Skipping expansion for simple query: '{original_query[:50]}...'")
+        return {"query_variations": [original_query]}  # Return original query as single variation
     
     # PERFORMANCE OPTIMIZATION: Use faster/cheaper model for query expansion
     # gpt-3.5-turbo is much faster and cheaper than gpt-4 for this task
@@ -280,6 +730,8 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
       queries property_details table directly for fast, accurate results
     
     This dramatically improves recall and handles lazy embedding seamlessly.
+    
+    PERFORMANCE OPTIMIZATION: If relevant_documents already exist (from cache), skip retrieval.
 
     Args:
         state: MainWorkflowState with user_query, query_variations, business_id
@@ -287,6 +739,15 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         Updated state with hybrid search results appended to relevant_documents
     """
+    # PERFORMANCE OPTIMIZATION: Check if documents were already retrieved from cache
+    existing_docs = state.get('relevant_documents', [])
+    if existing_docs and len(existing_docs) > 0:
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Skipping retrieval - {len(existing_docs)} documents already cached from previous conversation")
+        return {}  # No changes needed, use cached documents
+    
+    node_start = time.time()
+    user_query = state.get('user_query', '')
+    logger.info(f"[QUERY_VECTOR_DOCUMENTS] Starting retrieval for query: '{user_query[:50]}...'")
 
     try:
         # STEP 1: Check if query is property-specific (bedrooms, bathrooms, price, etc.)
@@ -329,9 +790,24 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                 
                 logger.info(f"[QUERY_STRUCTURED] Extracted - Bedrooms: {bedroom_match.group(1) if bedroom_match else None}, Bathrooms: {bathroom_match.group(1) if bathroom_match else None}")
                 
-                # Build property_details query
+                # SECURITY: First get property_ids for this business to ensure multi-tenancy
+                # This prevents querying other companies' property_details
+                business_properties = supabase.table('properties')\
+                    .select('id')\
+                    .eq('business_uuid', business_id)\
+                    .execute()
+                
+                if not business_properties.data:
+                    logger.info(f"[QUERY_STRUCTURED] No properties found for business {business_id}")
+                    property_results = type('obj', (object,), {'data': []})()  # Empty result
+                else:
+                    business_property_ids = [p['id'] for p in business_properties.data]
+                    logger.info(f"[QUERY_STRUCTURED] Filtering property_details for {len(business_property_ids)} properties in business")
+                    
+                    # Build property_details query - ONLY for this business's properties
                 property_query = supabase.table('property_details')\
-                    .select('property_id, number_bedrooms, number_bathrooms')
+                        .select('property_id, number_bedrooms, number_bathrooms')\
+                        .in_('property_id', business_property_ids)  # CRITICAL: Filter by business
                 
                 if bedroom_match:
                     bedrooms = int(bedroom_match.group(1))
@@ -345,12 +821,15 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                 property_results = property_query.execute()
                 
                 # RETRY LOGIC: If no exact matches, try similarity-based search
-                if not property_results.data and (bedroom_match or bathroom_match):
+                if not property_results.data and (bedroom_match or bathroom_match) and business_properties.data:
                     logger.info(f"[QUERY_STRUCTURED] No exact matches found, trying similarity-based search...")
                     
-                    # Try ranges: ±1 bedroom/bathroom
+                    business_property_ids = [p['id'] for p in business_properties.data]
+                    
+                    # Try ranges: ±1 bedroom/bathroom - STILL FILTERED BY BUSINESS
                     similarity_query = supabase.table('property_details')\
-                        .select('property_id, number_bedrooms, number_bathrooms')
+                        .select('property_id, number_bedrooms, number_bathrooms')\
+                        .in_('property_id', business_property_ids)  # CRITICAL: Filter by business
                     
                     if bedroom_match:
                         bedrooms = int(bedroom_match.group(1))
@@ -389,10 +868,11 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                             .eq('business_uuid', business_id)\
                             .execute()
                         
-                        # Get property addresses
+                        # Get property addresses - FILTER BY BUSINESS for security
                         addresses = supabase.table('properties')\
                             .select('id, formatted_address')\
                             .in_('id', property_ids)\
+                            .eq('business_uuid', business_id)\
                             .execute()
                         
                         address_map = {a['id']: a['formatted_address'] for a in addresses.data}
@@ -567,12 +1047,13 @@ This information has been verified and extracted from the property database, inc
                                     # Fallback: use property details if chunks are empty
                                     combined_content = party_names_context + property_context + f"Property with matching criteria from {doc.get('original_filename', 'document')}. Document chunks are being processed."
                                 
-                                # Trigger lazy embedding for this document if chunks are unembedded
+                                # Trigger lazy embedding for this document if chunks are unembedded (edge case: legacy documents)
+                                # Note: All new documents are embedded upfront, so this should rarely trigger
                                 if has_unembedded:
                                     try:
                                         from backend.tasks import embed_document_chunks_lazy
                                         embed_document_chunks_lazy.delay(str(doc['id']), business_id)
-                                        logger.info(f"[QUERY_STRUCTURED] Triggered lazy embedding for document {doc['id'][:8]}")
+                                        logger.info(f"[QUERY_STRUCTURED] Triggered lazy embedding for document {doc['id'][:8]} (legacy document)")
                                     except Exception as e:
                                         logger.warning(f"[QUERY_STRUCTURED] Failed to trigger lazy embedding: {e}")
                             else:
@@ -610,24 +1091,202 @@ This information has been verified and extracted from the property database, inc
                 logger.debug(traceback.format_exc())
         
         # STEP 2: Use hybrid retriever (BM25 + Vector with lazy embedding triggers)
+        hybrid_start = time.time()
         retriever = HybridDocumentRetriever()
         
         # Get query variations (or just original if expansion didn't run)
         queries = state.get('query_variations', [state['user_query']])
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Running hybrid search for {len(queries)} query variation(s)")
         
         # Search with each query variation using hybrid retriever
         all_results = []
-        for query in queries:
+        for i, query in enumerate(queries, 1):
+            query_start = time.time()
+            # Adjust top_k based on detail_level
+            detail_level = state.get('detail_level', 'concise')
+            if detail_level == 'detailed':
+                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_DETAILED", "50"))  # More chunks for detailed mode
+            else:
+                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "20"))  # Fewer chunks for concise mode
+            
+            # NEW: Header-Priority Retrieval (Pass 1)
+            # Search for chunks with matching section headers first, then boost them in results
+            # Query-driven: Uses query terms directly to find relevant section headers
+            header_results = []
+            relevant_headers = None
+            from backend.llm.utils.section_header_matcher import get_relevant_section_headers, should_use_header_retrieval
+            from backend.llm.utils.section_header_detector import _normalize_header
+            import re
+            
+            document_type = state.get("classification_type")
+            if should_use_header_retrieval(query, document_type):
+                # Build query-driven header search terms
+                # Strategy: Use query terms directly + mapped section headers as enhancement
+                query_lower = query.lower()
+                query_words = [re.sub(r'[^\w\s]', '', w) for w in query_lower.split() if len(w) > 2]  # Remove short words and punctuation
+                
+                # Get mapped section headers (as enhancement, not primary)
+                mapped_headers = get_relevant_section_headers(query, document_type)
+                
+                # Combine: query terms + mapped headers (query terms take priority)
+                # Normalize all terms for consistent matching
+                header_search_terms = set()
+                
+                # Add query terms directly (primary - query-driven)
+                for word in query_words:
+                    if word not in ['the', 'and', 'or', 'for', 'with', 'from', 'this', 'that', 'what', 'where', 'when', 'how']:
+                        header_search_terms.add(word)
+                
+                # Add mapped headers (enhancement)
+                for header in mapped_headers:
+                    # Normalize and split header into individual words
+                    normalized = _normalize_header(header)
+                    header_search_terms.add(normalized)
+                    # Also add individual words from multi-word headers
+                    header_search_terms.update(normalized.split())
+                
+                if header_search_terms:
+                    logger.info(f"[HEADER_RETRIEVAL] Query-driven header search terms: {sorted(header_search_terms)}")
+                    try:
+                        from backend.llm.retrievers.bm25_retriever import BM25DocumentRetriever
+                        bm25_retriever = BM25DocumentRetriever()
+                        
+                        # Build query string for BM25 search (OR all terms - query-driven)
+                        # Use phrase search for multi-word terms, individual words for single terms
+                        header_query_parts = []
+                        for term in header_search_terms:
+                            if ' ' in term:
+                                # Multi-word term: use as phrase
+                                header_query_parts.append(f'"{term}"')
+                            else:
+                                # Single word: use directly
+                                header_query_parts.append(term)
+                        
+                        header_query = " OR ".join(header_query_parts)
+                        
+                        # Search for chunks with these section headers (query-driven)
+                        header_results = bm25_retriever.query_documents(
+                            query_text=header_query,
+                            top_k=int(os.getenv("MAX_HEADER_MATCHES", "20")),  # Limit header matches
+                            business_id=business_id,
+                            property_id=state.get("property_id"),
+                            classification_type=document_type
+                        )
+                        
+                        if header_results:
+                            logger.info(f"[HEADER_RETRIEVAL] Found {len(header_results)} chunks with query-driven header matches")
+                            # Runtime header detection for header results
+                            from backend.llm.utils.section_header_detector import detect_section_header
+                            for result in header_results:
+                                result['_header_match'] = True
+                                # Detect section headers from chunk text at runtime
+                                chunk_text = result.get('chunk_text', '')
+                                if chunk_text:
+                                    header_info = detect_section_header(chunk_text)
+                                    if header_info:
+                                        result['_detected_section_header'] = header_info.get('section_header')
+                                        result['_detected_normalized_header'] = header_info.get('normalized_header')
+                                        logger.debug(f"[RUNTIME_HEADER] Detected header in header result: '{header_info.get('section_header')}'")
+                    except Exception as e:
+                        logger.warning(f"[HEADER_RETRIEVAL] Header search failed: {e}, continuing with standard retrieval")
+            
+            # Standard Hybrid Search (Pass 2)
             results = retriever.query_documents(
                 user_query=query,
-                top_k=20,  # Fetch fewer per query, merge later
+                top_k=top_k,  # Adjusted based on detail_level
                 business_id=business_id,
                 property_id=state.get("property_id"),
                 classification_type=state.get("classification_type"),
-                trigger_lazy_embedding=True  # Enable lazy embedding triggers
+                trigger_lazy_embedding=False  # Disabled: all chunks embedded upfront
+                # TODO: Add section_headers parameter once hybrid retriever supports it
             )
+            
+            # Runtime Section Header Detection (Phase 1): Detect headers in standard results
+            from backend.llm.utils.section_header_detector import detect_section_header, _normalize_header
+            from backend.llm.utils.section_header_matcher import get_relevant_section_headers
+            
+            # Get relevant section headers for this query (generic - works for any query type)
+            relevant_headers = get_relevant_section_headers(query, document_type)
+            relevant_normalized = {_normalize_header(h) for h in relevant_headers} if relevant_headers else set()
+            
+            # Detect headers in standard results and tag them
+            for result in results:
+                chunk_text = result.get('chunk_text', '')
+                if chunk_text:
+                    header_info = detect_section_header(chunk_text)
+                    if header_info:
+                        detected_header = header_info.get('section_header')
+                        detected_normalized = header_info.get('normalized_header')
+                        
+                        result['_detected_section_header'] = detected_header
+                        result['_detected_normalized_header'] = detected_normalized
+                        
+                        # Generic boost: if detected header matches query intent
+                        if detected_normalized in relevant_normalized:
+                            current_score = result.get('similarity_score', 0.0)
+                            result['similarity_score'] = current_score * 2.0  # 2x boost for matching headers
+                            logger.debug(f"[RUNTIME_HEADER] Boosted chunk with matching header: '{detected_header}' (score: {current_score:.3f} → {result['similarity_score']:.3f})")
+            
+            # Boost header-based results (multiply RRF score by 1.5x)
+            if header_results:
+                section_header_boost = float(os.getenv("SECTION_HEADER_BOOST", "1.5"))
+                header_doc_chunk_pairs = {(r.get('doc_id'), r.get('chunk_index')) for r in header_results}
+                
+                for result in results:
+                    chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                    if result.get('_header_match') or chunk_key in header_doc_chunk_pairs:
+                        current_score = result.get('similarity_score', 0.0)
+                        result['similarity_score'] = current_score * section_header_boost
+                        logger.debug(f"[HEADER_RETRIEVAL] Boosted chunk {result.get('chunk_index')} from {current_score:.3f} to {result['similarity_score']:.3f}")
+            
+            # Combine header results with standard results (header results get priority)
+            # Deduplicate by doc_id + chunk_index
+            seen_chunks = set()
+            combined_results = []
+            
+            # Add header results first (they get priority)
+            for result in header_results:
+                chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                if chunk_key not in seen_chunks:
+                    combined_results.append(result)
+                    seen_chunks.add(chunk_key)
+            
+            # Add standard results (skip duplicates)
+            for result in results:
+                chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                if chunk_key not in seen_chunks:
+                    combined_results.append(result)
+                    seen_chunks.add(chunk_key)
+            
+            # Post-Retrieval Header-Based Boosting (Phase 2): Apply additional boosting to combined results
+            # This ensures chunks with matching section headers get prioritized even after combination
+            if relevant_normalized:
+                for result in combined_results:
+                    chunk_text = result.get('chunk_text', '')
+                    if chunk_text:
+                        # If header not already detected, detect it now
+                        if '_detected_normalized_header' not in result:
+                            header_info = detect_section_header(chunk_text)
+                            if header_info:
+                                result['_detected_section_header'] = header_info.get('section_header')
+                                result['_detected_normalized_header'] = header_info.get('normalized_header')
+                        
+                        # Boost if detected header matches query intent (generic matching)
+                        detected_normalized = result.get('_detected_normalized_header')
+                        if detected_normalized and detected_normalized in relevant_normalized:
+                            current_score = result.get('similarity_score', 0.0)
+                            # Additional 1.5x boost for matching headers in combined results
+                            result['similarity_score'] = current_score * 1.5
+                            logger.debug(f"[RUNTIME_HEADER] Post-retrieval boost for matching header: '{result.get('_detected_section_header')}' (score: {current_score:.3f} → {result['similarity_score']:.3f})")
+            
+            # Use combined results
+            results = combined_results
+            query_time = time.time() - query_start
             all_results.append(results)
-            logger.info(f"[QUERY_HYBRID] Query '{query[:40]}...' → {len(results)} docs")
+            logger.info(f"[QUERY_HYBRID] Query {i}/{len(queries)} '{query[:40]}...' → {len(results)} docs in {query_time:.2f}s")
+        
+        hybrid_time = time.time() - hybrid_start
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Hybrid search completed in {hybrid_time:.2f}s")
         
         # Merge results using Reciprocal Rank Fusion
         if len(all_results) > 1:
@@ -869,10 +1528,17 @@ This information has been verified and extracted from the property database, inc
             logger.info(f"[QUERY_FILTERED] Filtered from {len(final_results)} to {len(filtered_results)} documents by document_ids")
             final_results = filtered_results
         
-        logger.info(f"[QUERY_COMBINED] Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, Hybrid: {len(merged_results)}, Final: {len(final_results)}")
+        node_time = time.time() - node_start
+        logger.info(
+            f"[QUERY_VECTOR_DOCUMENTS] Completed in {node_time:.2f}s: "
+            f"Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, "
+            f"Hybrid: {len(merged_results)}, Final: {len(final_results)}"
+        )
         return {"relevant_documents": final_results[:config.vector_top_k]}
 
     except Exception as exc:  # pylint: disable=broad-except
+        node_time = time.time() - node_start
+        logger.error(f"[QUERY_VECTOR_DOCUMENTS] Failed after {node_time:.2f}s: {exc}", exc_info=True)
         logger.error("[QUERY_HYBRID] Hybrid search failed: %s", exc, exc_info=True)
         # Fallback to vector-only search if hybrid fails
         try:

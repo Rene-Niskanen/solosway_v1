@@ -41,15 +41,24 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
         logger.warning("[PROCESS_DOCUMENTS] No relevant documents to process")
         return {"document_outputs": []}
     
-    # PERFORMANCE OPTIMIZATION: Limit number of documents processed to top 5-7
-    # Processing more documents adds significant latency with diminishing returns
-    # Top documents are already ranked by relevance, so we get the best results
-    max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS", "5"))
+    # PERFORMANCE OPTIMIZATION: Limit number of documents processed based on detail_level
+    # Concise mode: 5 docs (fast, precise answers)
+    # Detailed mode: 15 docs (comprehensive, thorough answers)
+    detail_level = state.get('detail_level', 'concise')
+    logger.info(f"[PROCESS_DOCUMENTS] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
+    if detail_level == 'detailed':
+        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS_DETAILED", "15"))
+        logger.info(f"[PROCESS_DOCUMENTS] Detailed mode: processing up to {max_docs_to_process} documents")
+    else:
+        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS", "5"))
+        logger.info(f"[PROCESS_DOCUMENTS] Concise mode: processing up to {max_docs_to_process} documents")
+    
     if len(relevant_docs) > max_docs_to_process:
         logger.info(
-            "[PROCESS_DOCUMENTS] Limiting processing to top %d documents (out of %d) for faster response",
+            "[PROCESS_DOCUMENTS] Limiting processing to top %d documents (out of %d) for %s response",
             max_docs_to_process,
-            len(relevant_docs)
+            len(relevant_docs),
+            detail_level
         )
         relevant_docs = relevant_docs[:max_docs_to_process]
 
@@ -109,6 +118,7 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             "doc_content": doc_content,
             "user_query": state.get("user_query", ""),
             "answer": "",
+            "detail_level": state.get("detail_level", "concise"),  # Pass detail_level to document QA
         }
 
         try:

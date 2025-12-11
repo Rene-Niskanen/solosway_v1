@@ -1222,10 +1222,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   }, [documents]);
 
-  const loadPropertyDocuments = async () => {
+  const loadPropertyDocuments = async (): Promise<number> => {
     if (!property?.id) {
       console.log('⚠️ loadPropertyDocuments: No property or property.id');
-      return;
+      return 0;
     }
     
     // OPTIMIZATION: Use cached documents immediately if available
@@ -1796,7 +1796,31 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         // CRITICAL: Reload documents for the property we uploaded to (use captured currentProperty)
         const propertyId = currentProperty.id;
         try {
-          await loadPropertyDocuments(); // Reload documents
+          // Retry loading documents with exponential backoff to handle race condition
+          // The relationship might not be immediately visible in Supabase queries
+          let retries = 3;
+          let delay = 300;
+          let documentsLoaded = false;
+          
+          while (retries > 0 && !documentsLoaded) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+            await loadPropertyDocuments(); // Reload documents
+            
+            // Check if documents were loaded (check state after a brief moment)
+            await new Promise(resolve => setTimeout(resolve, 100));
+            if (documents.length > 0) {
+              documentsLoaded = true;
+              console.log('✅ Documents loaded successfully after upload');
+            } else {
+              retries--;
+              delay *= 2; // Exponential backoff: 300ms, 600ms, 1200ms
+              console.log(`🔄 Retrying document load (${retries} retries left, delay: ${delay}ms)`);
+            }
+          }
+          
+          if (!documentsLoaded && retries === 0) {
+            console.warn('⚠️ Documents not found after upload - they may appear after processing completes');
+          }
             
             // Wait for React to render the file, then set progress to 100%
             requestAnimationFrame(() => {
@@ -2263,7 +2287,31 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             <Search size={32} className="text-gray-300" />
                   </div>
                           <p className="text-lg font-medium text-gray-900 mb-1">No documents found</p>
-                          <p className="text-sm text-gray-500">Try adjusting your search or upload a new file.</p>
+                          <p className="text-sm text-gray-500 mb-6">Try adjusting your search or upload a new file.</p>
+                          <button 
+                            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => {
+                              if (!property?.id) {
+                                alert('Please select a property first');
+                                return;
+                              }
+                              fileInputRef.current?.click();
+                            }}
+                            disabled={uploading || !property?.id}
+                            title={!property?.id ? "Please select a property first" : "Upload document"}
+                          >
+                            {uploading ? (
+                              <>
+                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                                <span>Uploading...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Upload size={16} strokeWidth={2.5} />
+                                <span>Upload Document</span>
+                              </>
+                            )}
+                          </button>
                       </div>
                     ) : (
                       <div 

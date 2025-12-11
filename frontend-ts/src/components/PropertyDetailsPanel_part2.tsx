@@ -168,10 +168,18 @@
                   />
                 </div>
                 
+                {/* Upload button - always visible, even with 0 documents */}
                 <button 
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => {
+                    if (!property?.id) {
+                      alert('Please select a property first');
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={uploading || !property?.id}
+                  title={!property?.id ? "Please select a property first" : "Upload document"}
                 >
                   {uploading ? (
                     <>
@@ -229,10 +237,19 @@
                   <p className="text-lg font-medium text-gray-400 mb-1">No documents found</p>
                   <p className="text-sm mb-6 text-gray-600">Upload documents or adjust your search.</p>
                   <button 
-                    className="text-blue-400 hover:text-blue-300 font-medium hover:underline"
-                    onClick={() => fileInputRef.current?.click()}
+                    className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-full transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-600/30 flex items-center gap-2"
+                    onClick={() => {
+                      if (!property?.id) {
+                        alert('Please select a property first');
+                        return;
+                      }
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={!property?.id}
+                    title={!property?.id ? "Please select a property first" : "Upload document"}
                   >
-                    Browse files
+                    <Upload size={16} strokeWidth={2.5} />
+                    <span>Upload Document</span>
                   </button>
                 </div>
               ) : selectedCardIndex !== null ? (

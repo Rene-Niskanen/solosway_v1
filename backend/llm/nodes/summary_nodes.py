@@ -110,14 +110,23 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         temperature=0,
     )
 
-    # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization to reduce token usage
-    # Process top documents first (already ranked by relevance)
-    max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY", "7"))
+    # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization based on detail_level
+    # Concise mode: 7 docs (fast summary)
+    # Detailed mode: 20 docs (comprehensive summary)
+    detail_level = state.get('detail_level', 'concise')
+    if detail_level == 'detailed':
+        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY_DETAILED", "20"))
+        logger.info(f"[SUMMARIZE_RESULTS] Detailed mode: summarizing up to {max_docs_for_summary} documents")
+    else:
+        max_docs_for_summary = int(os.getenv("MAX_DOCS_FOR_SUMMARY", "7"))
+        logger.info(f"[SUMMARIZE_RESULTS] Concise mode: summarizing up to {max_docs_for_summary} documents")
+    
     if len(doc_outputs) > max_docs_for_summary:
         logger.info(
-            "[SUMMARIZE_RESULTS] Limiting summary to top %d documents (out of %d) for faster processing",
+            "[SUMMARIZE_RESULTS] Limiting summary to top %d documents (out of %d) for %s processing",
             max_docs_for_summary,
-            len(doc_outputs)
+            len(doc_outputs),
+            detail_level
         )
         doc_outputs = doc_outputs[:max_docs_for_summary]
     
@@ -155,8 +164,11 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             'unknown': 'Unknown source'
         }.get(search_source, search_source)
         
-        header = f"\n### {doc_type}: {filename}\n"
-        header += f"Property: {address}\n"
+        # Use address instead of filename to avoid LLM including filenames in response
+        header = f"\n### {doc_type}"
+        if address and address != f"Property {prop_id[:8]}":
+            header += f" - {address}"
+        header += f"\n"
         header += f"Pages: {page_info}\n"
         header += f"Found via: {source_display}"
         if similarity_score > 0:
@@ -211,11 +223,14 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     system_msg = get_system_prompt('summarize')
     
     # Get human message content
+    detail_level = state.get('detail_level', 'concise')
+    logger.info(f"[SUMMARIZE_RESULTS] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
     human_content = get_summary_human_content(
         user_query=state['user_query'],
         conversation_history=history_context,
         search_summary=search_summary,
-        formatted_outputs=formatted_outputs_str
+        formatted_outputs=formatted_outputs_str,
+        detail_level=detail_level
     )
     
     try:

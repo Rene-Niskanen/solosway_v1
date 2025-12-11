@@ -1,10 +1,19 @@
 from werkzeug.security import check_password_hash
 import logging
 import uuid
+import os
+from datetime import datetime, timedelta
+from typing import Optional, Tuple
 
 from .supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+# In-memory cache for business UUID lookups (TTL: 5 minutes)
+# Format: {legacy_id: (uuid, timestamp)}
+_business_uuid_cache: dict[str, Tuple[str, datetime]] = {}
+_cache_ttl = timedelta(minutes=5)
+
 
 class SupabaseAuthService:
     """Authentication service using Supabase as primary database"""
@@ -64,9 +73,29 @@ class SupabaseAuthService:
 
     # Business mapping helpers -------------------------------------------------
     def get_business_uuid(self, legacy_id: str) -> str | None:
-        """Lookup business UUID from mapping table."""
+        """
+        Lookup business UUID from mapping table with in-memory TTL cache.
+        
+        Cache TTL: 5 minutes (configurable via _cache_ttl)
+        This eliminates 55s hangs on connection errors and reduces database load.
+        """
         if not legacy_id:
             return None
+        
+        # Check cache first
+        enable_cache = os.getenv("ENABLE_BUSINESS_UUID_CACHE", "true").lower() == "true"
+        if enable_cache:
+            cache_key = legacy_id
+            if cache_key in _business_uuid_cache:
+                cached_uuid, timestamp = _business_uuid_cache[cache_key]
+                if datetime.now() - timestamp < _cache_ttl:
+                    logger.debug(f"[CACHE_HIT] Business UUID for {legacy_id[:8]}...")
+                    return cached_uuid
+                else:
+                    # Cache expired, remove it
+                    del _business_uuid_cache[cache_key]
+        
+        # Cache miss or disabled - fetch from database
         try:
             result = (
                 self.supabase
@@ -77,13 +106,21 @@ class SupabaseAuthService:
                 .execute()
             )
             if result.data:
-                return result.data[0]['uuid_id']
+                uuid_value = result.data[0]['uuid_id']
+                # Store in cache
+                if enable_cache:
+                    _business_uuid_cache[legacy_id] = (uuid_value, datetime.now())
+                    logger.debug(f"[CACHE_MISS] Business UUID for {legacy_id[:8]}... cached")
+                return uuid_value
         except Exception as e:
             logger.error(f"Error fetching business UUID for {legacy_id}: {e}")
         return None
 
     def ensure_business_uuid(self, legacy_id: str) -> str:
-        """Get or create a business UUID for the given legacy identifier."""
+        """
+        Get or create a business UUID for the given legacy identifier.
+        Updates cache when creating new UUID.
+        """
         existing = self.get_business_uuid(legacy_id)
         if existing:
             return existing
@@ -94,6 +131,10 @@ class SupabaseAuthService:
                 'legacy_id': legacy_id,
                 'uuid_id': new_uuid
             }).execute()
+            # Cache the new UUID
+            enable_cache = os.getenv("ENABLE_BUSINESS_UUID_CACHE", "true").lower() == "true"
+            if enable_cache:
+                _business_uuid_cache[legacy_id] = (new_uuid, datetime.now())
             return new_uuid
         except Exception as e:
             logger.error(f"Error creating business UUID for {legacy_id}: {e}")

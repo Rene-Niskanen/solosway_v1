@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 # Conditional import for checkpointer (only needed if use_checkpointer=True)
 try:
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg_pool import AsyncConnectionPool
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
+    from psycopg_pool import AsyncConnectionPool  # type: ignore
     CHECKPOINTER_AVAILABLE = True
 except ImportError:
     CHECKPOINTER_AVAILABLE = False
@@ -25,10 +25,12 @@ except ImportError:
 from backend.llm.types import MainWorkflowState
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
+    check_cached_documents,
     expand_query_for_retrieval,
     query_vector_documents,
     clarify_relevant_docs
 )
+from backend.llm.nodes.detail_level_detector import determine_detail_level
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 
@@ -150,6 +152,16 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder = StateGraph(MainWorkflowState)
 
     # Add active nodes
+    builder.add_node("check_cached_documents", check_cached_documents)
+    """
+    Node 0.5: Check Cached Documents (NEW - Performance Optimization)
+    - Input: user_query, conversation_history, relevant_documents (from checkpointer)
+    - Checks if documents were already retrieved in previous conversation turns
+    - If property context matches, reuses cached documents (much faster)
+    - If property context differs or no cache, proceeds with normal retrieval
+    - Output: cached relevant_documents (if applicable) or empty to proceed
+    """
+    
     builder.add_node("rewrite_query", rewrite_query_with_context)
     """
     Node 1: Query Rewriting (NEW)
@@ -157,6 +169,17 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Rewrites vague queries to be self-contained using conversation context
     - Example: "What's the price?" → "What's the price for Highlands property?"
     - Output: rewritten user_query (or original if no history)
+    """
+
+    builder.add_node("determine_detail_level", determine_detail_level)
+    """
+    Node 1.5: Detail Level Detection (NEW - Intelligent Classification)
+    - Input: user_query, conversation_history (optional)
+    - Uses fast LLM (gpt-4o-mini) to classify query complexity
+    - Determines if query needs detailed RICS-level answer or concise factual answer
+    - Skips detection if detail_level already set (manual override from API)
+    - Output: detail_level ("concise" or "detailed")
+    - Performance: ~0.5-1s with gpt-4o-mini
     """
 
     builder.add_node("expand_query", expand_query_for_retrieval)
@@ -213,12 +236,19 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Build graph edges (execution flow)
 
     # NEW: Start -> Query Rewriting (adds context from conversation)
-    builder.add_edge(START, 'rewrite_query')
-    logger.debug("Edge: START -> rewrite_query")
+    builder.add_edge(START, 'check_cached_documents')
+    logger.debug("Edge: START -> check_cached_documents")
+    
+    builder.add_edge('check_cached_documents', 'rewrite_query')
+    logger.debug("Edge: check_cached_documents -> rewrite_query")
 
-    # Query Rewriting -> Query Expansion
-    builder.add_edge('rewrite_query', 'expand_query')
-    logger.debug("Edge: rewrite_query -> expand_query")
+    # Query Rewriting -> Detail Level Detection
+    builder.add_edge('rewrite_query', 'determine_detail_level')
+    logger.debug("Edge: rewrite_query -> determine_detail_level")
+
+    # Detail Level Detection -> Query Expansion
+    builder.add_edge('determine_detail_level', 'expand_query')
+    logger.debug("Edge: determine_detail_level -> expand_query")
 
     # Query Expansion -> Vector Search (searches with all variations)
     builder.add_edge('expand_query', 'query_vector_documents')

@@ -1032,6 +1032,26 @@ class SupabaseVectorService:
                 
                 chunk_blocks = chunk_meta.get('blocks', [])
                 
+                # Extract section header metadata if present
+                section_header = chunk_meta.get('section_header') if chunk_meta else None
+                normalized_header = chunk_meta.get('normalized_header') if chunk_meta else None
+                section_keywords = chunk_meta.get('section_keywords', []) if chunk_meta else []
+                has_section_header = chunk_meta.get('has_section_header', False) if chunk_meta else False
+                
+                # Store section header info in metadata JSONB (create metadata dict if needed)
+                chunk_metadata_jsonb = {}
+                if has_section_header and section_header:
+                    chunk_metadata_jsonb = {
+                        'section_header': section_header,
+                        'normalized_header': normalized_header,
+                        'section_keywords': section_keywords,
+                        'has_section_header': True
+                    }
+                elif chunk_meta:
+                    chunk_metadata_jsonb = {
+                        'has_section_header': False
+                    }
+                
                 # Get the context for this chunk (if contextualization was used)
                 chunk_context = chunk_contexts[i] if i < len(chunk_contexts) else ""
                 
@@ -1093,6 +1113,7 @@ class SupabaseVectorService:
                     'embedding_completed_at': embedding_completed_at,  # NEW: When embedding completed
                     'embedding_error': embedding_error,  # NEW: Error message if embedding failed
                     'embedding_model': self.embedding_model if not lazy_embedding else None,  # NEW: Model used
+                    'metadata': chunk_metadata_jsonb if chunk_metadata_jsonb else None,  # NEW: Section header metadata (JSONB)
                     'created_at': datetime.utcnow().isoformat()
                 }
                 records.append(record)

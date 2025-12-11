@@ -43,13 +43,12 @@ def _ensure_business_uuid():
         auth_service = SupabaseAuthService()
         business_uuid = auth_service.ensure_business_uuid(company_name)
         if business_uuid:
+            # Store UUID in memory for this request (no PostgreSQL commit needed - we use Supabase)
+            # This avoids PostgreSQL connection overhead on every query
             try:
-                # Persist UUID to the local user record for future requests
                 current_user.business_id = UUID(str(business_uuid))
-                db.session.commit()
-            except Exception as commit_error:
-                db.session.rollback()
-                logger.warning(f"Failed to persist business UUID locally: {commit_error}")
+            except Exception:
+                pass  # Ignore if we can't set it - it's just for this request
             return str(business_uuid)
     except Exception as fetch_error:
         logger.warning(f"Failed to ensure business UUID: {fetch_error}")
@@ -308,8 +307,9 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         message_history = data.get('messageHistory', [])
         session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        detail_level = data.get('detailLevel')  # Optional: "concise" or "detailed" - if not provided, detection agent will determine
         
-        logger.info(f"🔵 [STREAM] Query: '{query[:50]}...', Property ID: {property_id}, Session: {session_id}")
+        logger.info(f"🔵 [STREAM] Query: '{query[:50]}...', Property ID: {property_id}, Session: {session_id}, Detail Level: {detail_level or 'auto-detect'}")
         
         if not query:
             response = jsonify({
@@ -373,6 +373,11 @@ def query_documents_stream():
                     "session_id": session_id,
                     "property_id": property_id
                 }
+                # Only set detail_level if explicitly provided (manual override)
+                # Otherwise, let the detection agent determine it
+                if detail_level:
+                    initial_state["detail_level"] = detail_level
+                    logger.info(f"🟢 [STREAM] Using manual detail level override: {detail_level}")
                 logger.info(f"🟢 [STREAM] Initial state built: query='{query[:30]}...', business_id={business_id}")
                 
                 # Send initial status and FIRST reasoning step immediately
@@ -454,7 +459,7 @@ def query_documents_stream():
                 
                 intent_message = extract_query_intent(query)
                 
-                # Emit initial reasoning step with extracted intent
+                # Emit initial reasoning step IMMEDIATELY - search starts now
                 initial_reasoning = {
                     'type': 'reasoning_step',
                     'step': 'initial',
@@ -464,20 +469,25 @@ def query_documents_stream():
                 }
                 initial_reasoning_json = json.dumps(initial_reasoning)
                 yield f"data: {initial_reasoning_json}\n\n"
-                logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
+                logger.info(f"🟡 [REASONING] ✅ Emitted initial reasoning step: {intent_message}")
+                logger.info(f"🟡 [STREAM] ⚡ Search starting IMMEDIATELY - graph execution begins now")
                 
                 # Shared variable to store early summary (generated in parallel)
                 early_summary_result = {'summary_data': None, 'task': None}
                 
                 async def run_and_stream():
-                    """Run LangGraph and stream the final summary with reasoning steps"""
+                    """Run LangGraph and stream the final summary with reasoning steps
+                    
+                    PERFORMANCE: Graph execution starts immediately - reasoning steps stream in parallel
+                    """
                     try:
-                        logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        logger.info("🟡 [STREAM] run_and_stream() async function started - search begins NOW")
                         
                         # Create checkpointer for THIS event loop (the one in the thread)
                         # This avoids "bound to different event loop" errors
                         from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                         
+                        # OPTIMIZATION: Start checkpointer creation in background (non-blocking for search)
                         checkpointer = None
                         try:
                             logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
@@ -504,7 +514,7 @@ def query_documents_stream():
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
-                        # Check for existing session state (follow-up detection)
+                        # OPTIMIZATION: Check existing state quickly (non-blocking for search start)
                         is_followup = False
                         existing_doc_count = 0
                         try:
@@ -520,8 +530,9 @@ def query_documents_stream():
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
                         
-                        # Use astream_events to capture node execution and emit reasoning steps
-                        logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
+                        # START GRAPH EXECUTION IMMEDIATELY - search begins here
+                        # Reasoning steps will stream in parallel as nodes execute
+                        logger.info("🟡 [STREAM] ⚡ Starting graph execution NOW - search is active, reasoning steps streaming...")
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
@@ -552,10 +563,13 @@ def query_documents_stream():
                         # Stream events from graph execution and track state
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
+                        # NOTE: Initial reasoning step already emitted above (line 466) - search starts NOW
                         logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
+                        logger.info("🟡 [STREAM] ⚡ Graph execution starting NOW - search is active, reasoning steps streaming in parallel")
                         final_result = None
                         
                         # Execute graph with error handling for connection timeouts during execution
+                        # START GRAPH IMMEDIATELY - search begins now, reasoning steps stream in parallel
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
@@ -1095,9 +1109,11 @@ def query_documents_stream():
                                 'classification_type': doc_type
                             }
                             
-                            # NEW: Number documents for citation reference
-                            header = f"\n[Document {citation_number}] {doc_type}: {filename}\n"
-                            header += f"Property: {address}\n"
+                            # Format header without filename (to match summary_nodes.py)
+                            header = f"\n### {doc_type}"
+                            if address and address != f"Property {prop_id[:8]}":
+                                header += f" - {address}"
+                            header += f"\n"
                             header += f"Pages: {page_info}\n"
                             header += f"---------------------------------------------\n"
                             
@@ -1105,51 +1121,48 @@ def query_documents_stream():
                         
                         formatted_outputs_str = "\n".join(formatted_outputs)
                         
-                        prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
-
-CONTEXT
-
-The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
-They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
-
-The user has asked:
-
-"{query}"
-
-Below is the extracted content from the pages you analyzed:
-
-{formatted_outputs_str}
-
-GUIDELINES FOR YOUR RESPONSE
-
-Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
-
-**CITATION REQUIREMENTS:**
-- Each document is labeled with [Document 1], [Document 2], etc. at the top
-- When you use information from a document, cite it immediately after the relevant sentence using the format [1], [2], [3], etc.
-- Place citations right after the sentence that contains information from that document
-- Example: "The property is approximately 2.5 acres[1]. The valuation was completed by John Smith[2]."
-- If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
-- Citations should appear inline, naturally within your response
-- Always cite your sources - use [1], [2], etc. after each fact that comes from a document
-
-Focus on what matters in real estate:
-- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
-
-CRITICAL RULES:
-1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
-2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
-3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
-4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
-5. **Always cite your sources** - Use [1], [2], etc. after each fact that comes from a document.
-
-Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
-
-TONE
-
-Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
-
-Now provide your response (answer directly, no heading, no additional context, with citations):"""
+                        # Use the same prompt structure as summary prompt for consistency
+                        from backend.llm.prompts import get_summary_human_content
+                        
+                        # Build search summary (simplified for streaming)
+                        search_summary = f"Found {len(doc_outputs)} document(s) via semantic search"
+                        
+                        # Get conversation history if available (for follow-up queries)
+                        conversation_history = ""
+                        try:
+                            if checkpointer:
+                                existing_state = await graph.aget_state(config_dict)
+                                if existing_state and existing_state.values:
+                                    conv_history = existing_state.values.get('conversation_history', [])
+                                    if conv_history:
+                                        # Format conversation history
+                                        history_lines = []
+                                        for exchange in conv_history[-3:]:  # Last 3 exchanges
+                                            if 'query' in exchange and 'summary' in exchange:
+                                                history_lines.append(f"Previous Q: {exchange['query']}")
+                                                history_lines.append(f"Previous A: {exchange['summary'][:300]}...\n")
+                                        if history_lines:
+                                            conversation_history = "CONVERSATION HISTORY:\n" + "\n".join(history_lines) + "\n\n"
+                        except Exception as e:
+                            logger.debug(f"Could not retrieve conversation history: {e}")
+                        
+                        # Get detail_level from state or default to concise
+                        detail_level = 'concise'
+                        try:
+                            if checkpointer:
+                                existing_state = await graph.aget_state(config_dict)
+                                if existing_state and existing_state.values:
+                                    detail_level = existing_state.values.get('detail_level', 'concise')
+                        except Exception:
+                            pass
+                        
+                        prompt = get_summary_human_content(
+                            user_query=query,
+                            conversation_history=conversation_history,
+                            search_summary=search_summary,
+                            formatted_outputs=formatted_outputs_str,
+                            detail_level=detail_level
+                        )
                         
                         # Use streaming LLM
                         logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
@@ -1599,6 +1612,7 @@ def query_documents():
     property_id = data.get('propertyId')  # From property attachment
     message_history = data.get('messageHistory', [])
     session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    detail_level = data.get('detailLevel')  # Optional: "concise" or "detailed" - if not provided, detection agent will determine
     
     if not query:
         return jsonify({
@@ -1644,6 +1658,11 @@ def query_documents():
             "session_id": session_id,
             "property_id": property_id  # Pass property_id to filter results
         }
+        # Only set detail_level if explicitly provided (manual override)
+        # Otherwise, let the detection agent determine it
+        if detail_level:
+            initial_state["detail_level"] = detail_level
+            logger.info(f"Using manual detail level override: {detail_level}")
         
         # Use global graph instance (initialized on app startup)
         async def run_query():
@@ -2102,14 +2121,33 @@ def get_enriched_property(property_id):
 def get_properties_completeness():
     """Get completeness report for all properties"""
     try:
+        from .services.supabase_property_hub_service import SupabasePropertyHubService
+        
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({
+                'success': False,
+                'error': 'User not associated with a business'
+            }), 400
+        
         enrichment_service = PropertyEnrichmentService()
-        properties = Property.query.filter_by(
-            business_id=current_user.company_name
-        ).all()
+        property_hub_service = SupabasePropertyHubService()
+        
+        # Get all properties from Supabase (not PostgreSQL)
+        property_hubs = property_hub_service.get_all_property_hubs(
+            business_uuid_str,
+            limit=1000,  # Get all for completeness report
+            offset=0,
+            sort_by='created_at',
+            sort_order='desc'
+        )
         
         results = []
-        for prop in properties:
-            completeness = enrichment_service.get_property_completeness(str(prop.id))
+        for hub in property_hubs:
+            prop = hub.get('property', {})
+            property_id = prop.get('id')
+            if property_id:
+                completeness = enrichment_service.get_property_completeness(str(property_id))
             results.append(completeness)
             
         return jsonify({
@@ -3084,19 +3122,16 @@ def api_dashboard():
         doc_service = SupabaseDocumentService()
         documents = doc_service.get_documents_for_business(business_uuid, limit=10)
         
-        # Get user's properties (still from PostgreSQL for now)
-        properties = []
-        try:
-            properties = (
-                Property.query
-                .filter_by(business_id=business_uuid)
-                .order_by(Property.created_at.desc())
-                .limit(10)
-                .all()
-            )
-        except Exception as e:
-            logger.warning(f"Error querying properties from PostgreSQL: {e}")
-            properties = []
+        # Get user's properties from Supabase (not PostgreSQL)
+        from .services.supabase_property_hub_service import SupabasePropertyHubService
+        property_hub_service = SupabasePropertyHubService()
+        property_hubs = property_hub_service.get_all_property_hubs(
+            business_uuid_str,
+            limit=10,
+            offset=0,
+            sort_by='created_at',
+            sort_order='desc'
+        )
         
         # Convert documents to JSON-serializable format
         documents_data = []
@@ -3112,14 +3147,15 @@ def api_dashboard():
         
         # Convert properties to JSON-serializable format
         properties_data = []
-        for prop in properties:
+        for hub in property_hubs:
+            prop = hub.get('property', {})
             properties_data.append({
-                'id': str(prop.id),
-                'formatted_address': prop.formatted_address,
-                'normalized_address': prop.normalized_address,
-                'completeness_score': prop.completeness_score,
-                'created_at': prop.created_at.isoformat() if prop.created_at else None,
-                'document_count': len(prop.documents) if prop.documents else 0
+                'id': str(prop.get('id', '')),
+                'formatted_address': prop.get('formatted_address'),
+                'normalized_address': prop.get('normalized_address'),
+                'completeness_score': hub.get('completeness_score', 0.0),
+                'created_at': prop.get('created_at'),
+                'document_count': len(hub.get('documents', []))
             })
     
         # User data
