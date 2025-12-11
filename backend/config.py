@@ -15,14 +15,18 @@ class Config:
     
     SQLALCHEMY_DATABASE_URI = _get_database_uri()
     
-    # SQLAlchemy connection pool settings to prevent connection exhaustion
-    # Important: Limits SQLAlchemy connections to avoid hitting Supabase pool limits
-    # Transaction mode pooler supports ~200 connections (free tier) or ~500+ (Pro tier)
-    # Session mode pooler supports ~15 connections (free tier) or ~100-200 (Pro tier)
-    # Recommended: Use Transaction mode (port 6543) for better connection limits
+    # SQLAlchemy connection pool settings optimized for Supabase Pro tier transaction pooler
+    # Transaction mode pooler (port 6543) supports ~500+ connections on Pro tier
+    # This pool is SHARED across all users/requests, so it needs to handle high concurrency
+    # 
+    # Capacity planning for multiple accounts/users:
+    # - 25 base connections + 25 overflow = 50 total SQLAlchemy connections
+    # - Supports ~100-150 concurrent users (each user typically uses 1 connection per request)
+    # - Leaves ~450 connections available for checkpointer pools (per-request, temporary)
+    # - Checkpointer pools are short-lived (released when request completes)
     SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_size': 2,  # Maximum connections in pool (reduced to leave room for LangGraph)
-        'max_overflow': 2,  # Additional connections when pool is exhausted
+        'pool_size': 25,  # Base pool size - handles ~100 concurrent users
+        'max_overflow': 25,  # Overflow for traffic spikes - total 50 connections
         'pool_timeout': 30,  # Timeout when getting connection (seconds)
         'pool_recycle': 3600,  # Recycle connections after 1 hour (prevents stale connections)
         'pool_pre_ping': True,  # Check connections before using (validates connection is alive)

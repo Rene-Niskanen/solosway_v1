@@ -11,12 +11,14 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
+from backend.llm.utils.block_id_formatter import format_document_with_block_ids
+from backend.llm.tools.citation_mapping import create_citation_tool
 
 logger = logging.getLogger(__name__)
 
 
-def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
+async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     """
     Create a final unified answer from all document outputs.
 
@@ -103,15 +105,9 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             lines.append(f"...and {len(doc_outputs) - 5} more documents.")
         return {"final_summary": "\n".join(lines)}
 
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
-
-    # Format outputs with natural names (filename and address)
-    # Also include search source information to help LLM understand how documents were found
-    formatted_outputs = []
+    # Format outputs with block IDs and build metadata lookup tables
+    formatted_outputs_with_ids = []
+    metadata_lookup_tables = {}  # doc_id -> block_id -> metadata
     search_source_summary = {
         'structured_query': 0,
         'llm_sql_query': 0,
@@ -122,6 +118,7 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     }
     
     for idx, output in enumerate(doc_outputs):
+        doc_id = output.get('doc_id', '')
         doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
         filename = output.get('original_filename', f"Document {output['doc_id'][:8]}")
         prop_id = output.get('property_id') or 'Unknown'
@@ -143,17 +140,52 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             'unknown': 'Unknown source'
         }.get(search_source, search_source)
         
-        header = f"\n### {doc_type}: {filename}\n"
-        header += f"Property: {address}\n"
-        header += f"Pages: {page_info}\n"
-        header += f"Found via: {source_display}"
-        if similarity_score > 0:
-            header += f" (relevance: {similarity_score:.2f})"
-        header += f"\n---------------------------------------------\n"
+        # Format document with block IDs
+        formatted_content, metadata_table = format_document_with_block_ids(output)
         
-        formatted_outputs.append(header + output.get('output', ''))
+        # Format with document header
+        doc_header = f"\n### {doc_type}: {filename}\n"
+        doc_header += f"Property: {address}\n"
+        doc_header += f"Pages: {page_info}\n"
+        doc_header += f"Found via: {source_display}"
+        if similarity_score > 0:
+            doc_header += f" (relevance: {similarity_score:.2f})"
+        doc_header += f"\n---------------------------------------------\n"
+        
+        formatted_outputs_with_ids.append(doc_header + formatted_content)
+        
+        # Store metadata lookup table for this document
+        if doc_id and metadata_table:
+            metadata_lookup_tables[doc_id] = metadata_table
+            logger.info(
+                f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} with {len(metadata_table)} block IDs"
+            )
     
-    formatted_outputs_str = "\n".join(formatted_outputs)
+    # Create citation tool with metadata lookup tables (bbox lookup happens in tool)
+    citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
+    
+    # ============================================================
+    # PHASE 1: MANDATORY CITATION EXTRACTION
+    # ============================================================
+    logger.info("[SUMMARIZE_RESULTS] Phase 1: Starting mandatory citation extraction")
+    
+    citation_llm = ChatOpenAI(
+        api_key=config.openai_api_key,
+        model=config.openai_model,
+        temperature=0,
+    ).bind_tools(
+        [citation_tool],
+        tool_choice="required"  # ← FORCE TOOL CALLS!
+    )
+    
+    formatted_outputs_str = "\n".join(formatted_outputs_with_ids)
+    
+    # Limit total content size to prevent context overflow
+    MAX_CONTENT_LENGTH = 80000  # ~20k tokens, leave room for prompt + metadata + response
+    if len(formatted_outputs_str) > MAX_CONTENT_LENGTH:
+        logger.warning(f"[SUMMARIZE_RESULTS] Truncating formatted outputs from {len(formatted_outputs_str)} to {MAX_CONTENT_LENGTH} chars")
+        formatted_outputs_str = formatted_outputs_str[:MAX_CONTENT_LENGTH]
+        formatted_outputs_str += "\n\n... (content truncated due to length limits) ..."
     
     # Build search summary for LLM context
     search_summary_parts = []
@@ -198,20 +230,96 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Get system prompt for summarize task
     system_msg = get_system_prompt('summarize')
     
-    # Get human message content
-    human_content = get_summary_human_content(
+    # ============================================================
+    # PHASE 1: CITATION EXTRACTION (MANDATORY TOOL CALLS)
+    # ============================================================
+    citation_prompt = get_citation_extraction_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
         search_summary=search_summary,
-        formatted_outputs=formatted_outputs_str
+        formatted_outputs=formatted_outputs_str,
+        metadata_lookup_tables=metadata_lookup_tables
     )
     
     try:
-        # Use LangGraph message format
-        messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
-        summary = response.content.strip()
-        logger.info("[SUMMARIZE_RESULTS] Generated final summary")
+        # Phase 1: Extract citations with mandatory tool calls
+        citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
+        citation_response = await citation_llm.ainvoke(citation_messages)
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Response type: {type(citation_response)}")
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: finish_reason: {citation_response.response_metadata.get('finish_reason') if hasattr(citation_response, 'response_metadata') else 'unknown'}")
+        
+        # Execute tool calls from Phase 1
+        citations_extracted = 0
+        if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Executing {len(citation_response.tool_calls)} tool calls...")
+            for tool_call in citation_response.tool_calls:
+                tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
+                if tool_name == 'cite_source':
+                    tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
+                    if isinstance(tool_args, dict):
+                        try:
+                            citation_tool_instance.add_citation(
+                                cited_text=tool_args.get('cited_text', ''),
+                                block_id=tool_args.get('block_id', ''),
+                                citation_number=tool_args.get('citation_number', 0)
+                            )
+                            citations_extracted += 1
+                            logger.info(
+                                f"[SUMMARIZE_RESULTS] Phase 1: ✅ Citation {tool_args.get('citation_number')} extracted: "
+                                f"block_id={tool_args.get('block_id')}"
+                            )
+                        except Exception as tool_error:
+                            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error executing tool call: {tool_error}", exc_info=True)
+        else:
+            logger.warning("[SUMMARIZE_RESULTS] Phase 1: No tool calls found in response")
+        
+        # Get extracted citations
+        citations_from_state = citation_tool_instance.citations
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Extracted {len(citations_from_state)} citations")
+        
+        # ============================================================
+        # PHASE 2: GENERATE FINAL ANSWER WITH CITATIONS
+        # ============================================================
+        logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating final answer with citations")
+        
+        final_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
+        # No tool binding needed - citations already collected
+        
+        final_prompt = get_final_answer_prompt(
+            user_query=state['user_query'],
+            conversation_history=history_context,
+            formatted_outputs=formatted_outputs_str,
+            citations=citations_from_state
+        )
+        
+        final_messages = [system_msg, HumanMessage(content=final_prompt)]
+        final_response = await final_llm.ainvoke(final_messages)
+        
+        # Extract summary from Phase 2
+        summary = ''
+        if hasattr(final_response, 'content'):
+            summary = str(final_response.content).strip() if final_response.content else ''
+        elif isinstance(final_response, str):
+            summary = final_response.strip()
+        
+        # Clean up any unwanted text
+        import re
+        summary = re.sub(
+            r'(?i)(I will now proceed.*?\.|I will call.*?\.|Now calling.*?\.)',
+            '',
+            summary
+        )
+        summary = summary.strip()
+        
+        logger.info(
+            f"[SUMMARIZE_RESULTS] Phase 2: Generated final summary ({len(summary)} chars, "
+            f"{len(citations_from_state)} citations available)"
+        )
         
         # Add current exchange to conversation history
         # Include timestamp for checkpoint persistence (as per LangGraph documentation)
@@ -222,9 +330,14 @@ def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             "document_ids": [output['doc_id'] for output in doc_outputs[:10]]  # Track which docs were used
         }
         
+        # Preserve document_outputs and relevant_documents in state (LangGraph merges, but be explicit)
         return {
             "final_summary": summary,
-            "conversation_history": [conversation_entry]  # operator.add will append to existing history
+            "citations": citations_from_state,  # NEW: Citations stored in state (with bbox coordinates)
+            "conversation_history": [conversation_entry],  # operator.add will append to existing history
+            # Preserve existing state fields (LangGraph merges by default, but ensure they're not lost)
+            "document_outputs": doc_outputs,  # Preserve document outputs for views.py
+            "relevant_documents": state.get('relevant_documents', [])  # Preserve relevant docs
         }
     except Exception as exc:  # pylint: disable=broad-except
         logger.error("[SUMMARIZE_RESULTS] Error creating summary: %s", exc, exc_info=True)

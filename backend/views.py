@@ -22,6 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
 from uuid import UUID
+# Citations are now stored directly in graph state with bbox coordinates - no processing needed
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -306,10 +307,28 @@ def query_documents_stream():
         
         query = data.get('query', '')
         property_id = data.get('propertyId')
+        document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
         session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
         
-        logger.info(f"🔵 [STREAM] Query: '{query[:50]}...', Property ID: {property_id}, Session: {session_id}")
+        # Handle documentIds as comma-separated string, array, or single value
+        if isinstance(document_ids, str):
+            document_ids = [d.strip() for d in document_ids.split(',') if d.strip()]
+        elif isinstance(document_ids, (int, float)):
+            # Handle single number
+            document_ids = [str(document_ids)]
+        elif isinstance(document_ids, list):
+            # Ensure all IDs are strings
+            document_ids = [str(doc_id) for doc_id in document_ids if doc_id]
+        else:
+            document_ids = []
+        
+        logger.info(
+            f"🔵 [STREAM] Query: '{query[:50]}...', "
+            f"Property ID: {property_id}, "
+            f"Document IDs: {document_ids} (count: {len(document_ids)}), "
+            f"Session: {session_id}"
+        )
         
         if not query:
             response = jsonify({
@@ -371,9 +390,14 @@ def query_documents_stream():
                     "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
                     "business_id": business_id,
                     "session_id": session_id,
-                    "property_id": property_id
+                    "property_id": property_id,
+                    "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
                 }
-                logger.info(f"🟢 [STREAM] Initial state built: query='{query[:30]}...', business_id={business_id}")
+                logger.info(
+                    f"🟢 [STREAM] Initial state built: query='{query[:30]}...', "
+                    f"business_id={business_id}, "
+                    f"document_ids={len(document_ids) if document_ids else 0}"
+                )
                 
                 # Send initial status and FIRST reasoning step immediately
                 logger.info("🟢 [STREAM] Yielding initial status message")
@@ -448,7 +472,7 @@ def query_documents_stream():
                     target_str = ', '.join(targets) if targets else 'information'
                     if potential_names:
                         name_str = ' '.join(potential_names[:2])  # Max 2 names
-                        return f"Searching for {target_str} in {name_str} documents"
+                        return f"Searching for {target_str} in documents"
                     else:
                         return f"Searching for {target_str}"
                 
@@ -713,6 +737,90 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                     
+                                    # Handle summarize_results node completion - citations already have bbox coordinates
+                                    if node_name == "summarize_results":
+                                        state_data = state_update if state_update else output
+                                        
+                                        # Initialize final_result if needed
+                                        if final_result is None:
+                                            final_result = {}
+                                        
+                                        # Explicitly capture final_summary (critical for streaming)
+                                        final_summary_from_state = state_data.get('final_summary', '')
+                                        if final_summary_from_state:
+                                            final_result['final_summary'] = final_summary_from_state
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from summarize_results ({len(final_summary_from_state)} chars)")
+                                        
+                                        # Capture document_outputs (preserved in summarize_results return)
+                                        doc_outputs_from_state = state_data.get('document_outputs', [])
+                                        if doc_outputs_from_state:
+                                            final_result['document_outputs'] = doc_outputs_from_state
+                                            logger.info(f"🟢 [STREAM] Captured {len(doc_outputs_from_state)} document_outputs from summarize_results")
+                                        
+                                        # Capture relevant_documents if available
+                                        relevant_docs_from_state = state_data.get('relevant_documents', [])
+                                        if relevant_docs_from_state:
+                                            final_result['relevant_documents'] = relevant_docs_from_state
+                                            logger.info(f"🟢 [STREAM] Captured {len(relevant_docs_from_state)} relevant_documents from summarize_results")
+                                        
+                                        # Extract citations from state (already have bbox coordinates from CitationTool)
+                                        citations_from_state = state_data.get('citations', [])
+                                        
+                                        if citations_from_state:
+                                            logger.info(
+                                                f"🟢 [CITATION_STREAM] Processing {len(citations_from_state)} citations "
+                                                f"from summarize_results node (bbox coordinates already included)"
+                                            )
+                                            
+                                            try:
+                                                # Format citations for frontend (convert List[Citation] to Dict[str, CitationData])
+                                                processed_citations = {}
+                                                
+                                                # Stream citation events immediately
+                                                for citation in citations_from_state:
+                                                    citation_num_str = str(citation['citation_number'])
+                                                    
+                                                    # Format citation data for frontend
+                                                    citation_data = {
+                                                        'doc_id': citation.get('doc_id'),
+                                                        'page': citation.get('page_number'),
+                                                        'bbox': citation.get('bbox'),
+                                                        'method': citation.get('method', 'block-id-lookup')
+                                                    }
+                                                    
+                                                    processed_citations[citation_num_str] = citation_data
+                                                    
+                                                    # Stream citation event
+                                                    citation_event = {
+                                                        'type': 'citation',
+                                                        'citation_number': citation['citation_number'],
+                                                        'data': citation_data
+                                                    }
+                                                    yield f"data: {json.dumps(citation_event)}\n\n"
+                                                    logger.info(
+                                                        f"🟢 [CITATION_STREAM] Streamed citation {citation_num_str} "
+                                                        f"(doc: {citation_data.get('doc_id', '')[:8]}, page: {citation_data.get('page')})"
+                                                    )
+                                                
+                                                # Store processed citations in final_result for later use
+                                                final_result['processed_citations'] = processed_citations
+                                                
+                                            except Exception as citation_error:
+                                                logger.error(
+                                                    f"🟡 [CITATION_STREAM] Error processing citations: {citation_error}",
+                                                    exc_info=True
+                                                )
+                                                # Continue without citations rather than failing
+                                        
+                                        # Debug: Log what we captured
+                                        logger.info(
+                                            f"🟢 [STREAM] summarize_results state captured: "
+                                            f"summary={bool(final_result.get('final_summary'))}, "
+                                            f"doc_outputs={len(final_result.get('document_outputs', []))}, "
+                                            f"relevant_docs={len(final_result.get('relevant_documents', []))}, "
+                                            f"citations={len(citations_from_state)}"
+                                        )
+                                    
                                     # MERGE state updates from each node (don't overwrite!)
                                     if state_update:
                                         if final_result is None:
@@ -882,8 +990,14 @@ def query_documents_stream():
                                     break
                                 
                                 if latest_checkpoint:
-                                    final_result = latest_checkpoint
-                                    logger.info("🟡 [STREAM] Retrieved final state from checkpointer")
+                                    # Checkpointer returns (state, config) tuple or just state
+                                    if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
+                                        final_result, _ = latest_checkpoint
+                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                    else:
+                                        # Single value returned
+                                        final_result = latest_checkpoint
+                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
                                 else:
                                     # Fallback: use ainvoke (will be fast since graph already executed)
                                     logger.warning("🟡 [STREAM] No checkpoint found, using ainvoke...")
@@ -895,327 +1009,99 @@ def query_documents_stream():
                             logger.info("🟡 [STREAM] Using final state captured from events")
                         
                         # Extract data from final result
-                        doc_outputs = final_result.get('document_outputs', []) if final_result else []
-                        relevant_docs = final_result.get('relevant_documents', []) if final_result else []
+                        # FIX: Handle case where final_result might be tuple or have different structure
+                        if isinstance(final_result, tuple):
+                            # If checkpointer returns tuple, extract the dict
+                            if len(final_result) >= 1:
+                                final_result = final_result[0]
+                                doc_outputs = final_result.get('document_outputs', []) if isinstance(final_result, dict) else []
+                                relevant_docs = final_result.get('relevant_documents', []) if isinstance(final_result, dict) else []
+                            else:
+                                doc_outputs = []
+                                relevant_docs = []
+                        elif final_result is None:
+                            doc_outputs = []
+                            relevant_docs = []
+                        else:
+                            doc_outputs = final_result.get('document_outputs', []) if final_result else []
+                            relevant_docs = final_result.get('relevant_documents', []) if final_result else []
                         
                         logger.info(f"🟡 [STREAM] Final state: {len(doc_outputs)} doc outputs, {len(relevant_docs)} relevant docs")
                         
-                        # Send document count
-                        yield f"data: {json.dumps({'type': 'documents_found', 'count': len(relevant_docs)})}\n\n"
+                        # Get the summary that was already generated by summarize_results node
+                        full_summary = final_result.get('final_summary', '')
                         
-                        if not doc_outputs:
+                        # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
+                        if not full_summary:
+                            # Only error if we have neither summary nor documents
+                            if not doc_outputs:
+                                logger.error("🟡 [STREAM] No summary and no documents - cannot proceed")
+                                yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
+                                return
+                            else:
+                                logger.warning("🟡 [STREAM] No final_summary found in result, generating fallback")
+                                full_summary = "I couldn't generate a summary from the retrieved documents. Please try rephrasing your query."
+                        
+                        # Send document count (use doc_outputs if available, otherwise relevant_docs)
+                        doc_count = len(doc_outputs) if doc_outputs else len(relevant_docs)
+                        yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
+                        
+                        # If we have a summary, proceed even if doc_outputs is empty (documents were already processed)
+                        if not doc_outputs and not full_summary:
                             yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                             return
                         
-                        # Stream the summary generation using OpenAI streaming
-                        yield f"data: {json.dumps({'type': 'status', 'message': 'Generating response...'})}\n\n"
+                        logger.info(f"🟡 [STREAM] Using existing summary from summarize_results node ({len(full_summary)} chars)")
                         
-                        # Build summary prompt (same as summarize_results node)
-                        from backend.llm.nodes.summary_nodes import summarize_results
-                        # Get the prompt from the summarize function logic
-                        formatted_outputs = []
-                        citation_map = {}  # NEW: Map citation number to doc_id and metadata
-                        for idx, output in enumerate(doc_outputs, start=1):  # Start at 1 for citations
-                            citation_number = idx  # [1], [2], [3], etc.
-                            
-                            # FIX: Get doc_id with fallback - check output, then source_chunks_metadata
-                            doc_id = output.get('doc_id') or ''
-                            if not doc_id:
-                                # Try to get doc_id from first chunk's metadata
-                                source_chunks = output.get('source_chunks_metadata', [])
-                                if source_chunks and isinstance(source_chunks, list) and len(source_chunks) > 0:
-                                    doc_id = source_chunks[0].get('doc_id') or ''
-                            
-                            if not doc_id:
-                                logger.warning(f"🟡 [CITATIONS] No doc_id found in doc_output[{idx}], skipping citation mapping")
-                                continue  # Skip documents without doc_id
-                            
-                            doc_type = (output.get('classification_type') or 'Property Document').replace('_', ' ').title()
-                            filename = output.get('original_filename', f"Document {doc_id[:8]}")
-                            prop_id = output.get('property_id') or 'Unknown'
-                            address = output.get('property_address', f"Property {prop_id[:8]}")
-                            page_info = output.get('page_range', 'multiple pages')
-                            
-                            # NEW: Store citation mapping for later use (includes bbox metadata)
-                            citation_map[str(citation_number)] = {
-                                'doc_id': doc_id,
-                                'source_chunks_metadata': output.get('source_chunks_metadata', []),
-                                'original_filename': filename,
-                                'property_address': address,
-                                'page_range': page_info,
-                                'classification_type': doc_type
-                            }
-                            
-                            # NEW: Number documents for citation reference
-                            header = f"\n[Document {citation_number}] {doc_type}: {filename}\n"
-                            header += f"Property: {address}\n"
-                            header += f"Pages: {page_info}\n"
-                            header += f"---------------------------------------------\n"
-                            
-                            formatted_outputs.append(header + output.get('output', ''))
+                        # Stream the existing summary token by token (simulate streaming for UX)
+                        logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
+                        yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                         
-                        formatted_outputs_str = "\n".join(formatted_outputs)
+                        # Split summary into words and stream them (no delay needed - already fast)
+                        words = full_summary.split()
+                        for i, word in enumerate(words):
+                            if i == 0:
+                                logger.info("🟡 [STREAM] First token streamed from existing summary")
+                            # Add space after word (except last word)
+                            token = word + (' ' if i < len(words) - 1 else '')
+                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
                         
-                        prompt = f"""You are an AI assistant for real estate and valuation professionals. You help them quickly understand what's inside their documents and how that information relates to their query.
-
-CONTEXT
-
-The user works in real estate (agent, valuer, acquisitions, asset manager, investor, or analyst).
-They have uploaded {len(doc_outputs)} documents, which may include: valuation reports, leases, EPCs, offer letters, appraisals, inspections, legal documents, or correspondence.
-
-The user has asked:
-
-"{query}"
-
-Below is the extracted content from the pages you analyzed:
-
-{formatted_outputs_str}
-
-GUIDELINES FOR YOUR RESPONSE
-
-Speak naturally, like an experienced real estate professional giving you exactly what you need without excess detail unless explicitly asked for.
-
-**CITATION REQUIREMENTS:**
-- Each document is labeled with [Document 1], [Document 2], etc. at the top
-- When you use information from a document, cite it immediately after the relevant sentence using the format [1], [2], [3], etc.
-- Place citations right after the sentence that contains information from that document
-- Example: "The property is approximately 2.5 acres[1]. The valuation was completed by John Smith[2]."
-- If multiple documents support the same fact, cite all: "The property has 5 bedrooms[1][2]."
-- Citations should appear inline, naturally within your response
-- Always cite your sources - use [1], [2], etc. after each fact that comes from a document
-
-Focus on what matters in real estate:
-- Valuations, specifications, location, condition, risks, opportunities, deal terms, and comparable evidence.
-
-CRITICAL RULES:
-1. **Do NOT repeat the user's question as a heading or title** - The user can see their own query, so start directly with the answer.
-2. **Do NOT add "Additional Context" sections** - Only provide context if the user explicitly asks for it.
-3. **Do NOT add unsolicited insights or recommendations** - Answer only what was asked.
-4. **Do NOT add "Next steps" or follow-up suggestions** - Answer the question and stop.
-5. **Always cite your sources** - Use [1], [2], etc. after each fact that comes from a document.
-
-Start with a clear, direct answer to the user's question. Provide only the information requested - nothing more.
-
-TONE
-
-Professional, concise, helpful, human, and grounded in the documents — not robotic or over-structured.
-
-Now provide your response (answer directly, no heading, no additional context, with citations):"""
+                        # Check if we have processed citations from block IDs (new approach)
+                        processed_citations = final_result.get('processed_citations', {})
+                                    
+                        # Build citations_map_for_frontend and structured_citations from block ID citations
+                        citations_map_for_frontend = {}
+                        structured_citations = []
                         
-                        # Use streaming LLM
-                        logger.info("🟡 [STREAM] Creating ChatOpenAI instance...")
-                        logger.info(f"🟡 [STREAM] API Key present: {bool(config.openai_api_key)}")
-                        logger.info(f"🟡 [STREAM] Model: {config.openai_model}")
-                        llm = ChatOpenAI(
-                            api_key=config.openai_api_key,
-                            model=config.openai_model,
-                            temperature=0,
-                            streaming=True,  # Enable streaming
-                        )
-                        logger.info("🟡 [STREAM] ChatOpenAI instance created, starting to stream...")
+                        if processed_citations:
+                            logger.info(
+                                f"🟢 [CITATIONS] Using block ID citations ({len(processed_citations)} citations)"
+                            )
+                            # Convert processed citations from block IDs to frontend format
+                            for citation_num, citation_data in processed_citations.items():
+                                bbox = citation_data.get('bbox', {})
+                                page = citation_data.get('page', 0)
+                                doc_id = citation_data.get('doc_id', '')
+                                
+                                # Build structured citation for array format
+                                structured_citations.append({
+                                    'id': int(citation_num),
+                                    'document_id': doc_id,
+                                    'page': page,
+                                    'bbox': bbox
+                                })
+                                
+                                # Build citation map entry for frontend
+                                citations_map_for_frontend[citation_num] = {
+                                    'doc_id': doc_id,
+                                    'page': page,
+                                    'bbox': bbox,
+                                    'method': citation_data.get('method', 'block-id-lookup')
+                                }
+                        else:
+                            logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
                         
-                        # Stream tokens
-                        full_summary = ""
-                        chunk_count = 0
-                        for chunk in llm.stream(prompt):
-                            chunk_count += 1
-                            if chunk_count == 1:
-                                logger.info("🟡 [STREAM] First chunk received from LLM")
-                            if chunk.content:
-                                token = chunk.content
-                                full_summary += token
-                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
-                        
-                        # NEW: Parse citations from LLM response and map to bbox metadata
-                        # Strategy: Number citations per unique chunk/bbox, not per document
-                        # Each unique chunk gets its own sequential number (1, 2, 3...)
-                        citations_data = {}  # Initialize to empty dict
-                        try:
-                            citation_pattern = r'\[(\d+)\]'
-                            citations_found = re.findall(citation_pattern, full_summary)
-                            
-                            # If no documents, skip citation processing
-                            if not citation_map:
-                                logger.info("🟡 [CITATIONS] No documents found, skipping citation processing")
-                            else:
-                                # Step 1: Build a map of ALL unique chunks from ALL documents
-                                # Key: (doc_id, chunk_index, page_number) -> unique chunk identifier
-                                # Value: sequential citation number
-                                all_chunks_map = {}  # Map chunk_signature to citation number
-                                sequential_num = 1
-                                chunk_to_citation = {}  # Map chunk_signature to citation number
-                                citation_to_chunks = {}  # Map citation number to chunk metadata
-                                
-                                # First, collect ALL chunks from ALL documents in citation_map
-                                for doc_num_str, doc_citation in citation_map.items():
-                                    doc_id = doc_citation['doc_id']
-                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
-                                    
-                                    if isinstance(source_chunks_metadata, list):
-                                        for chunk in source_chunks_metadata:
-                                            if isinstance(chunk, dict):
-                                                chunk_index = chunk.get('chunk_index')
-                                                page_number = chunk.get('page_number')
-                                                bbox = chunk.get('bbox')
-                                                
-                                                # Create unique chunk signature: (doc_id, chunk_index, page_number)
-                                                # This uniquely identifies a chunk regardless of document
-                                                chunk_signature = (doc_id, chunk_index, page_number)
-                                                
-                                                # If this is a new unique chunk, assign it a citation number
-                                                if chunk_signature not in chunk_to_citation:
-                                                    chunk_to_citation[chunk_signature] = sequential_num
-                                                    citation_to_chunks[str(sequential_num)] = {
-                                                        'doc_id': doc_id,
-                                                        'chunk_index': chunk_index,
-                                                        'page_number': page_number,
-                                                        'chunk_metadata': chunk,  # Full chunk metadata including bbox
-                                                        'original_filename': doc_citation.get('original_filename'),
-                                                        'property_address': doc_citation.get('property_address'),
-                                                        'page_range': doc_citation.get('page_range'),
-                                                        'classification_type': doc_citation.get('classification_type')
-                                                    }
-                                                    logger.info(f"🟡 [CITATIONS] Assigned citation [{sequential_num}] to chunk: doc {doc_id[:8]}, chunk_idx {chunk_index}, page {page_number}")
-                                                    sequential_num += 1
-                                
-                                # Step 2: Map LLM's document citations to chunk citations
-                                # When LLM cites [1] (Document 1), we need to map it to all chunks from Document 1
-                                citation_renumber_map = {}  # Map old doc citation -> new chunk citations
-                                doc_to_chunk_citations = {}  # Map doc_num -> list of chunk citation numbers
-                                
-                                for doc_num_str, doc_citation in citation_map.items():
-                                    doc_id = doc_citation['doc_id']
-                                    source_chunks_metadata = doc_citation.get('source_chunks_metadata', [])
-                                    
-                                    # Get all chunk citation numbers for this document
-                                    chunk_citations = []
-                                    if isinstance(source_chunks_metadata, list):
-                                        for chunk in source_chunks_metadata:
-                                            if isinstance(chunk, dict):
-                                                chunk_index = chunk.get('chunk_index')
-                                                page_number = chunk.get('page_number')
-                                                chunk_signature = (doc_id, chunk_index, page_number)
-                                                
-                                                if chunk_signature in chunk_to_citation:
-                                                    chunk_cit_num = str(chunk_to_citation[chunk_signature])
-                                                    if chunk_cit_num not in chunk_citations:
-                                                        chunk_citations.append(chunk_cit_num)
-                                    
-                                    doc_to_chunk_citations[doc_num_str] = chunk_citations
-                                
-                                # Step 3: Replace document citations with chunk citations in the text
-                                # When we see [1], replace it with [1], [2], [3] etc. based on chunks
-                                # But actually, we should just use the first chunk citation number
-                                # and let the frontend handle multiple chunks per document
-                                
-                                # For now, map each document citation to its first chunk citation
-                                # (We can enhance this later to handle multiple chunks per document citation)
-                                for doc_num_str in citations_found:
-                                    if doc_num_str in doc_to_chunk_citations:
-                                        chunk_citations = doc_to_chunk_citations[doc_num_str]
-                                        if chunk_citations:
-                                            # Use the first chunk citation number for this document
-                                            citation_renumber_map[doc_num_str] = chunk_citations[0]
-                                            logger.info(f"🟡 [CITATIONS] Mapped document citation [{doc_num_str}] to chunk citation [{chunk_citations[0]}] (from {len(chunk_citations)} chunks)")
-                                
-                                # Get unique chunk citation numbers that were actually used
-                                unique_citations = sorted(set(citation_renumber_map.values()), key=int) if citation_renumber_map else []
-                                
-                                logger.info(f"🟡 [CITATIONS] Found {len(citations_found)} document citation(s), mapped to {len(unique_citations)} unique chunk citation(s): {unique_citations}")
-                                
-                                # Renumber citations in the text: replace document citations with chunk citations
-                                if citation_renumber_map:
-                                    def replace_citation(match):
-                                        old_num = match.group(1)
-                                        new_num = citation_renumber_map.get(old_num, old_num)
-                                        return f'[{new_num}]'
-                                    
-                                    full_summary = re.sub(citation_pattern, replace_citation, full_summary)
-                                    logger.debug(f"🟡 [CITATIONS] After renumbering to chunk citations, full_summary has {len(re.findall(citation_pattern, full_summary))} citations")
-                                
-                                # Deduplicate citations: same citation number in same sentence -> keep only first
-                                def deduplicate_citations(text):
-                                    sentences = re.split(r'([.!?]+\s+)', text)
-                                    deduped_sentences = []
-                                    
-                                    for i in range(0, len(sentences), 2):
-                                        sentence = sentences[i]
-                                        delimiter = sentences[i + 1] if i + 1 < len(sentences) else ''
-                                        
-                                        if not sentence:
-                                            deduped_sentences.append(sentence + delimiter)
-                                            continue
-                                        
-                                        citation_pattern_local = r'\[(\d+)\]'
-                                        citations = list(re.finditer(citation_pattern_local, sentence))
-                                        
-                                        if len(citations) <= 1:
-                                            deduped_sentences.append(sentence + delimiter)
-                                            continue
-                                        
-                                        seen_nums = set()
-                                        parts = []
-                                        last_end = 0
-                                        
-                                        for match in citations:
-                                            citation_num = match.group(1)
-                                            
-                                            if match.start() > last_end:
-                                                parts.append(sentence[last_end:match.start()])
-                                            
-                                            if citation_num not in seen_nums:
-                                                parts.append(match.group(0))
-                                                seen_nums.add(citation_num)
-                                            
-                                            last_end = match.end()
-                                        
-                                        if last_end < len(sentence):
-                                            parts.append(sentence[last_end:])
-                                        
-                                        deduped_sentences.append(''.join(parts) + delimiter)
-                                    
-                                    return ''.join(deduped_sentences)
-                                
-                                # Deduplicate citations in the text
-                                full_summary = deduplicate_citations(full_summary)
-                                
-                                # Build citations_data mapping: chunk citation number -> chunk metadata with bbox
-                                citations_data = {}
-                                for citation_num_str, chunk_info in citation_to_chunks.items():
-                                    # Only include citations that were actually used in the response
-                                    if citation_num_str in unique_citations:
-                                        chunk_metadata = chunk_info.get('chunk_metadata', {})
-                                        
-                                        # FIX: Get doc_id from chunk_info or fallback to chunk_metadata
-                                        # This handles cases where doc_id might be empty in citation_map
-                                        doc_id = chunk_info.get('doc_id') or chunk_metadata.get('doc_id') or ''
-                                        
-                                        if not doc_id:
-                                            logger.warning(f"🟡 [CITATIONS] No doc_id found for citation [{citation_num_str}], chunk_idx {chunk_info.get('chunk_index')}")
-                                        
-                                        # Ensure doc_id is in chunk_metadata for frontend
-                                        if chunk_metadata and not chunk_metadata.get('doc_id'):
-                                            chunk_metadata = {**chunk_metadata, 'doc_id': doc_id}
-                                        
-                                        # Build source_chunks_metadata array with just this chunk
-                                        source_chunks_metadata = [chunk_metadata] if chunk_metadata else []
-                                        
-                                        citations_data[citation_num_str] = {
-                                            'doc_id': doc_id,  # Use recovered doc_id
-                                            'original_filename': chunk_info.get('original_filename'),
-                                            'property_address': chunk_info.get('property_address'),
-                                            'page_range': chunk_info.get('page_range'),
-                                            'classification_type': chunk_info.get('classification_type'),
-                                            'source_chunks_metadata': source_chunks_metadata  # Single chunk with bbox!
-                                        }
-                                        logger.info(
-                                            f"🟡 [CITATIONS] Mapped chunk citation [{citation_num_str}] to doc {doc_id[:8] if doc_id else 'MISSING'}, "
-                                            f"chunk_idx {chunk_info.get('chunk_index')}, page {chunk_info.get('page_number')}, "
-                                            f"bbox: {bool(chunk_metadata.get('bbox'))}"
-                                        )
-                        except Exception as citation_error:
-                            logger.error(f"🟡 [CITATIONS] Error parsing citations: {citation_error}", exc_info=True)
-                            citations_data = {}  # Fallback to empty citations
+                        logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         # Send complete message with metadata
                         complete_data = {
@@ -1224,7 +1110,8 @@ Now provide your response (answer directly, no heading, no additional context, w
                                 'summary': full_summary.strip(),
                                 'relevant_documents': relevant_docs,
                                 'document_outputs': doc_outputs,
-                                'citations': citations_data,  # Citation mapping with bbox
+                                'citations': citations_map_for_frontend,  # Frontend expects Record<string, CitationDataType>
+                                'citations_array': structured_citations,  # NEW: Structured array format (for future use)
                                 'session_id': session_id
                             }
                         }
@@ -1253,6 +1140,7 @@ Now provide your response (answer directly, no heading, no additional context, w
                     try:
                         logger.info("🟠 [STREAM] run_async_gen() thread started")
                         # Create new event loop for this thread
+                        import asyncio
                         new_loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(new_loop)
                         logger.info("🟠 [STREAM] New event loop created")
@@ -1268,120 +1156,70 @@ Now provide your response (answer directly, no heading, no additional context, w
                                     if chunk_count == 1:
                                         logger.info("🟠 [STREAM] First chunk received from async generator")
                                     # Log reasoning step chunks for debugging
-                                    try:
-                                        if chunk.startswith('data: '):
-                                            chunk_data = json.loads(chunk[6:])
-                                            if chunk_data.get('type') == 'reasoning_step':
-                                                logger.info(f"🟡 [STREAM] Queueing reasoning_step: {chunk_data.get('step')} - {chunk_data.get('message')}")
-                                    except:
-                                        pass
-                                    chunk_queue.put(('chunk', chunk))
-                                logger.info(f"🟠 [STREAM] Async generator completed, received {chunk_count} chunks")
-                                chunk_queue.put(('done', None))
+                                    chunk_queue.put(chunk)
+                                logger.info(f"🟠 [STREAM] Finished consuming async generator ({chunk_count} chunks)")
                             except Exception as e:
-                                logger.error(f"❌ [STREAM] Error in async generator: {e}")
-                                import traceback
-                                logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
-                                traceback.print_exc()
-                                error_message[0] = str(e)
+                                logger.error(f"🟠 [STREAM] Error in consume_async_gen: {e}", exc_info=True)
                                 error_occurred.set()
-                                chunk_queue.put(('error', str(e)))
+                                error_message[0] = str(e)
+                                chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
                         
-                        logger.info("🟠 [STREAM] Running async generator in event loop...")
                         new_loop.run_until_complete(consume_async_gen())
                         logger.info("🟠 [STREAM] Event loop completed")
-                        new_loop.close()
                     except Exception as e:
-                        logger.error(f"❌ [STREAM] Error in async thread: {e}")
-                        import traceback
-                        logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
-                        traceback.print_exc()
-                        error_message[0] = str(e)
+                        logger.error(f"🟠 [STREAM] Error in run_async_gen: {e}", exc_info=True)
                         error_occurred.set()
-                        chunk_queue.put(('error', str(e)))
+                        error_message[0] = str(e)
+                        chunk_queue.put(f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n")
+                    finally:
+                        chunk_queue.put(None)  # Signal completion
                 
-                # Start async generator in background thread
+                # Start async generator in a separate thread
                 thread = threading.Thread(target=run_async_gen, daemon=True)
                 thread.start()
+                logger.info("🟠 [STREAM] Thread started")
                 
-                # Yield chunks as they arrive from the async generator
+                # Yield chunks from queue
                 while True:
                     try:
-                        # Wait for chunk with timeout to allow checking thread status
-                        try:
-                            item_type, item_data = chunk_queue.get(timeout=0.1)
-                        except:
-                            # Check if thread is still alive
-                            if not thread.is_alive() and chunk_queue.empty():
-                                if error_occurred.is_set():
-                                    yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
-                                break
-                            continue
+                        chunk = chunk_queue.get(timeout=1.0)
+                        if chunk is None:  # Completion signal
+                            break
+                        yield chunk
+                    except:
+                        # Timeout or error - check if thread is still alive
+                        if not thread.is_alive():
+                            if error_occurred.is_set():
+                                yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                            break
+                        continue
                         
-                        if item_type == 'chunk':
-                            # Log reasoning step chunks being yielded for debugging
-                            try:
-                                if item_data.startswith('data: '):
-                                    chunk_data = json.loads(item_data[6:])
-                                    if chunk_data.get('type') == 'reasoning_step':
-                                        logger.info(f"🟡 [STREAM] Yielding reasoning_step to client: {chunk_data.get('step')} - {chunk_data.get('message')}")
-                            except:
-                                pass
-                            yield item_data
-                        elif item_type == 'done':
-                            break
-                        elif item_type == 'error':
-                            yield f"data: {json.dumps({'type': 'error', 'message': item_data})}\n\n"
-                            break
-                    except Exception as e:
-                        logger.error(f"Error consuming stream chunks: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-                        break
             except Exception as e:
+                # Handle any errors in the main generate_stream logic
                 logger.error(f"❌ [STREAM] Error in generate_stream: {e}")
                 import traceback
-                logger.error(f"❌ [STREAM] Full traceback: {traceback.format_exc()}")
-                traceback.print_exc()
+                logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         
         # Return SSE response with proper CORS headers
         # Note: generate_stream() already has internal error handling that yields error messages
-        try:
-            logger.info("🔵 [STREAM] Creating Response object with stream...")
-            response = Response(
-                stream_with_context(generate_stream()),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache',
-                    'X-Accel-Buffering': 'no',  # Disable nginx buffering
-                    'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
-                    'Access-Control-Allow-Credentials': 'true',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                }
-            )
-            logger.info("🔵 [STREAM] Response object created successfully, returning...")
-            return response
-        except Exception as response_error:
-            # If Response creation fails, return error with CORS headers
-            logger.error(f"❌ [STREAM] Error creating streaming response: {response_error}")
-            import traceback
-            logger.error(f"❌ [STREAM] Response creation traceback: {traceback.format_exc()}")
-            traceback.print_exc()
-            error_response = jsonify({
-                'success': False,
-                'error': f'Failed to create streaming response: {str(response_error)}'
-            })
-            error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-            error_response.headers.add('Access-Control-Allow-Credentials', 'true')
-            error_response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-            error_response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-            return error_response, 500
+        logger.info("🔵 [STREAM] Creating Response object with stream...")
+        response = Response(
+            stream_with_context(generate_stream()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',  # Disable nginx buffering
+                'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
+                'Access-Control-Allow-Credentials': 'true',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+                'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            }
+        )
+        logger.info("🔵 [STREAM] Response object created successfully, returning...")
+        return response
     except Exception as e:
-        # Catch any errors and return with CORS headers
-        logger.error(f"❌ [STREAM] Outer exception in query_documents_stream: {e}")
+        logger.error(f"❌ [STREAM] Error in query_documents_stream: {e}")
         import traceback
         logger.error(f"❌ [STREAM] Full traceback: {traceback.format_exc()}")
         traceback.print_exc()
@@ -1448,8 +1286,21 @@ def query_documents():
     
     query = data.get('query', '')
     property_id = data.get('propertyId')  # From property attachment
+    document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
     session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    # Handle documentIds as comma-separated string, array, or single value
+    if isinstance(document_ids, str):
+        document_ids = [d.strip() for d in document_ids.split(',') if d.strip()]
+    elif isinstance(document_ids, (int, float)):
+        # Handle single number
+        document_ids = [str(document_ids)]
+    elif isinstance(document_ids, list):
+        # Ensure all IDs are strings
+        document_ids = [str(doc_id) for doc_id in document_ids if doc_id]
+    else:
+        document_ids = []
     
     if not query:
         return jsonify({
@@ -1466,9 +1317,9 @@ def query_documents():
                 'error': 'User not associated with a business'
             }), 400
         
-        # Get document_id from property_id if provided
+        # Get document_id from property_id if provided (fallback if document_ids not provided)
         document_id = None
-        if property_id:
+        if property_id and not document_ids:
             try:
                 # Query document_relationships to find document linked to this property
                 supabase = get_supabase_client()
@@ -1493,7 +1344,8 @@ def query_documents():
             "user_id": str(current_user.id) if current_user.is_authenticated else "anonymous",
             "business_id": business_id,
             "session_id": session_id,
-            "property_id": property_id  # Pass property_id to filter results
+            "property_id": property_id,
+            "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
         }
         
         # Use global graph instance (initialized on app startup)

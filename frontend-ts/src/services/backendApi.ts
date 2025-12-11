@@ -215,10 +215,21 @@ class BackendApiService {
     abortSignal?: AbortSignal,
     documentIds?: string[],
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
-    onReasoningContext?: (context: { message: string; moment: string }) => void
+    onReasoningContext?: (context: { message: string; moment: string }) => void,
+    onCitation?: (citation: { citation_number: string; data: any }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
+    
+    const requestBody = {
+      query,
+      propertyId,
+      messageHistory,
+      sessionId: sessionId || `session_${Date.now()}`,
+      documentIds: documentIds || undefined
+    };
+    
+    console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'full body:', requestBody);
     
     try {
       const response = await fetch(url, {
@@ -228,13 +239,7 @@ class BackendApiService {
         },
         credentials: 'include',
         signal: abortSignal, // Add abort signal support
-        body: JSON.stringify({
-          query,
-          propertyId,
-          messageHistory,
-          sessionId: sessionId || `session_${Date.now()}`,
-          documentIds: documentIds || undefined
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
@@ -308,6 +313,15 @@ class BackendApiService {
                     onReasoningContext({
                       message: data.message,
                       moment: data.moment
+                    });
+                  }
+                  break;
+                case 'citation':
+                  console.log('📚 BackendApi: Received citation event:', data);
+                  if (onCitation) {
+                    onCitation({
+                      citation_number: String(data.citation_number),
+                      data: data.data
                     });
                   }
                   break;

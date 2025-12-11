@@ -26,7 +26,9 @@ services:
     environment:
       - FLASK_ENV=development
       - REDIS_URL=redis://redis:6379/0
-      # DATABASE_URL removed - uses SUPABASE_DB_URL from .env file (loaded via env_file)
+      # Database connection strings (loaded from .env via env_file):
+      # - SUPABASE_DB_URL: Transaction pooler (port 6543) for SQLAlchemy - high concurrency
+      # - SUPABASE_DB_URL_SESSION: Session pooler (port 5432) for LangGraph checkpointer - prepared statements work
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - DOCKER_ENV=true
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed
@@ -44,7 +46,9 @@ services:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
-      # DATABASE_URL removed - uses SUPABASE_DB_URL from .env file (loaded via env_file)
+      # Database connection strings (loaded from .env via env_file):
+      # - SUPABASE_DB_URL: Transaction pooler (port 6543) for SQLAlchemy - high concurrency
+      # - SUPABASE_DB_URL_SESSION: Session pooler (port 5432) for LangGraph checkpointer - prepared statements work
       - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - DOCKER_ENV=true
       - LOCAL_EMBEDDING_URL=http://embedding-server:5003/embed

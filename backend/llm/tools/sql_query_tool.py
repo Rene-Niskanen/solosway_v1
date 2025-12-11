@@ -9,7 +9,7 @@ Supports: bedrooms, bathrooms, price, square footage, distances, property type, 
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from pydantic import BaseModel, Field
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 from backend.services.supabase_client_factory import get_supabase_client
 import math
 

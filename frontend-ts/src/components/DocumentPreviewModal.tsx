@@ -73,6 +73,24 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     const bbox = fileHighlight.bbox;
     
+    // Validate bbox values
+    if (
+      typeof bbox.left !== 'number' || bbox.left < 0 || bbox.left > 1 ||
+      typeof bbox.top !== 'number' || bbox.top < 0 || bbox.top > 1 ||
+      typeof bbox.width !== 'number' || bbox.width <= 0 || bbox.width > 1 ||
+      typeof bbox.height !== 'number' || bbox.height <= 0 || bbox.height > 1
+    ) {
+      console.warn('⚠️ [BBOX] Invalid bbox values, skipping highlight:', bbox);
+      return null;
+    }
+    
+    // Check if bbox area is suspiciously large
+    const area = bbox.width * bbox.height;
+    if (area > 0.5) {
+      console.warn('⚠️ [BBOX] Bbox area too large, may be incorrect:', { area, bbox });
+      // Still render, but log warning
+    }
+    
     // IMPROVED: Use tighter minimum dimensions for precise highlighting
     // Small BBOXes are often CORRECT (e.g., just "£2,300,000")
     const MIN_WIDTH = 0.12;   // Minimum 12% of page width (enough for a price)
@@ -125,7 +143,36 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       console.log('📐 [BBOX] Using precise bbox with padding:', { left, top, width, height });
     }
     
-    return { left, top, width, height, page, ...(original_page !== undefined && { original_page }) };
+    // Phase 6: Validate bbox coordinates before returning
+    const finalBbox = { 
+      left: Number(left.toFixed(4)), 
+      top: Number(top.toFixed(4)), 
+      width: Number(width.toFixed(4)), 
+      height: Number(height.toFixed(4)), 
+      page, 
+      ...(original_page !== undefined && { original_page }) 
+    };
+    
+    // Validate bbox is reasonable
+    if (finalBbox.top > 0.9) {
+      console.warn('⚠️ [BBOX] Suspicious bbox - likely footer area:', finalBbox);
+      console.warn('⚠️ [BBOX] This may indicate incorrect block matching in backend');
+    }
+    
+    if (finalBbox.width * finalBbox.height > 0.5) {
+      console.warn('⚠️ [BBOX] Suspicious bbox - very large area (>50% of page):', finalBbox);
+    }
+    
+    // Log the actual block position for debugging
+    console.log('📋 [BBOX] Highlighting block at:', {
+      page: finalBbox.page,
+      position: `${(finalBbox.top * 100).toFixed(1)}% from top`,
+      left: `${(finalBbox.left * 100).toFixed(1)}% from left`,
+      area: `${(finalBbox.width * finalBbox.height * 100).toFixed(2)}% of page`,
+      dimensions: `${(finalBbox.width * 100).toFixed(1)}% × ${(finalBbox.height * 100).toFixed(1)}%`
+    });
+    
+    return finalBbox;
   }, [fileHighlight?.bbox]);
   
   const [imageNaturalHeight, setImageNaturalHeight] = React.useState<number | null>(null);
@@ -139,6 +186,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [pdfDocument, setPdfDocument] = React.useState<PDFDocumentProxy | null>(null);
   const [pdfPageRendering, setPdfPageRendering] = React.useState(false);
   const [pdfCanvasDimensions, setPdfCanvasDimensions] = React.useState<{ width: number; height: number } | null>(null);
+  const [pdfViewportTransform, setPdfViewportTransform] = React.useState<number[] | null>(null);
   const pdfCanvasRef = React.useRef<HTMLCanvasElement>(null);
   
   // Reprocess document state
@@ -462,6 +510,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         
         // Store dimensions for highlight positioning
         setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
+        
+        // Store viewport transform for highlight positioning (PDF.js transform matrix)
+        const transform = viewport.transform;
+        setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
         
         // Render the page
         await page.render({
@@ -1922,17 +1974,54 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         {/* PDF.js Canvas-based rendering for precise highlight positioning */}
                         {pdfDocument ? (
                           <>
-                            <canvas
-                              ref={pdfCanvasRef}
+                            {/* Wrap canvas and highlight in a container that matches canvas dimensions */}
+                            {/* This ensures highlight is positioned relative to canvas, not container */}
+                            <div
                               style={{
-                                display: 'block',
-                                margin: '0 auto',
-                                backgroundColor: '#fff',
-                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                                position: 'relative',
+                                width: pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : 'auto',
+                                height: pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : 'auto',
+                                margin: '0 auto', // Center the container (same as canvas)
+                                display: 'block'
                               }}
-                            />
+                            >
+                              <canvas
+                                ref={pdfCanvasRef}
+                                style={{
+                                  display: 'block',
+                                  margin: '0 auto',
+                                  backgroundColor: '#fff',
+                                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                                }}
+                              />
+                              
+                              {/* Highlight overlay for citations - positioned relative to canvas container */}
+                              {/* Uses expandedBbox (normalized 0-1) converted to pixels using PDF.js viewport dimensions */}
+                              {expandedBbox && expandedBbox.page === currentPage && pdfCanvasDimensions && (
+                                <div
+                                  style={{
+                                    position: 'absolute',
+                                    // Position directly using normalized coordinates converted to pixels
+                                    left: `${expandedBbox.left * pdfCanvasDimensions.width}px`,
+                                    top: `${expandedBbox.top * pdfCanvasDimensions.height}px`,
+                                    width: `${expandedBbox.width * pdfCanvasDimensions.width}px`,
+                                    height: `${expandedBbox.height * pdfCanvasDimensions.height}px`,
+                                    backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
+                                    border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
+                                    borderRadius: '2px',
+                                    pointerEvents: 'none',
+                                    zIndex: 10,
+                                    boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                                    opacity: 0,
+                                    animation: 'fadeInHighlight 0.3s ease-in forwards',
+                                    // REMOVED: Don't apply viewport transform - it's already applied to canvas rendering
+                                    transformOrigin: 'top left',
+                                  }}
+                                />
+                              )}
+                            </div>
                             
-                            {/* Loading indicator while rendering */}
+                            {/* Loading indicator while rendering - positioned relative to outer container */}
                             {pdfPageRendering && (
                               <div
                                 style={{
@@ -1950,29 +2039,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                               >
                                 Loading page...
                               </div>
-                            )}
-                            
-                            {/* Highlight overlay for citations - positioned using percentage-based coordinates */}
-                            {/* Uses expandedBbox which ensures small BBOXes are enlarged for visibility */}
-                            {expandedBbox && expandedBbox.page === currentPage && (
-                              <div
-                                style={{
-                                  position: 'absolute',
-                                  // Use percentage-based positioning since bbox is normalized 0-1
-                                  left: `${expandedBbox.left * 100}%`,
-                                  top: `${expandedBbox.top * 100}%`,
-                                  width: `${expandedBbox.width * 100}%`,
-                                  height: `${expandedBbox.height * 100}%`,
-                                  backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
-                                  border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
-                                  borderRadius: '2px',
-                                  pointerEvents: 'none',
-                                  zIndex: 10,
-                                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                  opacity: 0,
-                                  animation: 'fadeInHighlight 0.3s ease-in forwards',
-                                }}
-                              />
                             )}
                             
                             {/* Debug overlay showing all chunk bboxes when enabled */}

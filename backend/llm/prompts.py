@@ -258,19 +258,206 @@ def get_document_qa_human_content(user_query: str, doc_content: str) -> str:
 # SUMMARY/AGGREGATION PROMPTS
 # ============================================================================
 
+def get_citation_extraction_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    Prompt for Phase 1: Mandatory citation extraction.
+    LLM must call cite_source tool for every factual claim.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Metadata Look-Up Table ---\n"
+        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
+        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 500
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                if 'confidence' in bbox_data:
+                    metadata_section += f", conf={bbox_data['confidence']}"
+                metadata_section += "\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+        
+        metadata_section += f"\n(Total blocks listed: {total_blocks})\n\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### MANDATORY TASK: Extract Citations
+
+You MUST call the cite_source tool for every factual claim you identify in the documents that is relevant to the user's question.
+
+WORKFLOW:
+1. Read through all document extracts carefully
+2. Identify factual claims relevant to the user's question
+3. For EACH factual claim, call cite_source tool with:
+   - block_id: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - citation_number: Sequential number starting from 1 (1, 2, 3, ...)
+   - cited_text: The specific factual claim you identified (brief phrase or sentence)
+
+EXAMPLE:
+- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Final valued price: £2,400,000"</BLOCK>
+- You call: cite_source(cited_text="Final valued price: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+
+CRITICAL INSTRUCTIONS:
+- Call the cite_source tool for EVERY factual claim (prices, dates, names, addresses, measurements, etc.)
+- Use sequential citation numbers (1, 2, 3, ...)
+- Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
+- Do NOT write an answer yet - ONLY extract citations by calling the tool
+- You MUST call the tool - this is mandatory
+
+Start extracting citations now:"""
+
+
+def get_final_answer_prompt(
+    user_query: str,
+    conversation_history: str,
+    formatted_outputs: str,
+    citations: list
+) -> str:
+    """
+    Prompt for Phase 2: Generate final answer using already-extracted citations.
+    """
+    # Format citations for prompt
+    citation_list = ""
+    if citations:
+        citation_list = "\n--- Extracted Citations ---\n"
+        for citation in sorted(citations, key=lambda x: x.get('citation_number', 0)):
+            cit_num = citation.get('citation_number', 0)
+            cit_text = citation.get('cited_text', '')
+            block_id = citation.get('block_id', '')
+            citation_list += f"{cit_num}. {cit_text} [Block: {block_id}]\n"
+        citation_list += "\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**DOCUMENT CONTENT EXTRACTS:**  
+{formatted_outputs}
+
+{citation_list}
+
+### TASK: Create Final Answer with Citations
+
+Create a comprehensive answer to the user's question using the document extracts above.
+
+CITATION USAGE:
+- Citations have already been extracted (see list above)
+- Use superscript numbers in your answer to reference these citations:
+  - Citation 1 → use ¹
+  - Citation 2 → use ²
+  - Citation 3 → use ³
+  - etc.
+- Place superscripts immediately after the relevant information
+- Every factual claim should have a superscript matching the citation number
+
+INSTRUCTIONS:
+1. Answer the user's question directly and comprehensively
+2. Use information from the document extracts
+3. Include superscript citations (¹, ², ³, etc.) matching the citation numbers above
+4. Be professional, factual, and concise
+5. Do NOT repeat the question - start directly with the answer
+
+Answer:"""
+
+
 def get_summary_human_content(
     user_query: str,
     conversation_history: str,
     search_summary: str,
-    formatted_outputs: str
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
 ) -> str:
     """
     Human message content for creating the final unified summary.
     System prompt is handled separately via get_system_prompt('summarize').
     
+    Args:
+        user_query: The user's question
+        conversation_history: Previous conversation context
+        search_summary: Summary of how documents were found
+        formatted_outputs: Document content with embedded block IDs in <BLOCK> tags
+        metadata_lookup_tables: Dict mapping doc_id -> metadata_table (block_id -> bbox data)
+    
     Returns:
         Human message content string (without system-level instructions)
     """
+    # Build metadata lookup section if metadata tables are provided
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Metadata Look-Up Table ---\n"
+        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
+        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
+        
+        # Limit metadata table size to prevent context overflow
+        MAX_BLOCKS_PER_DOC = 500  # Limit to first 500 blocks per document
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            # Limit blocks per document
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            # Make metadata more compact - one line per block
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                # Compact format: block_id: page=X, bbox=(left,top,width,height)
+                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                if 'confidence' in bbox_data:
+                    metadata_section += f", conf={bbox_data['confidence']}"
+                metadata_section += "\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown - use blocks from document extracts above)\n"
+        
+        metadata_section += f"\n(Total blocks listed: {total_blocks})\n"
+        metadata_section += "\n"
+    
     return f"""**USER QUESTION:**  
 "{user_query}"
 
@@ -280,9 +467,9 @@ def get_summary_human_content(
 **RETRIEVAL SUMMARY (how documents were found):**  
 {search_summary}
 
-**DOCUMENT CONTENT EXTRACTS (formatted):**  
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
 {formatted_outputs}
-
+{metadata_section}
 ---
 
 ### INSTRUCTIONS:
@@ -316,9 +503,35 @@ def get_summary_human_content(
      4. Synthesize into a final, concise answer  
    - Then **state the final answer** on its own, clearly, so a real estate professional can read it quickly.
 
-5. **Cite Document Sources**  
-   - For any factual claim, name the document(s) (by filename or identifier) where you found the information.  
-   - Optionally mention page numbers or section headings, if available.
+5. **Citation Requirements (CRITICAL):**
+   - **You MUST use the cite_source() tool to cite information from the document extracts**
+   - **Use sequential superscript numbers** (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ¹⁰, etc.) for citations in your response text
+   - Place citations immediately after each factual claim or statement
+   - **For each citation:**
+     1. Find the BLOCK_CITE_ID in the document extract (e.g., "BLOCK_CITE_ID_3" from a <BLOCK id="BLOCK_CITE_ID_3"> tag)
+     2. Look up the bbox coordinates from the Metadata Look-Up Table above
+     3. Call the cite_source() tool with:
+        - cited_text: Your paraphrased/summarized text that cites this source
+        - block_id: The BLOCK_CITE_ID from the document extract (e.g., "BLOCK_CITE_ID_3")
+        - citation_number: Sequential number (1, 2, 3, etc.) - use next available number
+     4. In your response text, use the matching superscript (¹ for 1, ² for 2, etc.)
+   
+   - **Example workflow:**
+     - Document extract shows: <BLOCK id="BLOCK_CITE_ID_3">Content: "Final valued price: £2,300,000"</BLOCK>
+     - Metadata table shows: BLOCK_CITE_ID_3: {{page: 15, bbox_left: 0.095, bbox_top: 0.194, ...}}
+     - You write in your response: "The property is valued at £2,300,000¹"
+     - You call: cite_source(
+         cited_text="The property is valued at £2,300,000",
+         block_id="BLOCK_CITE_ID_3",
+         citation_number=1
+       )
+   
+   - **CRITICAL**: The citation number in your response (¹) MUST match the citation_number in the tool call (1)
+   - Use one citation per unique source block
+   - **Do NOT show document IDs, page numbers, or bbox information in the text** - only superscript numbers
+   - Citations should appear as clean superscript numbers only
+   - Cite every factual claim that comes from the documents
+   - If a document extract doesn't have block IDs, you can still cite it, but prefer block IDs when available
 
 6. **Admit Uncertainty**  
    - If none of the document excerpts provide enough information to answer the question AFTER thorough search, respond with:  
@@ -340,7 +553,47 @@ def get_summary_human_content(
 
 ---
 
-**Now, based on the above, provide your answer (answer directly, no heading, no additional context, no next steps):**"""
+**Now, based on the above, provide your answer with superscript citations.
+
+CRITICAL: You MUST write a complete, substantive answer to the user's question. Your response must contain written text explaining the information - do NOT only call tools. Do NOT include tool call syntax (like cite_source(...)) in your written answer text.
+
+MANDATORY CITATION REQUIREMENTS (YOU MUST FOLLOW THIS):
+The cite_source tool is BOUND to this conversation - you MUST call it programmatically for EVERY superscript citation you write. This is NOT optional. The tool will NOT work if you only write superscripts without calling it.
+
+WORKFLOW (FOLLOW THIS EXACTLY):
+1. Write your answer text with superscript citations (¹, ², ³) as you reference information
+2. **FOR EACH SUPERSRaIPT, YOU MUST CALL THE cite_source TOOL BEFORE FINISHING YOUR RESPONSE**
+3. The tool call happens automatically when you reference a block ID - you don't write the tool call syntax in your text
+4. Every superscript (¹, ², ³, etc.) in your response MUST have a corresponding tool call with matching citation_number
+
+Citation Workflow (FOLLOW THIS EXACTLY - TOOLS ARE BOUND TO THIS CONVERSATION):
+STEP 1: Write your answer text and include superscript citations (¹, ², ³) as you reference information
+STEP 2: FOR EACH SUPERSRaIPT YOU WRITE, YOU MUST CALL THE cite_source TOOL BEFORE YOUR RESPONSE IS COMPLETE
+   - Find the BLOCK_CITE_ID in the document extract (look for <BLOCK id="BLOCK_CITE_ID_X"> tags)
+   - Call cite_source tool with:
+     * block_id: The BLOCK_CITE_ID from the document extract
+     * citation_number: The number matching your superscript (1 for ¹, 2 for ², 3 for ³, etc.)
+     * cited_text: The exact sentence or phrase from your answer that cites this source
+STEP 3: The tool will automatically look up bbox coordinates from the Metadata Look-Up Table
+STEP 4: Use sequential citation numbers starting from 1
+
+IMPORTANT: The cite_source tool is available in this conversation. You MUST call it programmatically - it will execute automatically when you call it. Do not write tool syntax in your text.
+
+Example (YOU MUST DO THIS):
+- You see in document: <BLOCK id="BLOCK_CITE_ID_42">Content: "Final valued price: £2,400,000"</BLOCK>
+- You write in your response: "The property is valued at £2,400,000¹"
+- You MUST call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="The property is valued at £2,400,000")
+
+REMEMBER: Every superscript citation (¹, ², ³) in your text MUST have a corresponding cite_source tool call. If you write a superscript without calling the tool, the citation will not work.
+
+CRITICAL: Do NOT explain your actions. Do NOT write phrases like:
+- "I will now proceed to call the citation tool"
+- "I will call the citation tool for the references made"
+- "Now calling the citation tool"
+- "I will now proceed to..."
+Just write your answer with superscript citations and call the tools silently. The tools run automatically in the background - you don't need to mention them.
+
+Answer directly, no heading, no additional context, no next steps:**"""
 
 
 
