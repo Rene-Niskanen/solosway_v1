@@ -334,6 +334,23 @@ class VectorDocumentRetriever:
                 if not original_filename and doc_id:
                     original_filename = document_filenames_cache.get(doc_id)
                 
+                # Parse bbox and blocks if they're JSON strings
+                bbox = row.get("bbox")
+                if isinstance(bbox, str):
+                    try:
+                        import json
+                        bbox = json.loads(bbox)
+                    except:
+                        bbox = None
+                
+                blocks = row.get("blocks")
+                if isinstance(blocks, str):
+                    try:
+                        import json
+                        blocks = json.loads(blocks)
+                    except:
+                        blocks = None
+                
                 results.append(
                     RetrievedDocument(
                         vector_id=row["id"],
@@ -343,7 +360,8 @@ class VectorDocumentRetriever:
                         classification_type=row.get("classification_type", ""),
                         chunk_index=row.get("chunk_index", 0),
                         page_number=row.get("page_number", 0),
-                        bbox=row.get("bbox"),
+                        bbox=bbox,
+                        blocks=blocks,
                         similarity_score=float(row.get("similarity", 0.0)),
                         source="vector",
                         address_hash=row.get("address_hash"),

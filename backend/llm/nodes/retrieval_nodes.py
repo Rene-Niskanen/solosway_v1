@@ -242,7 +242,7 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     return {"query_intent": intent}
 
 
-def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
+async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Hybrid Search (BM25 + Vector) with Lazy Embedding Support + Structured Query Fallback
 
@@ -589,19 +589,35 @@ This information has been verified and extracted from the property database, inc
         # Get query variations (or just original if expansion didn't run)
         queries = state.get('query_variations', [state['user_query']])
         
-        # Search with each query variation using hybrid retriever
-        all_results = []
-        for query in queries:
-            results = retriever.query_documents(
-                user_query=query,
-                top_k=20,  # Fetch fewer per query, merge later
-                business_id=business_id,
-                property_id=state.get("property_id"),
-                classification_type=state.get("classification_type"),
-                trigger_lazy_embedding=True  # Enable lazy embedding triggers
+        # Search with each query variation in parallel using hybrid retriever
+        import asyncio
+        
+        async def search_single_query(query: str):
+            """Run a single query search in a thread pool (since retriever is sync)"""
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                lambda: retriever.query_documents(
+                    user_query=query,
+                    top_k=20,  # Fetch fewer per query, merge later
+                    business_id=business_id,
+                    property_id=state.get("property_id"),
+                    classification_type=state.get("classification_type"),
+                    trigger_lazy_embedding=True  # Enable lazy embedding triggers
+                )
             )
-            all_results.append(results)
-            logger.info(f"[QUERY_HYBRID] Query '{query[:40]}...' → {len(results)} docs")
+        
+        # Run all queries in parallel
+        if len(queries) > 1:
+            all_results = await asyncio.gather(*[search_single_query(q) for q in queries])
+            logger.info(f"[QUERY_HYBRID] Processed {len(queries)} query variations in parallel")
+        else:
+            # Single query - still use executor for consistency
+            all_results = [await search_single_query(queries[0])]
+        
+        # Log results
+        for i, (query, results) in enumerate(zip(queries, all_results), 1):
+            logger.info(f"[QUERY_HYBRID] Query {i} '{query[:40]}...' → {len(results)} docs")
         
         # Merge results using Reciprocal Rank Fusion
         if len(all_results) > 1:

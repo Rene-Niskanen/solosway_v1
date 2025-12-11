@@ -16,7 +16,7 @@ class LLMConfig(BaseSettings):
 
     # OpenAI 
     openai_api_key: str = os.environ.get('OPENAI_API_KEY')
-    openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-5-mini')
+    openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 

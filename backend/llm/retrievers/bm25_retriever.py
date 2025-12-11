@@ -283,6 +283,14 @@ class BM25DocumentRetriever:
                 # Get property_address from row or property table if needed
                 property_address = row.get('property_address') or row.get('formatted_address')
                 
+                # Parse blocks if available
+                blocks = row.get('blocks')
+                if isinstance(blocks, str):
+                    try:
+                        blocks = json.loads(blocks)
+                    except:
+                        blocks = None
+                
                 # Create document with embedding status stored as extra metadata
                 doc = RetrievedDocument(
                     vector_id=row['id'],
@@ -292,7 +300,8 @@ class BM25DocumentRetriever:
                     classification_type=row.get('classification_type', ''),
                     chunk_index=row.get('chunk_index', 0),
                     page_number=row.get('page_number', 0),
-                    bbox=bbox,  # ✅ Bbox for location pinpointing
+                    bbox=bbox,  # Bbox for location pinpointing
+                    blocks=blocks,  # Block-level bboxes for precise citations
                     similarity_score=float(row.get('rank', 0.0)),  # BM25 rank
                     source="bm25",  # Mark as BM25 result
                     address_hash=row.get('address_hash'),

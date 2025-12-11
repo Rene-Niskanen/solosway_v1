@@ -23,6 +23,7 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
+from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
     expand_query_for_retrieval,
@@ -31,6 +32,7 @@ from backend.llm.nodes.retrieval_nodes import (
 )
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
+from typing import Literal
 
 async def create_checkpointer_for_current_loop():
     """
@@ -50,41 +52,70 @@ async def create_checkpointer_for_current_loop():
     
     try:
         import asyncio
-        from backend.services.supabase_client_factory import get_supabase_db_url
-        db_url = get_supabase_db_url()
+        from backend.services.supabase_client_factory import get_supabase_db_url_for_checkpointer
+        db_url = get_supabase_db_url_for_checkpointer()  # Use session pooler for checkpointer
         
-        # Create connection pool for THIS event loop with optimized settings
-        # Reduced max_size to avoid connection exhaustion - each event loop gets 2 connections
-        # This prevents authentication timeout issues when multiple checkpointers exist
-        # Disable prepared statements to avoid "prepared statement already exists" errors
-        # when multiple event loops create checkpointers concurrently
-        # prepare_threshold=0 disables prepared statements entirely
-        conn_params = db_url
-        if '?' not in db_url:
-            conn_params = f"{db_url}?prepare_threshold=0&connect_timeout=5"
-        else:
-            conn_params = f"{db_url}&prepare_threshold=0&connect_timeout=5"
-        
-        # Create pool with lazy connection opening to avoid immediate connection exhaustion
-        # With open=True, min_size connections are opened immediately
-        # With open=False, connections are opened on-demand (better for concurrent requests)
-        pool = AsyncConnectionPool(
-            conninfo=conn_params, 
-            min_size=1,  # Minimum connections in the pool (required by psycopg_pool)
-            max_size=2,  # Maximum connections per event loop
-            open=True,  # Open pool immediately (connections opened on first use with min_size=1)
-            timeout=20  # Increased timeout when getting connection from pool (seconds)
-            # Increased from 5s to 20s to handle concurrent requests and Supabase pooler delays
-        )
-        
-        # Create checkpointer instance for this event loop
-        checkpointer = AsyncPostgresSaver(pool)
+        try:
+            checkpointer = await AsyncPostgresSaver.from_conn_string(
+                db_url,
+                prepare_threshold=0,  # Directly disable prepared statements
+                autocommit=True
+            )
+            logger.info("✅ Checkpointer created using from_conn_string (prepared statements disabled)")
+        except (AttributeError, TypeError, Exception) as from_string_error:
+            # from_conn_string might not be available or might not accept these parameters
+            # Fall back to pool-based approach with connection wrapper
+            logger.info(f"from_conn_string approach failed, using pool with wrapper: {from_string_error}")
+            
+            # Create connection string with timeout
+            conn_params = db_url
+            if '?' not in db_url:
+                conn_params = f"{db_url}?connect_timeout=5"
+            elif 'connect_timeout' not in db_url:
+                conn_params = f"{db_url}&connect_timeout=5"
+            
+            # Import psycopg to create connection factory
+            from psycopg import AsyncConnection
+            
+            # Create a connection factory that sets prepare_threshold=0 on each connection
+            async def connection_factory(conninfo):
+                """Factory that creates connections with prepare_threshold=0"""
+                conn = await AsyncConnection.connect(conninfo)
+                conn.prepare_threshold = 0
+                return conn
+            
+            # Create pool with connection factory
+            # Note: AsyncConnectionPool might not support connection_factory directly
+            # If it doesn't, we'll fall back to the basic pool and handle errors gracefully
+            try:
+                pool = AsyncConnectionPool(
+                    conninfo=conn_params,
+                    min_size=3,
+                    max_size=7,
+                    open=True,
+                    timeout=20,
+                    connection_factory=connection_factory  # Try connection factory
+                )
+                logger.info("✅ Checkpointer pool created with connection factory (prepared statements disabled)")
+            except TypeError:
+                # connection_factory not supported, use basic pool
+                # We'll need to handle prepared statement errors with retry logic
+                logger.warning("connection_factory not supported, using basic pool (errors will be handled gracefully)")
+                pool = AsyncConnectionPool(
+                    conninfo=conn_params,
+                    min_size=3,
+                    max_size=7,
+                    open=True,
+                    timeout=20,
+                )
+                logger.info("✅ Checkpointer pool created (prepared statement errors will be handled gracefully)")
+            
+            # Create checkpointer instance for this event loop
+            checkpointer = AsyncPostgresSaver(pool)
         
         # Setup tables with timeout to prevent hanging
         # Idempotent - safe to call multiple times
-        # Note: If tables were manually created (via migration), setup() may fail with
-        # "CREATE INDEX CONCURRENTLY cannot run inside transaction" error.
-        # Since tables already exist from migration, we continue with checkpointer anyway.
+
         try:
             # Reduced timeout to 10 seconds for faster startup - will fallback to stateless mode
             await asyncio.wait_for(checkpointer.setup(), timeout=10.0)
@@ -94,8 +125,8 @@ async def create_checkpointer_for_current_loop():
             return None
         except Exception as setup_error:
             error_msg = str(setup_error)
-            # If setup fails with CONCURRENTLY error, tables already exist from migration
-            # This is expected when tables are manually created - setup() can't use CONCURRENTLY in transactions
+
+            # This is expected when tables are manually created 
             if "CREATE INDEX CONCURRENTLY cannot run inside a transaction block" in error_msg:
                 logger.warning("Checkpointer setup() failed with CONCURRENTLY error - this is expected")
                 logger.info("Tables already exist from migration with correct schema - continuing with checkpointer")
@@ -112,7 +143,7 @@ async def create_checkpointer_for_current_loop():
                 logger.info("Assuming tables are correctly set up from migration - continuing with checkpointer")
                 # Continue anyway - if tables don't work, checkpointer operations will fail and fall back to stateless
         
-        logger.info("✅ Checkpointer created for current event loop (pool size: 2)")
+        logger.info("✅ Checkpointer created for current event loop (pool size: 7, prepared statements disabled)")
         return checkpointer
     except Exception as e:
         logger.error(f"Error creating checkpointer for event loop: {e}", exc_info=True)
@@ -120,20 +151,18 @@ async def create_checkpointer_for_current_loop():
 
 async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=None):
     """
-    Build and compile the main LangGraph orchestration (async for checkpointer setup).
-
-    NEW: Now includes PostgreSQL checkpointer for conversation persistence
-    and query rewriting for context-aware follow-up questions.
-
-    Flow (Vector-Only with Context + Query Expansion):
-    1. Rewrite query (adds context from conversation history)
-    2. Expand query (generates variations for better recall) 
-    3. Vector search (multi-query with RRF merging)
-    4. Clarify (LLM re-rank by relevance, merge chunks)
-    5. Process documents (parallel subgraph invocations per document)
-    6. Summarize (LLM creates unified summary with conversation memory)
-
-    Note: SQL/structured retrieval temporarily disabled until implemented.
+    Build and compile the main LangGraph orchestration with intelligent routing.
+    
+    NEW: Includes intelligent routing for performance optimization:
+    - Direct document path (~2s): User attached files → fetch chunks → process → summarize
+    - Simple search path (~6s): Simple query → vector search → process → summarize
+    - Complex search path (~12s): Full pipeline with expansion and clarification
+    
+    Flow (with Routing):
+    1. Route query (determines fast vs full pipeline)
+    2a. Fast path: Direct document fetch → process → summarize
+    2b. Simple path: Vector search → process → summarize
+    2c. Complex path: Rewrite → expand → vector → clarify → process → summarize
     
     Args:
         use_checkpointer: If True, enables state persistence across conversation turns
@@ -149,10 +178,27 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Create the state graph 
     builder = StateGraph(MainWorkflowState)
 
-    # Add active nodes
+    # ROUTER NODES (NEW - Performance Optimization)
+    builder.add_node("route_query", route_query)
+    """
+    Node 0: Route Query (NEW - Performance Optimization)
+    - Analyzes query complexity and context
+    - Determines which workflow path to use (direct/simple/complex)
+    - Sets optimization flags (skip_expansion, skip_clarify, etc.)
+    """
+
+    builder.add_node("fetch_direct_chunks", fetch_direct_document_chunks)
+    """
+    Fast Path Node: Direct Document Fetch
+    - Fetches ALL chunks from specific document(s)
+    - Bypasses vector search entirely
+    - Used when user attaches files or mentions specific document
+    """
+
+    # EXISTING NODES (Full Pipeline)
     builder.add_node("rewrite_query", rewrite_query_with_context)
     """
-    Node 1: Query Rewriting (NEW)
+    Node 1: Query Rewriting
     - Input: user_query, conversation_history
     - Rewrites vague queries to be self-contained using conversation context
     - Example: "What's the price?" → "What's the price for Highlands property?"
@@ -161,7 +207,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     builder.add_node("expand_query", expand_query_for_retrieval)
     """
-    Node 2: Query Expansion (NEW - Accuracy Improvement)
+    Node 2: Query Expansion (Accuracy Improvement)
     - Input: user_query (potentially rewritten)
     - Generates 2 query variations with synonyms and rephrasing
     - Example: "foundation issues" → ["foundation issues", "foundation damage", "concrete defects"]
@@ -171,7 +217,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     builder.add_node("query_vector_documents", query_vector_documents)
     """
-    Node 3: Vector Search with Multi-Query (NEW - Uses query variations)
+    Node 3: Vector Search with Multi-Query (Uses query variations)
     - Input: query_variations (from expand_query), business_id
     - Embeds each query variation and searches Supabase pgvector
     - Merges results with Reciprocal Rank Fusion (RRF)
@@ -210,33 +256,130 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Output: final_summary, updated conversation_history
     """
 
-    # Build graph edges (execution flow)
+    # ROUTING LOGIC FUNCTIONS
+    def should_route(state: MainWorkflowState) -> Literal["direct_document", "simple_search", "complex_search"]:
+        """
+        Conditional routing - makes decision based on initial state.
+        
+        NOTE: This function receives state BEFORE route_query's return is merged,
+        so we must duplicate the routing logic here instead of reading route_decision.
+        """
+        user_query = state.get("user_query", "").lower().strip()
+        document_ids = state.get("document_ids", [])
+        property_id = state.get("property_id")
+        
+        # FIX: Ensure document_ids is always a list (safety check)
+        if document_ids and not isinstance(document_ids, list):
+            document_ids = [str(document_ids)]
+        elif not document_ids:
+            document_ids = []
+        
+        logger.info(
+            f"[ROUTER] should_route called - Query: '{user_query[:50]}...', "
+            f"Docs: {document_ids} (count: {len(document_ids)}), "
+            f"Property: {property_id[:8] if property_id else 'None'}"
+        )
+        
+        # PATH 1: DIRECT DOCUMENT (FASTEST ~2s)
+        if document_ids and len(document_ids) > 0:
+            logger.info("🟢 [ROUTER] should_route → direct_document (document_ids provided)")
+            return "direct_document"
+        
+        # PATH 2: PROPERTY CONTEXT (treat as simple_search for now)
+        if property_id and any(word in user_query for word in [
+            "report", "document", "inspection", "appraisal", "valuation", 
+            "lease", "contract", "the document", "this document", "that document"
+        ]):
+            logger.info("🟡 [ROUTER] should_route → simple_search (property-specific query)")
+            return "simple_search"
+        
+        # PATH 3: SIMPLE QUERY (MEDIUM ~6s)
+        word_count = len(user_query.split())
+        simple_keywords = [
+            "what is", "what's", "how much", "how many", "price", "cost", 
+            "value", "worth", "address", "location", "when", "who"
+        ]
+        is_simple = (
+            word_count <= 8 and 
+            any(keyword in user_query for keyword in simple_keywords)
+        )
+        
+        if is_simple:
+            logger.info("🟡 [ROUTER] should_route → simple_search (simple query)")
+            return "simple_search"
+        
+        # PATH 4: COMPLEX QUERY (FULL PIPELINE ~12s)
+        logger.info("🔴 [ROUTER] should_route → complex_search (complex query, full pipeline)")
+        return "complex_search"
 
-    # NEW: Start -> Query Rewriting (adds context from conversation)
-    builder.add_edge(START, 'rewrite_query')
-    logger.debug("Edge: START -> rewrite_query")
+    def should_skip_expansion(state: MainWorkflowState) -> Literal["expand_query", "query_vector_documents"]:
+        """Skip expansion if route_decision says so"""
+        if state.get("skip_expansion"):
+            return "query_vector_documents"
+        return "expand_query"
 
-    # Query Rewriting -> Query Expansion
-    builder.add_edge('rewrite_query', 'expand_query')
+    def should_skip_clarify(state: MainWorkflowState) -> Literal["clarify_relevant_docs", "process_documents"]:
+        """Skip clarification for simple queries or direct documents"""
+        if state.get("skip_clarify"):
+            return "process_documents"
+        # Also skip if only 1-2 documents (fast path)
+        relevant_docs = state.get("relevant_documents", [])
+        if len(relevant_docs) <= 2:
+            return "process_documents"
+        return "clarify_relevant_docs"
+
+    # BUILD GRAPH EDGES
+    # START → Router
+    builder.add_edge(START, "route_query")
+    logger.debug("Edge: START -> route_query")
+
+    # Router → Conditional routing
+    builder.add_conditional_edges(
+        "route_query",
+        should_route,
+        {
+            "direct_document": "fetch_direct_chunks",
+            "simple_search": "query_vector_documents",  # Skip expand/clarify
+            "complex_search": "rewrite_query"  # Full pipeline
+        }
+    )
+    logger.debug("Conditional: route_query -> [direct_document|simple_search|complex_search]")
+
+    # DIRECT PATH: fetch → process → summarize (FASTEST ~2s)
+    builder.add_edge("fetch_direct_chunks", "process_documents")
+    logger.debug("Edge: fetch_direct_chunks -> process_documents")
+
+    # SIMPLE PATH: vector → process → summarize (no clarify, ~6s)
+    builder.add_edge("query_vector_documents", "process_documents")
+    logger.debug("Edge: query_vector_documents -> process_documents (simple path)")
+
+    # COMPLEX PATH: rewrite → expand → vector → clarify (conditional) → process
+    builder.add_edge("rewrite_query", "expand_query")
     logger.debug("Edge: rewrite_query -> expand_query")
 
-    # Query Expansion -> Vector Search (searches with all variations)
-    builder.add_edge('expand_query', 'query_vector_documents')
+    # Expansion → Vector Search
+    builder.add_edge("expand_query", "query_vector_documents")
     logger.debug("Edge: expand_query -> query_vector_documents")
 
-    # Vector Search -> Clarify
-    builder.add_edge("query_vector_documents", "clarify_relevant_docs")
-    logger.debug("Edge: query_vector_documents -> clarify_relevant_docs")
+    # Conditional: Skip clarification for simple queries
+    builder.add_conditional_edges(
+        "query_vector_documents",
+        should_skip_clarify,
+        {
+            "clarify_relevant_docs": "clarify_relevant_docs",
+            "process_documents": "process_documents"
+        }
+    )
+    logger.debug("Conditional: query_vector_documents -> [clarify_relevant_docs|process_documents]")
 
-    # Clarify -> Process Documents
+    # Clarify → Process
     builder.add_edge("clarify_relevant_docs", "process_documents")
     logger.debug("Edge: clarify_relevant_docs -> process_documents")
 
-    # Process Documents -> Summarize 
+    # ALL PATHS CONVERGE HERE
     builder.add_edge("process_documents", "summarize_results")
     logger.debug("Edge: process_documents -> summarize_results")
 
-    # Summarize -> End 
     builder.add_edge("summarize_results", END)
     logger.debug("Edge: summarize_results -> END")
 

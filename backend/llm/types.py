@@ -14,7 +14,8 @@ class RetrievedDocument(TypedDict):
     classification_type: str    
     chunk_index: int
     page_number: int
-    bbox: Optional[dict]
+    bbox: Optional[dict]  # Chunk-level bbox (fallback)
+    blocks: Optional[list[dict]]  # Block-level bboxes for precise citations
     similarity_score: float
     source: str # "vector" or "structured"
     address_hash: Optional[str]
@@ -38,6 +39,17 @@ class DocumentProcessingResult(TypedDict, total=False):
     page_range: Optional[str]
     page_numbers: Optional[list[int]]
 
+class Citation(TypedDict):
+    """Citation stored in graph state with bbox coordinates"""
+    citation_number: int
+    block_id: str
+    cited_text: str
+    bbox: Optional[dict]  # {'left': float, 'top': float, 'width': float, 'height': float, 'page': int}
+    page_number: int
+    doc_id: str
+    confidence: Optional[str]  # 'high', 'medium', 'low'
+    method: str  # 'block-id-lookup'
+
 class MainWorkflowState(TypedDict, total=False):
     """Main orchestration graph state"""
     user_query: str
@@ -52,6 +64,7 @@ class MainWorkflowState(TypedDict, total=False):
     conversation_history: Annotated[list[dict], operator.add]  # New: stores Q&A history
     session_id: str  # New: unique chat session identifier
     document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
+    citations: Annotated[list[Citation], operator.add]  # NEW: Accumulate citations in graph state
 
 class DocumentQAState(TypedDict):
     """State for per-document Q&A subgraph"""
