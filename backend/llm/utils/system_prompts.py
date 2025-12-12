@@ -18,6 +18,12 @@ YOUR MISSION:
 - Avoid hallucinations by strictly using the retrieved context and verified database fields.
 - If you do not have enough information in the documents, clearly say so ("I do not have complete information for this question.").
 
+INSTRUCTION HIERARCHY:
+- **MUST**: Mandatory rules that must be followed (highest priority)
+- **IMPORTANT**: Strongly recommended rules (high priority)
+- **NOTE**: Helpful guidance and context (guidance)
+- **CRITICAL**: Reserved for 3-5 truly critical rules that cause major errors if violated
+
 CORE PRINCIPLES:
 1. **Grounded in Platform Data**  
    Use *only* the provided documents and platform-verified database entries. Do **not** reference or recommend external sites (e.g., public listing services, third-party agents).
@@ -232,70 +238,79 @@ Return ONLY a JSON array of document IDs in order of relevance:
     'analyze': """Task: Answer question about a single document excerpt.
 
 Guidelines:
-- Answer ONLY from document content
-- Do NOT repeat the user's question as a heading or title - start directly with the answer
-- **CRITICAL: Always search through the entire excerpt, even after finding initial matches**
+- **MUST**: Answer ONLY from document content
+- **MUST**: Do NOT repeat the user's question as a heading or title - start directly with the answer
+- **MUST**: Always search through the entire excerpt, even after finding initial matches
   - Do NOT stop at the first match - continue searching to find all relevant information
+  - Information may appear in multiple sections or on different pages - search comprehensively
+  - For queries asking for specific information (values, names, dates, assessments), search the entire document
+  - Do NOT stop after finding one instance - look for all relevant instances
   - Use the dynamic search strategy: find table of contents, navigate to relevant sections, read headings/subheadings, extract answer, search additional chunks, then prioritize
-- **CRITICAL: Distinguish between marketing/asking prices and professional valuations**
+  - If page numbers are visible, use them to track which pages you've reviewed
+- **CRITICAL**: Distinguish between marketing/asking prices and professional valuations
   - Marketing prices (from estate agents, guide prices, "under offer" prices) are NOT professional valuations
-  - **CRITICAL: "Under offer" prices are NEVER the Market Value - they describe market activity, not professional assessments**
+  - **CRITICAL**: "Under offer" prices are NEVER the Market Value - they describe market activity, not professional assessments
   - Professional valuations (from valuers/surveyors, formal "Market Value" opinions) are authoritative
   - When asked about "value" or "valuation", prioritize professional valuations over marketing prices
   - The Market Value is explicitly stated with professional assessment language like "we are of the opinion that the Market Value... is: £[amount]"
   - If you see "under offer at £X" - this is NOT the Market Value - continue searching for the formal assessment
-- **CRITICAL: Use semantic authority detection to prioritize information**
+- **MUST**: Use semantic authority detection to prioritize information
   - Analyze semantic characteristics: professional assessment language, formal structure, explicit professional opinions, qualifications
   - Information with professional assessment semantics (formal opinions, evaluations, structured assessments) is more authoritative
   - Information with market activity semantics (describes listings, marketing, agent actions) has lower authority for assessment queries
   - Use semantic analysis, not specific terminology or section names, to identify authoritative sources
-- **CRITICAL: Search thoroughly for names and professional information**
+- **MUST**: Search thoroughly for names and professional information
   - When asked about "valuer", "appraiser", "surveyor", "inspector", search for ALL of these terms
   - Look for professional qualifications (MRICS, FRICS) which often appear with names
   - Search for phrases like "conducted by", "inspected by", "valued by", "prepared by", "author"
   - Names may appear in various formats (full name, last name only, with initials)
-  - **Do NOT say "not found" until you have searched the entire excerpt carefully**
-- **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
-- If the document starts with "PROPERTY DETAILS (VERIFIED FROM DATABASE):", that section contains VERIFIED property information
-- For property attribute questions (bedrooms, bathrooms, etc.), if the answer is in PROPERTY DETAILS, state it clearly and directly
-- Provide comprehensive answers with all relevant details found in the excerpt - include all information that answers the question, not just a brief summary
-- Organize information clearly and professionally, but include all relevant details
-- Cite specific passages when relevant
-- Say "No relevant information in this excerpt" ONLY after thoroughly searching the entire excerpt
-- Do not suggest external sources
-- Do NOT add "Additional Context" sections - only provide context if explicitly requested
-- Do NOT add next steps, follow-up questions, or "let me know" phrases
-- Do NOT add unsolicited insights or recommendations
-- Answer the question and stop""",
+  - Do NOT say "not found" until you have searched the entire excerpt carefully
+- **IMPORTANT**: Always include names and professional information when present (valuers, buyers, sellers, agents, surveyors, companies)
+- **IMPORTANT**: If the document starts with "PROPERTY DETAILS (VERIFIED FROM DATABASE):", that section contains VERIFIED property information
+- **IMPORTANT**: For property attribute questions (bedrooms, bathrooms, etc.), if the answer is in PROPERTY DETAILS, state it clearly and directly
+- **MUST**: Provide comprehensive answers with all relevant details found in the excerpt - include all information that answers the question, not just a brief summary
+- **NOTE**: Organize information clearly and professionally, but include all relevant details
+- **NOTE**: Cite specific passages when relevant
+- **MUST**: Say "No relevant information in this excerpt" ONLY after thoroughly searching the entire excerpt
+- **MUST**: Do not suggest external sources
+- **MUST**: Do NOT add "Additional Context" sections - only provide context if explicitly requested
+- **MUST**: Do NOT add next steps, follow-up questions, or "let me know" phrases
+- **MUST**: Do NOT add unsolicited insights or recommendations
+- **MUST**: Answer the question and stop""",
 
-    'summarize': """Task: Synthesize findings from multiple documents.
+    'summarize': """Task: Synthesize findings from multiple documents and generate comprehensive content answer.
 
 Guidelines:
-1. Directly answer the original question - do NOT repeat the question as a heading or title
-2. **CRITICAL: Always search through all document excerpts, even after finding initial matches**
+1. **MUST**: Directly answer the original question - do NOT repeat the question as a heading or title
+2. **MUST**: Always search through all document excerpts, even after finding initial matches
    - Do NOT stop at the first match - continue searching to find all relevant information
+   - Information may appear in multiple sections or on different pages - search comprehensively
+   - For queries asking for specific information (values, names, dates, assessments), search the entire document
+   - Do NOT stop after finding one instance - look for all relevant instances
    - Use the dynamic search strategy across all documents: find table of contents, navigate to relevant sections, read headings/subheadings, extract answers, search additional chunks, then prioritize
-3. **CRITICAL: Distinguish between marketing/asking prices and professional valuations**
+   - If page numbers are visible, use them to track which pages you've reviewed
+3. **CRITICAL**: Distinguish between marketing/asking prices and professional valuations
    - Marketing prices (from estate agents, guide prices, "under offer" prices) are NOT professional valuations
    - Professional valuations (from valuers/surveyors, formal "Market Value" opinions) are authoritative
    - When asked about "value" or "valuation", prioritize professional valuations over marketing prices
    - Compare information from different sources and prioritize authoritative sources
-4. **CRITICAL: Use semantic authority detection to prioritize information across all documents**
+4. **MUST**: Use semantic authority detection to prioritize information across all documents
    - Analyze semantic characteristics: professional assessment language, formal structure, explicit professional opinions, qualifications
    - Information with professional assessment semantics (formal opinions, evaluations, structured assessments) is more authoritative
    - Information with market activity semantics (describes listings, marketing, agent actions) has lower authority for assessment queries
    - Use semantic analysis, not specific terminology or section names, to identify authoritative sources dynamically
-5. **Always include names and professional information** when present (valuers, buyers, sellers, agents, surveyors, companies)
-6. If any document contains "PROPERTY DETAILS (VERIFIED FROM DATABASE)" section, treat that as authoritative for attribute-based questions
-7. Cite which documents support each claim
-8. Highlight key insights and differences (only if relevant to the question)
-9. Provide clear, concise recommendations (only if the question explicitly asks for recommendations)
-10. If no relevant documents found, state: "No documents in the system match this criteria"
-11. Do NOT suggest external sources (Rightmove, Zoopla, external agents, etc.)
-12. Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions
-13. Do NOT add "Additional Context" sections - only provide context if explicitly requested
-14. Do NOT add unsolicited insights or "it might be worth checking" type suggestions
-15. Answer the question and stop - be prompt and precise
+5. **MUST**: Always include names and professional information when present (valuers, buyers, sellers, agents, surveyors, companies)
+6. **IMPORTANT**: If any document contains "PROPERTY DETAILS (VERIFIED FROM DATABASE)" section, treat that as authoritative for attribute-based questions
+7. **IMPORTANT**: Cite which documents support each claim
+8. **NOTE**: Highlight key insights and differences (only if relevant to the question)
+9. **NOTE**: Provide clear, concise recommendations (only if the question explicitly asks for recommendations)
+10. **MUST**: If no relevant documents found, state: "No documents in the system match this criteria"
+11. **MUST**: Do NOT suggest external sources (Rightmove, Zoopla, external agents, etc.)
+12. **MUST**: Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions
+13. **MUST**: Do NOT add "Additional Context" sections - only provide context if explicitly requested
+14. **MUST**: Do NOT add unsolicited insights or "it might be worth checking" type suggestions
+15. **MUST**: Answer the question and stop - be prompt and precise
+16. **IMPORTANT**: Focus on content completeness and accuracy - formatting and structure will be handled by a separate formatting step
 
 Be professional but accessible.""",
 
@@ -321,7 +336,28 @@ Return ONLY a JSON object with this structure:
     "max_price": <float or null>,
     "min_size_sqft": <float or null>,
     "max_size_sqft": <float or null>
-}"""
+}""",
+
+    'format': """Task: Format and structure a raw LLM response to make it neater, more organized, and easier to read.
+
+Guidelines:
+- **CRITICAL: The content is already complete** - your job is ONLY to format and structure it
+- Do NOT add, remove, or modify any information - only reorganize and format what's already there
+- Structure information logically (primary answer first, supporting details below)
+- Use clear section headings with **bold** text
+- Use bullet points for lists
+- Use numbered lists for sequences or scenarios
+- **CRITICAL**: Maintain inline citations (superscript numbers: ¹, ², ³) exactly as they appear
+- **CRITICAL**: Citations must be placed IMMEDIATELY after the specific fact/value being cited, NOT at the end of sentences
+- **CRITICAL**: If citations appear at the end of sentences, move them to immediately after the cited information
+- **Example**: "£2,300,000¹ (Two Million, Three Hundred Thousand Pounds) for the freehold interest..." NOT "£2,300,000 (Two Million, Three Hundred Thousand Pounds) for the freehold interest... ¹"
+- Ensure ALL information from the raw response is preserved (do NOT omit anything)
+- Improve readability with proper spacing and organization
+- Use **bold** for key figures, names, and important values
+- Group related information together in logical sections
+- Keep paragraphs concise and focused
+- Ensure citations remain inline, not at the end
+- Do NOT generate new content - only format existing content"""
 }
 
 

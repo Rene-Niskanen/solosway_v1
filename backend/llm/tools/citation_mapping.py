@@ -17,6 +17,71 @@ from backend.llm.types import Citation
 logger = logging.getLogger(__name__)
 
 
+def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]:
+    """
+    Verify that cited_text matches block_content.
+    
+    Args:
+        cited_text: Text the LLM is citing (e.g., "90-day value: £1,950,000")
+        block_content: Actual content of the block being cited
+    
+    Returns:
+        {
+            'match': bool,
+            'confidence': 'high'|'medium'|'low',
+            'matched_terms': list,
+            'missing_terms': list,
+            'numeric_matches': list
+        }
+    """
+    if not block_content:
+        return {'match': False, 'confidence': 'low', 'matched_terms': [], 'missing_terms': ['block_content_missing'], 'numeric_matches': []}
+    
+    import re
+    
+    # Extract numeric values from cited_text (normalize formats: £1,950,000, 1950000, 1,950,000)
+    numeric_pattern = r'£?([\d,]+\.?\d*)'
+    cited_numbers = re.findall(numeric_pattern, cited_text)
+    cited_numbers_normalized = [num.replace(',', '').replace('.', '') for num in cited_numbers]
+    
+    # Extract numeric values from block_content
+    block_numbers = re.findall(numeric_pattern, block_content)
+    block_numbers_normalized = [num.replace(',', '').replace('.', '') for num in block_numbers]
+    
+    # Check for numeric matches
+    numeric_matches = [num for num in cited_numbers_normalized if num in block_numbers_normalized]
+    
+    # Extract key terms (non-numeric words, 3+ chars)
+    cited_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', cited_text.lower())]
+    block_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', block_content.lower())]
+    
+    # Check for term matches
+    term_matches = [term for term in cited_terms if term in block_terms]
+    missing_terms = [term for term in cited_terms if term not in block_terms]
+    
+    # Determine confidence
+    has_numeric_match = len(numeric_matches) > 0
+    has_term_match = len(term_matches) > 0
+    
+    if has_numeric_match and has_term_match:
+        confidence = 'high'
+        match = True
+    elif has_numeric_match or (has_term_match and len(term_matches) >= len(cited_terms) * 0.5):
+        confidence = 'medium'
+        match = True
+    else:
+        confidence = 'low'
+        match = False
+    
+    return {
+        'match': match,
+        'confidence': confidence,
+        'matched_terms': term_matches,
+        'missing_terms': missing_terms,
+        'numeric_matches': numeric_matches
+    }
+
+
 class CitationInput(BaseModel):
     """Input schema for citation tool - LLM provides block ID directly."""
     

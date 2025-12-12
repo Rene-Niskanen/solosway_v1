@@ -357,7 +357,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       // Only reset if it's a different document
       const isDifferentFile = prevFileIdRef.current !== file.id;
       if (isDifferentFile) {
-        setCurrentPage(1);
+      setCurrentPage(1);
         prevFileIdRef.current = file.id;
       }
       setImageNaturalHeight(null); // Reset image height when file changes
@@ -515,8 +515,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         setCachedPdfDocument?.(file.id, pdf);
         
         if (!cancelled) {
-          setPdfDocument(pdf);
-          setTotalPages(pdf.numPages);
+        setPdfDocument(pdf);
+        setTotalPages(pdf.numPages);
           
           // OPTIMIZATION: If there's a highlight citation for this document, pre-render that page immediately
           // This ensures the page is ready when user sees the preview
@@ -600,26 +600,26 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         // OPTIMIZATION: Use requestAnimationFrame for smoother rendering
         animationFrameId = requestAnimationFrame(() => {
           if (cancelled) return;
-          
-          // Set canvas dimensions to match the viewport
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          
-          // Store dimensions for highlight positioning
-          setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
-          
-          // Store viewport transform for highlight positioning (PDF.js transform matrix)
-          const transform = viewport.transform;
-          setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
-          
-          // Render the page
+        
+        // Set canvas dimensions to match the viewport
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        
+        // Store dimensions for highlight positioning
+        setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
+        
+        // Store viewport transform for highlight positioning (PDF.js transform matrix)
+        const transform = viewport.transform;
+        setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
+        
+        // Render the page
           page.render({
-            canvasContext: context,
-            viewport,
-            canvas
+          canvasContext: context,
+          viewport,
+          canvas
           } as any).promise.then(() => {
-            if (!cancelled) {
-              console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
+        if (!cancelled) {
+          console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
               
               // OPTIMIZATION: Cache the rendered page for instant future access
               if (file && scale === 1.0 && rotation === 0) {
@@ -628,8 +628,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                 setCachedRenderedPage?.(file.id, currentPage, imageData);
               }
               
-              setPdfPageRendering(false);
-            }
+          setPdfPageRendering(false);
+        }
           }).catch((error) => {
             console.error('❌ Failed to render PDF page:', error);
             setPdfPageRendering(false);

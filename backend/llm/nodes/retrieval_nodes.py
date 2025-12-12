@@ -18,6 +18,7 @@ from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
 from backend.llm.retrievers.hybrid_retriever import HybridDocumentRetriever
 from backend.llm.utils import reciprocal_rank_fusion
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.services.supabase_client_factory import get_supabase_client
 from backend.llm.prompts import (
     get_query_rewrite_human_content,
     get_query_expansion_human_content,
@@ -29,6 +30,571 @@ from backend.llm.prompts import (
 # from backend.llm.retrievers.sql_retriever import SQLDocumentRetriever
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# SMART RETRIEVAL ALGORITHM - Multi-Factor Chunk Selection
+# ============================================================================
+
+def detect_query_characteristics(query: str) -> Dict[str, Any]:
+    """
+    Analyze query to determine its characteristics for adaptive retrieval.
+    
+    Returns:
+        Dictionary with:
+        - complexity_score: 0.0-1.0 (higher = more complex)
+        - needs_comprehensive: bool (True if query needs all information)
+        - query_type: str (assessment, activity, attribute, relationship, general)
+        - expects_later_pages: bool (True if info likely on later pages)
+    """
+    query_lower = query.lower()
+    
+    # Detect query type
+    assessment_terms = ['valuation', 'value', 'assess', 'opinion', 'appraisal', 'evaluate', 'determine']
+    activity_terms = ['sold', 'offer', 'listed', 'marketing', 'transaction', 'history']
+    attribute_terms = ['bedroom', 'bathroom', 'size', 'area', 'floor', 'feature', 'amenity', 'condition']
+    relationship_terms = ['who', 'valued', 'inspected', 'prepared', 'author', 'company']
+    
+    query_type = 'general'
+    if any(term in query_lower for term in assessment_terms):
+        query_type = 'assessment'
+    elif any(term in query_lower for term in activity_terms):
+        query_type = 'activity'
+    elif any(term in query_lower for term in attribute_terms):
+        query_type = 'attribute'
+    elif any(term in query_lower for term in relationship_terms):
+        query_type = 'relationship'
+    
+    # Detect complexity indicators
+    comprehensive_indicators = [
+        'all', 'every', 'comprehensive', 'complete', 'tell me about', 'describe',
+        'scenario', 'assumption', 'period', 'day', 'marketing period'
+    ]
+    needs_comprehensive = any(indicator in query_lower for indicator in comprehensive_indicators)
+    
+    # CRITICAL FIX: Assessment queries (especially valuation queries) need comprehensive search
+    # because they often contain multiple scenarios (primary value, 90-day, 180-day, etc.)
+    # that must all be extracted. Simple "value" queries should retrieve all relevant chunks.
+    if query_type == 'assessment':
+        needs_comprehensive = True  # Force comprehensive for all assessment queries
+    
+    # Multi-part queries (asking for multiple things)
+    multi_part_indicators = ['and', 'also', 'as well', 'including', 'plus']
+    has_multiple_parts = sum(1 for indicator in multi_part_indicators if indicator in query_lower) > 1
+    
+    # Calculate complexity score
+    complexity_score = 0.0
+    if needs_comprehensive:
+        complexity_score += 0.4
+    if has_multiple_parts:
+        complexity_score += 0.3
+    if query_type == 'assessment':
+        complexity_score += 0.2  # Assessments often need comprehensive info
+    if len(query.split()) > 10:
+        complexity_score += 0.1  # Longer queries tend to be more complex
+    
+    complexity_score = min(1.0, complexity_score)
+    
+    # Detect if later pages are expected
+    expects_later_pages = (
+        query_type == 'assessment' or  # Valuations often on later pages
+        'scenario' in query_lower or
+        'assumption' in query_lower or
+        'period' in query_lower or
+        needs_comprehensive
+    )
+    
+    return {
+        'complexity_score': complexity_score,
+        'needs_comprehensive': needs_comprehensive,
+        'query_type': query_type,
+        'expects_later_pages': expects_later_pages
+    }
+
+
+def detect_semantic_authority(chunk_content: str, query_type: str) -> float:
+    """
+    Detect semantic authority of chunk content (professional assessments vs market activity).
+    Works for all query types, not just valuations.
+    
+    Returns:
+        Authority score (0.0-1.0) where 1.0 = highly authoritative
+    """
+    if not chunk_content:
+        return 0.0
+    
+    content_lower = chunk_content.lower()
+    authority_score = 0.0
+    
+    # Professional assessment language patterns
+    professional_patterns = [
+        'we are of the opinion',
+        'we conclude',
+        'we determine',
+        'we assess',
+        'we evaluate',
+        'professional assessment',
+        'formal opinion',
+        'market value',
+        'our assessment',
+        'our evaluation',
+        'established that',
+        'determined to be',
+        'concluded that',
+        'assessment indicates',
+        'evaluation shows'
+    ]
+    
+    # Professional qualifications
+    qualification_patterns = [
+        'mrics', 'frics', 'rics', 'chartered surveyor',
+        'registered valuer', 'qualified', 'accredited'
+    ]
+    
+    # Formal structure indicators
+    structure_patterns = [
+        'scenario', 'assumption', 'based on', 'in accordance with',
+        'following', 'per', 'as per', 'according to'
+    ]
+    
+    # Count matches
+    professional_matches = sum(1 for pattern in professional_patterns if pattern in content_lower)
+    qualification_matches = sum(1 for pattern in qualification_patterns if pattern in content_lower)
+    structure_matches = sum(1 for pattern in structure_patterns if pattern in content_lower)
+    
+    # Calculate authority score
+    if professional_matches > 0:
+        authority_score += min(0.5, professional_matches * 0.15)
+    if qualification_matches > 0:
+        authority_score += min(0.3, qualification_matches * 0.2)
+    if structure_matches > 0:
+        authority_score += min(0.2, structure_matches * 0.1)
+    
+    # Boost for query-specific authority
+    if query_type == 'assessment' and authority_score > 0.3:
+        authority_score = min(1.0, authority_score * 1.3)
+    
+    return min(1.0, authority_score)
+
+
+def calculate_page_diversity_score(chunk: Dict, all_chunks: List[Dict]) -> float:
+    """
+    Calculate page diversity score for a chunk.
+    Higher score = chunk is from a page range with fewer other chunks selected.
+    
+    Returns:
+        Diversity score (0.0-1.0)
+    """
+    page_num = chunk.get('page_number', 0)
+    if page_num <= 0:
+        return 0.5  # Neutral score for chunks without page numbers
+    
+    # Define page ranges
+    if page_num <= 10:
+        page_range = 'early'
+    elif page_num <= 20:
+        page_range = 'mid'
+    elif page_num <= 30:
+        page_range = 'late'
+    else:
+        page_range = 'very_late'
+    
+    # Count chunks in same page range
+    chunks_in_range = sum(
+        1 for c in all_chunks
+        if c.get('page_number', 0) > 0 and (
+            (page_range == 'early' and c.get('page_number', 0) <= 10) or
+            (page_range == 'mid' and 10 < c.get('page_number', 0) <= 20) or
+            (page_range == 'late' and 20 < c.get('page_number', 0) <= 30) or
+            (page_range == 'very_late' and c.get('page_number', 0) > 30)
+        )
+    )
+    
+    # Inverse relationship: fewer chunks in range = higher diversity score
+    # Normalize to 0.0-1.0 range
+    if chunks_in_range == 0:
+        return 1.0
+    elif chunks_in_range <= 2:
+        return 0.8
+    elif chunks_in_range <= 5:
+        return 0.6
+    elif chunks_in_range <= 10:
+        return 0.4
+    else:
+        return 0.2
+
+
+def calculate_query_relevance(chunk: Dict, query: str) -> float:
+    """
+    Calculate query relevance score based on keyword and semantic matching.
+    
+    Returns:
+        Relevance score (0.0-1.0)
+    """
+    content = chunk.get('content', '').lower()
+    query_lower = query.lower()
+    
+    if not content or not query_lower:
+        return 0.0
+    
+    # Extract key terms from query (exclude common words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 
+                   'is', 'are', 'what', 'who', 'how', 'when', 'where', 'why'}
+    query_terms = [term for term in query_lower.split() 
+                   if term not in common_words and len(term) > 2]
+    
+    # Count exact matches
+    exact_matches = sum(1 for term in query_terms if term in content)
+    
+    # Count partial matches (substring)
+    partial_matches = sum(1 for term in query_terms 
+                         if any(term in word or word in term for word in content.split()))
+    
+    # Calculate relevance
+    if len(query_terms) == 0:
+        return 0.5  # Neutral if no meaningful terms
+    
+    relevance = (exact_matches * 0.7 + partial_matches * 0.3) / len(query_terms)
+    return min(1.0, relevance)
+
+
+def calculate_multi_factor_score(chunk: Dict, query: str, query_type: str, all_chunks: List[Dict]) -> float:
+    """
+    Calculate multi-factor score for chunk selection.
+    
+    Factors:
+    - Similarity (40%): Base similarity from vector/BM25 search
+    - Page Diversity (20%): Inverse of page concentration
+    - Semantic Authority (20%): Professional/authoritative language detection
+    - Query Relevance (20%): Keyword/semantic match to query
+    
+    Returns:
+        Final score (0.0-1.0)
+    """
+    # Base similarity (normalize to 0.0-1.0 if needed)
+    similarity = chunk.get('similarity', 0.0)
+    if similarity > 1.0:
+        similarity = similarity / 100.0  # Normalize if needed
+    similarity = max(0.0, min(1.0, similarity))
+    
+    # Page diversity
+    page_diversity = calculate_page_diversity_score(chunk, all_chunks)
+    
+    # Semantic authority
+    content = chunk.get('content', '')
+    authority = detect_semantic_authority(content, query_type)
+    
+    # Query relevance
+    relevance = calculate_query_relevance(chunk, query)
+    
+    # Weighted combination
+    final_score = (
+        similarity * 0.4 +
+        page_diversity * 0.2 +
+        authority * 0.2 +
+        relevance * 0.2
+    )
+    
+    return final_score
+
+
+def ensure_page_diversity(chunks_with_scores: List[Tuple[Dict, float]], min_per_range: int = 2) -> List[Tuple[Dict, float]]:
+    """
+    Ensure page diversity by guaranteeing minimum chunks from each page range.
+    
+    Args:
+        chunks_with_scores: List of (chunk, score) tuples
+        min_per_range: Minimum chunks to include from each page range
+    
+    Returns:
+        List of (chunk, score) tuples with page diversity enforced
+    """
+    # Group chunks by page range
+    page_ranges = {
+        'early': [],      # 1-10
+        'mid': [],        # 11-20
+        'late': [],       # 21-30
+        'very_late': []   # 31+
+    }
+    
+    for chunk, score in chunks_with_scores:
+        page_num = chunk.get('page_number', 0)
+        if page_num <= 0:
+            page_ranges['early'].append((chunk, score))  # Default to early
+        elif page_num <= 10:
+            page_ranges['early'].append((chunk, score))
+        elif page_num <= 20:
+            page_ranges['mid'].append((chunk, score))
+        elif page_num <= 30:
+            page_ranges['late'].append((chunk, score))
+        else:
+            page_ranges['very_late'].append((chunk, score))
+    
+    # Select minimum from each range, sorted by score
+    diverse_chunks = []
+    for range_name, range_chunks in page_ranges.items():
+        range_chunks.sort(key=lambda x: x[1], reverse=True)  # Sort by score
+        diverse_chunks.extend(range_chunks[:min_per_range])
+    
+    # Add remaining chunks sorted by score
+    all_chunk_ids = {id(chunk) for chunk, _ in diverse_chunks}
+    remaining = [(chunk, score) for chunk, score in chunks_with_scores 
+                 if id(chunk) not in all_chunk_ids]
+    remaining.sort(key=lambda x: x[1], reverse=True)
+    diverse_chunks.extend(remaining)
+    
+    return diverse_chunks
+
+
+def smart_select_chunks(chunks: List[Dict], user_query: str, query_type: str) -> List[Dict]:
+    """
+    Smart chunk selection algorithm using multi-factor scoring and adaptive limits.
+    
+    Algorithm:
+    1. Analyze query characteristics (complexity, comprehensiveness needs)
+    2. Calculate adaptive chunk limit
+    3. Score all chunks using multi-factor scoring
+    4. Ensure page diversity
+    5. Return top N chunks
+    
+    Args:
+        chunks: List of chunk dictionaries with content, similarity, page_number, etc.
+        user_query: Original user query
+        query_type: Query type (assessment, activity, attribute, etc.)
+    
+    Returns:
+        Selected chunks (List[Dict])
+    """
+    if not chunks:
+        return []
+    
+    # 1. Analyze query characteristics
+    characteristics = detect_query_characteristics(user_query)
+    complexity = characteristics['complexity_score']
+    needs_comprehensive = characteristics['needs_comprehensive']
+    
+    # 2. Calculate adaptive limit
+    if needs_comprehensive:
+        chunk_limit = len(chunks)  # Use all chunks for comprehensive queries
+    else:
+        base_limit = 20
+        chunk_limit = int(base_limit * (1 + complexity * 2))  # 20-60 chunks
+    
+    # Ensure we don't exceed available chunks
+    chunk_limit = min(chunk_limit, len(chunks))
+    
+    # 3. Calculate multi-factor scores for all chunks
+    scored_chunks = []
+    for chunk in chunks:
+        score = calculate_multi_factor_score(chunk, user_query, query_type, chunks)
+        scored_chunks.append((chunk, score))
+    
+    # 4. Ensure page diversity (minimum 2 chunks per page range if available)
+    diverse_chunks = ensure_page_diversity(scored_chunks, min_per_range=2)
+    
+    # 5. Sort by final score and return top N
+    diverse_chunks.sort(key=lambda x: x[1], reverse=True)
+    selected = [chunk for chunk, score in diverse_chunks[:chunk_limit]]
+    
+    logger.debug(
+        f"[SMART_SELECT] Selected {len(selected)}/{len(chunks)} chunks "
+        f"(complexity={complexity:.2f}, comprehensive={needs_comprehensive}, type={query_type})"
+    )
+    
+    return selected
+
+
+# ============================================================================
+# SIMILARITY-BASED CHUNK RETRIEVAL
+# ============================================================================
+
+def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, match_threshold: float = 0.3, query_type: str = None) -> List[Dict]:
+    """
+    Retrieve chunks from a document using vector similarity search.
+    This replaces sequential chunk_index ordering with similarity-based ordering.
+    
+    Args:
+        doc_id: Document UUID
+        user_query: User query to find similar chunks
+        top_k: Number of chunks to retrieve
+        match_threshold: Minimum similarity threshold (0.0-1.0) - will be lowered for assessment queries
+        query_type: Query type (assessment, activity, etc.) - used to adjust threshold
+    
+    Returns:
+        List of chunk dictionaries ordered by similarity (highest first)
+        Each dict contains: chunk_text, chunk_index, page_number, similarity_score, etc.
+    """
+    # CRITICAL FIX: Lower threshold for assessment queries to ensure we don't miss valuation chunks
+    # Assessment queries (especially valuations) often have chunks with lower similarity scores
+    # because they use formal terminology that may not match the user's simple query
+    if query_type == 'assessment':
+        match_threshold = min(match_threshold, 0.2)  # Lower threshold for assessment queries
+        logger.debug(f"[SIMILARITY_CHUNKS] Assessment query detected - using lower threshold: {match_threshold}")
+    from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
+    
+    try:
+        supabase = get_supabase_client()
+        
+        # 1. Embed the user query
+        vector_retriever = VectorDocumentRetriever()
+        
+        # Use the same embedding method as VectorDocumentRetriever
+        if vector_retriever.use_voyage:
+            expanded_query = vector_retriever._expand_query_semantically(user_query)
+            response = vector_retriever.voyage_client.embed(
+                texts=[expanded_query],
+                model=vector_retriever.voyage_model,
+                input_type='query'
+            )
+            query_embedding = response.embeddings[0]
+        else:
+            expanded_query = vector_retriever._expand_query_semantically(user_query)
+            query_embedding = vector_retriever.embeddings.embed_query(expanded_query)
+        
+        # 2. Search for similar chunks using pgvector cosine similarity
+        # Use RPC function if available, otherwise use direct SQL query
+        try:
+            # Try RPC function first (if it exists in Supabase)
+            result = supabase.rpc(
+                'match_chunks_by_similarity',
+                {
+                    'document_id': doc_id,
+                    'query_embedding': query_embedding,
+                    'match_count': top_k,
+                    'match_threshold': match_threshold
+                }
+            ).execute()
+            
+            if result.data:
+                logger.debug(f"[SIMILARITY_CHUNKS] Found {len(result.data)} chunks via RPC for doc {doc_id[:8]}")
+                return result.data
+        except Exception as rpc_error:
+            # RPC function doesn't exist, use direct SQL query
+            logger.debug(f"[SIMILARITY_CHUNKS] RPC not available, using direct query: {rpc_error}")
+        
+        # 3. Fallback: Direct SQL query using pgvector
+        # Query document_vectors table with cosine similarity
+        # Note: This requires the embedding column to exist and be a vector type
+        query = f"""
+        SELECT 
+            id,
+            chunk_text,
+            chunk_index,
+            page_number,
+            embedding_status,
+            1 - (embedding <=> %s::vector) as similarity_score
+        FROM document_vectors
+        WHERE document_id = %s
+          AND embedding IS NOT NULL
+          AND embedding_status = 'embedded'
+          AND (1 - (embedding <=> %s::vector)) >= %s
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+        """
+        
+        # Use raw SQL via Supabase (if supported) or fallback to sequential
+        # For now, use a simpler approach: fetch all chunks and filter by embedding status
+        # Then use Python to calculate similarity (less efficient but works)
+        
+        # Alternative: Use Supabase's built-in vector search if available
+        # Check if chunks are embedded first
+        chunks_check = supabase.table('document_vectors')\
+            .select('id, embedding_status')\
+            .eq('document_id', doc_id)\
+            .eq('embedding_status', 'embedded')\
+            .limit(1)\
+            .execute()
+        
+        if not chunks_check.data:
+            # No embedded chunks, fallback to sequential retrieval
+            logger.warning(f"[SIMILARITY_CHUNKS] No embedded chunks for doc {doc_id[:8]}, falling back to sequential")
+            chunks_result = supabase.table('document_vectors')\
+                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .eq('document_id', doc_id)\
+                .order('chunk_index')\
+                .limit(top_k)\
+                .execute()
+            return chunks_result.data or []
+        
+        # Use vector similarity search via Supabase PostgREST
+        # We'll use a workaround: fetch chunks and calculate similarity in Python
+        # For production, this should use a proper RPC function or direct SQL
+        
+        # Get all embedded chunks for this document
+        all_chunks = supabase.table('document_vectors')\
+            .select('id, chunk_text, chunk_index, page_number, embedding, embedding_status')\
+            .eq('document_id', doc_id)\
+            .eq('embedding_status', 'embedded')\
+            .execute()
+        
+        if not all_chunks.data:
+            logger.warning(f"[SIMILARITY_CHUNKS] No embedded chunks found for doc {doc_id[:8]}")
+            return []
+        
+        # Calculate similarity for each chunk
+        import numpy as np
+        
+        chunks_with_similarity = []
+        for chunk in all_chunks.data:
+            chunk_embedding = chunk.get('embedding')
+            if not chunk_embedding:
+                continue
+            
+            # Calculate cosine similarity
+            try:
+                # Convert to numpy arrays if needed
+                if isinstance(chunk_embedding, list):
+                    chunk_vec = np.array(chunk_embedding)
+                else:
+                    chunk_vec = np.array(chunk_embedding)
+                
+                if isinstance(query_embedding, list):
+                    query_vec = np.array(query_embedding)
+                else:
+                    query_vec = np.array(query_embedding)
+                
+                # Cosine similarity: dot product / (norm1 * norm2)
+                similarity = np.dot(chunk_vec, query_vec) / (np.linalg.norm(chunk_vec) * np.linalg.norm(query_vec))
+                
+                if similarity >= match_threshold:
+                    chunk_result = {
+                        'chunk_text': chunk.get('chunk_text', ''),
+                        'chunk_index': chunk.get('chunk_index', 0),
+                        'page_number': chunk.get('page_number', 0),
+                        'embedding_status': chunk.get('embedding_status', ''),
+                        'similarity_score': float(similarity),
+                        'id': chunk.get('id')
+                    }
+                    chunks_with_similarity.append(chunk_result)
+            except Exception as calc_error:
+                logger.debug(f"[SIMILARITY_CHUNKS] Error calculating similarity: {calc_error}")
+                continue
+        
+        # Sort by similarity (highest first) and return top_k
+        chunks_with_similarity.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+        result = chunks_with_similarity[:top_k]
+        
+        logger.info(f"[SIMILARITY_CHUNKS] Retrieved {len(result)}/{len(all_chunks.data)} chunks by similarity for doc {doc_id[:8]}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"[SIMILARITY_CHUNKS] Error retrieving chunks by similarity: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        
+        # Fallback to sequential retrieval on error
+        logger.warning(f"[SIMILARITY_CHUNKS] Falling back to sequential retrieval")
+        try:
+            supabase = get_supabase_client()
+            chunks_result = supabase.table('document_vectors')\
+                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .eq('document_id', doc_id)\
+                .order('chunk_index')\
+                .limit(top_k)\
+                .execute()
+            return chunks_result.data or []
+        except Exception:
+            return []
 
 
 def _rewrite_query_keywords(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
@@ -982,7 +1548,8 @@ This information has been verified and extracted from the property database, inc
                                 if bathroom_match:
                                     keywords.extend(['bathroom', 'bathrooms', 'bath', 'baths'])
                                 
-                                # Fetch all chunks for this document to search for keywords
+                                # OPTIMIZATION: Enhanced keyword-based retrieval with similarity search
+                                # First, find keyword matches
                                 all_chunks = supabase.table('document_vectors')\
                                     .select('chunk_text, chunk_index, page_number, embedding_status')\
                                     .eq('document_id', doc['id'])\
@@ -998,17 +1565,50 @@ This information has been verified and extracted from the property database, inc
                                 keyword_chunks.sort(key=lambda x: x.get('chunk_index', 0))
                                 keyword_chunks = keyword_chunks[:10]
                                 
-                                # Use the keyword chunks as the base, then add sequential chunks for context
+                                # ENHANCEMENT: Also use similarity search to find related chunks
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=15,  # Get top 15 similar chunks
+                                    match_threshold=0.3,
+                                    query_type=query_type
+                                )
+                                
+                                # Combine keyword matches with similarity-based matches
                                 chunk_indices_seen = set(c.get('chunk_index') for c in keyword_chunks)
                                 all_chunks_list = list(keyword_chunks)
                                 
-                                # Add sequential chunks that weren't already included (for context)
-                                for chunk in all_chunks.data:
-                                    if chunk.get('chunk_index') not in chunk_indices_seen and len(all_chunks_list) < 20:
-                                        all_chunks_list.append(chunk)
-                                        chunk_indices_seen.add(chunk.get('chunk_index'))
+                                # Add similar chunks that weren't already included
+                                # Prioritize chunks with both keyword matches AND high similarity
+                                for chunk in similar_chunks:
+                                    chunk_idx = chunk.get('chunk_index', 0)
+                                    if chunk_idx not in chunk_indices_seen:
+                                        # Check if this similar chunk also has keywords (bonus)
+                                        chunk_text_lower = (chunk.get('chunk_text', '') or '').lower()
+                                        has_keywords = any(kw in chunk_text_lower for kw in keywords)
+                                        
+                                        if has_keywords:
+                                            # Prioritize: add at the beginning
+                                            all_chunks_list.insert(0, chunk)
+                                        else:
+                                            # Add to end
+                                            all_chunks_list.append(chunk)
+                                        chunk_indices_seen.add(chunk_idx)
+                                        
+                                        if len(all_chunks_list) >= 20:
+                                            break
                                 
-                                # Sort by chunk_index for proper ordering
+                                # If we still need more chunks, add sequential ones for context
+                                if len(all_chunks_list) < 20:
+                                    for chunk in all_chunks.data:
+                                        if chunk.get('chunk_index') not in chunk_indices_seen and len(all_chunks_list) < 20:
+                                            all_chunks_list.append(chunk)
+                                            chunk_indices_seen.add(chunk.get('chunk_index'))
+                                
+                                # Sort by chunk_index for proper ordering (but keyword/similar chunks are prioritized)
                                 all_chunks_list.sort(key=lambda x: x.get('chunk_index', 0))
                                 
                                 # Create a mock result object with the combined chunks
@@ -1017,18 +1617,36 @@ This information has been verified and extracted from the property database, inc
                                         self.data = data
                                 chunks_result = MockResult(all_chunks_list[:20])
                             else:
-                                # No keyword search needed, just fetch sequential chunks
-                                # OPTIMIZATION: For valuation queries, fetch more chunks to ensure valuation pages (e.g., page 30) are included
-                                user_query_lower = state.get('user_query', '').lower()
-                                is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
-                                chunk_limit = 100 if is_valuation_query else 20  # Fetch up to 100 chunks for valuation queries
+                                # OPTIMIZATION: Use similarity-based chunk retrieval instead of sequential
+                                # This ensures chunks from all pages (including page 30+) are retrieved if similar
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                complexity = characteristics['complexity_score']
+                                needs_comprehensive = characteristics['needs_comprehensive']
                                 
-                                chunks_result = (supabase.table('document_vectors')
-                                    .select('chunk_text, chunk_index, page_number, embedding_status')
-                                    .eq('document_id', doc['id'])
-                                    .order('chunk_index')
-                                    .limit(chunk_limit)
-                                    .execute())
+                                # Base limit: 20 chunks, scale up based on complexity
+                                base_limit = 20
+                                if needs_comprehensive:
+                                    chunk_limit = 150  # Use more chunks for comprehensive queries
+                                else:
+                                    chunk_limit = int(base_limit * (1 + complexity * 4))  # 20-100 chunks
+                                chunk_limit = min(chunk_limit, 150)  # Cap at 150
+                                
+                                # Use similarity-based retrieval (finds chunks across all pages by similarity)
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=chunk_limit,
+                                    match_threshold=0.3,  # Minimum similarity threshold (will be lowered for assessment queries)
+                                    query_type=query_type
+                                )
+                                
+                                # Convert to expected format
+                                class MockResult:
+                                    def __init__(self, data):
+                                        self.data = data
+                                chunks_result = MockResult(similar_chunks)
                             
                             # Combine chunks into content
                             chunk_texts = []
@@ -1107,19 +1725,25 @@ This information has been verified and extracted from the property database, inc
         def process_single_query(query: str, query_index: int) -> Tuple[int, List[Dict]]:
             """Process a single query variation and return (index, results)."""
             query_start = time.time()
-            # Adjust top_k based on detail_level and query type
+            # Adjust top_k based on detail_level and query characteristics (adaptive)
             detail_level = state.get('detail_level', 'concise')
-            user_query_lower = state.get('user_query', '').lower()
-            is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+            user_query = state.get('user_query', '')
+            characteristics = detect_query_characteristics(user_query)
+            complexity = characteristics['complexity_score']
+            needs_comprehensive = characteristics['needs_comprehensive']
             
-            if is_valuation_query:
-                # For valuation queries, fetch significantly more chunks to ensure valuation pages (e.g., page 30) are included
-                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_VALUATION", "100"))  # Much more chunks for valuation queries
-                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Valuation query detected - using top_k={top_k} to ensure later pages are retrieved")
+            if needs_comprehensive:
+                # For comprehensive queries, fetch significantly more chunks
+                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_VALUATION", "100"))
+                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Comprehensive query detected - using top_k={top_k}")
             elif detail_level == 'detailed':
-                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_DETAILED", "50"))  # More chunks for detailed mode
+                # Scale based on complexity for detailed mode
+                base_top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_DETAILED", "50"))
+                top_k = int(base_top_k * (1 + complexity * 0.5))  # 50-75 chunks
             else:
-                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "20"))  # Fewer chunks for concise mode
+                # Scale based on complexity for concise mode
+                base_top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "20"))
+                top_k = int(base_top_k * (1 + complexity * 1.5))  # 20-50 chunks
             
             # NEW: Header-Priority Retrieval (Pass 1)
             # Search for chunks with matching section headers first, then boost them in results
@@ -1455,17 +2079,36 @@ This information has been verified and extracted from the property database, inc
 """
                                 
                                 # Get chunks
-                                # OPTIMIZATION: For valuation queries, fetch more chunks to ensure valuation pages (e.g., page 30) are included
-                                user_query_lower = state.get('user_query', '').lower()
-                                is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
-                                chunk_limit = 150 if is_valuation_query else 50  # Fetch up to 150 chunks for valuation queries
+                                # OPTIMIZATION: Adaptive chunk limit based on query characteristics
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                complexity = characteristics['complexity_score']
+                                needs_comprehensive = characteristics['needs_comprehensive']
                                 
-                                chunks_result = supabase.table('document_vectors')\
-                                    .select('chunk_text, chunk_index, page_number')\
-                                    .eq('document_id', doc['id'])\
-                                    .order('chunk_index')\
-                                    .limit(chunk_limit)\
-                                    .execute()
+                                # Base limit: 50 chunks, scale up based on complexity
+                                base_limit = 50
+                                if needs_comprehensive:
+                                    chunk_limit = 150  # Use more chunks for comprehensive queries
+                                else:
+                                    chunk_limit = int(base_limit * (1 + complexity * 2))  # 50-150 chunks
+                                chunk_limit = min(chunk_limit, 150)  # Cap at 150
+                                
+                                # OPTIMIZATION: Use similarity-based chunk retrieval instead of sequential
+                                # This ensures chunks from all pages (including page 30+) are retrieved if similar
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=chunk_limit,
+                                    match_threshold=0.3,  # Minimum similarity threshold (will be lowered for assessment queries)
+                                    query_type=query_type
+                                )
+                                
+                                # Convert to expected format
+                                class MockResult:
+                                    def __init__(self, data):
+                                        self.data = data
+                                chunks_result = MockResult(similar_chunks)
                                 
                                 chunk_texts = [c.get('chunk_text', '').strip() for c in chunks_result.data if c.get('chunk_text', '').strip() and len(c.get('chunk_text', '').strip()) > 10]
                                 # Extract party names for this document (similar to structured query above)
@@ -1731,56 +2374,14 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
         # Sort chunks by chunk_index for proper ordering
         group['chunks'].sort(key=lambda x: x['chunk_index'])
         
-        # Merge chunk content (keep top chunks for better context with 1200-char chunks)
-        # For valuation queries, keep more chunks to ensure valuation pages are included
-        user_query = state.get('user_query', '').lower()
-        is_valuation_query = any(term in user_query for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+        # Merge chunk content using smart multi-factor selection algorithm
+        # This replaces hardcoded valuation logic with adaptive algorithm for all query types
+        user_query = state.get('user_query', '')
+        query_characteristics = detect_query_characteristics(user_query)
+        query_type = query_characteristics.get('query_type', 'general')
         
-        if is_valuation_query:
-            # For valuation queries: Ensure we get chunks from a wide page range, not just top similarity
-            # This ensures we capture valuation pages (often on later pages like page 30)
-            top_n_chunks = 40  # Keep even more chunks for valuation queries to ensure all scenarios are captured
-            
-            # Strategy: Take top chunks by similarity, but also ensure page diversity AND valuation-specific content
-            # Sort by similarity first
-            sorted_by_similarity = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)
-            
-            # Get top chunks by similarity
-            top_by_similarity = sorted_by_similarity[:top_n_chunks]
-            
-            # Also check if we have chunks from later pages (page 20+)
-            later_page_chunks = [c for c in group['chunks'] if c.get('page_number', 0) >= 20]
-            
-            # CRITICAL: Also look for chunks with valuation-specific keywords (90-day, 180-day, reduced marketing, etc.)
-            valuation_keywords = ['90', '180', 'day', 'marketing period', 'reduced', 'scenario', 'assumption']
-            valuation_specific_chunks = [
-                c for c in group['chunks'] 
-                if any(keyword in (c.get('content', '') or '').lower() for keyword in valuation_keywords)
-            ]
-            
-            # If we have later page chunks or valuation-specific chunks, ensure they're included
-            if later_page_chunks or valuation_specific_chunks:
-                # Sort later page chunks by similarity and take top 10
-                top_later_pages = sorted(later_page_chunks, key=lambda x: x['similarity'], reverse=True)[:10] if later_page_chunks else []
-                
-                # Sort valuation-specific chunks by similarity and take top 10
-                top_valuation_specific = sorted(valuation_specific_chunks, key=lambda x: x['similarity'], reverse=True)[:10] if valuation_specific_chunks else []
-                
-                # Merge with top_by_similarity, removing duplicates
-                chunk_ids_seen = set()
-                top_chunks = []
-                for chunk in top_by_similarity + top_later_pages + top_valuation_specific:
-                    chunk_id = (chunk.get('chunk_index'), chunk.get('doc_id'))
-                    if chunk_id not in chunk_ids_seen:
-                        chunk_ids_seen.add(chunk_id)
-                        top_chunks.append(chunk)
-                # Re-sort by similarity to maintain quality, but keep more chunks
-                top_chunks = sorted(top_chunks, key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
-            else:
-                top_chunks = top_by_similarity
-        else:
-            top_n_chunks = 7
-            top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
+        # Use smart chunk selection algorithm
+        top_chunks = smart_select_chunks(group['chunks'], user_query, query_type)
         
         merged_content = "\n\n".join([chunk['content'] for chunk in top_chunks])
         

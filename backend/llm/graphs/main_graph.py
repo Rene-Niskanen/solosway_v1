@@ -36,6 +36,7 @@ from backend.llm.nodes.retrieval_nodes import (
 from backend.llm.nodes.detail_level_detector import determine_detail_level
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
+from backend.llm.nodes.formatting_nodes import format_response
 from typing import Literal
 
 async def create_checkpointer_for_current_loop():
@@ -282,7 +283,16 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Uses natural language (addresses and filenames, not IDs)
     - Output: final_summary, updated conversation_history
     """
-
+    
+    builder.add_node("format_response", format_response)
+    """
+    Node 7: Format Response
+    - Input: final_summary (raw LLM response)
+    - Formats and structures the response for better readability
+    - Ensures logical organization, consistent formatting, and completeness
+    - Output: formatted final_summary
+    """
+    
     # ROUTING LOGIC FUNCTIONS
     def should_route(state: MainWorkflowState) -> Literal["direct_document", "simple_search", "complex_search"]:
         """
@@ -434,8 +444,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("process_documents", "summarize_results")
     logger.debug("Edge: process_documents -> summarize_results")
 
-    builder.add_edge("summarize_results", END)
-    logger.debug("Edge: summarize_results -> END")
+    # Format response for better readability
+    builder.add_edge("summarize_results", "format_response")
+    logger.debug("Edge: summarize_results -> format_response")
+
+    builder.add_edge("format_response", END)
+    logger.debug("Edge: format_response -> END")
 
     # Add checkpointer setup
     checkpointer = None 

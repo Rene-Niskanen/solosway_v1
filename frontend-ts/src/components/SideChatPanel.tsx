@@ -3253,13 +3253,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             >
               <ReactMarkdown 
                 components={{
-                  p: ({ children }) => {
+                p: ({ children }) => {
                     // Recursively process all text nodes to find citations
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
-                        if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
-                        }
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
                         if (React.isValidElement(child)) {
                           // Recursively process nested children
                           const childChildren = (child.props as any)?.children;
@@ -3270,23 +3270,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             } as any);
                           }
                         }
-                        return child;
-                      });
+                    return child;
+                  });
                     };
                     const processedChildren = processChildren(children);
-                    return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
-                  },
-                  h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
-                  h2: () => null, h3: () => null,
-                  ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
-                  ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
-                  li: ({ children }) => {
+                  return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
+                },
+                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                h2: () => null, h3: () => null,
+                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+                li: ({ children }) => {
                     // Recursively process all text nodes to find citations
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
-                        if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
-                        }
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                    }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
                           if (childChildren !== undefined) {
@@ -3296,12 +3296,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             } as any);
                           }
                         }
-                        return child;
-                      });
+                    return child;
+                  });
                     };
                     const processedChildren = processChildren(children);
-                    return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
-                  },
+                  return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
+                },
                   strong: ({ children }) => {
                     // Recursively process citations in strong elements
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
@@ -3344,9 +3344,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     };
                     return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
                   },
-                  code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                  blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                  hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
                 }}
               >
                 {message.text}

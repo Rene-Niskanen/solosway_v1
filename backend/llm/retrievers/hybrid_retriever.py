@@ -234,8 +234,17 @@ class HybridDocumentRetriever:
             weighted_r['similarity_score'] = (r.get('similarity_score', 0.0) * vector_weight)
             weighted_vector.append(weighted_r)
         
+        # OPTIMIZATION: Adaptive RRF k parameter based on result set size
+        total_results = len(weighted_bm25) + len(weighted_vector)
+        if total_results > 100:
+            rrf_k = 60  # Large result set: use higher k for better ranking
+        elif total_results > 50:
+            rrf_k = 40  # Medium result set: moderate k
+        else:
+            rrf_k = 30  # Small result set: more aggressive ranking
+        
         # Merge with RRF (expects lists of dicts with 'doc_id' key)
-        merged = reciprocal_rank_fusion([weighted_bm25, weighted_vector], k=60)
+        merged = reciprocal_rank_fusion([weighted_bm25, weighted_vector], k=rrf_k)
         
         # Return top-k
         final_results = merged[:top_k]

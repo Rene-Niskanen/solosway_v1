@@ -33,6 +33,8 @@ class Citation(TypedDict):
     doc_id: str
     confidence: Optional[str]  # 'high', 'medium', 'low'
     method: str  # 'block-id-lookup'
+    block_content: Optional[str]  # NEW: Store actual block content for verification
+    verification: Optional[dict]  # NEW: Store verification result
 
 class DocumentProcessingResult(TypedDict, total=False):
     """Result from processing a single document with LLM"""

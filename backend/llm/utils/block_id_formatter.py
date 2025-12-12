@@ -192,7 +192,8 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                     'bbox_height': round(bbox_height, 4),
                     'chunk_index': chunk_index,
                     'doc_id': doc_id,
-                    'confidence': block.get('confidence', 'medium')
+                    'confidence': block.get('confidence', 'medium'),
+                    'content': block_content  # Store block content for verification
                 }
                 
                 # #region agent log
@@ -260,7 +261,8 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                 'bbox_height': round(bbox_height, 4),
                 'chunk_index': chunk_index,
                 'doc_id': doc_id,
-                'confidence': 'medium'  # Chunk-level confidence (no block-level data)
+                'confidence': 'medium',  # Chunk-level confidence (no block-level data)
+                'content': chunk_content  # Store chunk content for verification
             }
             
             logger.debug(
