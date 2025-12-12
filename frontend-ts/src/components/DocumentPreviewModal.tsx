@@ -105,9 +105,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const MIN_WIDTH = 0.12;   // Minimum 12% of page width (enough for a price)
     const MIN_HEIGHT = 0.025; // Minimum 2.5% of page height (one line of text)
     
-    // Add small padding around precise values for better visibility
-    const PADDING_X = 0.02;  // 2% horizontal padding
-    const PADDING_Y = 0.01;  // 1% vertical padding
+    // Only add minimal padding for very small bboxes to prevent overlap issues
+    const MIN_PADDING_X = 0.005;  // 0.5% horizontal padding (minimal)
+    const MIN_PADDING_Y = 0.003;  // 0.3% vertical padding (minimal)
     
     let { left, top, width, height, page } = bbox;
     const original_page = (bbox as any).original_page; // Optional field, may not be in type
@@ -138,18 +138,27 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       
       console.log('📐 [BBOX] Expanded to:', { left, top, width, height });
     } else {
-      // Add slight padding for better visibility of precise matches
-      const paddedLeft = Math.max(0, left - PADDING_X);
-      const paddedTop = Math.max(0, top - PADDING_Y);
-      const paddedWidth = Math.min(width + PADDING_X * 2, 1 - paddedLeft);
-      const paddedHeight = Math.min(height + PADDING_Y * 2, 1 - paddedTop);
+      // For precise bboxes, only add minimal padding if they're still quite small
+      // This prevents overlap issues when multiple citations are close together
+      const isSmallButVisible = width < 0.08 || height < 0.02;
       
-      left = paddedLeft;
-      top = paddedTop;
-      width = paddedWidth;
-      height = paddedHeight;
-      
-      console.log('📐 [BBOX] Using precise bbox with padding:', { left, top, width, height });
+      if (isSmallButVisible) {
+        // Add minimal padding only for small but visible bboxes
+        const paddedLeft = Math.max(0, left - MIN_PADDING_X);
+        const paddedTop = Math.max(0, top - MIN_PADDING_Y);
+        const paddedWidth = Math.min(width + MIN_PADDING_X * 2, 1 - paddedLeft);
+        const paddedHeight = Math.min(height + MIN_PADDING_Y * 2, 1 - paddedTop);
+        
+        left = paddedLeft;
+        top = paddedTop;
+        width = paddedWidth;
+        height = paddedHeight;
+        
+        console.log('📐 [BBOX] Using small bbox with minimal padding:', { left, top, width, height });
+      } else {
+        // For larger precise bboxes, use them as-is to prevent overlap
+        console.log('📐 [BBOX] Using precise bbox without padding (large enough):', { left, top, width, height });
+      }
     }
     
     // Phase 6: Validate bbox coordinates before returning
@@ -548,6 +557,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     
     let cancelled = false;
     let animationFrameId: number | null = null;
+    let renderTask: any = null; // Track PDF.js render task to cancel if needed
     
     const renderPage = async () => {
       try {
@@ -561,8 +571,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           
           if (context && !cancelled) {
             // Restore cached page instantly
+            // CRITICAL: Clear canvas before restoring cached image to prevent overlap
             canvas.width = cachedImageData.width;
             canvas.height = cachedImageData.height;
+            context.clearRect(0, 0, canvas.width, canvas.height);
             context.putImageData(cachedImageData, 0, 0);
             
             // Store dimensions for highlight positioning
@@ -585,13 +597,22 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         setPdfPageRendering(true);
         console.log('📄 Rendering PDF page', currentPage, 'at zoom', zoomLevel, '%');
         
+        // CRITICAL: Clear canvas immediately when starting new render to prevent overlap
+        const canvas = pdfCanvasRef.current;
+        if (canvas) {
+          const context = canvas.getContext('2d');
+          if (context) {
+            // Clear canvas immediately to prevent showing previous page content
+            context.clearRect(0, 0, canvas.width, canvas.height);
+          }
+        }
+        
         const page = await pdfDocument.getPage(currentPage);
         
         if (cancelled) return;
         
         const viewport = page.getViewport({ scale, rotation });
         
-        const canvas = pdfCanvasRef.current;
         if (!canvas) return;
         
         const context = canvas.getContext('2d');
@@ -602,6 +623,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           if (cancelled) return;
         
         // Set canvas dimensions to match the viewport
+        // CRITICAL: Setting width/height automatically clears canvas, but we also explicitly clear
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         
@@ -613,11 +635,14 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
         
         // Render the page
-          page.render({
+        // CRITICAL: Store render task so we can cancel it if page changes
+        renderTask = page.render({
           canvasContext: context,
           viewport,
           canvas
-          } as any).promise.then(() => {
+        } as any);
+        
+        renderTask.promise.then(() => {
         if (!cancelled) {
           console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
               
@@ -647,6 +672,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       cancelled = true;
       if (animationFrameId !== null) {
         cancelAnimationFrame(animationFrameId);
+      }
+      // CRITICAL: Cancel any in-progress PDF.js render task to prevent overlapping pages
+      if (renderTask && renderTask.cancel) {
+        try {
+          renderTask.cancel();
+          console.log('🛑 [PDF_RENDER] Cancelled in-progress render task');
+        } catch (e) {
+          // Ignore errors from cancellation
+        }
       }
     };
   }, [pdfDocument, currentPage, zoomLevel, rotation, isOpen, file?.id, getCachedRenderedPage, setCachedRenderedPage]);
