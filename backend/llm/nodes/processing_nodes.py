@@ -14,6 +14,7 @@ from backend.llm.types import (
 )
 from backend.llm.agents.document_qa_agent import build_document_qa_subgraph
 from backend.llm.config import config
+from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 
 logger = logging.getLogger(__name__)
 
@@ -105,40 +106,75 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
                     len(relevant_docs)
                 )
                 
-                # Process each chunk that needs metadata
-                for chunk in chunks_needing_metadata:
-                    doc_id = chunk.get('doc_id') or chunk.get('document_id')
-                    if not doc_id:
-                        logger.warning(
-                            "[PROCESS_DOCUMENTS] Chunk %s missing doc_id, skipping metadata creation",
-                            chunk.get('chunk_index', 'unknown')
-                        )
-                        # Set empty metadata to avoid retrying
-                        chunk['source_chunks_metadata'] = []
-                        continue
-                    
+                # OPTIMIZATION: Batch fetch metadata for all chunks in parallel
+                if chunks_needing_metadata:
                     try:
-                        # Create metadata for this chunk
-                        chunk_metadata = await create_source_chunks_metadata_for_single_chunk(chunk, doc_id)
+                        from backend.llm.nodes.retrieval_nodes import batch_create_source_chunks_metadata
                         
-                        # Attach as list (format expected by format_document_with_block_ids)
-                        chunk['source_chunks_metadata'] = [chunk_metadata]
+                        # Extract doc_ids for batch fetching
+                        chunk_doc_ids = []
+                        valid_chunks = []
+                        for chunk in chunks_needing_metadata:
+                            doc_id = chunk.get('doc_id') or chunk.get('document_id')
+                            if doc_id:
+                                chunk_doc_ids.append(doc_id)
+                                valid_chunks.append(chunk)
+                            else:
+                                logger.warning(
+                                    "[PROCESS_DOCUMENTS] Chunk %s missing doc_id, skipping metadata creation",
+                                    chunk.get('chunk_index', 'unknown')
+                                )
+                                chunk['source_chunks_metadata'] = []
                         
-                        blocks_count = len(chunk_metadata.get('blocks', [])) if chunk_metadata.get('blocks') else 0
-                        logger.debug(
-                            "[PROCESS_DOCUMENTS] Created metadata for chunk %d (doc %s, %d blocks)",
-                            chunk.get('chunk_index', 0),
-                            doc_id[:8],
-                            blocks_count
-                        )
+                        if valid_chunks:
+                            # Batch fetch all metadata
+                            batch_metadata = await batch_create_source_chunks_metadata(valid_chunks, chunk_doc_ids)
+                            
+                            # Attach metadata to chunks using (doc_id, chunk_index) key
+                            for chunk, doc_id in zip(valid_chunks, chunk_doc_ids):
+                                chunk_index = chunk.get('chunk_index', 0)
+                                metadata_key = (doc_id, chunk_index)
+                                
+                                if metadata_key in batch_metadata:
+                                    chunk_metadata = batch_metadata[metadata_key]
+                                    chunk['source_chunks_metadata'] = [chunk_metadata]
+                                    
+                                    blocks_count = len(chunk_metadata.get('blocks', [])) if chunk_metadata.get('blocks') else 0
+                                    logger.debug(
+                                        "[PROCESS_DOCUMENTS] Created metadata for chunk %d (doc %s, %d blocks)",
+                                        chunk_index,
+                                        doc_id[:8],
+                                        blocks_count
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[PROCESS_DOCUMENTS] No metadata found for chunk %d (doc %s)",
+                                        chunk_index,
+                                        doc_id[:8]
+                                    )
+                                    chunk['source_chunks_metadata'] = []
                     except Exception as e:
                         logger.warning(
-                            "[PROCESS_DOCUMENTS] Failed to create metadata for chunk %s: %s",
-                            chunk.get('chunk_index', 'unknown'),
-                            e
+                            "[PROCESS_DOCUMENTS] Batch metadata creation failed, falling back to individual: %s",
+                            str(e)
                         )
-                        # Continue without metadata (will use fallback bbox)
-                        chunk['source_chunks_metadata'] = []
+                        # Fallback to individual processing
+                        for chunk in chunks_needing_metadata:
+                            doc_id = chunk.get('doc_id') or chunk.get('document_id')
+                            if not doc_id:
+                                chunk['source_chunks_metadata'] = []
+                                continue
+                            
+                            try:
+                                chunk_metadata = await create_source_chunks_metadata_for_single_chunk(chunk, doc_id)
+                                chunk['source_chunks_metadata'] = [chunk_metadata]
+                            except Exception as e2:
+                                logger.warning(
+                                    "[PROCESS_DOCUMENTS] Failed to create metadata for chunk %s: %s",
+                                    chunk.get('chunk_index', 'unknown'),
+                                    str(e2)
+                                )
+                                chunk['source_chunks_metadata'] = []
             else:
                 logger.debug(
                     "[PROCESS_DOCUMENTS] All %d chunks already have source_chunks_metadata",
@@ -275,6 +311,31 @@ async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
             # Preserve search source information (BM25, SQL, Vector, Hybrid)
             result['search_source'] = doc.get('source', 'unknown')
             result['similarity_score'] = doc.get('similarity_score', 0.0)
+            
+            # OPTIMIZATION: Pre-format document during processing to parallelize with LLM calls
+            # This saves time in summarize_results by doing formatting work in parallel
+            # Format after all metadata is added to ensure complete data
+            try:
+                # Format document with block IDs and create metadata lookup table
+                formatted_content, metadata_table = format_document_with_block_ids(result)
+                
+                # Store formatted content and metadata in result
+                result['formatted_content'] = formatted_content
+                result['formatted_metadata_table'] = metadata_table
+                result['is_formatted'] = True  # Flag to skip formatting in summarize_results
+                
+                logger.debug(
+                    "[PROCESS_DOCUMENTS] Pre-formatted doc %s with %d block IDs",
+                    result.get("doc_id", "")[:8],
+                    len(metadata_table) if metadata_table else 0
+                )
+            except Exception as format_error:
+                logger.warning(
+                    "[PROCESS_DOCUMENTS] Failed to pre-format doc %s: %s (will format in summarize_results)",
+                    result.get("doc_id", "")[:8],
+                    str(format_error)
+                )
+                result['is_formatted'] = False
             
             logger.info(
                 "[PROCESS_DOCUMENTS] Completed doc %s (%s)", 

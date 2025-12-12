@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -1018,11 +1018,16 @@ This information has been verified and extracted from the property database, inc
                                 chunks_result = MockResult(all_chunks_list[:20])
                             else:
                                 # No keyword search needed, just fetch sequential chunks
+                                # OPTIMIZATION: For valuation queries, fetch more chunks to ensure valuation pages (e.g., page 30) are included
+                                user_query_lower = state.get('user_query', '').lower()
+                                is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+                                chunk_limit = 100 if is_valuation_query else 20  # Fetch up to 100 chunks for valuation queries
+                                
                                 chunks_result = (supabase.table('document_vectors')
                                     .select('chunk_text, chunk_index, page_number, embedding_status')
                                     .eq('document_id', doc['id'])
                                     .order('chunk_index')
-                                    .limit(20)  # Get more chunks for better context
+                                    .limit(chunk_limit)
                                     .execute())
                             
                             # Combine chunks into content
@@ -1098,13 +1103,20 @@ This information has been verified and extracted from the property database, inc
         queries = state.get('query_variations', [state['user_query']])
         logger.info(f"[QUERY_VECTOR_DOCUMENTS] Running hybrid search for {len(queries)} query variation(s)")
         
-        # Search with each query variation using hybrid retriever
-        all_results = []
-        for i, query in enumerate(queries, 1):
+        # OPTIMIZATION: Process query variations in parallel instead of sequentially
+        def process_single_query(query: str, query_index: int) -> Tuple[int, List[Dict]]:
+            """Process a single query variation and return (index, results)."""
             query_start = time.time()
-            # Adjust top_k based on detail_level
+            # Adjust top_k based on detail_level and query type
             detail_level = state.get('detail_level', 'concise')
-            if detail_level == 'detailed':
+            user_query_lower = state.get('user_query', '').lower()
+            is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+            
+            if is_valuation_query:
+                # For valuation queries, fetch significantly more chunks to ensure valuation pages (e.g., page 30) are included
+                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_VALUATION", "100"))  # Much more chunks for valuation queries
+                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Valuation query detected - using top_k={top_k} to ensure later pages are retrieved")
+            elif detail_level == 'detailed':
                 top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_DETAILED", "50"))  # More chunks for detailed mode
             else:
                 top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "20"))  # Fewer chunks for concise mode
@@ -1282,8 +1294,24 @@ This information has been verified and extracted from the property database, inc
             # Use combined results
             results = combined_results
             query_time = time.time() - query_start
-            all_results.append(results)
-            logger.info(f"[QUERY_HYBRID] Query {i}/{len(queries)} '{query[:40]}...' → {len(results)} docs in {query_time:.2f}s")
+            logger.info(f"[QUERY_HYBRID] Query {query_index}/{len(queries)} '{query[:40]}...' → {len(results)} docs in {query_time:.2f}s")
+            return (query_index, results)
+        
+        # OPTIMIZATION: Process all queries in parallel using ThreadPoolExecutor
+        # Since retriever.query_documents is synchronous, we use threads for parallelization
+        import concurrent.futures
+        if len(queries) > 1:
+            # Parallel execution for multiple queries
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 3)) as executor:
+                futures = [executor.submit(process_single_query, query, i+1) for i, query in enumerate(queries)]
+                query_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            # Sort by query_index to maintain order
+            query_results.sort(key=lambda x: x[0])
+            all_results = [results for _, results in query_results]
+        else:
+            # Single query - no need for parallelization
+            _, results = process_single_query(queries[0], 1)
+            all_results = [results]
         
         hybrid_time = time.time() - hybrid_start
         logger.info(f"[QUERY_VECTOR_DOCUMENTS] Hybrid search completed in {hybrid_time:.2f}s")
@@ -1427,11 +1455,16 @@ This information has been verified and extracted from the property database, inc
 """
                                 
                                 # Get chunks
+                                # OPTIMIZATION: For valuation queries, fetch more chunks to ensure valuation pages (e.g., page 30) are included
+                                user_query_lower = state.get('user_query', '').lower()
+                                is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+                                chunk_limit = 150 if is_valuation_query else 50  # Fetch up to 150 chunks for valuation queries
+                                
                                 chunks_result = supabase.table('document_vectors')\
                                     .select('chunk_text, chunk_index, page_number')\
                                     .eq('document_id', doc['id'])\
                                     .order('chunk_index')\
-                                    .limit(50)\
+                                    .limit(chunk_limit)\
                                     .execute()
                                 
                                 chunk_texts = [c.get('chunk_text', '').strip() for c in chunks_result.data if c.get('chunk_text', '').strip() and len(c.get('chunk_text', '').strip()) > 10]
@@ -1701,9 +1734,54 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
         # Merge chunk content (keep top chunks for better context with 1200-char chunks)
         # For valuation queries, keep more chunks to ensure valuation pages are included
         user_query = state.get('user_query', '').lower()
-        is_valuation_query = any(term in user_query for term in ['valuation', 'value', 'price', 'worth', 'cost'])
-        top_n_chunks = 15 if is_valuation_query else 7  # Keep more chunks for valuation queries
-        top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
+        is_valuation_query = any(term in user_query for term in ['valuation', 'value', 'price', 'worth', 'cost', 'figure', 'amount'])
+        
+        if is_valuation_query:
+            # For valuation queries: Ensure we get chunks from a wide page range, not just top similarity
+            # This ensures we capture valuation pages (often on later pages like page 30)
+            top_n_chunks = 40  # Keep even more chunks for valuation queries to ensure all scenarios are captured
+            
+            # Strategy: Take top chunks by similarity, but also ensure page diversity AND valuation-specific content
+            # Sort by similarity first
+            sorted_by_similarity = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)
+            
+            # Get top chunks by similarity
+            top_by_similarity = sorted_by_similarity[:top_n_chunks]
+            
+            # Also check if we have chunks from later pages (page 20+)
+            later_page_chunks = [c for c in group['chunks'] if c.get('page_number', 0) >= 20]
+            
+            # CRITICAL: Also look for chunks with valuation-specific keywords (90-day, 180-day, reduced marketing, etc.)
+            valuation_keywords = ['90', '180', 'day', 'marketing period', 'reduced', 'scenario', 'assumption']
+            valuation_specific_chunks = [
+                c for c in group['chunks'] 
+                if any(keyword in (c.get('content', '') or '').lower() for keyword in valuation_keywords)
+            ]
+            
+            # If we have later page chunks or valuation-specific chunks, ensure they're included
+            if later_page_chunks or valuation_specific_chunks:
+                # Sort later page chunks by similarity and take top 10
+                top_later_pages = sorted(later_page_chunks, key=lambda x: x['similarity'], reverse=True)[:10] if later_page_chunks else []
+                
+                # Sort valuation-specific chunks by similarity and take top 10
+                top_valuation_specific = sorted(valuation_specific_chunks, key=lambda x: x['similarity'], reverse=True)[:10] if valuation_specific_chunks else []
+                
+                # Merge with top_by_similarity, removing duplicates
+                chunk_ids_seen = set()
+                top_chunks = []
+                for chunk in top_by_similarity + top_later_pages + top_valuation_specific:
+                    chunk_id = (chunk.get('chunk_index'), chunk.get('doc_id'))
+                    if chunk_id not in chunk_ids_seen:
+                        chunk_ids_seen.add(chunk_id)
+                        top_chunks.append(chunk)
+                # Re-sort by similarity to maintain quality, but keep more chunks
+                top_chunks = sorted(top_chunks, key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
+            else:
+                top_chunks = top_by_similarity
+        else:
+            top_n_chunks = 7
+            top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:top_n_chunks]
+        
         merged_content = "\n\n".join([chunk['content'] for chunk in top_chunks])
         
         # Extract page numbers from top chunks (filter out 0 and None)
@@ -1920,57 +1998,68 @@ async def create_source_chunks_metadata_for_single_chunk(chunk: Dict[str, Any], 
     # Try to get blocks from chunk first (if already present)
     blocks = chunk.get('blocks', [])
     
-    # If blocks not in chunk, fetch from database
+    # If blocks not in chunk, fetch from database (with caching)
     if not blocks or not isinstance(blocks, list) or len(blocks) == 0:
-        try:
-            supabase = get_supabase_client()
-            
-            # Fetch document to get document_summary with reducto_chunks
-            doc_result = supabase.table('documents')\
-                .select('id, document_summary')\
-                .eq('id', doc_id)\
-                .single()\
-                .execute()
-            
-            if doc_result.data:
-                import json
-                document_summary = doc_result.data.get('document_summary')
+        # Check cache first
+        if doc_id in _document_summary_cache:
+            document_summary = _document_summary_cache[doc_id]
+        else:
+            try:
+                supabase = get_supabase_client()
                 
-                # Parse document_summary if it's a string
-                if isinstance(document_summary, str):
-                    try:
-                        document_summary = json.loads(document_summary)
-                        if isinstance(document_summary, str):
+                # Fetch document to get document_summary with reducto_chunks
+                doc_result = supabase.table('documents')\
+                    .select('id, document_summary')\
+                    .eq('id', doc_id)\
+                    .single()\
+                    .execute()
+            
+                if doc_result.data:
+                    import json
+                    document_summary = doc_result.data.get('document_summary')
+                    
+                    # Parse document_summary if it's a string
+                    if isinstance(document_summary, str):
+                        try:
                             document_summary = json.loads(document_summary)
-                    except (json.JSONDecodeError, TypeError):
-                        document_summary = None
+                            if isinstance(document_summary, str):
+                                document_summary = json.loads(document_summary)
+                        except (json.JSONDecodeError, TypeError):
+                            document_summary = None
+                    
+                    # Cache the parsed document_summary
+                    if isinstance(document_summary, dict):
+                        _document_summary_cache[doc_id] = document_summary
+            except Exception as e:
+                logger.warning(
+                    f"[CREATE_METADATA] Failed to fetch document_summary for doc {doc_id[:8]}: {e}"
+                )
+                document_summary = None
+        
+        # Extract blocks from reducto_chunks (from cache or fresh fetch)
+        if isinstance(document_summary, dict):
+            reducto_chunks = document_summary.get('reducto_chunks', [])
+            if reducto_chunks and isinstance(reducto_chunks, list):
+                # Find chunk by chunk_index
+                for rc in reducto_chunks:
+                    rc_index = rc.get('chunk_index')
+                    if rc_index is None:
+                        # Try to match by position if chunk_index not stored
+                        try:
+                            rc_index = reducto_chunks.index(rc)
+                        except ValueError:
+                            continue
+                    
+                    if rc_index == chunk_index:
+                        blocks = rc.get('blocks', [])
+                        # Also get bbox if not already set
+                        if not bbox:
+                            bbox = rc.get('bbox')
+                        break
                 
-                # Extract blocks from reducto_chunks
-                if isinstance(document_summary, dict):
-                    reducto_chunks = document_summary.get('reducto_chunks', [])
-                    if reducto_chunks and isinstance(reducto_chunks, list):
-                        # Find chunk by chunk_index
-                        for rc in reducto_chunks:
-                            rc_index = rc.get('chunk_index')
-                            if rc_index is None:
-                                # Try to match by position if chunk_index not stored
-                                rc_index = reducto_chunks.index(rc)
-                            
-                            if rc_index == chunk_index:
-                                blocks = rc.get('blocks', [])
-                                # Also get bbox if not already set
-                                if not bbox:
-                                    bbox = rc.get('bbox')
-                                break
-            
-            logger.debug(
-                f"[CREATE_METADATA] Fetched {len(blocks) if blocks else 0} blocks for chunk {chunk_index} (doc {doc_id[:8]})"
-            )
-        except Exception as e:
-            logger.warning(
-                f"[CREATE_METADATA] Failed to fetch blocks for chunk {chunk_index} (doc {doc_id[:8]}): {e}"
-            )
-            blocks = []
+                logger.debug(
+                    f"[CREATE_METADATA] Fetched {len(blocks) if blocks else 0} blocks for chunk {chunk_index} (doc {doc_id[:8]})"
+                )
     
     # Create metadata structure
     metadata = {
@@ -1985,4 +2074,144 @@ async def create_source_chunks_metadata_for_single_chunk(chunk: Dict[str, Any], 
     }
     
     return metadata
+
+
+# Request-scoped cache for document_summary to prevent duplicate fetches
+_document_summary_cache: Dict[str, Dict] = {}
+
+
+async def batch_create_source_chunks_metadata(chunks: List[Dict[str, Any]], doc_ids: List[str]) -> Dict[Tuple[str, int], Dict[str, Any]]:
+    """
+    Batch create source_chunks_metadata for multiple chunks, grouping by doc_id to minimize database queries.
+    
+    This function fetches document_summary for all unique doc_ids in one batch, then distributes
+    blocks to chunks in memory. This is much more efficient than calling create_source_chunks_metadata_for_single_chunk
+    for each chunk individually.
+    
+    Args:
+        chunks: List of chunk dictionaries, each with chunk_index, page_number, content, etc.
+        doc_ids: List of document IDs corresponding to chunks (same length as chunks)
+        
+    Returns:
+        Dictionary mapping (doc_id, chunk_index) tuple to metadata dictionary:
+        {
+            (doc_id, chunk_index): {
+                'content': str,
+                'chunk_index': int,
+                'page_number': int,
+                'bbox': dict,
+                'blocks': list[dict],
+                'vector_id': str,
+                'similarity': float,
+                'doc_id': str
+            }
+        }
+    """
+    from backend.services.supabase_client_factory import get_supabase_client
+    import json
+    
+    if not chunks or not doc_ids or len(chunks) != len(doc_ids):
+        logger.warning("[BATCH_METADATA] Invalid input: chunks and doc_ids must be same length")
+        return {}
+    
+    # Group chunks by doc_id to minimize queries
+    chunks_by_doc: Dict[str, List[Tuple[int, Dict]]] = {}  # doc_id -> [(chunk_index, chunk), ...]
+    for idx, (chunk, doc_id) in enumerate(zip(chunks, doc_ids)):
+        if doc_id not in chunks_by_doc:
+            chunks_by_doc[doc_id] = []
+        chunks_by_doc[doc_id].append((chunk.get('chunk_index', idx), chunk))
+    
+    # Fetch all unique document_summaries in parallel
+    unique_doc_ids = list(chunks_by_doc.keys())
+    supabase = get_supabase_client()
+    
+    # Batch fetch all document_summaries using IN clause
+    try:
+        doc_results = supabase.table('documents')\
+            .select('id, document_summary')\
+            .in_('id', unique_doc_ids)\
+            .execute()
+        
+        # Parse document_summaries and cache them
+        doc_summaries: Dict[str, Dict] = {}
+        for doc_result in doc_results.data:
+            doc_id = doc_result.get('id')
+            document_summary = doc_result.get('document_summary')
+            
+            # Parse document_summary if it's a string
+            if isinstance(document_summary, str):
+                try:
+                    document_summary = json.loads(document_summary)
+                    if isinstance(document_summary, str):
+                        document_summary = json.loads(document_summary)
+                except (json.JSONDecodeError, TypeError):
+                    document_summary = None
+            
+            if isinstance(document_summary, dict):
+                doc_summaries[doc_id] = document_summary
+                # Cache for potential future use in same request
+                _document_summary_cache[doc_id] = document_summary
+        
+        logger.info(
+            f"[BATCH_METADATA] Fetched {len(doc_summaries)} document_summaries for {len(unique_doc_ids)} unique documents"
+        )
+    except Exception as e:
+        logger.warning(f"[BATCH_METADATA] Failed to batch fetch document_summaries: {e}")
+        doc_summaries = {}
+    
+    # Distribute blocks to chunks
+    # Use (doc_id, chunk_index) as key to ensure uniqueness across documents
+    result: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    
+    for doc_id, chunk_list in chunks_by_doc.items():
+        document_summary = doc_summaries.get(doc_id)
+        reducto_chunks = []
+        
+        if isinstance(document_summary, dict):
+            reducto_chunks = document_summary.get('reducto_chunks', [])
+            if not isinstance(reducto_chunks, list):
+                reducto_chunks = []
+        
+        for chunk_index, chunk in chunk_list:
+            # Find blocks for this chunk
+            blocks = chunk.get('blocks', [])
+            bbox = chunk.get('bbox')
+            
+            # If blocks not in chunk, extract from reducto_chunks
+            if (not blocks or not isinstance(blocks, list) or len(blocks) == 0) and reducto_chunks:
+                for rc in reducto_chunks:
+                    rc_index = rc.get('chunk_index')
+                    if rc_index is None:
+                        # Try to match by position if chunk_index not stored
+                        try:
+                            rc_index = reducto_chunks.index(rc)
+                        except ValueError:
+                            continue
+                    
+                    if rc_index == chunk_index:
+                        blocks = rc.get('blocks', [])
+                        if not bbox:
+                            bbox = rc.get('bbox')
+                        break
+            
+            # Create metadata structure
+            metadata = {
+                'content': chunk.get('content', ''),
+                'chunk_index': chunk_index,
+                'page_number': chunk.get('page_number', 0),
+                'bbox': bbox,
+                'blocks': blocks if blocks else [],
+                'vector_id': chunk.get('vector_id', ''),
+                'similarity': chunk.get('similarity') or chunk.get('similarity_score', 0.0),
+                'doc_id': doc_id
+            }
+            
+            # Use (doc_id, chunk_index) as key to ensure uniqueness
+            result[(doc_id, chunk_index)] = metadata
+    
+    logger.info(
+        f"[BATCH_METADATA] Created metadata for {len(result)} chunks from {len(unique_doc_ids)} documents"
+    )
+    
+    return result
 
