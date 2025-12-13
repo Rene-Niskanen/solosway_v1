@@ -11,6 +11,412 @@ This file ensures:
 - Version control of prompt changes
 """
 
+from typing import Dict, Any
+
+# ============================================================================
+# SHARED INSTRUCTION CONSTANTS
+# ============================================================================
+
+# Core valuation prioritization rules (single source of truth)
+VALUATION_PRIORITIZATION_RULES = """
+**VALUATION PRIORITIZATION (MUST FOLLOW)**:
+1. **MUST**: Prioritize professional valuation figures over market activity prices
+   - Professional valuations: "we are of the opinion", "Market Value", formal assessments
+   - Market activity: "under offer", "guide price", "listed for", "asking price"
+   - Example: "Market Value: £2,300,000" (professional) vs "under offer at £2,400,000" (market activity)
+   - For valuation queries, use professional valuations FIRST, then include market activity below
+
+2. **MUST**: Extract ALL valuation scenarios separately
+   - Primary Market Value (vacant possession, normal marketing period)
+   - Each reduced marketing period scenario (90 days, 180 days, etc.) - extract separately
+   - Market Rent (if provided)
+   - Do not stop after finding one figure - read entire valuation section
+
+3. **CRITICAL**: Do NOT use "under offer" prices as Market Value
+   - "Under offer" describes market activity, not professional assessment
+   - Continue searching for formal Market Value statement
+"""
+
+# Citation format rules (single source of truth)
+CITATION_FORMAT_RULES = """
+**CITATION FORMAT (MUST FOLLOW - CRITICAL)**:
+- Use superscript numbers: ¹, ², ³, ⁴, ⁵, etc. (single Unicode characters)
+- **CRITICAL**: Place citations IMMEDIATELY after the specific fact/value being cited
+- **CRITICAL**: Use ONE citation per fact/value - do NOT use multiple citations (like "¹ ²") for the same value
+- **DO NOT** place citations at the end of sentences or phrases - place them right after the cited information
+- If multiple facts appear together, each gets its own citation: "John Smith¹ MRICS on 12th February 2024²" (name and date are different facts)
+
+**CORRECT PLACEMENT EXAMPLES**:
+  * "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest..."
+  * "90-day marketing period value: £1,950,000¹ (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..."
+  * "Valuation conducted by John Smith¹ MRICS on 12th February 2024²"
+  * "The property has 5 bedrooms¹ and 3 bathrooms²"
+  * "Market Rent: £6,000¹ per calendar month (Six Thousand Pounds)"
+  * "180-day marketing period value: £2,050,000¹ (Two Million and Fifty Thousand Pounds). This valuation assumes..."
+
+**INCORRECT PLACEMENT (DO NOT DO THIS)**:
+  * ❌ "Market Value: £2,400,000 (Two Million, Four Hundred Thousand Pounds) for the freehold interest... ¹ ²"
+  * ❌ "90-day marketing period value: £1,950,000³ ⁴ (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..." (multiple citations for same value)
+  * ❌ "90-day marketing period value: £1,950,000. This figure assumes a restricted marketing period... ¹ ² ³" (citations at end)
+  * ❌ "Valuation conducted by John Smith MRICS on 12th February 2024. ¹ ²" (citations at end)
+  * ❌ "Market Value: £2,400,000 (1, 2)" (wrong format)
+  * ❌ "Market Value: £2,400,000¹²" (no spaces, wrong format)
+
+**RULE**: The citation number(s) must appear IMMEDIATELY after the specific value, amount, date, name, or fact being cited, not at the end of the sentence or phrase.
+"""
+
+# ============================================================================
+# SHARED INSTRUCTION HELPERS
+# ============================================================================
+
+def _get_names_search_instructions(scope: str = "excerpt") -> str:
+    """Get instructions for thorough name and professional information search."""
+    scope_text = "the ENTIRE excerpt" if scope == "excerpt" else "ALL document excerpts"
+    return f"""1. **Thorough Search for Names and Professional Information** (MUST)
+   - **MUST**: When asked about names (valuer, appraiser, surveyor, inspector, buyer, seller, agent), search {scope_text} carefully
+   - Look for synonyms: "valuer" = "appraiser" = "surveyor" = "inspector" = "registered valuer" = "MRICS" = "FRICS"
+   - Names may appear in different formats: "John Smith", "Smith, John", "J. Smith", "Mr. Smith"
+   - Professional qualifications (MRICS, FRICS) often appear with names
+   - Search for phrases like "conducted by", "inspected by", "valued by", "prepared by", "author"
+   - **MUST**: Do NOT say "not found" until you have searched {scope_text} thoroughly
+   - Example: If searching for "valuer", also search for "appraiser", "surveyor", "MRICS", "FRICS", "conducted by", "valued by" """
+
+
+def _get_dynamic_search_strategy_instructions(scope: str = "excerpt") -> str:
+    """Get instructions for dynamic multi-stage search strategy."""
+    scope_text = "all provided chunks/excerpts" if scope == "all excerpts" else "the provided excerpt"
+    return f"""**DYNAMIC SEARCH STRATEGY - Follow This 6-Stage Process**:
+
+**Stage 1 - Find Table of Contents**:
+- First, scan {scope_text} for a table of contents, contents page, or document index
+- If found, use it to identify which sections/pages are likely to contain the answer
+- Note the page numbers and section names that seem relevant
+- **IMPORTANT**: If page numbers are visible in extracts, use them to track which pages you've reviewed
+
+**Stage 2 - Navigate to Relevant Sections**:
+- Based on the table of contents (if found) or by scanning section headers, identify relevant sections
+- Use semantic analysis to identify sections that semantically match your query intent
+- For assessment queries (valuations, inspections, appraisals), prioritize sections with professional assessment semantics
+- Section headers can take many forms - numbered sections, titled sections, or informal headings
+- Identify sections by their semantic content and professional language patterns, not by specific section names
+
+**Stage 3 - Read Headings and Subheadings**:
+- Within each relevant section, first read all headings and subheadings to understand the structure
+- Use headings to identify which subsection contains the specific information you need
+- Headings provide context - a subheading under a formal valuation section is more authoritative than a heading in a marketing section
+
+**Stage 4 - Extract Answer from Primary Section**:
+- Extract the answer from the most relevant section identified through headings
+- Pay attention to the section context - formal/professional sections are more authoritative than marketing/informal sections
+- Extract values/information EXACTLY as written in the relevant section
+- Do NOT extract information from one section and attribute it to a different section
+
+**Stage 5 - Search Additional Chunks for Context**:
+- After finding the primary answer, search through ALL other chunks for additional relevant information
+- **IMPORTANT**: Information may be split across multiple chunks - read all related chunks before answering
+- If information is mentioned in multiple chunks, synthesize it comprehensively
+- Related information may appear in different chunks - read all chunks before finalizing answer
+- Do NOT stop after finding the first answer - continue searching all chunks systematically
+- **IMPORTANT**: If page numbers are visible, check pages 20-30+ where important sections (like valuations) often appear
+
+**Stage 6 - Prioritize and Synthesize**:
+- Compare information from different sections using semantic authority detection
+- Prioritize based on semantic authority indicators: professional assessment language, formal structure, explicit professional opinions, qualifications mentioned
+- Apply the semantic authority detection algorithm: professional assessments override market activity descriptions for assessment queries
+- If you find conflicting information, use the source with higher semantic authority (professional assessment semantics over descriptive/activity semantics)
+- Synthesize all relevant information into a comprehensive answer
+
+**Complete Example**:
+Query: "What is the value of the property?"
+- Stage 1: Find table of contents → See "Valuation" section on page 30
+- Stage 2: Navigate to page 30 valuation section
+- Stage 3: Read headings → "Market Value", "Reduced Marketing Periods"
+- Stage 4: Extract from "Market Value" section → £2,300,000
+- Stage 5: Search other chunks → Find 90-day and 180-day scenarios in same section
+- Stage 6: Prioritize professional valuations → Present Market Value first, then scenarios"""
+
+
+def _get_section_header_awareness_instructions() -> str:
+    """Get instructions for dynamic section header awareness."""
+    return """**Section Header Awareness**:
+- Section headers can take many forms - numbered sections (e.g., '10', '5.2'), titled sections, or informal headings
+- Identify section headers dynamically by looking for: numbered patterns, bold/titled text, or structural markers
+- Use section headers to understand document structure and navigate to relevant information
+- Prioritize sections based on their content and terminology, not their specific names
+- If you see a section header that matches the query intent, prioritize extracting information from that section
+- Extract values/information EXACTLY as written in the relevant section
+- Do NOT extract information from one section and attribute it to a different section"""
+
+
+def _get_semantic_authority_detection_instructions() -> str:
+    """Get universal algorithm for identifying authoritative information based on semantic characteristics."""
+    return """**SEMANTIC AUTHORITY DETECTION ALGORITHM**:
+
+Use this algorithm to identify authoritative information for ANY question type:
+
+**Step 1: Analyze Semantic Characteristics** (MUST)
+- Look for **Professional Language Indicators**:
+  * Formal opinion language ("we are of the opinion", "it is our assessment", "we conclude")
+  * Professional qualifications mentioned (MRICS, FRICS, professional titles, certifications)
+  * Structured assessment language (formal evaluations, systematic analysis)
+  * References to professional standards, methodologies, or frameworks
+  * Explicit professional judgments or conclusions
+- Look for **Formal Structure Indicators**:
+  * Structured presentation (numbered sections, formal headings, systematic organization)
+  * Date-specific assessments ("as at the date of", "as of", "dated")
+  * Subject-specific language ("subject property", "the property in question")
+  * Professional report formatting
+
+**Step 2: Identify Information Type Semantically** (MUST)
+- **Professional Assessment Type**: Language indicates a professional evaluation, opinion, or structured assessment
+  * Semantic markers: "opinion", "assessment", "evaluation", "conclusion", "determined", "established"
+  * Context: Professional making a judgment or evaluation
+  * Example: "we are of the opinion that the Market Value... is: £2,300,000"
+- **Market Activity Type**: Language describes market events, listings, or commercial activity
+  * Semantic markers: "marketed", "listed", "guide price", "asking price", "under offer", "agent reported"
+  * Context: Describing what happened in the market or what agents did
+  * Example: "property was listed for £2,400,000" or "under offer at £2,400,000"
+- **Historical/Descriptive Type**: Language describes past events or provides background
+  * Semantic markers: "history", "background", "previous", "past", "earlier", "was"
+  * Context: Providing context or describing what occurred
+
+**Step 3: Determine Authority Level** (MUST)
+- **High Authority**: Professional assessment type with professional language indicators and formal structure
+- **Medium Authority**: Professional assessment type but less formal structure
+- **Low Authority**: Market activity or historical/descriptive type
+
+**Step 4: Apply to Query Type** (MUST)
+- For queries asking for professional opinions/assessments (valuations, inspections, appraisals): Use ONLY high/medium authority (professional assessment type)
+- For queries asking about market activity: Market activity type is relevant
+- For queries asking about history: Historical type is relevant
+
+**Step 5: Prioritize Based on Semantic Authority** (MUST)
+- When multiple sources contain similar information, prioritize based on authority level
+- Professional assessments always override market activity descriptions for assessment queries
+- Use semantic analysis, not section names or specific terminology
+
+**Example - Correct Prioritization**:
+- Document contains: "under offer at £2,400,000" (market activity) and "we are of the opinion that the Market Value... is: £2,300,000" (professional assessment)
+- For valuation query: Use £2,300,000 (professional assessment), then mention £2,400,000 (market activity) below
+- For market activity query: Use £2,400,000 (market activity)"""
+
+
+def _get_section_type_recognition_instructions() -> str:
+    """Get instructions for dynamically recognizing section types using semantic analysis."""
+    return """**Section Type Recognition - Semantic Analysis**:
+- Use semantic analysis to identify section types - do NOT rely on specific section names or terminology
+- Analyze the semantic characteristics of each section:
+  * **Authoritative Sections**: Contain professional assessment language, formal opinions, professional qualifications, structured evaluations
+  * **Non-Authoritative Sections**: Contain descriptive language, market activity descriptions, historical information, or informal reporting
+- Identify sections by their semantic content and context, not by their titles
+- For any query type, prioritize sections with professional assessment semantics over descriptive/activity semantics
+- If a section describes what happened (market activity, listing, agent actions) rather than providing a professional assessment, it has lower authority for assessment queries"""
+
+
+def _get_comprehensive_search_instructions(scope: str = "excerpt", query_characteristics: Dict[str, Any] = None) -> str:
+    """
+    Get instructions for comprehensive search through all chunks.
+    Enhanced with query-aware instructions that adapt to query characteristics.
+    """
+    scope_text = "ALL provided chunks/excerpts" if scope == "all excerpts" else "the entire excerpt"
+    
+    # Base comprehensive search instructions (apply to all queries)
+    base_instructions = f"""**Comprehensive Search Requirement** (MUST):
+- **MUST**: Search through {scope_text}, even if you find information that seems to answer the question
+- **MUST**: Do NOT stop at the first match - continue searching to find all relevant information
+- **IMPORTANT**: Information may appear in multiple sections or on different pages - search comprehensively
+- **IMPORTANT**: If page numbers are visible in extracts, use them to track which pages you've reviewed
+- **IMPORTANT**: Information may be split across multiple chunks - read all related chunks before answering
+- For queries asking for specific information (values, names, dates, assessments), search the entire document
+- Do NOT stop after finding one instance - look for all relevant instances
+- Extract ALL relevant information found - names, dates, figures, assumptions, qualifications, context
+- After finding all relevant information, compare and prioritize based on source authority and context
+- Include all relevant details in your answer - be comprehensive, not brief
+- This applies to ALL information types, not just valuations
+- Systematic search ensures you don't miss important information that may appear later in the document"""
+    
+    # Add query-aware instructions if characteristics provided
+    if query_characteristics:
+        query_type = query_characteristics.get('query_type', 'general')
+        expects_later_pages = query_characteristics.get('expects_later_pages', False)
+        needs_comprehensive = query_characteristics.get('needs_comprehensive', False)
+        
+        query_aware = []
+        
+        if needs_comprehensive or expects_later_pages:
+            query_aware.append(
+                "- **MUST**: Search through ALL pages, especially later pages (20-30+)"
+            )
+            query_aware.append(
+                "- **IMPORTANT**: Use page numbers (if visible) to track which pages you've reviewed"
+            )
+            query_aware.append(
+                "- **IMPORTANT**: For valuation queries, explicitly check pages 20-30+ where valuation sections often appear"
+            )
+        
+        if query_type == 'assessment':
+            query_aware.append(
+                "- **IMPORTANT**: For assessment queries, prioritize professional assessment sections over descriptive sections"
+            )
+            query_aware.append(
+                "- **MUST**: If you find a price, value, or figure early in the document (like in a marketing section), continue searching for more authoritative sources (like formal valuation sections)"
+            )
+            query_aware.append(
+                "- **CRITICAL**: If you find a guide price, asking price, or \"under offer\" price, this is NOT the answer - continue searching for the actual professional valuation"
+            )
+        
+        if query_type == 'attribute':
+            query_aware.append(
+                "- **For attribute queries**: Check all sections mentioning the attribute"
+            )
+        
+        if query_aware:
+            return base_instructions + "\n\n" + "\n".join(query_aware)
+    
+    return base_instructions
+
+
+def _get_information_type_distinction_instructions() -> str:
+    """Get instructions for distinguishing information types using semantic pattern recognition."""
+    return """**Information Type Distinction - Semantic Pattern Recognition**:
+
+Use semantic analysis to distinguish between information types for ANY query:
+
+**Algorithm for Numeric Information**:
+1. **Analyze the semantic context** around any price, value, or figure:
+   - Does the language indicate a **professional assessment** (formal opinion, evaluation, structured judgment)?
+   - Or does it describe **market activity** (listing, marketing, agent actions, commercial activity)?
+   - Or is it **historical/descriptive** (what happened, past events, background)?
+
+2. **For queries asking for professional assessments** (valuations, appraisals, inspections):
+   - Use ONLY information with professional assessment semantics
+   - Ignore information with market activity semantics (describes what was listed, marketed, or offered)
+   - Ignore historical/descriptive information unless explicitly asked
+
+3. **Semantic Pattern Recognition**:
+   - **Professional Assessment Pattern**: Contains formal opinion language, professional qualifications, structured evaluation, explicit professional judgment
+   - **Market Activity Pattern**: Describes commercial activity, listings, marketing, agent actions, what was offered/listed
+   - **Historical Pattern**: Describes past events, background, what happened previously
+
+4. **Apply Universal Rule**:
+   - When query asks for a professional assessment/opinion, use ONLY information with professional assessment semantics
+   - When query asks about market activity, market activity semantics are relevant
+   - When query asks about history, historical semantics are relevant
+
+**This algorithm works for**: valuations, prices, conditions, dates, names, any information type - analyze semantics, not specific words"""
+
+
+def _get_verified_property_details_instructions(is_single_doc: bool = True) -> str:
+    """Get instructions for handling verified property details."""
+    if is_single_doc:
+        return """3. **Prioritize Verified Property Details**  
+   - If the document begins with a **"PROPERTY DETAILS (VERIFIED FROM DATABASE):"** section, that information is definitive.  
+     - For questions about property attributes (e.g., bedrooms, bathrooms, size), if the answer is in that section, cite it directly and clearly.  
+     - Example: "This property has 5 bedrooms and 3 bathrooms (from the PROPERTY DETAILS section)."  
+   - Do **not** claim "no information" when the details are actually present in this verified section."""
+    else:
+        return """3. **Use Verified Property Details First**  
+   - If any document excerpt includes a **"PROPERTY DETAILS (VERIFIED FROM DATABASE)"** section, treat that as authoritative for attribute-based questions (e.g., bedrooms, bathrooms, price).  
+   - When using these details, present the information directly without mentioning document names or sources."""
+
+
+def _get_citation_instructions() -> str:
+    """Get instructions for citing sources."""
+    return """5. **Cite Your Sources**  
+   - When referencing information from documents, use natural citations like "According to section 'Market Value' on page 12" or "The valuation report states..."
+   - Do NOT include document filenames or identifiers in your response.  
+   - Optionally mention page numbers or section headings if relevant to provide context."""
+
+
+def _get_no_unsolicited_content_instructions() -> str:
+    """Get instructions for avoiding unsolicited content while being comprehensive."""
+    return """8. **Comprehensive but Focused Response**  
+   - Provide a complete, comprehensive answer with all relevant details found in the documents
+   - Include ALL information that directly answers the question - be thorough, not brief
+   - Organize the information clearly and professionally for easy reading
+   - Do NOT repeat the user's question as a heading or title - start directly with the answer
+   - Do NOT add "Additional Context" sections - integrate all relevant context naturally into your answer
+   - Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions
+   - Do NOT add unsolicited insights or recommendations beyond what answers the question
+   - Present all relevant information in a well-organized, professional manner"""
+
+
+def _get_metadata_label_instructions() -> str:
+    """Get instructions for handling metadata labels in chunks."""
+    return """**Metadata Label Handling** (IMPORTANT):
+- The document excerpts may include contextual metadata at the beginning (like 'PARTY_NAMES:', 'KEY_VALUES:', 'PROPERTY DETAILS:'). 
+- These are pre-extracted hints to guide your search, but they may be incomplete or incorrect. 
+- **MUST**: Always verify this information against the actual document chunks that follow. 
+- Use the metadata as a starting point, but rely on the actual chunk content for your answer. 
+- Present information naturally without mentioning the metadata label names."""
+
+
+def _get_valuation_extraction_instructions(detail_level: str = 'concise', is_valuation_query: bool = False) -> str:
+    """
+    Get instructions for extracting valuation figures using semantic analysis.
+    Simplified and restructured for better clarity and LLM comprehension.
+    """
+    # Always include valuation extraction instructions if it's a valuation query, regardless of detail level
+    if detail_level != 'detailed' and not is_valuation_query:
+        return ""
+    
+    return """**VALUATION EXTRACTION - Core Principles**
+
+1. **Identify Professional Valuations** (MUST)
+   - Look for: "we are of the opinion", "Market Value", professional qualifications (MRICS, FRICS)
+   - Ignore: "under offer", "guide price", "listed for" (these are market activity, not professional assessments)
+   - Example: "we are of the opinion that the Market Value... is: £2,300,000" → Professional valuation
+   - Example: "under offer at £2,400,000" → Market activity (NOT a professional valuation)
+
+2. **Extract ALL Scenarios** (MUST)
+   - Primary Market Value (with vacant possession, normal marketing period)
+   - Reduced marketing periods (90 days, 180 days, etc.) - extract EACH one separately
+   - Market Rent (if provided)
+   - Read entire valuation section - do not stop after first figure
+   - Each scenario has its own figure and assumptions - extract them separately
+
+3. **Match Assumptions to Figures** (MUST)
+   - Each valuation scenario has specific assumptions
+   - Extract: vacant possession, marketing period, discounts, rationale
+   - Do not mix assumptions between scenarios
+   - Example: Primary: £2,300,000 (vacant possession, normal marketing period)
+   - Example: 90-day: £1,950,000 (vacant possession, 90 days, 15% discount)
+
+4. **Common Mistakes to Avoid** (IMPORTANT)
+   - ❌ Using "under offer" price as Market Value
+   - ❌ Stopping after finding one valuation figure
+   - ❌ Mixing assumptions between scenarios
+   - ❌ Using figures from market activity sections instead of professional assessments
+   - ✅ Correct: Extract all scenarios separately with their correct assumptions
+
+5. **Complete Example**
+   Document states:
+   - "Market Value with vacant possession: £2,300,000"
+   - "90-day marketing period: £1,950,000 (15% discount applied)"
+   - "180-day marketing period: £2,050,000 (10% discount applied)"
+   
+   Extract:
+   - Primary: £2,300,000 (vacant possession, normal marketing period)
+   - 90-day: £1,950,000 (vacant possession, 90 days, 15% discount)
+   - 180-day: £2,050,000 (vacant possession, 180 days, 10% discount)
+
+6. **Search Strategy** (CRITICAL)
+   - **MUST**: Read the ENTIRE valuation section from start to finish - do NOT stop after finding the first figure
+   - **CRITICAL**: If you find a price, value, or figure early in the document (like "under offer at £2,400,000"), this is NOT the answer
+   - **MUST**: Continue searching through ALL pages, especially later pages (20-30+) where detailed valuation sections often appear
+   - **MUST**: For each reduced marketing period scenario, read the entire subsection to find the final stated figure
+   - The valuation figure for each scenario is typically stated at the END of that scenario's description
+   - Look for phrases like "our opinion of the Market Value... is as follows; £[amount]"
+   - **CRITICAL**: Do not use figures mentioned earlier (like "under offer at £2,400,000") - only use explicitly stated Market Value figures
+   - **MUST**: Search through ALL document extracts thoroughly - reduced marketing period valuations may appear on later pages (page 30+)
+
+7. **Presentation** (NOTE)
+   - Format: £[amount] ([written form])
+   - Present all scenarios found, organized logically
+   - Start with primary Market Value, then list other scenarios
+   - Include assumptions for each scenario
+   - Present naturally in flowing narrative - do not explain methodology"""
+
 # ============================================================================
 # QUERY REWRITING PROMPTS
 # ============================================================================
@@ -30,19 +436,25 @@ CURRENT FOLLOW-UP QUERY:
 "{user_query}"
 
 GOAL:
+- **MUST**: If this is a follow-up question (there is conversation history), ALWAYS include the property name/address from the previous conversation in the rewritten query.
 - If the current query refers ambiguously to prior parts of the conversation (e.g., "the document," "that file," "this property," "it," "them"), rewrite it to explicitly include the relevant context (property name/address, document title, features, values, etc.).
-- If the query is already sufficiently self-contained and unambiguous, return it **unchanged**.
+- If the query is already sufficiently self-contained and unambiguous AND already includes the property name/address, return it **unchanged**.
 
 REWRITE GUIDELINES:
-1. Include relevant entities from the conversation:
-   - Property address, name, or identifier
+1. **Property Context** (MUST): 
+   - If conversation history exists, extract the property name/address from the previous conversation
+   - Look for property names (e.g., "Highlands"), addresses (e.g., "Berden Road, Bishop's Stortford"), or postcodes mentioned in the conversation
+   - **MUST**: Always include this property identifier in the rewritten query, even if the current query doesn't explicitly mention it
+   - Example: "can you give me more detail" → "can you give me more detail about the Highlands property at Berden Road, Bishop's Stortford"
+2. Include relevant entities from the conversation:
+   - Property address, name, or identifier (MANDATORY if conversation history exists)
    - Document or report name
    - Key property features (e.g., number of bedrooms, valuation, price)
-2. Maintain the **user's original intent**. Don't change the meaning, only clarify.
-3. Keep the rewritten query concise (preferably under ~200 words).
-4. Do **not** add new questions or assumptions not present in the user's query or the conversation.
-5. Do **not** include explanations, quotes, or internal commentary.  
-6. Return **only** the rewritten query text.
+3. Maintain the **user's original intent**. Don't change the meaning, only clarify.
+4. Keep the rewritten query concise (preferably under ~200 words).
+5. Do **not** add new questions or assumptions not present in the user's query or the conversation.
+6. Do **not** include explanations, quotes, or internal commentary.  
+7. Return **only** the rewritten query text.
 
 ### EXAMPLES:
 - Input Query: "What's the appraised value?"  
@@ -179,7 +591,7 @@ def get_llm_sql_query_human_content(user_query: str) -> str:
 # DOCUMENT QA AGENT PROMPTS
 # ============================================================================
 
-def get_document_qa_human_content(user_query: str, doc_content: str) -> str:
+def get_document_qa_human_content(user_query: str, doc_content: str, detail_level: str = 'concise') -> str:
     """
     Human message content for per-document question answering.
     System prompt is handled separately via get_system_prompt('analyze').
@@ -187,20 +599,28 @@ def get_document_qa_human_content(user_query: str, doc_content: str) -> str:
     Returns:
         Human message content string (without system-level instructions)
     """
+    # Detect query characteristics for adaptive instructions
+    from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
+    query_characteristics = detect_query_characteristics(user_query)
+    is_valuation_query = query_characteristics.get('query_type') == 'assessment'
+    
     return f"""Here is the document excerpt:  
 ```\n{doc_content}\n```
 
 **USER QUESTION:**  
 {user_query}
 
+{"**VALUATION QUERY GUIDANCE** (IMPORTANT): When extracting valuation information, use semantic authority detection to identify professional assessments. Extract ALL valuation scenarios found (primary Market Value, reduced marketing period values, market rent, etc.) with their specific assumptions. For each valuation, include its assumptions (vacant possession, marketing period, discounts, etc.) in a clear, summarized format. Present information naturally without explaining the distinction between market activity and professional assessments - simply present the professional valuations with their assumptions." if is_valuation_query else ""}
+
 **INSTRUCTIONS & GUIDELINES**  
-1. **Thorough Search for Names and Professional Information**  
-   - **CRITICAL**: When asked about names (valuer, appraiser, surveyor, inspector, buyer, seller, agent), search the ENTIRE excerpt carefully
-   - Look for synonyms: "valuer" = "appraiser" = "surveyor" = "inspector" = "registered valuer" = "MRICS" = "FRICS"
-   - Names may appear in different formats: "John Smith", "Smith, John", "J. Smith", "Mr. Smith"
-   - Professional qualifications (MRICS, FRICS) often appear with names
-   - Search for phrases like "conducted by", "inspected by", "valued by", "prepared by", "author"
-   - **Do NOT say "not found" until you have searched the entire excerpt thoroughly**
+
+{_get_dynamic_search_strategy_instructions("excerpt")}
+
+{_get_section_header_awareness_instructions()}
+
+{_get_section_type_recognition_instructions()}
+
+{_get_names_search_instructions("excerpt")}
 
 2. **Use Only Provided Context**  
    - Answer **only** using information in the excerpt above.  
@@ -210,52 +630,167 @@ def get_document_qa_human_content(user_query: str, doc_content: str) -> str:
      - Different phrasings or formats
    - If the excerpt lacks enough evidence after thorough search, respond: **"I do not have complete information in this excerpt."**
 
-3. **Prioritize Verified Property Details**  
-   - If the document begins with a **"PROPERTY DETAILS (VERIFIED FROM DATABASE):"** section, that information is definitive.  
-     - For questions about property attributes (e.g., bedrooms, bathrooms, size), if the answer is in that section, cite it directly and clearly.  
-     - Example: "This property has 5 bedrooms and 3 bathrooms (from the PROPERTY DETAILS section)."  
-   - Do **not** claim "no information" when the details are actually present in this verified section.
+{_get_comprehensive_search_instructions("excerpt", query_characteristics)}
+
+{_get_metadata_label_instructions()}
+
+{_get_verified_property_details_instructions(is_single_doc=True)}
+
+{_get_information_type_distinction_instructions()}
 
 4. **Comprehensive & Structured Response**  
-   - For relevant questions, extract and summarize:  
-     - **Names**: Valuers, appraisers, surveyors, inspectors, buyers, sellers, agents, solicitors
-     - Key numeric values (e.g., size, dates, price)  
-     - Property features (bedrooms, bathrooms, amenities)  
-     - Condition, risk, or opportunities (defects, professional assessments)  
-     - Location details and connectivity (neighborhood, transport links)  
+   - Extract and include ALL relevant information found:
+     - **Names**: Valuers, appraisers, surveyors, inspectors, buyers, sellers, agents, solicitors (include all names found)
+     - Key numeric values (e.g., size, dates, price, all valuation figures, all relevant numbers)  
+     - Property features (bedrooms, bathrooms, amenities, all relevant attributes)  
+     - Condition, risk, or opportunities (defects, professional assessments, all relevant details)  
+     - Location details and connectivity (neighborhood, transport links, all location information)
+     - Assumptions, qualifications, dates, and any other relevant context
    - Use a *chain-of-thought style*:  
      1. Identify which parts of the text are relevant  
      2. Search for synonyms and related terms if the exact term isn't found
-     3. Summarize or paraphrase those relevant parts  
-     4. Then synthesize them into a final, concise answer.
+     3. Extract ALL relevant information from those parts
+     4. Then synthesize them into a final, comprehensive answer that includes all relevant details
+   - **Include all information that answers the question** - be thorough and complete, not brief
+   
+   {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
+   
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
 
-5. **Cite Your Sources**  
-   - When you refer to a fact, mention where it was found ("In the PROPERTY DETAILS section," or "In paragraph 3 of the excerpt…").  
-   - This increases traceability and trust.
+{_get_citation_instructions()}
 
 6. **Guard Against Hallucination**  
    - Do **not** guess or invent details not present in the excerpt.  
    - Avoid speculation or external recommendations (websites, agents, market data).
 
 7. **Professional and Clear Tone**  
-   - Use a professional, concise, and factual writing style.  
-   - Focus on clarity: structured answers help real estate professionals quickly understand.
+   - Use a professional, comprehensive, and factual writing style.  
+   - Include all relevant details found in the documents - provide complete information, not summaries
+   - Organize information clearly and logically for easy reading
+   - Focus on clarity: provide comprehensive answers with all relevant details, organized professionally
 
-8. **No Unsolicited Content**  
-   - Answer the question directly and stop.
-   - Do NOT repeat the user's question as a heading or title - start directly with the answer.
-   - Do NOT add "Additional Context" sections - only provide context if explicitly requested.
-   - Do NOT add "Next steps:", "Let me know if...", or any follow-up suggestions.
-   - Do NOT add unsolicited insights or recommendations.
-   - Be prompt and precise: answer what was asked, nothing more.
+{_get_no_unsolicited_content_instructions()}
 
 ---
 
-**ANSWER (answer directly, no heading, no additional context, no next steps):**"""  
+**ANSWER (provide a comprehensive answer with all relevant details found, organized clearly and professionally):**"""  
 
 
 # ============================================================================
 # SUMMARY/AGGREGATION PROMPTS
+# ============================================================================
+
+def get_summary_human_content(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    detail_level: str = 'concise'
+) -> str:
+    """
+    Human message content for creating the final unified summary.
+    System prompt is handled separately via get_system_prompt('summarize').
+    
+    Returns:
+        Human message content string (without system-level instructions)
+    """
+    # Detect query characteristics for adaptive instructions
+    from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
+    query_characteristics = detect_query_characteristics(user_query)
+    is_valuation_query = query_characteristics.get('query_type') == 'assessment'
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY (how documents were found):**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (formatted):**  
+{formatted_outputs}
+
+---
+
+{"**VALUATION QUERY GUIDANCE** (IMPORTANT): Extract ALL professional valuation scenarios from the documents (primary Market Value, reduced marketing period values, market rent, etc.) with their specific assumptions. Include all assumptions for each valuation (vacant possession, marketing period, discounts, rationale) in a clear, summarized format. Present the information naturally - focus on the valuation figures and their assumptions, not on explaining methodology." if is_valuation_query else ""}
+
+### INSTRUCTIONS:
+
+{_get_dynamic_search_strategy_instructions("all excerpts")}
+
+{_get_section_header_awareness_instructions()}
+
+{_get_semantic_authority_detection_instructions()}
+
+{_get_section_type_recognition_instructions()}
+
+{_get_names_search_instructions("all excerpts")}
+
+2. **Answer Comprehensively with All Relevant Details**  
+   - Provide a **comprehensive answer with ALL relevant information found** in the document extracts
+   - Include all details that answer the question - be thorough and complete
+   - Organize information clearly and professionally for easy reading
+   - **Before saying "not found"**: Re-read all document excerpts carefully, looking for:
+     - Any mention of the requested information
+     - Synonyms or related terms
+     - Different phrasings or formats
+     - Related information that provides context
+   - Do **not** introduce additional information or context not in the extracts, unless the user explicitly asked.
+   - But DO include all relevant information that IS in the extracts
+   
+   {_get_comprehensive_search_instructions("all excerpts", query_characteristics=query_characteristics)}
+   
+   {_get_metadata_label_instructions()}
+   
+   {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
+   
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
+
+{_get_verified_property_details_instructions(is_single_doc=False)}
+
+{_get_information_type_distinction_instructions()}
+
+4. **Structure & Clarity**  
+   - **Start directly with the final answer** - do not show your internal reasoning process
+   - Provide a **comprehensive, detailed answer with all relevant information** following professional standards
+   - Include all valuation perspectives, assumptions, professional qualifications, dates, names, and any other relevant details found
+   - Organize information clearly and logically - use paragraphs, lists, or structured format as appropriate
+   - Present information in a way that a real estate professional can thoroughly understand and use
+   - Do NOT include:
+     - "Relevant document:" sections
+     - "Searched the extract" descriptions  
+     - "Extracted facts:" breakdowns
+     - Step-by-step reasoning processes
+     - Internal chain-of-thought explanations
+     - Technical field names like "KEY_VALUES", "PARTY_NAMES", or any other internal metadata field names
+     - Technical section identifiers or field labels
+     - Document filenames or document names (e.g., "Found in: [document name]")
+     - References to specific document files or identifiers
+   - Simply state the answer clearly and naturally, using only natural language
+
+{_get_citation_instructions()}
+
+6. **Admit Uncertainty**  
+   - If none of the document excerpts provide enough information to answer the question AFTER thorough search, respond with:  
+     `"No documents in the system match this criteria."`
+
+7. **Tone & Style**  
+   - Professional, factual, and comprehensive with all relevant details.  
+   - Include all information that answers the question - be thorough and complete
+   - Organize information clearly and professionally for easy reading
+   - Avoid flowery language, speculation, or marketing-like phrasing.  
+   - No external recommendations (e.g., "you should check Rightmove") — stay within the system's data.
+
+{_get_no_unsolicited_content_instructions()}
+
+---
+
+**Now, based on the above, provide your comprehensive answer with all relevant details found, organized clearly and professionally:**"""
+
+
+# ============================================================================
+# CITATION MAPPING PROMPTS
 # ============================================================================
 
 def get_citation_extraction_prompt(
@@ -317,284 +852,130 @@ def get_citation_extraction_prompt(
 {metadata_section}
 ---
 
-### MANDATORY TASK: Extract Citations
+### ⚠️ MANDATORY TASK: Extract Citations (REQUIRED TOOL CALLS)
 
-You MUST call the cite_source tool for every factual claim you identify in the documents that is relevant to the user's question.
+**YOU MUST CALL THE cite_source TOOL. THIS IS NOT OPTIONAL.**
 
-WORKFLOW:
-1. Read through all document extracts carefully
-2. Identify factual claims relevant to the user's question
-3. For EACH factual claim, call cite_source tool with:
-   - block_id: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
-   - citation_number: Sequential number starting from 1 (1, 2, 3, ...)
-   - cited_text: The specific factual claim you identified (brief phrase or sentence)
+The system is configured to REQUIRE tool calls. You cannot proceed without calling cite_source for every factual claim.
 
-EXAMPLE:
-- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Final valued price: £2,400,000"</BLOCK>
-- You call: cite_source(cited_text="Final valued price: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+**WHAT IS A FACTUAL CLAIM?**
+Any specific information that answers the user's question, including:
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
+- **Dates**: When something happened, dates of reports, inspection dates
+- **Names**: Valuers, appraisers, inspectors, parties involved
+- **Addresses**: Property addresses, locations
+- **Assessments**: Professional opinions, valuations, conditions, ratings
+- **Details**: Property features, specifications, characteristics
+- **Any specific data point** that directly answers the question
 
-CRITICAL INSTRUCTIONS:
-- Call the cite_source tool for EVERY factual claim (prices, dates, names, addresses, measurements, etc.)
-- Use sequential citation numbers (1, 2, 3, ...)
-- Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
-- Do NOT write an answer yet - ONLY extract citations by calling the tool
-- You MUST call the tool - this is mandatory
+**WORKFLOW (FOLLOW EXACTLY):**
+1. Read through ALL document extracts carefully
+2. Identify EVERY factual claim that is relevant to the user's question
+3. For EACH factual claim, you MUST call cite_source tool with:
+   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - **citation_number**: Sequential number starting from 1 (1, 2, 3, 4, 5...)
+   - **cited_text**: The specific factual claim (the exact text or your paraphrase)
 
-Start extracting citations now:"""
+**EXAMPLES:**
+
+Example 1 - Valuation:
+- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,400,000 as of 12th February 2024"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
+
+Example 2 - Names:
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 3 - Multiple Values:
+- You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
+- You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
+- You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
+
+**CRITICAL RULES:**
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
+3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
+4. ✅ Extract citations for ALL relevant information, not just one piece
+5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+6. ❌ Do NOT skip citations - if you see multiple values, cite each one
+7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+8. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use citations in sequential order (¹, ², ³, ⁴, ⁵...) as they appear in your response, and NEVER reuse a citation number
+
+**START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
 
 
-def get_final_answer_prompt(
-    user_query: str,
-    conversation_history: str,
-    formatted_outputs: str,
-    citations: list
-) -> str:
+# ============================================================================
+# RICS PROFESSIONAL STANDARDS PROMPTS
+# ============================================================================
+
+def get_rics_detailed_prompt_instructions() -> str:
     """
-    Prompt for Phase 2: Generate final answer using already-extracted citations.
-    """
-    # Format citations for prompt
-    citation_list = ""
-    if citations:
-        citation_list = "\n--- Extracted Citations ---\n"
-        for citation in sorted(citations, key=lambda x: x.get('citation_number', 0)):
-            cit_num = citation.get('citation_number', 0)
-            cit_text = citation.get('cited_text', '')
-            block_id = citation.get('block_id', '')
-            citation_list += f"{cit_num}. {cit_text} [Block: {block_id}]\n"
-        citation_list += "\n"
+    Returns RICS-level professional standards instructions for detailed mode.
     
-    return f"""**USER QUESTION:**  
-"{user_query}"
-
-**CONVERSATION HISTORY:**  
-{conversation_history}
-
-**DOCUMENT CONTENT EXTRACTS:**  
-{formatted_outputs}
-
-{citation_list}
-
-### TASK: Create Final Answer with Citations
-
-Create a comprehensive answer to the user's question using the document extracts above.
-
-CITATION USAGE:
-- Citations have already been extracted (see list above)
-- Use superscript numbers in your answer to reference these citations:
-  - Citation 1 → use ¹
-  - Citation 2 → use ²
-  - Citation 3 → use ³
-  - etc.
-- Place superscripts immediately after the relevant information
-- Every factual claim should have a superscript matching the citation number
-
-INSTRUCTIONS:
-1. Answer the user's question directly and comprehensively
-2. Use information from the document extracts
-3. Include superscript citations (¹, ², ³, etc.) matching the citation numbers above
-4. Be professional, factual, and concise
-5. Do NOT repeat the question - start directly with the answer
-
-Answer:"""
-
-
-def get_summary_human_content(
-    user_query: str,
-    conversation_history: str,
-    search_summary: str,
-    formatted_outputs: str,
-    metadata_lookup_tables: dict = None
-) -> str:
-    """
-    Human message content for creating the final unified summary.
-    System prompt is handled separately via get_system_prompt('summarize').
-    
-    Args:
-        user_query: The user's question
-        conversation_history: Previous conversation context
-        search_summary: Summary of how documents were found
-        formatted_outputs: Document content with embedded block IDs in <BLOCK> tags
-        metadata_lookup_tables: Dict mapping doc_id -> metadata_table (block_id -> bbox data)
+    These instructions ensure answers follow RICS Red Book standards for 
+    valuation reporting, including assumptions, methodology, professional 
+    qualifications, and comprehensive disclosure.
     
     Returns:
-        Human message content string (without system-level instructions)
+        String containing RICS professional standards instructions
     """
-    # Build metadata lookup section if metadata tables are provided
-    metadata_section = ""
-    if metadata_lookup_tables:
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        metadata_section = "\n--- Metadata Look-Up Table ---\n"
-        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
-        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
-        
-        # Limit metadata table size to prevent context overflow
-        MAX_BLOCKS_PER_DOC = 500  # Limit to first 500 blocks per document
-        total_blocks = 0
-        
-        for doc_id, metadata_table in metadata_lookup_tables.items():
-            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
-            
-            # Limit blocks per document
-            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
-            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
-                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
-            
-            metadata_section += f"\nDocument {doc_id_short}:\n"
-            
-            # Make metadata more compact - one line per block
-            for block_id, bbox_data in sorted(limited_blocks):
-                total_blocks += 1
-                # Compact format: block_id: page=X, bbox=(left,top,width,height)
-                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
-                if 'confidence' in bbox_data:
-                    metadata_section += f", conf={bbox_data['confidence']}"
-                metadata_section += "\n"
-            
-            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
-                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown - use blocks from document extracts above)\n"
-        
-        metadata_section += f"\n(Total blocks listed: {total_blocks})\n"
-        metadata_section += "\n"
-    
-    return f"""**USER QUESTION:**  
-"{user_query}"
+    return """**RICS PROFESSIONAL STANDARDS (Detailed Mode)**:
 
-**CONVERSATION HISTORY:**  
-{conversation_history}
+When providing detailed answers, you must follow RICS Red Book standards:
 
-**RETRIEVAL SUMMARY (how documents were found):**  
-{search_summary}
+1. **Disclose All Assumptions**: 
+   - State all assumptions made (vacant possession, normal marketing period, etc.)
+   - Include any special assumptions or conditions
+   - Mention any limitations or caveats
 
-**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
-{formatted_outputs}
-{metadata_section}
----
+2. **Multiple Valuation Perspectives**: 
+   - Include ALL professional valuation figures mentioned (market value, reduced marketing period values, market rent, etc.)
+   - For each valuation, extract and present its specific assumptions (vacant possession, marketing period, discounts, rationale)
+   - Summarize assumptions clearly and concisely for each valuation scenario
+   - State the primary market value first (with vacant possession), then other professional valuation scenarios
+   - Present information naturally - focus on the figures and assumptions, not on explaining methodology
 
-### INSTRUCTIONS:
+3. **Professional Qualifications**: 
+   - Include valuer name, qualifications (MRICS/FRICS), firm name
+   - Mention who conducted the valuation/inspection
+   - Include professional credentials when available
 
-1. **Thorough Search for Names and Professional Information**  
-   - **CRITICAL**: When asked about names (valuer, appraiser, surveyor, inspector, buyer, seller, agent), search ALL document excerpts carefully
-   - Look for synonyms: "valuer" = "appraiser" = "surveyor" = "inspector" = "registered valuer" = "MRICS" = "FRICS"
-   - Names may appear in different formats: "John Smith", "Smith, John", "J. Smith", "Mr. Smith"
-   - Professional qualifications (MRICS, FRICS) often appear with names
-   - Search for phrases like "conducted by", "inspected by", "valued by", "prepared by", "author"
-   - **Do NOT say "not found" until you have searched all document excerpts thoroughly**
+4. **Date & Context**: 
+   - State valuation date, report date, inspection date
+   - Include temporal context (e.g., "as at 12 February 2024")
+   - Mention if dates differ between documents
 
-2. **Answer Directly & Succinctly**  
-   - Provide a **direct answer** to the user's question using only the information in the document extracts.  
-   - **Before saying "not found"**: Re-read all document excerpts carefully, looking for:
-     - Any mention of the requested information
-     - Synonyms or related terms
-     - Different phrasings or formats
-   - Do **not** introduce additional information or context not in the extracts, unless the user explicitly asked.
+5. **Risk Factors & Caveats**: 
+   - Mention material risks, limitations, special assumptions
+   - Include any warnings or disclaimers
+   - Note any conditions affecting the valuation
 
-3. **Use Verified Property Details First**  
-   - If any document excerpt includes a **"PROPERTY DETAILS (VERIFIED FROM DATABASE)"** section, treat that as authoritative for attribute-based questions (e.g., bedrooms, bathrooms, price).  
-   - When using these details, clearly indicate:  
-     `Found in: [document name] — This property has …`
+6. **Comparable Evidence**: 
+   - Reference comparable properties used in valuation (if applicable)
+   - Mention number of comparables and their relevance
+   - Note any adjustments made to comparables
 
-4. **Structure & Clarity**  
-   - Use a **brief explanation** of the reasoning (chain-of-thought) to show how you arrived at the final answer:  
-     1. Identify which document(s) or excerpt(s) are relevant  
-     2. Search for synonyms and related terms if the exact term isn't found
-     3. Summarize the relevant facts or figures  
-     4. Synthesize into a final, concise answer  
-   - Then **state the final answer** on its own, clearly, so a real estate professional can read it quickly.
+7. **Professional Format**: 
+   - Use RICS Red Book terminology and structure
+   - Follow professional valuation report format
+   - Maintain consistency with industry standards
 
-5. **Citation Requirements (CRITICAL):**
-   - **You MUST use the cite_source() tool to cite information from the document extracts**
-   - **Use sequential superscript numbers** (¹, ², ³, ⁴, ⁵, ⁶, ⁷, ⁸, ⁹, ¹⁰, etc.) for citations in your response text
-   - Place citations immediately after each factual claim or statement
-   - **For each citation:**
-     1. Find the BLOCK_CITE_ID in the document extract (e.g., "BLOCK_CITE_ID_3" from a <BLOCK id="BLOCK_CITE_ID_3"> tag)
-     2. Look up the bbox coordinates from the Metadata Look-Up Table above
-     3. Call the cite_source() tool with:
-        - cited_text: Your paraphrased/summarized text that cites this source
-        - block_id: The BLOCK_CITE_ID from the document extract (e.g., "BLOCK_CITE_ID_3")
-        - citation_number: Sequential number (1, 2, 3, etc.) - use next available number
-     4. In your response text, use the matching superscript (¹ for 1, ² for 2, etc.)
-   
-   - **Example workflow:**
-     - Document extract shows: <BLOCK id="BLOCK_CITE_ID_3">Content: "Final valued price: £2,300,000"</BLOCK>
-     - Metadata table shows: BLOCK_CITE_ID_3: {{page: 15, bbox_left: 0.095, bbox_top: 0.194, ...}}
-     - You write in your response: "The property is valued at £2,300,000¹"
-     - You call: cite_source(
-         cited_text="The property is valued at £2,300,000",
-         block_id="BLOCK_CITE_ID_3",
-         citation_number=1
-       )
-   
-   - **CRITICAL**: The citation number in your response (¹) MUST match the citation_number in the tool call (1)
-   - Use one citation per unique source block
-   - **Do NOT show document IDs, page numbers, or bbox information in the text** - only superscript numbers
-   - Citations should appear as clean superscript numbers only
-   - Cite every factual claim that comes from the documents
-   - If a document extract doesn't have block IDs, you can still cite it, but prefer block IDs when available
+**FORMATTING GUIDELINES**:
+When presenting valuation information, organize it clearly and comprehensively:
 
-6. **Admit Uncertainty**  
-   - If none of the document excerpts provide enough information to answer the question AFTER thorough search, respond with:  
-     `"No documents in the system match this criteria."`
+- Start with the primary Market Value (with vacant possession and normal marketing period) - this is typically the main valuation figure
+- For each valuation scenario, clearly state the valuation figure and its specific assumptions
+- List all additional valuation perspectives separately (reduced marketing periods, market rent, etc.)
+- Do NOT include "under offer" prices as valuation figures - they are market activity, not professional valuations
+- Include professional information (valuer name, qualifications, firm name)
+- State all assumptions and conditions clearly
+- Mention any risk factors, caveats, or limitations
+- Include professional information (valuer name, qualifications, firm name) naturally within the response
+- Present information in a flowing, natural narrative style
 
-7. **Tone & Style**  
-   - Professional, factual, and concise.  
-   - Avoid flowery language, speculation, or marketing-like phrasing.  
-   - No external recommendations (e.g., "you should check Rightmove") — stay within the system's data.
-
-8. **No Unsolicited Content**  
-   - Answer the question directly and stop.
-   - Do NOT repeat the user's question as a heading or title - start directly with the answer.
-   - Do NOT add "Additional Context" sections - only provide context if explicitly requested.
-   - Do NOT add "Next steps:", "Let me know if...", "Would you like me to...", or any follow-up suggestions.
-   - Do NOT ask if the answer was helpful or if the user needs more detail.
-   - Do NOT add unsolicited insights, recommendations, or "it might be worth checking" type suggestions.
-   - Be prompt and precise: answer what was asked, nothing more.
-
----
-
-**Now, based on the above, provide your answer with superscript citations.
-
-CRITICAL: You MUST write a complete, substantive answer to the user's question. Your response must contain written text explaining the information - do NOT only call tools. Do NOT include tool call syntax (like cite_source(...)) in your written answer text.
-
-MANDATORY CITATION REQUIREMENTS (YOU MUST FOLLOW THIS):
-The cite_source tool is BOUND to this conversation - you MUST call it programmatically for EVERY superscript citation you write. This is NOT optional. The tool will NOT work if you only write superscripts without calling it.
-
-WORKFLOW (FOLLOW THIS EXACTLY):
-1. Write your answer text with superscript citations (¹, ², ³) as you reference information
-2. **FOR EACH SUPERSRaIPT, YOU MUST CALL THE cite_source TOOL BEFORE FINISHING YOUR RESPONSE**
-3. The tool call happens automatically when you reference a block ID - you don't write the tool call syntax in your text
-4. Every superscript (¹, ², ³, etc.) in your response MUST have a corresponding tool call with matching citation_number
-
-Citation Workflow (FOLLOW THIS EXACTLY - TOOLS ARE BOUND TO THIS CONVERSATION):
-STEP 1: Write your answer text and include superscript citations (¹, ², ³) as you reference information
-STEP 2: FOR EACH SUPERSRaIPT YOU WRITE, YOU MUST CALL THE cite_source TOOL BEFORE YOUR RESPONSE IS COMPLETE
-   - Find the BLOCK_CITE_ID in the document extract (look for <BLOCK id="BLOCK_CITE_ID_X"> tags)
-   - Call cite_source tool with:
-     * block_id: The BLOCK_CITE_ID from the document extract
-     * citation_number: The number matching your superscript (1 for ¹, 2 for ², 3 for ³, etc.)
-     * cited_text: The exact sentence or phrase from your answer that cites this source
-STEP 3: The tool will automatically look up bbox coordinates from the Metadata Look-Up Table
-STEP 4: Use sequential citation numbers starting from 1
-
-IMPORTANT: The cite_source tool is available in this conversation. You MUST call it programmatically - it will execute automatically when you call it. Do not write tool syntax in your text.
-
-Example (YOU MUST DO THIS):
-- You see in document: <BLOCK id="BLOCK_CITE_ID_42">Content: "Final valued price: £2,400,000"</BLOCK>
-- You write in your response: "The property is valued at £2,400,000¹"
-- You MUST call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="The property is valued at £2,400,000")
-
-REMEMBER: Every superscript citation (¹, ², ³) in your text MUST have a corresponding cite_source tool call. If you write a superscript without calling the tool, the citation will not work.
-
-CRITICAL: Do NOT explain your actions. Do NOT write phrases like:
-- "I will now proceed to call the citation tool"
-- "I will call the citation tool for the references made"
-- "Now calling the citation tool"
-- "I will now proceed to..."
-Just write your answer with superscript citations and call the tools silently. The tools run automatically in the background - you don't need to mention them.
-
-Answer directly, no heading, no additional context, no next steps:**"""
-
+**MUST**: If you find multiple valuation figures in the document, you MUST list ALL of them with their assumptions. Include every valuation perspective found (primary Market Value, reduced marketing period values, market rent, etc.) with their full written form and summarized assumptions. Present information naturally in a flowing narrative style, not as instructions or explanations of methodology.
+"""
 
 
 # ============================================================================
@@ -678,4 +1059,383 @@ def get_sql_retriever_human_content(user_query: str) -> str:
   "date_from": "<YYYY-MM-DD or null>",
   "date_to": "<YYYY-MM-DD or null>"
 }}```"""
+
+
+# ============================================================================
+# CITATION MAPPING PROMPTS
+# ============================================================================
+
+def get_citation_extraction_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    Prompt for Phase 1: Mandatory citation extraction.
+    LLM must call cite_source tool for every factual claim.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Metadata Look-Up Table ---\n"
+        metadata_section += "This table maps block IDs to their bbox coordinates. Use this when calling cite_source().\n"
+        metadata_section += "NOTE: Only blocks from the document extracts above are listed here.\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 500
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                if 'confidence' in bbox_data:
+                    metadata_section += f", conf={bbox_data['confidence']}"
+                metadata_section += "\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+        
+        metadata_section += f"\n(Total blocks listed: {total_blocks})\n\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### ⚠️ MANDATORY TASK: Extract Citations (REQUIRED TOOL CALLS)
+
+**YOU MUST CALL THE cite_source TOOL. THIS IS NOT OPTIONAL.**
+
+The system is configured to REQUIRE tool calls. You cannot proceed without calling cite_source for every factual claim.
+
+**WHAT IS A FACTUAL CLAIM?**
+Any specific information that answers the user's question, including:
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
+- **Dates**: When something happened, dates of reports, inspection dates
+- **Names**: Valuers, appraisers, inspectors, parties involved
+- **Addresses**: Property addresses, locations
+- **Assessments**: Professional opinions, valuations, conditions, ratings
+- **Details**: Property features, specifications, characteristics
+- **Any specific data point** that directly answers the question
+
+**WORKFLOW (FOLLOW EXACTLY):**
+1. Read through ALL document extracts carefully
+2. Identify EVERY factual claim that is relevant to the user's question
+3. For EACH factual claim, you MUST call cite_source tool with:
+   - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
+   - **citation_number**: Sequential number starting from 1 (1, 2, 3, 4, 5...)
+   - **cited_text**: The specific factual claim (the exact text or your paraphrase)
+
+**EXAMPLES:**
+
+Example 1 - Valuation:
+- You see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,400,000 as of 12th February 2024"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
+
+Example 2 - Names:
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 3 - Multiple Values:
+- You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
+- You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
+- You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
+
+**CRITICAL RULES:**
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
+3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
+4. ✅ Extract citations for ALL relevant information, not just one piece
+5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+6. ❌ Do NOT skip citations - if you see multiple values, cite each one
+7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+8. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use citations in sequential order (¹, ², ³, ⁴, ⁵...) as they appear in your response, and NEVER reuse a citation number
+
+**START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
+
+
+def get_final_answer_prompt(
+    user_query: str,
+    conversation_history: str,
+    formatted_outputs: str,
+    citations: list = None
+) -> str:
+    """
+    Prompt for answer generation with real-time citation tracking.
+    Citations are now created as the LLM writes the answer.
+    """
+    # Format citations for prompt (only if provided - backward compatibility)
+    citation_list = ""
+    if citations and len(citations) > 0:
+        citation_list = "\n--- Extracted Citations (for reference) ---\n"
+        for citation in sorted(citations, key=lambda x: x.get('citation_number', 0)):
+            cit_num = citation.get('citation_number', 0)
+            cit_text = citation.get('cited_text', '')
+            block_id = citation.get('block_id', '')
+            citation_list += f"{cit_num}. {cit_text} [Block: {block_id}]\n"
+        citation_list += "\n"
+    
+    # Check if this is a valuation query and add valuation extraction instructions
+    user_query_lower = user_query.lower()
+    is_valuation_query = any(term in user_query_lower for term in ['valuation', 'value', 'price', 'worth', 'cost'])
+    # Check if this is a "value-only" query (user wants ONLY valuation figures, not property details)
+    is_value_only_query = any(phrase in user_query_lower for phrase in [
+        'value of', 'what is the value', 'what was the value', 'property valued', 
+        'valued at', 'valuation amount', 'valuation figure', 'how much is', 'how much was'
+    ])
+    valuation_instructions = ""
+    if is_valuation_query:
+        valuation_instructions = _get_valuation_extraction_instructions(detail_level='detailed', is_valuation_query=True)
+        valuation_instructions = f"\n{valuation_instructions}\n"
+    
+    # Add value-only query instructions if applicable
+    value_only_instructions = ""
+    if is_value_only_query:
+        value_only_instructions = """
+**VALUE-ONLY QUERY DETECTED** (MUST):
+- The user is asking specifically for the VALUE/VALUATION amount
+- **MUST - Include FIRST:**
+  * Market Value figures (primary and all scenarios with their assumptions) - PRESENT THESE FIRST
+  * Valuation date
+  * Valuer information
+  * Valuation assumptions
+- **IMPORTANT - Include AFTER:**
+  * Market activity information (guide prices, under offer prices, pricing history) - these are important but come AFTER professional valuations
+- **MUST - Do NOT include:**
+  * Property features (bedrooms, bathrooms, amenities, floor areas)
+  * Property composition details
+  * Any other non-pricing information
+- **Structure: Professional valuations first, then market activity prices below**
+"""
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**DOCUMENT CONTENT EXTRACTS:**  
+{formatted_outputs}
+
+{citation_list}
+{valuation_instructions}
+{value_only_instructions}
+
+**CRITICAL - CITATION USAGE AS YOU WRITE YOUR ANSWER**:
+- Citations have already been extracted in Phase 1 (see list above)
+- As you write your answer, you MUST add citation superscripts (¹, ², ³, ⁴, ⁵...) for EACH fact you include
+- Match your facts to the citations extracted in Phase 1 - use the citation numbers that correspond to the facts you're stating
+- Example: If Phase 1 extracted "1. Market Value: £2,300,000 [Block: BLOCK_CITE_ID_42]", when you write "Market Value: £2,300,000", add superscript ¹
+- Citations must be sequential: ¹, ², ³, ⁴, ⁵... (never reuse numbers)
+- Place citations IMMEDIATELY after the specific value/amount/date/name being cited
+- **CRITICAL - SEQUENTIAL CITATION ORDER (MUST FOLLOW)**:
+  * Citations MUST be used in sequential order as they appear in your response
+  * The FIRST citation in your response must be ¹ (or the first available citation number)
+  * The SECOND citation must be ² (or the next sequential number)
+  * The THIRD citation must be ³ (or the next sequential number)
+  * **NEVER reuse a citation number** - once you use ¹, the next citation must be ², then ³, then ⁴, etc.
+  * **NEVER restart the sequence** - if you've used ¹, ², ³, the next citation must be ⁴, NOT ¹ again
+  * Citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ... (never go backwards or repeat)
+
+### TASK: Create Final Answer with Citations
+
+Create a comprehensive answer to the user's question using the document extracts above.
+
+**CITATION USAGE** (MUST FOLLOW - CRITICAL):
+{CITATION_FORMAT_RULES}
+
+**Additional Rules**:
+- **MUST**: Use sequential citation numbers (¹, ², ³, ⁴, ⁵...) as you write
+- **MUST**: Place citations IMMEDIATELY after the specific value/amount/date/name being cited
+- **DO NOT** place citations at the end of sentences - place them right after the cited fact
+- **MUST**: Find the BLOCK_CITE_ID in the document extracts that matches each fact you cite
+- **CRITICAL - SEQUENTIAL CITATION ORDER (MUST FOLLOW)**:
+  * Citations MUST be used in sequential order as they appear in your response
+  * The FIRST citation in your response must be ¹ (or the first available citation number)
+  * The SECOND citation must be ² (or the next sequential number)
+  * The THIRD citation must be ³ (or the next sequential number)
+  * **NEVER reuse a citation number** - once you use ¹, the next citation must be ², then ³, then ⁴, etc.
+  * **NEVER restart the sequence** - if you've used ¹, ², ³, the next citation must be ⁴, NOT ¹ again
+  * Citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ... (never go backwards or repeat)
+- **CRITICAL**: Place superscripts IMMEDIATELY after the specific value/amount/date/name being cited
+- **DO NOT** place citations at the end of sentences - place them right after the cited fact
+- **MUST**: Every factual claim must have a superscript AND the BLOCK_CITE_ID in parentheses
+- **Examples of correct usage**:
+  * "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42) (Two Million, Three Hundred Thousand Pounds) for the freehold interest. Valuation date: 12th February 2024² (BLOCK_CITE_ID_42). Conducted by John Smith³ (BLOCK_CITE_ID_15) MRICS."
+  * "90-day value: £1,950,000¹ (BLOCK_CITE_ID_7) (assumes 90-day marketing period). 180-day value: £2,050,000² (BLOCK_CITE_ID_7) (assumes 180-day marketing period). Market Rent: £6,000³ (BLOCK_CITE_ID_23) per calendar month."
+- **INCORRECT - DO NOT DO THIS**:
+  * ❌ "Market Value: £2,300,000¹" (missing block ID)
+  * ❌ "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42). Market Rent: £6,000¹ (BLOCK_CITE_ID_23)" (reused ¹)
+  * ❌ "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42). Market Rent: £6,000¹ ² (BLOCK_CITE_ID_23)" (reused and multiple citations)
+
+**CONTENT GENERATION INSTRUCTIONS**:
+
+1. **Answer Directly and Comprehensively** (MUST)
+   - The information IS available in the document extracts above
+   - If citations were extracted (see list above), the information EXISTS in the documents - you MUST use it
+   - NEVER say "information not provided" or "not available" if citations were extracted
+   - Start directly with the answer - do NOT repeat the question
+
+2. **Valuation Query Handling** (MUST for valuation queries)
+   {VALUATION_PRIORITIZATION_RULES}
+   
+   - Extract and include: Market Value (primary), all valuation scenarios (90-day, 180-day, etc.), assumptions, valuation date, valuer details
+   - **IMPORTANT**: If document mentions "90-day" or "180-day" marketing periods, you MUST find and extract those figures
+   - **IMPORTANT**: Search through ALL document extracts thoroughly - reduced marketing period valuations may appear on later pages (page 30+)
+   - **IMPORTANT**: If you see references to reduced marketing periods, the valuation figures MUST be present - continue searching until you find them
+   - **IMPORTANT**: Read through ALL document extracts completely - valuation scenarios may be spread across multiple chunks or pages
+   - **MUST**: Include citations for ALL valuation figures (including 90-day, 180-day, and all other scenarios)
+
+3. **Value-Only Query Handling** (MUST for value-only queries)
+   - **ONLY provide valuation information** - do NOT include property composition, features, floor areas, bedrooms, bathrooms
+   - Focus ONLY on: Market Value figures (primary and all scenarios), valuation assumptions, valuation date, valuer information
+   - Do NOT include: Property features, floor areas, property composition details, any non-valuation information
+
+4. **General Information Extraction** (MUST)
+   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, etc.
+   - **CRITICAL**: Include superscript citations (¹, ², ³, etc.) IMMEDIATELY after each specific fact/value being cited
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000¹ (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - include all relevant figures, dates, names, and details
+
+5. **Search Strategy** (IMPORTANT)
+   - Look carefully in the DOCUMENT CONTENT EXTRACTS section
+   - Search through ALL the content, especially later pages (like page 30) where important sections often appear
+   - If you see valuation-related terms (Market Value, valuation, price, amount, £, assumptions), extract that information
+   - If page numbers are visible, use them to ensure you've searched all pages
+
+**COMMON MISTAKES TO AVOID**:
+- ❌ Using "under offer" prices as Market Value
+- ❌ Stopping after finding one valuation figure
+- ❌ Saying "not specified" when reduced marketing periods are mentioned
+- ❌ Missing information on later pages (20-30+)
+- ✅ Search comprehensively, extract all scenarios, use professional valuations first
+
+**CONTENT GENERATION (Focus on completeness and accuracy):**
+- Organize information logically (primary information first, supporting details below)
+- Include ALL relevant information found in document extracts
+- Use citations inline (superscript format: ¹, ², ³) - see citation rules above
+- Ensure all valuation figures, assumptions, and details are included
+- Present information clearly and comprehensively
+- **Note: Formatting and structure will be handled in a separate step - focus on content completeness**
+
+Generate the answer content:"""
+
+
+# ============================================================================
+# RESPONSE FORMATTING PROMPTS
+# ============================================================================
+
+def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
+    """
+    Get prompt for formatting and structuring LLM responses.
+    
+    Args:
+        raw_response: Raw LLM response from summarize_results
+        user_query: Original user query
+    
+    Returns:
+        Formatting prompt string
+    """
+    return f"""**TASK**: Format and structure the following response to make it neater, more organized, and easier to read.
+
+**ORIGINAL USER QUERY**:  
+{user_query}
+
+**RAW RESPONSE TO FORMAT**:  
+{raw_response}
+
+---
+
+**YOUR ROLE** (MUST):
+- The content is already complete and comprehensive
+- Your job is ONLY to format and structure the existing content
+- **MUST**: Do NOT add, remove, or modify any information
+- **MUST**: Do NOT generate new content - only reorganize and format what's already there
+
+**FORMATTING INSTRUCTIONS**:
+
+1. **Structure the Response Logically**:
+   - Primary answer/valuation at the top (most important information first)
+   - Supporting details in clear subsections below
+   - Use clear section headings with **bold** text
+   - Group related information together
+
+2. **Ensure Completeness**:
+   - Include ALL information from the raw response
+   - Do NOT omit any valuation figures, assumptions, or details
+   - Preserve all citations and references
+
+3. **CITATION FORMAT** (MUST - Preserve Exactly):
+{CITATION_FORMAT_RULES}
+
+**CRITICAL - SEQUENTIAL CITATION ORDER**:
+- Citations MUST be used in sequential order as they appear in the response
+- First citation: ¹, Second: ², Third: ³, Fourth: ⁴, Fifth: ⁵, etc.
+- **NEVER reuse a citation number** - once you use ¹, the next must be ², then ³, etc.
+- **NEVER restart the sequence** - citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ...
+- Example of correct sequential progression: "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest. Valuation date: 12th February 2024². Conducted by John Smith³ MRICS. 90-day value: £1,950,000⁴ (One Million, Nine Hundred and Fifty Thousand Pounds). 180-day value: £2,050,000⁵ (Two Million and Fifty Thousand Pounds)."
+
+**CRITICAL PLACEMENT EXAMPLES**:
+- Value with citation: "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest..."
+- Multiple different facts: "Valuation by John Smith¹ MRICS on 12th February 2024²"
+- Multiple values (each gets its own sequential citation): "90-day value: £1,950,000¹ (One Million, Nine Hundred and Fifty Thousand Pounds). 180-day value: £2,050,000² (Two Million and Fifty Thousand Pounds)"
+- Date citation: "Valuation date: 12th February 2024²"
+- Name citation: "Conducted by Sukhbir Tiwana¹ MRICS and Graham Finegold² MRICS"
+
+**INCORRECT (DO NOT DO THIS)**:
+- ❌ "Market Value: £2,400,000¹. Valuation date: 12th February 2024². Market Rent: £6,000¹" (reused ¹ - should be ³)
+- ❌ "Market Value: £2,400,000 (Two Million, Four Hundred Thousand Pounds) for the freehold interest... ¹ ²" (citations at end)
+- ❌ "90-day value: £1,950,000¹ ² (One Million, Nine Hundred and Fifty Thousand Pounds)" (multiple citations for same value)
+- ❌ "Market Value: £2,400,000 (1, 2)" (wrong format)
+- ❌ "Market Value: £2,400,000¹²" (no spaces, wrong format)
+- ❌ "Valuation by John Smith MRICS on 12th February 2024. ¹ ²" (citations at end of sentence)
+
+4. **Formatting Standards**:
+   - Use **bold** for key figures, names, and important values
+   - Use bullet points (-) for lists
+   - Use numbered lists for sequences or scenarios
+   - Use clear section headings (e.g., "## Valuation Information", "## Market Activity")
+   - **CRITICAL**: Maintain inline citations (superscript numbers) IMMEDIATELY after the specific fact/value being cited
+   - **CRITICAL**: If citations appear at the end of sentences or phrases, move them to immediately after the cited information
+   - **Example**: "£2,300,000¹ (Two Million, Three Hundred Thousand Pounds) for the freehold interest..." NOT "£2,300,000 (Two Million, Three Hundred Thousand Pounds) for the freehold interest... ¹"
+
+5. **Organization**:
+   - Start with the main answer to the user's question
+   - Then provide detailed scenarios/assumptions
+   - Then provide supporting information (market activity, context, etc.)
+   - End with any additional relevant details
+
+6. **Readability**:
+   - Use clear, professional language
+   - Break up long paragraphs into shorter ones
+   - Use whitespace effectively
+   - Ensure the response flows logically
+
+**MUST**: Do NOT remove or omit any information from the raw response. Your job is to organize and format it better, not to filter it. The content is already complete - only format and structure it.
+
+**FORMATTED RESPONSE**:"""
 

@@ -56,9 +56,12 @@ def answer_question(state: DocumentQAState) -> DocumentQAState:
     system_msg = get_system_prompt('analyze')
     
     # Get human message content
+    detail_level = state.get('detail_level', 'concise')
+    logger.info(f"[DOCUMENT_QA] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
     human_content = get_document_qa_human_content(
         user_query=state['user_query'],
-        doc_content=state['doc_content']
+        doc_content=state['doc_content'],
+        detail_level=detail_level
     )
     
     try:

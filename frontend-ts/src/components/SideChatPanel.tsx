@@ -9,7 +9,7 @@ import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
-import { usePreview } from '../contexts/PreviewContext';
+import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
@@ -325,6 +325,24 @@ interface CitationDataType {
   match_reason?: string;
 }
 
+interface CitationData {
+  doc_id: string;
+  original_filename?: string | null;
+  page?: number;
+  page_number?: number;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+  matched_chunk_metadata?: CitationChunkData;
+  source_chunks_metadata?: CitationChunkData[];
+  candidate_chunks_metadata?: CitationChunkData[];
+  chunk_metadata?: CitationChunkData;
+}
+
 const CitationLink: React.FC<{
   citationNumber: string;
   citationData: CitationDataType;
@@ -445,7 +463,10 @@ const renderTextWithCitations = (
       const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
       placeholderIndex++;
+      console.log(`🔗 [CITATION] Matched superscript ${match} (${numStr}) with citation data:`, citData);
       return placeholder;
+    } else {
+      console.log(`⚠️ [CITATION] Superscript ${match} (${numStr}) found in text but no citation data available. Available keys:`, Object.keys(citations));
     }
     return match; // Keep original if no citation found
   });
@@ -1500,6 +1521,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             let accumulatedText = '';
             const accumulatedCitations: Record<string, CitationDataType> = {};
+            const preloadingDocs = new Set<string>(); // Track documents currently being preloaded to avoid duplicates
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -1528,7 +1550,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
                 
                 // Use citations from complete event, fallback to accumulated citations
-                const finalCitations = data.citations || accumulatedCitations || {};
+                // Ensure all citation keys are strings (backend may send mixed types)
+                const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
+                  if (!cits || typeof cits !== 'object') return {};
+                  const normalized: Record<string, CitationDataType> = {};
+                  for (const [key, value] of Object.entries(cits)) {
+                    normalized[String(key)] = value as CitationDataType;
+                  }
+                  return normalized;
+                };
+                
+                const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                
+                console.log('📚 [CITATIONS] Final citations for message:', {
+                  fromComplete: !!data.citations,
+                  fromAccumulated: Object.keys(accumulatedCitations).length,
+                  finalCount: Object.keys(finalCitations).length,
+                  finalKeys: Object.keys(finalCitations),
+                  sampleCitation: finalCitations[Object.keys(finalCitations)[0]]
+                });
                 
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -1538,7 +1578,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   text: finalText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: finalCitations // Use final citations
+                    citations: finalCitations // Use final citations (normalized to string keys)
                 };
                 
                   const updated = prev.map(msg => 
@@ -1639,16 +1679,221 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 });
               },
               // onCitation: Handle citation events during streaming
-              (citation: { citation_number: string; data: any }) => {
+              (citation: { citation_number: string | number; data: any }) => {
                 console.log('📚 SideChatPanel: Received citation:', citation);
+                console.log('📚 SideChatPanel: Citation data structure:', {
+                  hasDocId: !!citation.data.doc_id,
+                  hasPage: !!citation.data.page,
+                  hasPageNumber: !!citation.data.page_number,
+                  hasBbox: !!citation.data.bbox,
+                  bboxType: typeof citation.data.bbox,
+                  bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : [],
+                  bboxValue: citation.data.bbox
+                });
+                
+                // #region agent log
+                // Debug: Log citation reception for Hypothesis E and F
+                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    sessionId: 'debug-session',
+                    runId: 'run1',
+                    hypothesisId: 'E,F',
+                    location: 'SideChatPanel.tsx:1642',
+                    message: 'Citation event received',
+                    data: {
+                      citation_number: citation.citation_number,
+                      hasDocId: !!citation.data.doc_id,
+                      hasPage: !!citation.data.page,
+                      hasBbox: !!citation.data.bbox,
+                      bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : []
+                    },
+                    timestamp: Date.now()
+                  })
+                }).catch(() => {});
+                // #endregion
+                
+                // Convert citation_number to string (backend may send as int)
+                const citationNumStr = String(citation.citation_number);
                 
                 // Accumulate citation with all fields from backend
-                accumulatedCitations[citation.citation_number] = {
+                // CRITICAL: Ensure bbox structure matches CitationDataType interface
+                const citationBbox = citation.data.bbox;
+                let normalizedBbox: { left: number; top: number; width: number; height: number; page?: number } | null = null;
+                
+                if (citationBbox && typeof citationBbox === 'object') {
+                  // Validate bbox has required fields
+                  if (typeof citationBbox.left === 'number' && 
+                      typeof citationBbox.top === 'number' && 
+                      typeof citationBbox.width === 'number' && 
+                      typeof citationBbox.height === 'number') {
+                    normalizedBbox = {
+                      left: citationBbox.left,
+                      top: citationBbox.top,
+                      width: citationBbox.width,
+                      height: citationBbox.height,
+                      page: citationBbox.page ?? citation.data.page ?? citation.data.page_number
+                    };
+                  } else {
+                    console.warn('⚠️ [CITATION] Invalid bbox structure in citation data:', citationBbox);
+                  }
+                }
+                
+                // Ensure bbox always has required fields (even if invalid)
+                const finalBbox = normalizedBbox || { 
+                  left: 0, 
+                  top: 0, 
+                  width: 0, 
+                  height: 0 
+                };
+                
+                accumulatedCitations[citationNumStr] = {
                   doc_id: citation.data.doc_id,
                   page: citation.data.page || citation.data.page_number || 0,
-                  bbox: citation.data.bbox || {},
-                  method: citation.data.method // Include method field
+                  bbox: finalBbox, // Use normalized bbox or default empty bbox
+                  method: citation.data.method, // Include method field
+                  original_filename: citation.data.original_filename // Include filename for preloading
                 };
+                
+                console.log('📚 SideChatPanel: Normalized citation stored:', {
+                  citationNumber: citationNumStr,
+                  docId: citation.data.doc_id,
+                  page: accumulatedCitations[citationNumStr].page,
+                  bbox: normalizedBbox,
+                  bboxValid: normalizedBbox && typeof normalizedBbox.left === 'number'
+                });
+                
+                // PRELOAD: Start downloading document in background when citation received
+                // This ensures documents are ready when user clicks citation (instant BBOX highlight)
+                const docId = citation.data.doc_id;
+                if (docId && preloadFile) {
+                  // Check if document is already cached or currently being preloaded
+                  const isCached = previewFiles.some(f => f.id === docId);
+                  const isPreloading = preloadingDocs.has(docId);
+                  
+                  if (!isCached && !isPreloading) {
+                    // Mark as preloading to avoid duplicate downloads
+                    preloadingDocs.add(docId);
+                    
+                    // Start background download (non-blocking, fire-and-forget)
+                    // Use setTimeout to avoid blocking the citation accumulation
+                    setTimeout(() => {
+                      (async () => {
+                        try {
+                          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                          const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+                          
+                          console.log('📥 [PRELOAD] Starting background download for citation:', docId);
+                          
+                          const response = await fetch(downloadUrl, {
+                            credentials: 'include'
+                          });
+                          
+                          if (!response.ok) {
+                            console.warn('⚠️ [PRELOAD] Failed to download document:', response.status);
+                            preloadingDocs.delete(docId); // Remove from set on error
+                            return;
+                          }
+                          
+                          const blob = await response.blob();
+                          const fileType = blob.type || 'application/pdf';
+                          const fileSize = blob.size;
+                          
+                          // Create File object from blob
+                          const file = new File(
+                            [blob], 
+                            citation.data.original_filename || 'document.pdf', 
+                            { type: fileType }
+                          );
+                          
+                          // Convert to FileAttachmentData format
+                          const fileData: FileAttachmentData = {
+                            id: docId,
+                            file: file,
+                            name: citation.data.original_filename || 'document.pdf',
+                            type: fileType,
+                            size: fileSize
+                          };
+                          
+                          // Preload into cache (silent, doesn't open preview)
+                          preloadFile(fileData);
+                          
+                          // OPTIMIZATION: Aggressively pre-render citation pages immediately
+                          // Since probability of clicking citations is extremely high, start pre-rendering ASAP
+                          if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
+                            // Start pre-rendering immediately - don't wait
+                            (async () => {
+                              try {
+                                // Try to get PDF immediately (might be cached from previous load)
+                                let pdf = getCachedPdfDocument(docId);
+                                
+                                if (!pdf) {
+                                  // PDF not loaded yet - wait for it to load, but start checking immediately
+                                  // Poll more aggressively for faster response
+                                  const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
+                                  let attempts = 0;
+                                  
+                                  while (!pdf && attempts < maxAttempts) {
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                    pdf = getCachedPdfDocument(docId);
+                                    attempts++;
+                                  }
+                                }
+                                
+                                if (pdf) {
+                                  // PDF is ready - pre-render the page immediately
+                                  console.log('⚡ [PRELOAD] Pre-rendering citation page immediately:', docId, 'page', citation.data.page);
+                                  await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
+                                  console.log('✅ [PRELOAD] Citation page pre-rendered and cached:', docId, 'page', citation.data.page);
+                                } else {
+                                  console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
+                                }
+                              } catch (error) {
+                                console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
+                              }
+                            })(); // Fire and forget - don't block
+                          }
+                          
+                          // Remove from preloading set after successful cache
+                          preloadingDocs.delete(docId);
+                          
+                          console.log('✅ [PRELOAD] Document cached successfully:', docId, fileData.name);
+                        } catch (error) {
+                          console.warn('⚠️ [PRELOAD] Error preloading document:', error);
+                          preloadingDocs.delete(docId); // Remove from set on error
+                          // Silently fail - user can still click citation and download on-demand
+                        }
+                      })();
+                    }, 0); // Defer to next tick to avoid blocking
+                  } else if (isCached) {
+                    console.log('✅ [PRELOAD] Document already cached:', docId);
+                  } else if (isPreloading) {
+                    console.log('⏳ [PRELOAD] Document already being preloaded:', docId);
+                  }
+                }
+                
+                // #region agent log
+                // Debug: Log citation accumulation for Hypothesis F
+                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    sessionId: 'debug-session',
+                    runId: 'run1',
+                    hypothesisId: 'F',
+                    location: 'SideChatPanel.tsx:1700',
+                    message: 'Citation accumulated',
+                    data: {
+                      citation_number: citationNumStr,
+                      doc_id: citation.data.doc_id,
+                      has_bbox: !!normalizedBbox,
+                      bbox_valid: normalizedBbox && typeof normalizedBbox.left === 'number'
+                    },
+                    timestamp: Date.now()
+                  })
+                }).catch(() => {});
+                // #endregion
                 
                 // Update message with citations in real-time
                 setChatMessages(prev => {
@@ -1691,10 +1936,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
   
-  // Use shared preview context
+  // Use shared preview context (moved before handleQuerySubmit to ensure functions are available)
   const {
     addPreviewFile,
-    previewFiles
+    preloadFile,
+    previewFiles,
+    getCachedPdfDocument, // NEW: Get cached PDF document
+    preloadPdfPage // NEW: Pre-render PDF pages
   } = usePreview();
 
   // Phase 1: Handle citation click - fetch document and open in viewer
@@ -1786,11 +2034,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           return false;
         }
         
-        // Check if bbox is too large (likely wrong selection)
+        // Check if bbox is invalid fallback (covers entire page or is at origin with full size)
         const area = width * height;
-        if (area > 0.5) {  // More than 50% of page
-          console.warn('⚠️ [CITATION] Bbox area too large (likely wrong selection):', { area, bbox });
-          // Don't reject, but log warning
+        const isFallbackBbox = (
+          (left === 0 && top === 0 && width === 1 && height === 1) ||  // Full page fallback
+          area > 0.9  // More than 90% of page (likely fallback)
+        );
+        
+        if (isFallbackBbox) {
+          console.warn('⚠️ [CITATION] Rejecting fallback bbox (covers entire page):', { area, bbox });
+          return false;  // Reject invalid fallback bboxes
+        }
+        
+        // Warn if bbox is large but not full page
+        if (area > 0.5) {
+          console.warn('⚠️ [CITATION] Bbox area large (may be imprecise):', { area, bbox });
         }
         
         return true;
@@ -1798,7 +2056,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
       // Use new minimal citation structure: citationData.bbox and citationData.page
       // Fallback to legacy fields for backward compatibility
-      let highlightData: { bbox: { left: number; top: number; width: number; height: number; page: number }; fileId: string } | undefined;
+      let highlightData: CitationHighlight | undefined;
 
       // Priority: Use new structure (citationData.bbox) > legacy structure (source_chunks_metadata)
       if (citationData.bbox && 
@@ -1816,7 +2074,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
           
           highlightData = {
-            fileId: docId,
+            fileId: docId, // CRITICAL: Must match fileData.id below
             bbox: {
               left: citationData.bbox.left,
               top: citationData.bbox.top,
@@ -1827,8 +2085,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           };
 
           console.log('🎯 [CITATION] Using new minimal citation structure', {
+            fileId: docId,
             page: highlightPage,
-            bbox: citationData.bbox
+            bbox: citationData.bbox,
+            fileDataId: fileData.id // Verify they match
           });
         }
       }
@@ -1864,7 +2124,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
             
             highlightData = {
-              fileId: docId,
+              fileId: docId, // CRITICAL: Must match fileData.id below
               bbox: {
                 left: highlightChunk.bbox.left,
                 top: highlightChunk.bbox.top,
@@ -1875,9 +2135,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             };
 
             console.log('🎯 [CITATION] Using legacy citation structure', {
+              fileId: docId,
               reason: highlightSource?.reason,
               page: highlightPage,
-              bbox: highlightChunk.bbox
+              bbox: highlightChunk.bbox,
+              fileDataId: fileData.id // Verify they match
             });
           }
         } else {
@@ -1885,12 +2147,49 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       }
 
-      console.log('📚 [CITATION] Highlight payload prepared for preview:', highlightData);
+      console.log('📚 [CITATION] Highlight payload prepared for preview:', {
+        highlightData,
+        fileDataId: fileData.id,
+        highlightFileId: highlightData?.fileId,
+        fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
+      });
+      
+      // #region agent log
+      // Debug: Log citation click for Hypothesis F
+      fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'debug-session',
+          runId: 'run1',
+          hypothesisId: 'F',
+          location: 'SideChatPanel.tsx:2005',
+          message: 'Citation clicked - highlight prepared',
+          data: {
+            hasHighlightData: !!highlightData,
+            fileDataId: fileData.id,
+            highlightFileId: highlightData?.fileId,
+            fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : false,
+            hasBbox: !!highlightData?.bbox,
+            bboxPage: highlightData?.bbox?.page
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion
 
       // Open document in preview modal with highlight
+      // CRITICAL: fileData.id must match highlightData.fileId for highlighting to work
       addPreviewFile(fileData, highlightData);
       
-      console.log('✅ Document opened in viewer:', citationData.original_filename, highlightData ? 'with highlight' : 'without highlight');
+      console.log('✅ Document opened in viewer:', {
+        filename: citationData.original_filename,
+        docId: docId,
+        fileId: fileData.id,
+        hasHighlight: !!highlightData,
+        highlightPage: highlightData?.bbox?.page,
+        highlightBbox: highlightData?.bbox
+      });
     } catch (error: any) {
       console.error('❌ Error opening citation document:', error);
       toast({
@@ -2952,15 +3251,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
               style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}
             >
-              <ReactMarkdown components={{
+              <ReactMarkdown 
+                components={{
                 p: ({ children }) => {
-                  // Process children to find and replace citation patterns [1], [2], etc.
-                  const processedChildren = React.Children.map(children, child => {
+                    // Recursively process all text nodes to find citations
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
                     if (typeof child === 'string' && message.citations) {
                       return renderTextWithCitations(child, message.citations, handleCitationClick);
                     }
+                        if (React.isValidElement(child)) {
+                          // Recursively process nested children
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
                     return child;
                   });
+                    };
+                    const processedChildren = processChildren(children);
                   return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
                 },
                 h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
@@ -2968,21 +3281,76 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
                 li: ({ children }) => {
-                  // Also process citations in list items
-                  const processedChildren = React.Children.map(children, child => {
+                    // Recursively process all text nodes to find citations
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
                     if (typeof child === 'string' && message.citations) {
                       return renderTextWithCitations(child, message.citations, handleCitationClick);
                     }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
                     return child;
                   });
+                    };
+                    const processedChildren = processChildren(children);
                   return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
                 },
-                strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
-                em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
+                  strong: ({ children }) => {
+                    // Recursively process citations in strong elements
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
+                  },
+                  em: ({ children }) => {
+                    // Recursively process citations in em elements
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
+                  },
                 code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
                 blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
                 hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-              }}>{message.text}</ReactMarkdown>
+                }}
+              >
+                {message.text}
+              </ReactMarkdown>
             </motion.div>
           )}
         </div>

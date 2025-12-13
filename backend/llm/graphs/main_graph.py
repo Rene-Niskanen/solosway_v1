@@ -13,25 +13,30 @@ logger = logging.getLogger(__name__)
 
 # Conditional import for checkpointer (only needed if use_checkpointer=True)
 try:
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg_pool import AsyncConnectionPool
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore
+    from psycopg_pool import AsyncConnectionPool  # type: ignore
+    from psycopg import AsyncConnection  # type: ignore
     CHECKPOINTER_AVAILABLE = True
 except ImportError:
     CHECKPOINTER_AVAILABLE = False
     AsyncPostgresSaver = None  # Placeholder to avoid NameError
     AsyncConnectionPool = None
+    AsyncConnection = None
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
 from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
+    check_cached_documents,
     expand_query_for_retrieval,
     query_vector_documents,
     clarify_relevant_docs
 )
+from backend.llm.nodes.detail_level_detector import determine_detail_level
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
+from backend.llm.nodes.formatting_nodes import format_response
 from typing import Literal
 
 async def create_checkpointer_for_current_loop():
@@ -74,13 +79,14 @@ async def create_checkpointer_for_current_loop():
             elif 'connect_timeout' not in db_url:
                 conn_params = f"{db_url}&connect_timeout=5"
             
-            # Import psycopg to create connection factory
-            from psycopg import AsyncConnection
-            
             # Create a connection factory that sets prepare_threshold=0 on each connection
+            # AsyncConnection is imported at the top of the file (conditional import)
+            if AsyncConnection is None:
+                raise ImportError("psycopg.AsyncConnection not available")
+            
             async def connection_factory(conninfo):
                 """Factory that creates connections with prepare_threshold=0"""
-                conn = await AsyncConnection.connect(conninfo)
+                conn = await AsyncConnection.connect(conninfo)  # type: ignore
                 conn.prepare_threshold = 0
                 return conn
             
@@ -178,10 +184,21 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Create the state graph 
     builder = StateGraph(MainWorkflowState)
 
-    # ROUTER NODES (NEW - Performance Optimization)
+    # SPEED OPTIMIZATION: Check Cached Documents FIRST (our improvement)
+    builder.add_node("check_cached_documents", check_cached_documents)
+    """
+    Node 0: Check Cached Documents (Performance Optimization)
+    - Input: user_query, conversation_history, relevant_documents (from checkpointer)
+    - Checks if documents were already retrieved in previous conversation turns
+    - If property context matches, reuses cached documents (much faster)
+    - If property context differs or no cache, proceeds with routing
+    - Output: cached relevant_documents (if applicable) or empty to proceed
+    """
+    
+    # ROUTER NODES (from citation-mapping - Performance Optimization)
     builder.add_node("route_query", route_query)
     """
-    Node 0: Route Query (NEW - Performance Optimization)
+    Node 0.5: Route Query (Performance Optimization)
     - Analyzes query complexity and context
     - Determines which workflow path to use (direct/simple/complex)
     - Sets optimization flags (skip_expansion, skip_clarify, etc.)
@@ -203,6 +220,17 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Rewrites vague queries to be self-contained using conversation context
     - Example: "What's the price?" → "What's the price for Highlands property?"
     - Output: rewritten user_query (or original if no history)
+    """
+
+    builder.add_node("determine_detail_level", determine_detail_level)
+    """
+    Node 1.5: Detail Level Detection (NEW - Intelligent Classification)
+    - Input: user_query, conversation_history (optional)
+    - Uses fast LLM (gpt-4o-mini) to classify query complexity
+    - Determines if query needs detailed RICS-level answer or concise factual answer
+    - Skips detection if detail_level already set (manual override from API)
+    - Output: detail_level ("concise" or "detailed")
+    - Performance: ~0.5-1s with gpt-4o-mini
     """
 
     builder.add_node("expand_query", expand_query_for_retrieval)
@@ -255,7 +283,16 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Uses natural language (addresses and filenames, not IDs)
     - Output: final_summary, updated conversation_history
     """
-
+    
+    builder.add_node("format_response", format_response)
+    """
+    Node 7: Format Response
+    - Input: final_summary (raw LLM response)
+    - Formats and structures the response for better readability
+    - Ensures logical organization, consistent formatting, and completeness
+    - Output: formatted final_summary
+    """
+    
     # ROUTING LOGIC FUNCTIONS
     def should_route(state: MainWorkflowState) -> Literal["direct_document", "simple_search", "complex_search"]:
         """
@@ -312,6 +349,19 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         logger.info("🔴 [ROUTER] should_route → complex_search (complex query, full pipeline)")
         return "complex_search"
 
+    def should_use_cached_documents(state: MainWorkflowState) -> Literal["process_documents", "route_query"]:
+        """
+        Conditional routing after cache check.
+        If documents are cached, skip directly to processing.
+        If not cached, proceed to routing.
+        """
+        cached_docs = state.get("relevant_documents", [])
+        if cached_docs and len(cached_docs) > 0:
+            logger.info(f"[GRAPH] Using {len(cached_docs)} cached documents - skipping to process")
+            return "process_documents"
+        logger.info("[GRAPH] No cached documents - proceeding to routing")
+        return "route_query"
+
     def should_skip_expansion(state: MainWorkflowState) -> Literal["expand_query", "query_vector_documents"]:
         """Skip expansion if route_decision says so"""
         if state.get("skip_expansion"):
@@ -329,11 +379,22 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         return "clarify_relevant_docs"
 
     # BUILD GRAPH EDGES
-    # START → Router
-    builder.add_edge(START, "route_query")
-    logger.debug("Edge: START -> route_query")
+    # START → Check Cached Documents (our speed improvement)
+    builder.add_edge(START, "check_cached_documents")
+    logger.debug("Edge: START -> check_cached_documents")
 
-    # Router → Conditional routing
+    # Cache Check → Conditional: Use cached or route
+    builder.add_conditional_edges(
+        "check_cached_documents",
+        should_use_cached_documents,
+        {
+            "process_documents": "process_documents",  # Cached - skip to process
+            "route_query": "route_query"  # Not cached - proceed to routing
+        }
+    )
+    logger.debug("Conditional: check_cached_documents -> [process_documents|route_query]")
+
+    # Router → Conditional routing (from citation-mapping)
     builder.add_conditional_edges(
         "route_query",
         should_route,
@@ -350,12 +411,15 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     logger.debug("Edge: fetch_direct_chunks -> process_documents")
 
     # SIMPLE PATH: vector → process → summarize (no clarify, ~6s)
-    builder.add_edge("query_vector_documents", "process_documents")
-    logger.debug("Edge: query_vector_documents -> process_documents (simple path)")
+    # Note: This edge is conditional below, but we also need direct edge for simple path
+    # The conditional will handle routing after query_vector_documents
 
     # COMPLEX PATH: rewrite → expand → vector → clarify (conditional) → process
-    builder.add_edge("rewrite_query", "expand_query")
-    logger.debug("Edge: rewrite_query -> expand_query")
+    builder.add_edge("rewrite_query", "determine_detail_level")
+    logger.debug("Edge: rewrite_query -> determine_detail_level")
+
+    builder.add_edge("determine_detail_level", "expand_query")
+    logger.debug("Edge: determine_detail_level -> expand_query")
 
     # Expansion → Vector Search
     builder.add_edge("expand_query", "query_vector_documents")
@@ -380,8 +444,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("process_documents", "summarize_results")
     logger.debug("Edge: process_documents -> summarize_results")
 
-    builder.add_edge("summarize_results", END)
-    logger.debug("Edge: summarize_results -> END")
+    # Format response for better readability
+    builder.add_edge("summarize_results", "format_response")
+    logger.debug("Edge: summarize_results -> format_response")
+
+    builder.add_edge("format_response", END)
+    logger.debug("Edge: format_response -> END")
 
     # Add checkpointer setup
     checkpointer = None 

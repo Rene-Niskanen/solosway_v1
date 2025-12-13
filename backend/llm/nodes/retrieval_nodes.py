@@ -4,7 +4,10 @@ Retrieval nodes: Query classification, vector search, SQL search, deduplication,
 
 import json
 import logging
-from typing import Optional, List, Dict
+import os
+import re
+import time
+from typing import Optional, List, Dict, Any, Tuple
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -15,6 +18,7 @@ from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
 from backend.llm.retrievers.hybrid_retriever import HybridDocumentRetriever
 from backend.llm.utils import reciprocal_rank_fusion
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.services.supabase_client_factory import get_supabase_client
 from backend.llm.prompts import (
     get_query_rewrite_human_content,
     get_query_expansion_human_content,
@@ -28,12 +32,1027 @@ from backend.llm.prompts import (
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# SMART RETRIEVAL ALGORITHM - Multi-Factor Chunk Selection
+# ============================================================================
+
+def detect_query_characteristics(query: str) -> Dict[str, Any]:
+    """
+    Analyze query to determine its characteristics for adaptive retrieval.
+    
+    Returns:
+        Dictionary with:
+        - complexity_score: 0.0-1.0 (higher = more complex)
+        - needs_comprehensive: bool (True if query needs all information)
+        - query_type: str (assessment, activity, attribute, relationship, general)
+        - expects_later_pages: bool (True if info likely on later pages)
+    """
+    query_lower = query.lower()
+    
+    # Detect query type
+    assessment_terms = ['valuation', 'value', 'assess', 'opinion', 'appraisal', 'evaluate', 'determine']
+    activity_terms = ['sold', 'offer', 'listed', 'marketing', 'transaction', 'history']
+    attribute_terms = ['bedroom', 'bathroom', 'size', 'area', 'floor', 'feature', 'amenity', 'condition']
+    relationship_terms = ['who', 'valued', 'inspected', 'prepared', 'author', 'company']
+    
+    query_type = 'general'
+    if any(term in query_lower for term in assessment_terms):
+        query_type = 'assessment'
+    elif any(term in query_lower for term in activity_terms):
+        query_type = 'activity'
+    elif any(term in query_lower for term in attribute_terms):
+        query_type = 'attribute'
+    elif any(term in query_lower for term in relationship_terms):
+        query_type = 'relationship'
+    
+    # Detect complexity indicators
+    comprehensive_indicators = [
+        'all', 'every', 'comprehensive', 'complete', 'tell me about', 'describe',
+        'scenario', 'assumption', 'period', 'day', 'marketing period'
+    ]
+    needs_comprehensive = any(indicator in query_lower for indicator in comprehensive_indicators)
+    
+    # CRITICAL FIX: Assessment queries (especially valuation queries) need comprehensive search
+    # because they often contain multiple scenarios (primary value, 90-day, 180-day, etc.)
+    # that must all be extracted. Simple "value" queries should retrieve all relevant chunks.
+    if query_type == 'assessment':
+        needs_comprehensive = True  # Force comprehensive for all assessment queries
+    
+    # Multi-part queries (asking for multiple things)
+    multi_part_indicators = ['and', 'also', 'as well', 'including', 'plus']
+    has_multiple_parts = sum(1 for indicator in multi_part_indicators if indicator in query_lower) > 1
+    
+    # Calculate complexity score
+    complexity_score = 0.0
+    if needs_comprehensive:
+        complexity_score += 0.4
+    if has_multiple_parts:
+        complexity_score += 0.3
+    if query_type == 'assessment':
+        complexity_score += 0.2  # Assessments often need comprehensive info
+    if len(query.split()) > 10:
+        complexity_score += 0.1  # Longer queries tend to be more complex
+    
+    complexity_score = min(1.0, complexity_score)
+    
+    # Detect if later pages are expected
+    expects_later_pages = (
+        query_type == 'assessment' or  # Valuations often on later pages
+        'scenario' in query_lower or
+        'assumption' in query_lower or
+        'period' in query_lower or
+        needs_comprehensive
+    )
+    
+    return {
+        'complexity_score': complexity_score,
+        'needs_comprehensive': needs_comprehensive,
+        'query_type': query_type,
+        'expects_later_pages': expects_later_pages
+    }
+
+
+def detect_semantic_authority(chunk_content: str, query_type: str) -> float:
+    """
+    Detect semantic authority of chunk content (professional assessments vs market activity).
+    Works for all query types, not just valuations.
+    
+    Returns:
+        Authority score (0.0-1.0) where 1.0 = highly authoritative
+    """
+    if not chunk_content:
+        return 0.0
+    
+    content_lower = chunk_content.lower()
+    authority_score = 0.0
+    
+    # Professional assessment language patterns
+    professional_patterns = [
+        'we are of the opinion',
+        'we conclude',
+        'we determine',
+        'we assess',
+        'we evaluate',
+        'professional assessment',
+        'formal opinion',
+        'market value',
+        'our assessment',
+        'our evaluation',
+        'established that',
+        'determined to be',
+        'concluded that',
+        'assessment indicates',
+        'evaluation shows'
+    ]
+    
+    # Professional qualifications
+    qualification_patterns = [
+        'mrics', 'frics', 'rics', 'chartered surveyor',
+        'registered valuer', 'qualified', 'accredited'
+    ]
+    
+    # Formal structure indicators
+    structure_patterns = [
+        'scenario', 'assumption', 'based on', 'in accordance with',
+        'following', 'per', 'as per', 'according to'
+    ]
+    
+    # Count matches
+    professional_matches = sum(1 for pattern in professional_patterns if pattern in content_lower)
+    qualification_matches = sum(1 for pattern in qualification_patterns if pattern in content_lower)
+    structure_matches = sum(1 for pattern in structure_patterns if pattern in content_lower)
+    
+    # Calculate authority score
+    if professional_matches > 0:
+        authority_score += min(0.5, professional_matches * 0.15)
+    if qualification_matches > 0:
+        authority_score += min(0.3, qualification_matches * 0.2)
+    if structure_matches > 0:
+        authority_score += min(0.2, structure_matches * 0.1)
+    
+    # Boost for query-specific authority
+    if query_type == 'assessment' and authority_score > 0.3:
+        authority_score = min(1.0, authority_score * 1.3)
+    
+    return min(1.0, authority_score)
+
+
+def calculate_page_diversity_score(chunk: Dict, all_chunks: List[Dict]) -> float:
+    """
+    Calculate page diversity score for a chunk.
+    Higher score = chunk is from a page range with fewer other chunks selected.
+    
+    Returns:
+        Diversity score (0.0-1.0)
+    """
+    page_num = chunk.get('page_number', 0)
+    if page_num <= 0:
+        return 0.5  # Neutral score for chunks without page numbers
+    
+    # Define page ranges
+    if page_num <= 10:
+        page_range = 'early'
+    elif page_num <= 20:
+        page_range = 'mid'
+    elif page_num <= 30:
+        page_range = 'late'
+    else:
+        page_range = 'very_late'
+    
+    # Count chunks in same page range
+    chunks_in_range = sum(
+        1 for c in all_chunks
+        if c.get('page_number', 0) > 0 and (
+            (page_range == 'early' and c.get('page_number', 0) <= 10) or
+            (page_range == 'mid' and 10 < c.get('page_number', 0) <= 20) or
+            (page_range == 'late' and 20 < c.get('page_number', 0) <= 30) or
+            (page_range == 'very_late' and c.get('page_number', 0) > 30)
+        )
+    )
+    
+    # Inverse relationship: fewer chunks in range = higher diversity score
+    # Normalize to 0.0-1.0 range
+    if chunks_in_range == 0:
+        return 1.0
+    elif chunks_in_range <= 2:
+        return 0.8
+    elif chunks_in_range <= 5:
+        return 0.6
+    elif chunks_in_range <= 10:
+        return 0.4
+    else:
+        return 0.2
+
+
+def calculate_query_relevance(chunk: Dict, query: str) -> float:
+    """
+    Calculate query relevance score based on keyword and semantic matching.
+    
+    Returns:
+        Relevance score (0.0-1.0)
+    """
+    content = chunk.get('content', '').lower()
+    query_lower = query.lower()
+    
+    if not content or not query_lower:
+        return 0.0
+    
+    # Extract key terms from query (exclude common words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 
+                   'is', 'are', 'what', 'who', 'how', 'when', 'where', 'why'}
+    query_terms = [term for term in query_lower.split() 
+                   if term not in common_words and len(term) > 2]
+    
+    # Count exact matches
+    exact_matches = sum(1 for term in query_terms if term in content)
+    
+    # Count partial matches (substring)
+    partial_matches = sum(1 for term in query_terms 
+                         if any(term in word or word in term for word in content.split()))
+    
+    # Calculate relevance
+    if len(query_terms) == 0:
+        return 0.5  # Neutral if no meaningful terms
+    
+    relevance = (exact_matches * 0.7 + partial_matches * 0.3) / len(query_terms)
+    return min(1.0, relevance)
+
+
+def calculate_multi_factor_score(chunk: Dict, query: str, query_type: str, all_chunks: List[Dict]) -> float:
+    """
+    Calculate multi-factor score for chunk selection.
+    
+    Factors:
+    - Similarity (40%): Base similarity from vector/BM25 search
+    - Page Diversity (20%): Inverse of page concentration
+    - Semantic Authority (20%): Professional/authoritative language detection
+    - Query Relevance (20%): Keyword/semantic match to query
+    
+    Returns:
+        Final score (0.0-1.0)
+    """
+    # Base similarity (normalize to 0.0-1.0 if needed)
+    similarity = chunk.get('similarity', 0.0)
+    if similarity > 1.0:
+        similarity = similarity / 100.0  # Normalize if needed
+    similarity = max(0.0, min(1.0, similarity))
+    
+    # Page diversity
+    page_diversity = calculate_page_diversity_score(chunk, all_chunks)
+    
+    # Semantic authority
+    content = chunk.get('content', '')
+    authority = detect_semantic_authority(content, query_type)
+    
+    # Query relevance
+    relevance = calculate_query_relevance(chunk, query)
+    
+    # Weighted combination
+    final_score = (
+        similarity * 0.4 +
+        page_diversity * 0.2 +
+        authority * 0.2 +
+        relevance * 0.2
+    )
+    
+    return final_score
+
+
+def ensure_page_diversity(chunks_with_scores: List[Tuple[Dict, float]], min_per_range: int = 2) -> List[Tuple[Dict, float]]:
+    """
+    Ensure page diversity by guaranteeing minimum chunks from each page range.
+    
+    Args:
+        chunks_with_scores: List of (chunk, score) tuples
+        min_per_range: Minimum chunks to include from each page range
+    
+    Returns:
+        List of (chunk, score) tuples with page diversity enforced
+    """
+    # Group chunks by page range
+    page_ranges = {
+        'early': [],      # 1-10
+        'mid': [],        # 11-20
+        'late': [],       # 21-30
+        'very_late': []   # 31+
+    }
+    
+    for chunk, score in chunks_with_scores:
+        page_num = chunk.get('page_number', 0)
+        if page_num <= 0:
+            page_ranges['early'].append((chunk, score))  # Default to early
+        elif page_num <= 10:
+            page_ranges['early'].append((chunk, score))
+        elif page_num <= 20:
+            page_ranges['mid'].append((chunk, score))
+        elif page_num <= 30:
+            page_ranges['late'].append((chunk, score))
+        else:
+            page_ranges['very_late'].append((chunk, score))
+    
+    # Select minimum from each range, sorted by score
+    diverse_chunks = []
+    for range_name, range_chunks in page_ranges.items():
+        range_chunks.sort(key=lambda x: x[1], reverse=True)  # Sort by score
+        diverse_chunks.extend(range_chunks[:min_per_range])
+    
+    # Add remaining chunks sorted by score
+    all_chunk_ids = {id(chunk) for chunk, _ in diverse_chunks}
+    remaining = [(chunk, score) for chunk, score in chunks_with_scores 
+                 if id(chunk) not in all_chunk_ids]
+    remaining.sort(key=lambda x: x[1], reverse=True)
+    diverse_chunks.extend(remaining)
+    
+    return diverse_chunks
+
+
+def smart_select_chunks(chunks: List[Dict], user_query: str, query_type: str) -> List[Dict]:
+    """
+    Smart chunk selection algorithm using multi-factor scoring and adaptive limits.
+    
+    Algorithm:
+    1. Analyze query characteristics (complexity, comprehensiveness needs)
+    2. Calculate adaptive chunk limit
+    3. Score all chunks using multi-factor scoring
+    4. Ensure page diversity
+    5. Return top N chunks
+    
+    Args:
+        chunks: List of chunk dictionaries with content, similarity, page_number, etc.
+        user_query: Original user query
+        query_type: Query type (assessment, activity, attribute, etc.)
+    
+    Returns:
+        Selected chunks (List[Dict])
+    """
+    if not chunks:
+        return []
+    
+    # 1. Analyze query characteristics
+    characteristics = detect_query_characteristics(user_query)
+    complexity = characteristics['complexity_score']
+    needs_comprehensive = characteristics['needs_comprehensive']
+    
+    # 2. Calculate adaptive limit
+    if needs_comprehensive:
+        chunk_limit = len(chunks)  # Use all chunks for comprehensive queries
+    else:
+        base_limit = 20
+        chunk_limit = int(base_limit * (1 + complexity * 2))  # 20-60 chunks
+    
+    # Ensure we don't exceed available chunks
+    chunk_limit = min(chunk_limit, len(chunks))
+    
+    # 3. Calculate multi-factor scores for all chunks
+    scored_chunks = []
+    for chunk in chunks:
+        score = calculate_multi_factor_score(chunk, user_query, query_type, chunks)
+        scored_chunks.append((chunk, score))
+    
+    # 4. Ensure page diversity (minimum 2 chunks per page range if available)
+    diverse_chunks = ensure_page_diversity(scored_chunks, min_per_range=2)
+    
+    # 5. Sort by final score and return top N
+    diverse_chunks.sort(key=lambda x: x[1], reverse=True)
+    selected = [chunk for chunk, score in diverse_chunks[:chunk_limit]]
+    
+    logger.debug(
+        f"[SMART_SELECT] Selected {len(selected)}/{len(chunks)} chunks "
+        f"(complexity={complexity:.2f}, comprehensive={needs_comprehensive}, type={query_type})"
+    )
+    
+    return selected
+
+
+# ============================================================================
+# SIMILARITY-BASED CHUNK RETRIEVAL
+# ============================================================================
+
+def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, match_threshold: float = 0.3, query_type: str = None) -> List[Dict]:
+    """
+    Retrieve chunks from a document using vector similarity search.
+    This replaces sequential chunk_index ordering with similarity-based ordering.
+    
+    Args:
+        doc_id: Document UUID
+        user_query: User query to find similar chunks
+        top_k: Number of chunks to retrieve
+        match_threshold: Minimum similarity threshold (0.0-1.0) - will be lowered for assessment queries
+        query_type: Query type (assessment, activity, etc.) - used to adjust threshold
+    
+    Returns:
+        List of chunk dictionaries ordered by similarity (highest first)
+        Each dict contains: chunk_text, chunk_index, page_number, similarity_score, etc.
+    """
+    # CRITICAL FIX: Lower threshold for assessment queries to ensure we don't miss valuation chunks
+    # Assessment queries (especially valuations) often have chunks with lower similarity scores
+    # because they use formal terminology that may not match the user's simple query
+    if query_type == 'assessment':
+        match_threshold = min(match_threshold, 0.2)  # Lower threshold for assessment queries
+        logger.debug(f"[SIMILARITY_CHUNKS] Assessment query detected - using lower threshold: {match_threshold}")
+    from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
+    
+    try:
+        supabase = get_supabase_client()
+        
+        # 1. Embed the user query
+        vector_retriever = VectorDocumentRetriever()
+        
+        # Use the same embedding method as VectorDocumentRetriever
+        if vector_retriever.use_voyage:
+            expanded_query = vector_retriever._expand_query_semantically(user_query)
+            response = vector_retriever.voyage_client.embed(
+                texts=[expanded_query],
+                model=vector_retriever.voyage_model,
+                input_type='query'
+            )
+            query_embedding = response.embeddings[0]
+        else:
+            expanded_query = vector_retriever._expand_query_semantically(user_query)
+            query_embedding = vector_retriever.embeddings.embed_query(expanded_query)
+        
+        # 2. Search for similar chunks using pgvector cosine similarity
+        # Use RPC function if available, otherwise use direct SQL query
+        try:
+            # Try RPC function first (if it exists in Supabase)
+            result = supabase.rpc(
+                'match_chunks_by_similarity',
+                {
+                    'document_id': doc_id,
+                    'query_embedding': query_embedding,
+                    'match_count': top_k,
+                    'match_threshold': match_threshold
+                }
+            ).execute()
+            
+            if result.data:
+                logger.debug(f"[SIMILARITY_CHUNKS] Found {len(result.data)} chunks via RPC for doc {doc_id[:8]}")
+                return result.data
+        except Exception as rpc_error:
+            # RPC function doesn't exist, use direct SQL query
+            logger.debug(f"[SIMILARITY_CHUNKS] RPC not available, using direct query: {rpc_error}")
+        
+        # 3. Fallback: Direct SQL query using pgvector
+        # Query document_vectors table with cosine similarity
+        # Note: This requires the embedding column to exist and be a vector type
+        query = f"""
+        SELECT 
+            id,
+            chunk_text,
+            chunk_index,
+            page_number,
+            embedding_status,
+            1 - (embedding <=> %s::vector) as similarity_score
+        FROM document_vectors
+        WHERE document_id = %s
+          AND embedding IS NOT NULL
+          AND embedding_status = 'embedded'
+          AND (1 - (embedding <=> %s::vector)) >= %s
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+        """
+        
+        # Use raw SQL via Supabase (if supported) or fallback to sequential
+        # For now, use a simpler approach: fetch all chunks and filter by embedding status
+        # Then use Python to calculate similarity (less efficient but works)
+        
+        # Alternative: Use Supabase's built-in vector search if available
+        # Check if chunks are embedded first
+        chunks_check = supabase.table('document_vectors')\
+            .select('id, embedding_status')\
+            .eq('document_id', doc_id)\
+            .eq('embedding_status', 'embedded')\
+            .limit(1)\
+            .execute()
+        
+        if not chunks_check.data:
+            # No embedded chunks, fallback to sequential retrieval
+            logger.warning(f"[SIMILARITY_CHUNKS] No embedded chunks for doc {doc_id[:8]}, falling back to sequential")
+            chunks_result = supabase.table('document_vectors')\
+                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .eq('document_id', doc_id)\
+                .order('chunk_index')\
+                .limit(top_k)\
+                .execute()
+            return chunks_result.data or []
+        
+        # Use vector similarity search via Supabase PostgREST
+        # We'll use a workaround: fetch chunks and calculate similarity in Python
+        # For production, this should use a proper RPC function or direct SQL
+        
+        # Get all embedded chunks for this document
+        all_chunks = supabase.table('document_vectors')\
+            .select('id, chunk_text, chunk_index, page_number, embedding, embedding_status')\
+            .eq('document_id', doc_id)\
+            .eq('embedding_status', 'embedded')\
+            .execute()
+        
+        if not all_chunks.data:
+            logger.warning(f"[SIMILARITY_CHUNKS] No embedded chunks found for doc {doc_id[:8]}")
+            return []
+        
+        # Calculate similarity for each chunk
+        import numpy as np
+        
+        chunks_with_similarity = []
+        for chunk in all_chunks.data:
+            chunk_embedding = chunk.get('embedding')
+            if not chunk_embedding:
+                continue
+            
+            # Calculate cosine similarity
+            try:
+                # Convert to numpy arrays if needed
+                if isinstance(chunk_embedding, list):
+                    chunk_vec = np.array(chunk_embedding)
+                else:
+                    chunk_vec = np.array(chunk_embedding)
+                
+                if isinstance(query_embedding, list):
+                    query_vec = np.array(query_embedding)
+                else:
+                    query_vec = np.array(query_embedding)
+                
+                # Cosine similarity: dot product / (norm1 * norm2)
+                similarity = np.dot(chunk_vec, query_vec) / (np.linalg.norm(chunk_vec) * np.linalg.norm(query_vec))
+                
+                if similarity >= match_threshold:
+                    chunk_result = {
+                        'chunk_text': chunk.get('chunk_text', ''),
+                        'chunk_index': chunk.get('chunk_index', 0),
+                        'page_number': chunk.get('page_number', 0),
+                        'embedding_status': chunk.get('embedding_status', ''),
+                        'similarity_score': float(similarity),
+                        'id': chunk.get('id')
+                    }
+                    chunks_with_similarity.append(chunk_result)
+            except Exception as calc_error:
+                logger.debug(f"[SIMILARITY_CHUNKS] Error calculating similarity: {calc_error}")
+                continue
+        
+        # Sort by similarity (highest first) and return top_k
+        chunks_with_similarity.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+        result = chunks_with_similarity[:top_k]
+        
+        logger.info(f"[SIMILARITY_CHUNKS] Retrieved {len(result)}/{len(all_chunks.data)} chunks by similarity for doc {doc_id[:8]}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"[SIMILARITY_CHUNKS] Error retrieving chunks by similarity: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        
+        # Fallback to sequential retrieval on error
+        logger.warning(f"[SIMILARITY_CHUNKS] Falling back to sequential retrieval")
+        try:
+            supabase = get_supabase_client()
+            chunks_result = supabase.table('document_vectors')\
+                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .eq('document_id', doc_id)\
+                .order('chunk_index')\
+                .limit(top_k)\
+                .execute()
+            return chunks_result.data or []
+        except Exception:
+            return []
+
+
+def _rewrite_query_keywords(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
+    """
+    Rule-based query rewriting using keyword patterns.
+    Handles common property query patterns without LLM overhead.
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    rewritten = query
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Extract property name from query (capitalized words, excluding common words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where'}
+    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+    
+    # Expand value/price queries for better retrieval
+    if any(term in query_lower for term in ['value', 'worth', 'valuation']):
+        if 'market value' not in query_lower and 'valuation' not in query_lower:
+            # Add synonyms for better BM25/vector matching
+            rewritten = rewritten.replace('value', 'value valuation market value price worth')
+        elif 'market value' not in query_lower:
+            rewritten = rewritten.replace('valuation', 'valuation market value')
+    
+    # Expand bedroom/bathroom abbreviations (handles "5 bed" → "5 bedroom bedrooms")
+    rewritten = re.sub(r'(\d+)\s+bed\b', r'\1 bedroom bedrooms bed', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+bath\b', r'\1 bathroom bathrooms bath', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+br\b', r'\1 bedroom bedrooms', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'(\d+)\s+ba\b', r'\1 bathroom bathrooms', rewritten, flags=re.IGNORECASE)
+    
+    # Normalize UK postcodes (AB12CD → AB1 2CD)
+    postcode_pattern = r'\b([A-Z]{1,2}\d{1,2})\s?(\d[A-Z]{2})\b'
+    def format_postcode(match):
+        return f"{match.group(1)} {match.group(2)}"
+    rewritten = re.sub(postcode_pattern, format_postcode, rewritten, flags=re.IGNORECASE)
+    
+    # Expand address-related queries
+    if 'address' in query_lower and 'location' not in query_lower:
+        rewritten = rewritten.replace('address', 'address location property address')
+    
+    # CRITICAL: Add property name/address from conversation history for follow-up questions
+    # This ensures we don't retrieve information about the wrong property
+    if conversation_history:
+        # Extract from last assistant response and previous user query
+        last_exchange = conversation_history[-1] if conversation_history else {}
+        last_response = ''
+        last_query = ''
+        
+        if isinstance(last_exchange, dict):
+            if 'summary' in last_exchange:
+                last_response = last_exchange['summary']
+            elif 'content' in last_exchange and last_exchange.get('role') == 'assistant':
+                last_response = last_exchange['content']
+            if 'query' in last_exchange:
+                last_query = last_exchange['query']
+            elif 'content' in last_exchange and last_exchange.get('role') == 'user':
+                last_query = last_exchange['content']
+        
+        # Also check previous exchanges for property context
+        property_context = ''
+        for exchange in reversed(conversation_history[-3:]):  # Check last 3 exchanges
+            if isinstance(exchange, dict):
+                text_to_search = ''
+                if 'summary' in exchange:
+                    text_to_search = exchange['summary']
+                elif 'content' in exchange:
+                    text_to_search = exchange['content']
+                elif 'query' in exchange:
+                    text_to_search = exchange['query']
+                
+                if text_to_search:
+                    # Look for property addresses (common patterns)
+                    # Pattern for UK addresses: "Property Name, Street, City, Postcode"
+                    address_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Road|Street|Lane|Drive|Avenue|Close|Way|Place)),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+                    address_match = re.search(address_pattern, text_to_search)
+                    if address_match:
+                        property_context = ' '.join(address_match.groups())
+                        break
+                    
+                    # Look for property names (capitalized words that aren't common words)
+                    words = text_to_search.split()
+                    property_names_found = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+                    if property_names_found and not property_context:
+                        # Prefer longer property names
+                        property_context = max(property_names_found, key=len)
+                    
+                    # Look for postcodes (UK format: letters, numbers, space, letters, numbers)
+                    postcode_pattern = r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}'
+                    postcode_match = re.search(postcode_pattern, text_to_search)
+                    if postcode_match:
+                        if property_context:
+                            property_context = f"{property_context} {postcode_match.group()}"
+                        else:
+                            property_context = postcode_match.group()
+        
+        # If we found property context and it's not already in the query, add it
+        if property_context and property_context.lower() not in query_lower:
+            rewritten = f"{rewritten} {property_context}"
+            logger.info(f"[REWRITE_QUERY] Added property context from history: {property_context}")
+    
+    # Clean up multiple spaces
+    rewritten = ' '.join(rewritten.split())
+    return rewritten.strip()
+
+
+def _needs_llm_rewrite(query: str, conversation_history: List[Dict[str, Any]] = None) -> bool:
+    """
+    Determine if LLM-based rewrite is necessary.
+    Returns False for most queries (use keyword rewrite), True only for complex cases.
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Skip LLM for queries with specific terms (these are already clear)
+    specific_terms = ['value', 'price', 'worth', 'valuation', 'bedroom', 'bathroom', 'bed', 'bath', 
+                      'address', 'postcode', 'epc', 'energy', 'size', 'sqft', 'square', 'footage',
+                      'buyer', 'seller', 'valuer', 'surveyor', 'agent', 'owner']
+    if any(term in query_lower for term in specific_terms):
+        return False
+    
+    # Skip LLM for property name queries (capitalized words indicate specific property)
+    if any(len(w) > 3 and w[0].isupper() and w[1:].islower() for w in words):
+        return False
+    
+    # Skip LLM for postcode queries (UK format: AB1 2CD or AB12CD)
+    if re.search(r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}', query, re.IGNORECASE):
+        return False
+    
+    # Skip LLM for short specific queries (< 6 words with question words)
+    if len(words) < 6 and any(term in query_lower for term in ['what', 'how much', 'where', 'when', 'who']):
+        return False
+    
+    # Skip LLM for queries with numbers (specific values, counts, etc.)
+    if re.search(r'\d+', query):
+        return False
+    
+    # Use LLM for vague queries that need context expansion
+    vague_terms = ['tell me about', 'what can you', 'find information', 'show me', 'describe', 
+                   'give me details', 'what do you know', 'explain']
+    if any(term in query_lower for term in vague_terms):
+        return True
+    
+    # Use LLM if query references previous conversation without context
+    if conversation_history and any(ref in query_lower for ref in ['it', 'that', 'the property', 'the document', 'this', 'those']):
+        return True
+    
+    # Use LLM for complex multi-concept queries
+    complex_indicators = ['and', 'or', 'but', 'also', 'including', 'except']
+    if len(words) > 8 and sum(1 for term in complex_indicators if term in query_lower) >= 2:
+        return True
+    
+    # Default: skip LLM (keyword rewrite is sufficient for most queries)
+    return False
+
+
+def _should_expand_query(query: str) -> bool:
+    """
+    Determine if query expansion is necessary.
+    
+    Returns False (skip expansion) for:
+    - Queries with property names (capitalized words > 3 chars)
+    - Specific value queries ("£2.3m", "value of X", "price")
+    - Short queries (< 5 words) with specific terms
+    - Queries with postcodes (UK format: "AB1 2CD" or "AB12CD")
+    - Queries with exact property identifiers (addresses, IDs)
+    - Queries with numbers (specific counts, values)
+    
+    Returns True (require expansion) for:
+    - Vague queries ("tell me about", "what can you find")
+    - Conceptual queries ("foundation issues", "structural problems")
+    - Multi-concept queries requiring synonyms
+    - Queries with abstract terms needing expansion
+    """
+    query_lower = query.lower()
+    words = query.split()
+    
+    # Skip expansion for queries with property names (capitalized words indicate specific property)
+    if any(len(w) > 3 and w[0].isupper() and w[1:].islower() for w in words):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains property name")
+        return False
+    
+    # Skip expansion for postcode queries (UK format: AB1 2CD or AB12CD)
+    if re.search(r'[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}', query, re.IGNORECASE):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains postcode")
+        return False
+    
+    # Skip expansion for short specific queries (< 5 words with specific terms)
+    specific_terms = ['value', 'price', 'worth', 'valuation', 'bedroom', 'bathroom', 'bed', 'bath',
+                      'address', 'postcode', 'epc', 'energy', 'size', 'sqft', 'square', 'footage',
+                      'buyer', 'seller', 'valuer', 'surveyor', 'agent', 'owner', 'date', 'when']
+    if len(words) < 5 and any(term in query_lower for term in specific_terms):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - short query with specific term")
+        return False
+    
+    # Skip expansion for queries with numbers (specific values, counts, etc.)
+    if re.search(r'\d+', query):
+        # Check if number is part of a specific query pattern
+        number_patterns = [
+            r'\d+\s*(bedroom|bed|bathroom|bath|br|ba)',  # "5 bedroom"
+            r'£\s*\d+',  # "£2.3m" or "£2300000"
+            r'\d+\s*(million|m|thousand|k)',  # "2.3 million"
+            r'\d+\s*(sqft|sq\s*ft|square\s*feet)',  # "2500 sqft"
+        ]
+        if any(re.search(pattern, query, re.IGNORECASE) for pattern in number_patterns):
+            logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains specific number pattern")
+            return False
+    
+    # Skip expansion for queries with exact identifiers (UUIDs, IDs)
+    uuid_pattern = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    if re.search(uuid_pattern, query, re.IGNORECASE):
+        logger.debug(f"[EXPAND_QUERY] Skipping expansion - query contains UUID")
+        return False
+    
+    # Require expansion for vague queries that need context
+    vague_terms = ['tell me about', 'what can you', 'find information', 'show me', 'describe',
+                   'give me details', 'what do you know', 'explain', 'what information',
+                   'what details', 'what can you tell']
+    if any(term in query_lower for term in vague_terms):
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - vague query detected")
+        return True
+    
+    # Require expansion for conceptual queries (benefit from synonym expansion)
+    conceptual_terms = ['issue', 'problem', 'defect', 'damage', 'condition', 'quality',
+                        'feature', 'amenity', 'characteristic', 'aspect', 'detail']
+    if any(term in query_lower for term in conceptual_terms):
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - conceptual query detected")
+        return True
+    
+    # Require expansion for multi-concept queries (need synonym coverage)
+    complex_indicators = ['and', 'or', 'but', 'also', 'including', 'except', 'plus']
+    if len(words) > 6 and sum(1 for term in complex_indicators if term in query_lower) >= 2:
+        logger.debug(f"[EXPAND_QUERY] Requiring expansion - complex multi-concept query")
+        return True
+    
+    # Default: skip expansion for most queries (keyword-based retrieval is sufficient)
+    # Only expand when we're confident it will help
+    logger.debug(f"[EXPAND_QUERY] Default: skipping expansion for query")
+    return False
+
+
+def check_cached_documents(state: MainWorkflowState) -> MainWorkflowState:
+    """
+    Node: Check for Cached Documents from Previous Conversation Turns
+    
+    For follow-up questions about the same property, reuse previously retrieved documents
+    instead of performing a new search. This dramatically speeds up follow-up queries.
+    
+    Logic:
+    1. Check if there are cached documents from previous conversation turns (via checkpointer)
+    2. Extract property context from current query and conversation history
+    3. If property context matches, reuse cached documents
+    4. If property context differs or no cache exists, clear cache and proceed with normal retrieval
+    
+    Args:
+        state: MainWorkflowState with user_query, conversation_history, and potentially cached relevant_documents
+        
+    Returns:
+        Updated state with cached documents if applicable, or empty dict to proceed with normal retrieval
+    """
+    conversation_history = state.get('conversation_history', []) or []
+    user_query = state.get('user_query', '')
+    
+    # Check if there are cached documents from previous state (loaded from checkpointer)
+    cached_docs = state.get('relevant_documents', [])
+    
+    # If no conversation history AND no cached docs, proceed with normal retrieval
+    if (not conversation_history or len(conversation_history) == 0) and (not cached_docs or len(cached_docs) == 0):
+        logger.debug("[CHECK_CACHED_DOCS] No conversation history and no cached documents - proceeding with normal retrieval")
+        return {}  # No changes, proceed with normal flow
+    
+    # If no cached docs but we have history, proceed with normal retrieval
+    if not cached_docs or len(cached_docs) == 0:
+        logger.debug("[CHECK_CACHED_DOCS] No cached documents found - proceeding with normal retrieval")
+        return {}  # No cached docs, proceed with normal retrieval
+    
+    logger.info(f"[CHECK_CACHED_DOCS] Found {len(cached_docs)} cached documents from previous conversation")
+    
+    # Extract property context from current query
+    current_property_context = _extract_property_context(user_query, conversation_history)
+    
+    # Extract property context from previous conversation
+    previous_property_context = _extract_property_context_from_history(conversation_history)
+    
+    # Check if property contexts match (same property)
+    if current_property_context and previous_property_context:
+        # Normalize for comparison (case-insensitive, whitespace-insensitive)
+        current_normalized = ' '.join(current_property_context.lower().split())
+        previous_normalized = ' '.join(previous_property_context.lower().split())
+        
+        # Check if they match (allowing for partial matches)
+        if current_normalized in previous_normalized or previous_normalized in current_normalized:
+            logger.info(f"[CHECK_CACHED_DOCS] ✅ Property context matches - reusing {len(cached_docs)} cached documents")
+            logger.info(f"[CHECK_CACHED_DOCS] Current context: '{current_property_context}', Previous: '{previous_property_context}'")
+            return {"relevant_documents": cached_docs}  # Return cached documents
+        else:
+            logger.info(f"[CHECK_CACHED_DOCS] ❌ Property context differs - clearing cache and proceeding with new retrieval")
+            logger.info(f"[CHECK_CACHED_DOCS] Current: '{current_property_context}', Previous: '{previous_property_context}'")
+            return {"relevant_documents": []}  # Clear cache, proceed with normal retrieval
+    elif current_property_context:
+        # Current query has property context but previous doesn't - check if current matches cached docs
+        logger.info(f"[CHECK_CACHED_DOCS] Current query has property context: '{current_property_context}'")
+        # Check if cached docs are about the current property by examining document metadata
+        if _documents_match_property(cached_docs, current_property_context):
+            logger.info(f"[CHECK_CACHED_DOCS] ✅ Cached documents match current property context - reusing {len(cached_docs)} documents")
+            return {"relevant_documents": cached_docs}
+        else:
+            logger.info(f"[CHECK_CACHED_DOCS] ❌ Cached documents don't match current property - clearing cache and proceeding with new retrieval")
+            return {"relevant_documents": []}  # Clear cache
+    elif previous_property_context:
+        # Previous had property context but current doesn't - likely same conversation, reuse cache
+        logger.info(f"[CHECK_CACHED_DOCS] ✅ No property context in current query, but previous had context - reusing {len(cached_docs)} cached documents")
+        return {"relevant_documents": cached_docs}
+    else:
+        # No property context in either - likely same conversation, reuse cache
+        logger.info(f"[CHECK_CACHED_DOCS] ✅ No property context in query or history - reusing {len(cached_docs)} cached documents (likely same conversation)")
+        return {"relevant_documents": cached_docs}
+
+
+def _extract_property_context(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
+    """
+    Extract property name/address/postcode from query and conversation history.
+    
+    Returns:
+        Property context string (name, address, or postcode) or empty string
+    """
+    if conversation_history is None:
+        conversation_history = []
+    
+    context_parts = []
+    
+    # Extract from current query
+    query_lower = query.lower()
+    
+    # Look for postcodes (UK format)
+    postcode_pattern = r'\b[A-Z]{1,2}\d{1,2}\s?\d[A-Z]{2}\b'
+    postcode_matches = re.findall(postcode_pattern, query, re.IGNORECASE)
+    if postcode_matches:
+        context_parts.extend(postcode_matches)
+    
+    # Look for property names (capitalized words)
+    common_words = {'the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'please', 'find', 'me', 'what', 'is', 'are', 'show', 'get', 'tell', 'who', 'how', 'why', 'when', 'where', 'property', 'value', 'valuation', 'market'}
+    words = query.split()
+    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+    if property_names:
+        context_parts.extend(property_names[:2])  # Take first 2 property name words
+    
+    # Extract from conversation history if not found in query
+    if not context_parts and conversation_history:
+        for exchange in reversed(conversation_history[-3:]):  # Check last 3 exchanges
+            if isinstance(exchange, dict):
+                text_to_search = ''
+                if 'summary' in exchange:
+                    text_to_search = exchange['summary']
+                elif 'content' in exchange:
+                    text_to_search = exchange['content']
+                elif 'query' in exchange:
+                    text_to_search = exchange['query']
+                
+                if text_to_search:
+                    # Look for addresses
+                    address_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Road|Street|Lane|Drive|Avenue|Close|Way|Place)),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+                    address_match = re.search(address_pattern, text_to_search)
+                    if address_match:
+                        context_parts.append(' '.join(address_match.groups()))
+                        break
+                    
+                    # Look for postcodes
+                    postcode_matches = re.findall(postcode_pattern, text_to_search, re.IGNORECASE)
+                    if postcode_matches:
+                        context_parts.extend(postcode_matches)
+                        break
+                    
+                    # Look for property names
+                    words = text_to_search.split()
+                    property_names = [w for w in words if len(w) > 3 and w[0].isupper() and w[1:].islower() and w.lower() not in common_words]
+                    if property_names:
+                        context_parts.append(max(property_names, key=len))  # Take longest property name
+                        break
+    
+    return ' '.join(context_parts[:3]) if context_parts else ''  # Return first 3 context parts
+
+
+def _extract_property_context_from_history(conversation_history: List[Dict[str, Any]]) -> str:
+    """
+    Extract property context from conversation history (previous queries/responses).
+    
+    Returns:
+        Property context string or empty string
+    """
+    if not conversation_history:
+        return ''
+    
+    # Check last few exchanges for property context
+    for exchange in reversed(conversation_history[-3:]):
+        if isinstance(exchange, dict):
+            text_to_search = ''
+            if 'summary' in exchange:
+                text_to_search = exchange['summary']
+            elif 'content' in exchange:
+                text_to_search = exchange['content']
+            elif 'query' in exchange:
+                text_to_search = exchange['query']
+            
+            if text_to_search:
+                context = _extract_property_context(text_to_search, [])
+                if context:
+                    return context
+    
+    return ''
+
+
+def _documents_match_property(documents: List[RetrievedDocument], property_context: str) -> bool:
+    """
+    Check if cached documents are about the specified property.
+    
+    Args:
+        documents: List of cached RetrievedDocument objects
+        property_context: Property name/address/postcode to match
+        
+    Returns:
+        True if documents match the property, False otherwise
+    """
+    if not documents or not property_context:
+        return False
+    
+    property_lower = property_context.lower()
+    
+    # Check document metadata for property matches
+    for doc in documents[:5]:  # Check first 5 documents
+        # Check document ID/filename
+        doc_id = str(doc.get('document_id', '')).lower()
+        doc_metadata = doc.get('metadata', {})
+        filename = doc_metadata.get('original_filename', '').lower()
+        source = doc_metadata.get('source', '').lower()
+        
+        # Check if property context appears in document identifiers
+        if property_lower in doc_id or property_lower in filename or property_lower in source:
+            return True
+        
+        # Check document content (first 500 chars)
+        content = str(doc.get('content', ''))[:500].lower()
+        if property_lower in content:
+            return True
+    
+    return False
+
+
 def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Query Rewriting with Conversation Context
     
-    Rewrites vague follow-up queries to be self-contained using conversation history.
-    This ensures vector search understands references like "the document", "that property".
+    Uses keyword-based rewriting for most queries (fast, no LLM).
+    Falls back to LLM rewriting only for complex/vague queries.
     
     Examples:
         "What's the price?" → "What's the price for Highlands, Berden Road property?"
@@ -46,15 +1065,33 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         Updated state with rewritten user_query (or unchanged if no context needed)
     """
+    conversation_history = state.get('conversation_history', []) or []
+    user_query = state.get('user_query', '')
     
-    # Skip if no conversation history
-    if not state.get('conversation_history') or len(state['conversation_history']) == 0:
+    # Check if LLM rewrite is needed
+    if not _needs_llm_rewrite(user_query, conversation_history):
+        # Use fast keyword-based rewrite
+        rewritten = _rewrite_query_keywords(user_query, conversation_history)
+        if rewritten != user_query:
+            logger.info(f"[REWRITE_QUERY] Keyword rewrite: '{user_query[:50]}...' -> '{rewritten[:50]}...'")
+            return {"user_query": rewritten}
+        logger.debug(f"[REWRITE_QUERY] No rewrite needed for query: '{user_query[:50]}...'")
+        return {}  # No changes needed
+    
+    # Proceed with LLM rewrite for complex queries (existing code below)
+    logger.info(f"[REWRITE_QUERY] Using LLM rewrite for complex query: '{user_query[:50]}...'")
+    
+    # Skip if no conversation history (original query is fine)
+    if not conversation_history or len(conversation_history) == 0:
         logger.info("[REWRITE_QUERY] No conversation history, using original query")
         return {}  # No changes to state
     
+    # PERFORMANCE OPTIMIZATION: Use faster/cheaper model for query rewriting
+    # gpt-3.5-turbo is much faster and cheaper than gpt-4 for this task
+    rewrite_model = os.getenv("OPENAI_REWRITE_MODEL", "gpt-3.5-turbo")
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
-        model=config.openai_model,
+        model=rewrite_model,  # Use faster model for rewriting
         temperature=0,
     )
     
@@ -120,7 +1157,7 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     Node: Query Expansion for Better Recall
     
     Generates query variations to catch different phrasings and synonyms.
-    This dramatically improves recall for ambiguous queries.
+    Now uses smart heuristics to skip expansion for simple, specific queries.
     
     Examples:
         "foundation issues" → ["foundation issues", "foundation damage and structural problems", 
@@ -137,14 +1174,19 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     
     original_query = state['user_query']
     
-    # Skip expansion for very specific/long queries (already clear)
-    if len(original_query.split()) > 15:
-        logger.info("[EXPAND_QUERY] Query already specific, skipping expansion")
-        return {"query_variations": [original_query]}
+    # Check if expansion is needed using smart heuristics
+    enable_smart_expansion = os.getenv("ENABLE_SMART_EXPANSION", "true").lower() == "true"
     
+    if enable_smart_expansion and not _should_expand_query(original_query):
+        logger.info(f"[EXPAND_QUERY] Skipping expansion for simple query: '{original_query[:50]}...'")
+        return {"query_variations": [original_query]}  # Return original query as single variation
+    
+    # PERFORMANCE OPTIMIZATION: Use faster/cheaper model for query expansion
+    # gpt-3.5-turbo is much faster and cheaper than gpt-4 for this task
+    expansion_model = os.getenv("OPENAI_EXPANSION_MODEL", "gpt-3.5-turbo")
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
-        model=config.openai_model,
+        model=expansion_model,  # Use faster model for expansion
         temperature=0.4,  # Slight creativity for variations
     )
     
@@ -242,7 +1284,7 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     return {"query_intent": intent}
 
 
-async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
+def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Hybrid Search (BM25 + Vector) with Lazy Embedding Support + Structured Query Fallback
 
@@ -254,6 +1296,8 @@ async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
       queries property_details table directly for fast, accurate results
     
     This dramatically improves recall and handles lazy embedding seamlessly.
+    
+    PERFORMANCE OPTIMIZATION: If relevant_documents already exist (from cache), skip retrieval.
 
     Args:
         state: MainWorkflowState with user_query, query_variations, business_id
@@ -261,6 +1305,15 @@ async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         Updated state with hybrid search results appended to relevant_documents
     """
+    # PERFORMANCE OPTIMIZATION: Check if documents were already retrieved from cache
+    existing_docs = state.get('relevant_documents', [])
+    if existing_docs and len(existing_docs) > 0:
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Skipping retrieval - {len(existing_docs)} documents already cached from previous conversation")
+        return {}  # No changes needed, use cached documents
+    
+    node_start = time.time()
+    user_query = state.get('user_query', '')
+    logger.info(f"[QUERY_VECTOR_DOCUMENTS] Starting retrieval for query: '{user_query[:50]}...'")
 
     try:
         # STEP 1: Check if query is property-specific (bedrooms, bathrooms, price, etc.)
@@ -303,9 +1356,24 @@ async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                 
                 logger.info(f"[QUERY_STRUCTURED] Extracted - Bedrooms: {bedroom_match.group(1) if bedroom_match else None}, Bathrooms: {bathroom_match.group(1) if bathroom_match else None}")
                 
-                # Build property_details query
+                # SECURITY: First get property_ids for this business to ensure multi-tenancy
+                # This prevents querying other companies' property_details
+                business_properties = supabase.table('properties')\
+                    .select('id')\
+                    .eq('business_uuid', business_id)\
+                    .execute()
+                
+                if not business_properties.data:
+                    logger.info(f"[QUERY_STRUCTURED] No properties found for business {business_id}")
+                    property_results = type('obj', (object,), {'data': []})()  # Empty result
+                else:
+                    business_property_ids = [p['id'] for p in business_properties.data]
+                    logger.info(f"[QUERY_STRUCTURED] Filtering property_details for {len(business_property_ids)} properties in business")
+                    
+                    # Build property_details query - ONLY for this business's properties
                 property_query = supabase.table('property_details')\
-                    .select('property_id, number_bedrooms, number_bathrooms')
+                        .select('property_id, number_bedrooms, number_bathrooms')\
+                        .in_('property_id', business_property_ids)  # CRITICAL: Filter by business
                 
                 if bedroom_match:
                     bedrooms = int(bedroom_match.group(1))
@@ -319,12 +1387,15 @@ async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                 property_results = property_query.execute()
                 
                 # RETRY LOGIC: If no exact matches, try similarity-based search
-                if not property_results.data and (bedroom_match or bathroom_match):
+                if not property_results.data and (bedroom_match or bathroom_match) and business_properties.data:
                     logger.info(f"[QUERY_STRUCTURED] No exact matches found, trying similarity-based search...")
                     
-                    # Try ranges: ±1 bedroom/bathroom
+                    business_property_ids = [p['id'] for p in business_properties.data]
+                    
+                    # Try ranges: ±1 bedroom/bathroom - STILL FILTERED BY BUSINESS
                     similarity_query = supabase.table('property_details')\
-                        .select('property_id, number_bedrooms, number_bathrooms')
+                        .select('property_id, number_bedrooms, number_bathrooms')\
+                        .in_('property_id', business_property_ids)  # CRITICAL: Filter by business
                     
                     if bedroom_match:
                         bedrooms = int(bedroom_match.group(1))
@@ -363,10 +1434,11 @@ async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
                             .eq('business_uuid', business_id)\
                             .execute()
                         
-                        # Get property addresses
+                        # Get property addresses - FILTER BY BUSINESS for security
                         addresses = supabase.table('properties')\
                             .select('id, formatted_address')\
                             .in_('id', property_ids)\
+                            .eq('business_uuid', business_id)\
                             .execute()
                         
                         address_map = {a['id']: a['formatted_address'] for a in addresses.data}
@@ -476,7 +1548,8 @@ This information has been verified and extracted from the property database, inc
                                 if bathroom_match:
                                     keywords.extend(['bathroom', 'bathrooms', 'bath', 'baths'])
                                 
-                                # Fetch all chunks for this document to search for keywords
+                                # OPTIMIZATION: Enhanced keyword-based retrieval with similarity search
+                                # First, find keyword matches
                                 all_chunks = supabase.table('document_vectors')\
                                     .select('chunk_text, chunk_index, page_number, embedding_status')\
                                     .eq('document_id', doc['id'])\
@@ -492,17 +1565,50 @@ This information has been verified and extracted from the property database, inc
                                 keyword_chunks.sort(key=lambda x: x.get('chunk_index', 0))
                                 keyword_chunks = keyword_chunks[:10]
                                 
-                                # Use the keyword chunks as the base, then add sequential chunks for context
+                                # ENHANCEMENT: Also use similarity search to find related chunks
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=15,  # Get top 15 similar chunks
+                                    match_threshold=0.3,
+                                    query_type=query_type
+                                )
+                                
+                                # Combine keyword matches with similarity-based matches
                                 chunk_indices_seen = set(c.get('chunk_index') for c in keyword_chunks)
                                 all_chunks_list = list(keyword_chunks)
                                 
-                                # Add sequential chunks that weren't already included (for context)
-                                for chunk in all_chunks.data:
-                                    if chunk.get('chunk_index') not in chunk_indices_seen and len(all_chunks_list) < 20:
-                                        all_chunks_list.append(chunk)
-                                        chunk_indices_seen.add(chunk.get('chunk_index'))
+                                # Add similar chunks that weren't already included
+                                # Prioritize chunks with both keyword matches AND high similarity
+                                for chunk in similar_chunks:
+                                    chunk_idx = chunk.get('chunk_index', 0)
+                                    if chunk_idx not in chunk_indices_seen:
+                                        # Check if this similar chunk also has keywords (bonus)
+                                        chunk_text_lower = (chunk.get('chunk_text', '') or '').lower()
+                                        has_keywords = any(kw in chunk_text_lower for kw in keywords)
+                                        
+                                        if has_keywords:
+                                            # Prioritize: add at the beginning
+                                            all_chunks_list.insert(0, chunk)
+                                        else:
+                                            # Add to end
+                                            all_chunks_list.append(chunk)
+                                        chunk_indices_seen.add(chunk_idx)
+                                        
+                                        if len(all_chunks_list) >= 20:
+                                            break
                                 
-                                # Sort by chunk_index for proper ordering
+                                # If we still need more chunks, add sequential ones for context
+                                if len(all_chunks_list) < 20:
+                                    for chunk in all_chunks.data:
+                                        if chunk.get('chunk_index') not in chunk_indices_seen and len(all_chunks_list) < 20:
+                                            all_chunks_list.append(chunk)
+                                            chunk_indices_seen.add(chunk.get('chunk_index'))
+                                
+                                # Sort by chunk_index for proper ordering (but keyword/similar chunks are prioritized)
                                 all_chunks_list.sort(key=lambda x: x.get('chunk_index', 0))
                                 
                                 # Create a mock result object with the combined chunks
@@ -511,13 +1617,36 @@ This information has been verified and extracted from the property database, inc
                                         self.data = data
                                 chunks_result = MockResult(all_chunks_list[:20])
                             else:
-                                # No keyword search needed, just fetch sequential chunks
-                                chunks_result = (supabase.table('document_vectors')
-                                    .select('chunk_text, chunk_index, page_number, embedding_status')
-                                    .eq('document_id', doc['id'])
-                                    .order('chunk_index')
-                                    .limit(20)  # Get more chunks for better context
-                                    .execute())
+                                # OPTIMIZATION: Use similarity-based chunk retrieval instead of sequential
+                                # This ensures chunks from all pages (including page 30+) are retrieved if similar
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                complexity = characteristics['complexity_score']
+                                needs_comprehensive = characteristics['needs_comprehensive']
+                                
+                                # Base limit: 20 chunks, scale up based on complexity
+                                base_limit = 20
+                                if needs_comprehensive:
+                                    chunk_limit = 150  # Use more chunks for comprehensive queries
+                                else:
+                                    chunk_limit = int(base_limit * (1 + complexity * 4))  # 20-100 chunks
+                                chunk_limit = min(chunk_limit, 150)  # Cap at 150
+                                
+                                # Use similarity-based retrieval (finds chunks across all pages by similarity)
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=chunk_limit,
+                                    match_threshold=0.3,  # Minimum similarity threshold (will be lowered for assessment queries)
+                                    query_type=query_type
+                                )
+                                
+                                # Convert to expected format
+                                class MockResult:
+                                    def __init__(self, data):
+                                        self.data = data
+                                chunks_result = MockResult(similar_chunks)
                             
                             # Combine chunks into content
                             chunk_texts = []
@@ -541,12 +1670,13 @@ This information has been verified and extracted from the property database, inc
                                     # Fallback: use property details if chunks are empty
                                     combined_content = party_names_context + property_context + f"Property with matching criteria from {doc.get('original_filename', 'document')}. Document chunks are being processed."
                                 
-                                # Trigger lazy embedding for this document if chunks are unembedded
+                                # Trigger lazy embedding for this document if chunks are unembedded (edge case: legacy documents)
+                                # Note: All new documents are embedded upfront, so this should rarely trigger
                                 if has_unembedded:
                                     try:
                                         from backend.tasks import embed_document_chunks_lazy
                                         embed_document_chunks_lazy.delay(str(doc['id']), business_id)
-                                        logger.info(f"[QUERY_STRUCTURED] Triggered lazy embedding for document {doc['id'][:8]}")
+                                        logger.info(f"[QUERY_STRUCTURED] Triggered lazy embedding for document {doc['id'][:8]} (legacy document)")
                                     except Exception as e:
                                         logger.warning(f"[QUERY_STRUCTURED] Failed to trigger lazy embedding: {e}")
                             else:
@@ -584,40 +1714,231 @@ This information has been verified and extracted from the property database, inc
                 logger.debug(traceback.format_exc())
         
         # STEP 2: Use hybrid retriever (BM25 + Vector with lazy embedding triggers)
+        hybrid_start = time.time()
         retriever = HybridDocumentRetriever()
         
         # Get query variations (or just original if expansion didn't run)
         queries = state.get('query_variations', [state['user_query']])
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Running hybrid search for {len(queries)} query variation(s)")
         
-        # Search with each query variation in parallel using hybrid retriever
-        import asyncio
-        
-        async def search_single_query(query: str):
-            """Run a single query search in a thread pool (since retriever is sync)"""
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                lambda: retriever.query_documents(
-                    user_query=query,
-                    top_k=20,  # Fetch fewer per query, merge later
-                    business_id=business_id,
-                    property_id=state.get("property_id"),
-                    classification_type=state.get("classification_type"),
-                    trigger_lazy_embedding=True  # Enable lazy embedding triggers
-                )
+        # OPTIMIZATION: Process query variations in parallel instead of sequentially
+        def process_single_query(query: str, query_index: int) -> Tuple[int, List[Dict]]:
+            """Process a single query variation and return (index, results)."""
+            query_start = time.time()
+            # Adjust top_k based on detail_level and query characteristics (adaptive)
+            detail_level = state.get('detail_level', 'concise')
+            user_query = state.get('user_query', '')
+            characteristics = detect_query_characteristics(user_query)
+            complexity = characteristics['complexity_score']
+            needs_comprehensive = characteristics['needs_comprehensive']
+            
+            if needs_comprehensive:
+                # For comprehensive queries, fetch significantly more chunks
+                top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_VALUATION", "100"))
+                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Comprehensive query detected - using top_k={top_k}")
+            elif detail_level == 'detailed':
+                # Scale based on complexity for detailed mode
+                base_top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_DETAILED", "50"))
+                top_k = int(base_top_k * (1 + complexity * 0.5))  # 50-75 chunks
+            else:
+                # Scale based on complexity for concise mode
+                base_top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "20"))
+                top_k = int(base_top_k * (1 + complexity * 1.5))  # 20-50 chunks
+            
+            # NEW: Header-Priority Retrieval (Pass 1)
+            # Search for chunks with matching section headers first, then boost them in results
+            # Query-driven: Uses query terms directly to find relevant section headers
+            header_results = []
+            relevant_headers = None
+            from backend.llm.utils.section_header_matcher import get_relevant_section_headers, should_use_header_retrieval
+            from backend.llm.utils.section_header_detector import _normalize_header
+            import re
+            
+            document_type = state.get("classification_type")
+            if should_use_header_retrieval(query, document_type):
+                # Build query-driven header search terms
+                # Strategy: Use query terms directly + mapped section headers as enhancement
+                query_lower = query.lower()
+                query_words = [re.sub(r'[^\w\s]', '', w) for w in query_lower.split() if len(w) > 2]  # Remove short words and punctuation
+                
+                # Get mapped section headers (as enhancement, not primary)
+                mapped_headers = get_relevant_section_headers(query, document_type)
+                
+                # Combine: query terms + mapped headers (query terms take priority)
+                # Normalize all terms for consistent matching
+                header_search_terms = set()
+                
+                # Add query terms directly (primary - query-driven)
+                for word in query_words:
+                    if word not in ['the', 'and', 'or', 'for', 'with', 'from', 'this', 'that', 'what', 'where', 'when', 'how']:
+                        header_search_terms.add(word)
+                
+                # Add mapped headers (enhancement)
+                for header in mapped_headers:
+                    # Normalize and split header into individual words
+                    normalized = _normalize_header(header)
+                    header_search_terms.add(normalized)
+                    # Also add individual words from multi-word headers
+                    header_search_terms.update(normalized.split())
+                
+                if header_search_terms:
+                    logger.info(f"[HEADER_RETRIEVAL] Query-driven header search terms: {sorted(header_search_terms)}")
+                    try:
+                        from backend.llm.retrievers.bm25_retriever import BM25DocumentRetriever
+                        bm25_retriever = BM25DocumentRetriever()
+                        
+                        # Build query string for BM25 search (OR all terms - query-driven)
+                        # Use phrase search for multi-word terms, individual words for single terms
+                        header_query_parts = []
+                        for term in header_search_terms:
+                            if ' ' in term:
+                                # Multi-word term: use as phrase
+                                header_query_parts.append(f'"{term}"')
+                            else:
+                                # Single word: use directly
+                                header_query_parts.append(term)
+                        
+                        header_query = " OR ".join(header_query_parts)
+                        
+                        # Search for chunks with these section headers (query-driven)
+                        header_results = bm25_retriever.query_documents(
+                            query_text=header_query,
+                            top_k=int(os.getenv("MAX_HEADER_MATCHES", "20")),  # Limit header matches
+                            business_id=business_id,
+                            property_id=state.get("property_id"),
+                            classification_type=document_type
+                        )
+                        
+                        if header_results:
+                            logger.info(f"[HEADER_RETRIEVAL] Found {len(header_results)} chunks with query-driven header matches")
+                            # Runtime header detection for header results
+                            from backend.llm.utils.section_header_detector import detect_section_header
+                            for result in header_results:
+                                result['_header_match'] = True
+                                # Detect section headers from chunk text at runtime
+                                chunk_text = result.get('chunk_text', '')
+                                if chunk_text:
+                                    header_info = detect_section_header(chunk_text)
+                                    if header_info:
+                                        result['_detected_section_header'] = header_info.get('section_header')
+                                        result['_detected_normalized_header'] = header_info.get('normalized_header')
+                                        logger.debug(f"[RUNTIME_HEADER] Detected header in header result: '{header_info.get('section_header')}'")
+                    except Exception as e:
+                        logger.warning(f"[HEADER_RETRIEVAL] Header search failed: {e}, continuing with standard retrieval")
+            
+            # Standard Hybrid Search (Pass 2)
+            results = retriever.query_documents(
+                user_query=query,
+                top_k=top_k,  # Adjusted based on detail_level
+                business_id=business_id,
+                property_id=state.get("property_id"),
+                classification_type=state.get("classification_type"),
+                trigger_lazy_embedding=False  # Disabled: all chunks embedded upfront
+                # TODO: Add section_headers parameter once hybrid retriever supports it
             )
+            
+            # Runtime Section Header Detection (Phase 1): Detect headers in standard results
+            from backend.llm.utils.section_header_detector import detect_section_header, _normalize_header
+            from backend.llm.utils.section_header_matcher import get_relevant_section_headers
+            
+            # Get relevant section headers for this query (generic - works for any query type)
+            relevant_headers = get_relevant_section_headers(query, document_type)
+            relevant_normalized = {_normalize_header(h) for h in relevant_headers} if relevant_headers else set()
+            
+            # Detect headers in standard results and tag them
+            for result in results:
+                chunk_text = result.get('chunk_text', '')
+                if chunk_text:
+                    header_info = detect_section_header(chunk_text)
+                    if header_info:
+                        detected_header = header_info.get('section_header')
+                        detected_normalized = header_info.get('normalized_header')
+                        
+                        result['_detected_section_header'] = detected_header
+                        result['_detected_normalized_header'] = detected_normalized
+                        
+                        # Generic boost: if detected header matches query intent
+                        if detected_normalized in relevant_normalized:
+                            current_score = result.get('similarity_score', 0.0)
+                            result['similarity_score'] = current_score * 2.0  # 2x boost for matching headers
+                            logger.debug(f"[RUNTIME_HEADER] Boosted chunk with matching header: '{detected_header}' (score: {current_score:.3f} → {result['similarity_score']:.3f})")
+            
+            # Boost header-based results (multiply RRF score by 1.5x)
+            if header_results:
+                section_header_boost = float(os.getenv("SECTION_HEADER_BOOST", "1.5"))
+                header_doc_chunk_pairs = {(r.get('doc_id'), r.get('chunk_index')) for r in header_results}
+                
+                for result in results:
+                    chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                    if result.get('_header_match') or chunk_key in header_doc_chunk_pairs:
+                        current_score = result.get('similarity_score', 0.0)
+                        result['similarity_score'] = current_score * section_header_boost
+                        logger.debug(f"[HEADER_RETRIEVAL] Boosted chunk {result.get('chunk_index')} from {current_score:.3f} to {result['similarity_score']:.3f}")
+            
+            # Combine header results with standard results (header results get priority)
+            # Deduplicate by doc_id + chunk_index
+            seen_chunks = set()
+            combined_results = []
+            
+            # Add header results first (they get priority)
+            for result in header_results:
+                chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                if chunk_key not in seen_chunks:
+                    combined_results.append(result)
+                    seen_chunks.add(chunk_key)
+            
+            # Add standard results (skip duplicates)
+            for result in results:
+                chunk_key = (result.get('doc_id'), result.get('chunk_index'))
+                if chunk_key not in seen_chunks:
+                    combined_results.append(result)
+                    seen_chunks.add(chunk_key)
+            
+            # Post-Retrieval Header-Based Boosting (Phase 2): Apply additional boosting to combined results
+            # This ensures chunks with matching section headers get prioritized even after combination
+            if relevant_normalized:
+                for result in combined_results:
+                    chunk_text = result.get('chunk_text', '')
+                    if chunk_text:
+                        # If header not already detected, detect it now
+                        if '_detected_normalized_header' not in result:
+                            header_info = detect_section_header(chunk_text)
+                            if header_info:
+                                result['_detected_section_header'] = header_info.get('section_header')
+                                result['_detected_normalized_header'] = header_info.get('normalized_header')
+                        
+                        # Boost if detected header matches query intent (generic matching)
+                        detected_normalized = result.get('_detected_normalized_header')
+                        if detected_normalized and detected_normalized in relevant_normalized:
+                            current_score = result.get('similarity_score', 0.0)
+                            # Additional 1.5x boost for matching headers in combined results
+                            result['similarity_score'] = current_score * 1.5
+                            logger.debug(f"[RUNTIME_HEADER] Post-retrieval boost for matching header: '{result.get('_detected_section_header')}' (score: {current_score:.3f} → {result['similarity_score']:.3f})")
+            
+            # Use combined results
+            results = combined_results
+            query_time = time.time() - query_start
+            logger.info(f"[QUERY_HYBRID] Query {query_index}/{len(queries)} '{query[:40]}...' → {len(results)} docs in {query_time:.2f}s")
+            return (query_index, results)
         
-        # Run all queries in parallel
+        # OPTIMIZATION: Process all queries in parallel using ThreadPoolExecutor
+        # Since retriever.query_documents is synchronous, we use threads for parallelization
+        import concurrent.futures
         if len(queries) > 1:
-            all_results = await asyncio.gather(*[search_single_query(q) for q in queries])
-            logger.info(f"[QUERY_HYBRID] Processed {len(queries)} query variations in parallel")
+            # Parallel execution for multiple queries
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 3)) as executor:
+                futures = [executor.submit(process_single_query, query, i+1) for i, query in enumerate(queries)]
+                query_results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            # Sort by query_index to maintain order
+            query_results.sort(key=lambda x: x[0])
+            all_results = [results for _, results in query_results]
         else:
-            # Single query - still use executor for consistency
-            all_results = [await search_single_query(queries[0])]
+            # Single query - no need for parallelization
+            _, results = process_single_query(queries[0], 1)
+            all_results = [results]
         
-        # Log results
-        for i, (query, results) in enumerate(zip(queries, all_results), 1):
-            logger.info(f"[QUERY_HYBRID] Query {i} '{query[:40]}...' → {len(results)} docs")
+        hybrid_time = time.time() - hybrid_start
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Hybrid search completed in {hybrid_time:.2f}s")
         
         # Merge results using Reciprocal Rank Fusion
         if len(all_results) > 1:
@@ -642,15 +1963,15 @@ This information has been verified and extracted from the property database, inc
                 
                 supabase = get_supabase_client()  # Get supabase client for LLM SQL queries
                 
-                # Create the tool
-                property_tool = create_property_query_tool(business_id=business_id)
+                # Create the tool instance
+                sql_tool = SQLQueryTool(business_id=business_id)
                 
                 # Create LLM with tool binding (agent can invoke tool directly)
                 llm = ChatOpenAI(
                     api_key=config.openai_api_key,
                     model=config.openai_model,
                     temperature=0.3,
-                ).bind_tools([property_tool])
+                )
                 
                 # Use centralized prompt
                 # Get system prompt for SQL query task
@@ -758,12 +2079,36 @@ This information has been verified and extracted from the property database, inc
 """
                                 
                                 # Get chunks
-                                chunks_result = supabase.table('document_vectors')\
-                                    .select('chunk_text, chunk_index, page_number')\
-                                    .eq('document_id', doc['id'])\
-                                    .order('chunk_index')\
-                                    .limit(20)\
-                                    .execute()
+                                # OPTIMIZATION: Adaptive chunk limit based on query characteristics
+                                user_query = state.get('user_query', '')
+                                characteristics = detect_query_characteristics(user_query)
+                                complexity = characteristics['complexity_score']
+                                needs_comprehensive = characteristics['needs_comprehensive']
+                                
+                                # Base limit: 50 chunks, scale up based on complexity
+                                base_limit = 50
+                                if needs_comprehensive:
+                                    chunk_limit = 150  # Use more chunks for comprehensive queries
+                                else:
+                                    chunk_limit = int(base_limit * (1 + complexity * 2))  # 50-150 chunks
+                                chunk_limit = min(chunk_limit, 150)  # Cap at 150
+                                
+                                # OPTIMIZATION: Use similarity-based chunk retrieval instead of sequential
+                                # This ensures chunks from all pages (including page 30+) are retrieved if similar
+                                query_type = characteristics.get('query_type', 'general')
+                                similar_chunks = retrieve_chunks_by_similarity(
+                                    doc_id=doc['id'],
+                                    user_query=user_query,
+                                    top_k=chunk_limit,
+                                    match_threshold=0.3,  # Minimum similarity threshold (will be lowered for assessment queries)
+                                    query_type=query_type
+                                )
+                                
+                                # Convert to expected format
+                                class MockResult:
+                                    def __init__(self, data):
+                                        self.data = data
+                                chunks_result = MockResult(similar_chunks)
                                 
                                 chunk_texts = [c.get('chunk_text', '').strip() for c in chunks_result.data if c.get('chunk_text', '').strip() and len(c.get('chunk_text', '').strip()) > 10]
                                 # Extract party names for this document (similar to structured query above)
@@ -859,10 +2204,17 @@ This information has been verified and extracted from the property database, inc
             logger.info(f"[QUERY_FILTERED] Filtered from {len(final_results)} to {len(filtered_results)} documents by document_ids")
             final_results = filtered_results
         
-        logger.info(f"[QUERY_COMBINED] Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, Hybrid: {len(merged_results)}, Final: {len(final_results)}")
+        node_time = time.time() - node_start
+        logger.info(
+            f"[QUERY_VECTOR_DOCUMENTS] Completed in {node_time:.2f}s: "
+            f"Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, "
+            f"Hybrid: {len(merged_results)}, Final: {len(final_results)}"
+        )
         return {"relevant_documents": final_results[:config.vector_top_k]}
 
     except Exception as exc:  # pylint: disable=broad-except
+        node_time = time.time() - node_start
+        logger.error(f"[QUERY_VECTOR_DOCUMENTS] Failed after {node_time:.2f}s: {exc}", exc_info=True)
         logger.error("[QUERY_HYBRID] Hybrid search failed: %s", exc, exc_info=True)
         # Fallback to vector-only search if hybrid fails
         try:
@@ -1022,8 +2374,15 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
         # Sort chunks by chunk_index for proper ordering
         group['chunks'].sort(key=lambda x: x['chunk_index'])
         
-        # Merge chunk content (keep top 7 most relevant chunks for better context with 1200-char chunks)
-        top_chunks = sorted(group['chunks'], key=lambda x: x['similarity'], reverse=True)[:7]
+        # Merge chunk content using smart multi-factor selection algorithm
+        # This replaces hardcoded valuation logic with adaptive algorithm for all query types
+        user_query = state.get('user_query', '')
+        query_characteristics = detect_query_characteristics(user_query)
+        query_type = query_characteristics.get('query_type', 'general')
+        
+        # Use smart chunk selection algorithm
+        top_chunks = smart_select_chunks(group['chunks'], user_query, query_type)
+        
         merged_content = "\n\n".join([chunk['content'] for chunk in top_chunks])
         
         # Extract page numbers from top chunks (filter out 0 and None)
@@ -1084,31 +2443,63 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
             f"{doc.get('page_range', 'unknown')} | {doc.get('chunk_count', 0)} chunks"
         )
     
-    # If only a few documents, skip reranking (not worth the cost/latency)
-    if len(merged_docs) <= 3:
-        logger.info("[CLARIFY] Only %d documents, skipping re-ranking", len(merged_docs))
+    # PERFORMANCE OPTIMIZATION: Skip reranking for small result sets or when Cohere is disabled
+    # Reranking adds latency and isn't necessary when we have few documents or high confidence
+    max_docs_for_reranking = int(os.getenv("MAX_DOCS_FOR_RERANKING", "8"))
+    if len(merged_docs) <= max_docs_for_reranking:
+        logger.info(
+            "[CLARIFY] Only %d documents (threshold: %d), skipping re-ranking for speed",
+            len(merged_docs),
+            max_docs_for_reranking
+        )
+        return {"relevant_documents": merged_docs}
+    
+    # Also skip if documents have very high similarity scores (already well-ranked)
+    high_confidence_docs = [doc for doc in merged_docs if doc.get('similarity_score', 0) > 0.8]
+    if len(high_confidence_docs) >= len(merged_docs) * 0.7:  # 70% have high confidence
+        logger.info(
+            "[CLARIFY] %d%% of documents have high confidence scores (>0.8), skipping re-ranking",
+            int(len(high_confidence_docs) / len(merged_docs) * 100)
+        )
         return {"relevant_documents": merged_docs}
 
     # Step 3: Cohere reranking (replaces expensive LLM reranking)
+    # PERFORMANCE OPTIMIZATION: Only rerank if we have many documents and Cohere is enabled
     try:
         from backend.llm.retrievers.cohere_reranker import CohereReranker
         
         reranker = CohereReranker()
         
-        if reranker.is_enabled() and config.cohere_rerank_enabled:
+        # Only rerank if we have enough documents to justify the latency
+        min_docs_for_reranking = int(os.getenv("MIN_DOCS_FOR_RERANKING", "6"))
+        should_rerank = (
+            reranker.is_enabled() 
+            and config.cohere_rerank_enabled 
+            and len(merged_docs) >= min_docs_for_reranking
+        )
+        
+        if should_rerank:
             logger.info("[CLARIFY] Using Cohere reranker for %d documents", len(merged_docs))
             
-            # Rerank documents using Cohere
+            # Rerank documents using Cohere (limit to reasonable number for speed)
+            max_rerank = min(len(merged_docs), 15)  # Reduced from 20 for speed
             reranked_docs = reranker.rerank(
                 query=state['user_query'],
                 documents=merged_docs,
-                top_n=min(len(merged_docs), 20)  # Limit to top 20
+                top_n=max_rerank
             )
             
             logger.info("[CLARIFY] Cohere reranked %d documents", len(reranked_docs))
             return {"relevant_documents": reranked_docs}
         else:
-            logger.info("[CLARIFY] Cohere reranker disabled, using original order")
+            if not reranker.is_enabled() or not config.cohere_rerank_enabled:
+                logger.info("[CLARIFY] Cohere reranker disabled, using original order")
+            else:
+                logger.info(
+                    "[CLARIFY] Only %d documents (threshold: %d), skipping Cohere reranking for speed",
+                    len(merged_docs),
+                    min_docs_for_reranking
+                )
             return {"relevant_documents": merged_docs}
             
     except ImportError:
@@ -1172,4 +2563,256 @@ def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> M
     return {"relevant_documents": reordered}
 
 
+async def create_source_chunks_metadata_for_single_chunk(chunk: Dict[str, Any], doc_id: str) -> Dict[str, Any]:
+    """
+    Create source_chunks_metadata for a single chunk by fetching blocks from database.
+    
+    This function is used when clarify_relevant_docs is skipped and individual chunks
+    need metadata for citation/BBOX functionality.
+    
+    Args:
+        chunk: Chunk dictionary with chunk_index, page_number, content, etc.
+        doc_id: Document ID to fetch blocks from
+        
+    Returns:
+        Dictionary with metadata structure:
+        {
+            'content': str,
+            'chunk_index': int,
+            'page_number': int,
+            'bbox': dict,
+            'blocks': list[dict],
+            'vector_id': str,
+            'similarity': float,
+            'doc_id': str
+        }
+    """
+    from backend.services.supabase_client_factory import get_supabase_client
+    
+    chunk_index = chunk.get('chunk_index', 0)
+    page_number = chunk.get('page_number', 0)
+    content = chunk.get('content', '')
+    similarity_value = chunk.get('similarity') or chunk.get('similarity_score', 0.0)
+    vector_id = chunk.get('vector_id', '')
+    bbox = chunk.get('bbox')
+    
+    # Try to get blocks from chunk first (if already present)
+    blocks = chunk.get('blocks', [])
+    
+    # If blocks not in chunk, fetch from database (with caching)
+    if not blocks or not isinstance(blocks, list) or len(blocks) == 0:
+        # Check cache first
+        if doc_id in _document_summary_cache:
+            document_summary = _document_summary_cache[doc_id]
+        else:
+            try:
+                supabase = get_supabase_client()
+                
+                # Fetch document to get document_summary with reducto_chunks
+                doc_result = supabase.table('documents')\
+                    .select('id, document_summary')\
+                    .eq('id', doc_id)\
+                    .single()\
+                    .execute()
+            
+                if doc_result.data:
+                    import json
+                    document_summary = doc_result.data.get('document_summary')
+                    
+                    # Parse document_summary if it's a string
+                    if isinstance(document_summary, str):
+                        try:
+                            document_summary = json.loads(document_summary)
+                            if isinstance(document_summary, str):
+                                document_summary = json.loads(document_summary)
+                        except (json.JSONDecodeError, TypeError):
+                            document_summary = None
+                    
+                    # Cache the parsed document_summary
+                    if isinstance(document_summary, dict):
+                        _document_summary_cache[doc_id] = document_summary
+            except Exception as e:
+                logger.warning(
+                    f"[CREATE_METADATA] Failed to fetch document_summary for doc {doc_id[:8]}: {e}"
+                )
+                document_summary = None
+        
+        # Extract blocks from reducto_chunks (from cache or fresh fetch)
+        if isinstance(document_summary, dict):
+            reducto_chunks = document_summary.get('reducto_chunks', [])
+            if reducto_chunks and isinstance(reducto_chunks, list):
+                # Find chunk by chunk_index
+                for rc in reducto_chunks:
+                    rc_index = rc.get('chunk_index')
+                    if rc_index is None:
+                        # Try to match by position if chunk_index not stored
+                        try:
+                            rc_index = reducto_chunks.index(rc)
+                        except ValueError:
+                            continue
+                    
+                    if rc_index == chunk_index:
+                        blocks = rc.get('blocks', [])
+                        # Also get bbox if not already set
+                        if not bbox:
+                            bbox = rc.get('bbox')
+                        break
+                
+                logger.debug(
+                    f"[CREATE_METADATA] Fetched {len(blocks) if blocks else 0} blocks for chunk {chunk_index} (doc {doc_id[:8]})"
+                )
+    
+    # Create metadata structure
+    metadata = {
+        'content': content,
+        'chunk_index': chunk_index,
+        'page_number': page_number,
+        'bbox': bbox,
+        'blocks': blocks if blocks else [],
+        'vector_id': vector_id,
+        'similarity': similarity_value,
+        'doc_id': doc_id
+    }
+    
+    return metadata
+
+
+# Request-scoped cache for document_summary to prevent duplicate fetches
+_document_summary_cache: Dict[str, Dict] = {}
+
+
+async def batch_create_source_chunks_metadata(chunks: List[Dict[str, Any]], doc_ids: List[str]) -> Dict[Tuple[str, int], Dict[str, Any]]:
+    """
+    Batch create source_chunks_metadata for multiple chunks, grouping by doc_id to minimize database queries.
+    
+    This function fetches document_summary for all unique doc_ids in one batch, then distributes
+    blocks to chunks in memory. This is much more efficient than calling create_source_chunks_metadata_for_single_chunk
+    for each chunk individually.
+    
+    Args:
+        chunks: List of chunk dictionaries, each with chunk_index, page_number, content, etc.
+        doc_ids: List of document IDs corresponding to chunks (same length as chunks)
+        
+    Returns:
+        Dictionary mapping (doc_id, chunk_index) tuple to metadata dictionary:
+        {
+            (doc_id, chunk_index): {
+                'content': str,
+                'chunk_index': int,
+                'page_number': int,
+                'bbox': dict,
+                'blocks': list[dict],
+                'vector_id': str,
+                'similarity': float,
+                'doc_id': str
+            }
+        }
+    """
+    from backend.services.supabase_client_factory import get_supabase_client
+    import json
+    
+    if not chunks or not doc_ids or len(chunks) != len(doc_ids):
+        logger.warning("[BATCH_METADATA] Invalid input: chunks and doc_ids must be same length")
+        return {}
+    
+    # Group chunks by doc_id to minimize queries
+    chunks_by_doc: Dict[str, List[Tuple[int, Dict]]] = {}  # doc_id -> [(chunk_index, chunk), ...]
+    for idx, (chunk, doc_id) in enumerate(zip(chunks, doc_ids)):
+        if doc_id not in chunks_by_doc:
+            chunks_by_doc[doc_id] = []
+        chunks_by_doc[doc_id].append((chunk.get('chunk_index', idx), chunk))
+    
+    # Fetch all unique document_summaries in parallel
+    unique_doc_ids = list(chunks_by_doc.keys())
+    supabase = get_supabase_client()
+    
+    # Batch fetch all document_summaries using IN clause
+    try:
+        doc_results = supabase.table('documents')\
+            .select('id, document_summary')\
+            .in_('id', unique_doc_ids)\
+            .execute()
+        
+        # Parse document_summaries and cache them
+        doc_summaries: Dict[str, Dict] = {}
+        for doc_result in doc_results.data:
+            doc_id = doc_result.get('id')
+            document_summary = doc_result.get('document_summary')
+            
+            # Parse document_summary if it's a string
+            if isinstance(document_summary, str):
+                try:
+                    document_summary = json.loads(document_summary)
+                    if isinstance(document_summary, str):
+                        document_summary = json.loads(document_summary)
+                except (json.JSONDecodeError, TypeError):
+                    document_summary = None
+            
+            if isinstance(document_summary, dict):
+                doc_summaries[doc_id] = document_summary
+                # Cache for potential future use in same request
+                _document_summary_cache[doc_id] = document_summary
+        
+        logger.info(
+            f"[BATCH_METADATA] Fetched {len(doc_summaries)} document_summaries for {len(unique_doc_ids)} unique documents"
+        )
+    except Exception as e:
+        logger.warning(f"[BATCH_METADATA] Failed to batch fetch document_summaries: {e}")
+        doc_summaries = {}
+    
+    # Distribute blocks to chunks
+    # Use (doc_id, chunk_index) as key to ensure uniqueness across documents
+    result: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    
+    for doc_id, chunk_list in chunks_by_doc.items():
+        document_summary = doc_summaries.get(doc_id)
+        reducto_chunks = []
+        
+        if isinstance(document_summary, dict):
+            reducto_chunks = document_summary.get('reducto_chunks', [])
+            if not isinstance(reducto_chunks, list):
+                reducto_chunks = []
+        
+        for chunk_index, chunk in chunk_list:
+            # Find blocks for this chunk
+            blocks = chunk.get('blocks', [])
+            bbox = chunk.get('bbox')
+            
+            # If blocks not in chunk, extract from reducto_chunks
+            if (not blocks or not isinstance(blocks, list) or len(blocks) == 0) and reducto_chunks:
+                for rc in reducto_chunks:
+                    rc_index = rc.get('chunk_index')
+                    if rc_index is None:
+                        # Try to match by position if chunk_index not stored
+                        try:
+                            rc_index = reducto_chunks.index(rc)
+                        except ValueError:
+                            continue
+                    
+                    if rc_index == chunk_index:
+                        blocks = rc.get('blocks', [])
+                        if not bbox:
+                            bbox = rc.get('bbox')
+                        break
+            
+            # Create metadata structure
+            metadata = {
+                'content': chunk.get('content', ''),
+                'chunk_index': chunk_index,
+                'page_number': chunk.get('page_number', 0),
+                'bbox': bbox,
+                'blocks': blocks if blocks else [],
+                'vector_id': chunk.get('vector_id', ''),
+                'similarity': chunk.get('similarity') or chunk.get('similarity_score', 0.0),
+                'doc_id': doc_id
+            }
+            
+            # Use (doc_id, chunk_index) as key to ensure uniqueness
+            result[(doc_id, chunk_index)] = metadata
+    
+    logger.info(
+        f"[BATCH_METADATA] Created metadata for {len(result)} chunks from {len(unique_doc_ids)} documents"
+    )
+    
+    return result
 

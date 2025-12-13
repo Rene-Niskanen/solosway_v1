@@ -5,7 +5,8 @@ This is where each document gets processed with the user's question.
 
 import asyncio
 import logging
-from typing import List, Optional
+import os
+from typing import List
 
 from backend.llm.types import (
     DocumentProcessingResult,
@@ -13,6 +14,7 @@ from backend.llm.types import (
 )
 from backend.llm.agents.document_qa_agent import build_document_qa_subgraph
 from backend.llm.config import config
+from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 
 logger = logging.getLogger(__name__)
 
@@ -28,28 +30,156 @@ def _build_processing_result(output_state, source_chunks_metadata=None) -> Docum
     # NEW: Store source chunks metadata with bbox for citation/highlighting
     if source_chunks_metadata:
         result['source_chunks_metadata'] = source_chunks_metadata
+        # #region agent log
+        # Debug: Log blocks preservation for Hypothesis A
+        try:
+            chunks_with_blocks = sum(1 for chunk in source_chunks_metadata if chunk.get('blocks') and isinstance(chunk.get('blocks'), list) and len(chunk.get('blocks')) > 0)
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'processing_nodes.py:31',
+                    'message': 'Preserving source_chunks_metadata with blocks',
+                    'data': {
+                        'doc_id': result.get('doc_id', '')[:8] if result.get('doc_id') else 'unknown',
+                        'has_source_chunks_metadata': bool(source_chunks_metadata),
+                        'chunks_count': len(source_chunks_metadata) if source_chunks_metadata else 0,
+                        'chunks_with_blocks': chunks_with_blocks
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass  # Silently fail instrumentation
+        # #endregion
     
     return result
 
 
-async def process_documents(
-    state: MainWorkflowState,
-    graph_config: Optional[dict] = None  # LangGraph passes config as second parameter
-) -> MainWorkflowState:
-    """
-    Process each relevant document with the QA subgraph in parallel.
-    
-    Args:
-        state: Main workflow state containing relevant_documents
-        graph_config: LangGraph config dict with thread_id (passed automatically by LangGraph)
-                     Format: {"configurable": {"thread_id": "user_123"}}
-                     Subgraphs inherit parent's checkpointer when this is provided.
-    """
+async def process_documents(state: MainWorkflowState) -> MainWorkflowState:
+    """Process each relevant document with the QA subgraph in parallel."""
 
     relevant_docs = state.get("relevant_documents", [])
     if not relevant_docs:
         logger.warning("[PROCESS_DOCUMENTS] No relevant documents to process")
         return {"document_outputs": []}
+    
+    # PERFORMANCE OPTIMIZATION: Limit number of documents processed based on detail_level
+    # Concise mode: 5 docs (fast, precise answers)
+    # Detailed mode: 15 docs (comprehensive, thorough answers)
+    detail_level = state.get('detail_level', 'concise')
+    logger.info(f"[PROCESS_DOCUMENTS] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
+    if detail_level == 'detailed':
+        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS_DETAILED", "15"))
+        logger.info(f"[PROCESS_DOCUMENTS] Detailed mode: processing up to {max_docs_to_process} documents")
+    else:
+        max_docs_to_process = int(os.getenv("MAX_DOCS_TO_PROCESS", "5"))
+        logger.info(f"[PROCESS_DOCUMENTS] Concise mode: processing up to {max_docs_to_process} documents")
+    
+    if len(relevant_docs) > max_docs_to_process:
+        logger.info(
+            "[PROCESS_DOCUMENTS] Limiting processing to top %d documents (out of %d) for %s response",
+            max_docs_to_process,
+            len(relevant_docs),
+            detail_level
+        )
+        relevant_docs = relevant_docs[:max_docs_to_process]
+
+    # NEW: Create source_chunks_metadata for individual chunks when clarify_relevant_docs was skipped
+    # This ensures BBOX highlighting works without affecting LLM response quality (chunks remain individual)
+    if relevant_docs and len(relevant_docs) > 0:
+        first_doc = relevant_docs[0]
+        is_individual_chunks = 'chunk_index' in first_doc
+        
+        if is_individual_chunks:
+            # Import helper function
+            from backend.llm.nodes.retrieval_nodes import create_source_chunks_metadata_for_single_chunk
+            
+            # Count chunks needing metadata
+            chunks_needing_metadata = [chunk for chunk in relevant_docs if not chunk.get('source_chunks_metadata')]
+            
+            if chunks_needing_metadata:
+                logger.info(
+                    "[PROCESS_DOCUMENTS] Creating source_chunks_metadata for %d individual chunks (out of %d total)",
+                    len(chunks_needing_metadata),
+                    len(relevant_docs)
+                )
+                
+                # OPTIMIZATION: Batch fetch metadata for all chunks in parallel
+                if chunks_needing_metadata:
+                    try:
+                        from backend.llm.nodes.retrieval_nodes import batch_create_source_chunks_metadata
+                        
+                        # Extract doc_ids for batch fetching
+                        chunk_doc_ids = []
+                        valid_chunks = []
+                        for chunk in chunks_needing_metadata:
+                            doc_id = chunk.get('doc_id') or chunk.get('document_id')
+                            if doc_id:
+                                chunk_doc_ids.append(doc_id)
+                                valid_chunks.append(chunk)
+                            else:
+                                logger.warning(
+                                    "[PROCESS_DOCUMENTS] Chunk %s missing doc_id, skipping metadata creation",
+                                    chunk.get('chunk_index', 'unknown')
+                                )
+                                chunk['source_chunks_metadata'] = []
+                        
+                        if valid_chunks:
+                            # Batch fetch all metadata
+                            batch_metadata = await batch_create_source_chunks_metadata(valid_chunks, chunk_doc_ids)
+                            
+                            # Attach metadata to chunks using (doc_id, chunk_index) key
+                            for chunk, doc_id in zip(valid_chunks, chunk_doc_ids):
+                                chunk_index = chunk.get('chunk_index', 0)
+                                metadata_key = (doc_id, chunk_index)
+                                
+                                if metadata_key in batch_metadata:
+                                    chunk_metadata = batch_metadata[metadata_key]
+                                    chunk['source_chunks_metadata'] = [chunk_metadata]
+                                    
+                                    blocks_count = len(chunk_metadata.get('blocks', [])) if chunk_metadata.get('blocks') else 0
+                                    logger.debug(
+                                        "[PROCESS_DOCUMENTS] Created metadata for chunk %d (doc %s, %d blocks)",
+                                        chunk_index,
+                                        doc_id[:8],
+                                        blocks_count
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[PROCESS_DOCUMENTS] No metadata found for chunk %d (doc %s)",
+                                        chunk_index,
+                                        doc_id[:8]
+                                    )
+                                    chunk['source_chunks_metadata'] = []
+                    except Exception as e:
+                        logger.warning(
+                            "[PROCESS_DOCUMENTS] Batch metadata creation failed, falling back to individual: %s",
+                            str(e)
+                        )
+                        # Fallback to individual processing
+                        for chunk in chunks_needing_metadata:
+                            doc_id = chunk.get('doc_id') or chunk.get('document_id')
+                            if not doc_id:
+                                chunk['source_chunks_metadata'] = []
+                                continue
+                            
+                            try:
+                                chunk_metadata = await create_source_chunks_metadata_for_single_chunk(chunk, doc_id)
+                                chunk['source_chunks_metadata'] = [chunk_metadata]
+                            except Exception as e2:
+                                logger.warning(
+                                    "[PROCESS_DOCUMENTS] Failed to create metadata for chunk %s: %s",
+                                    chunk.get('chunk_index', 'unknown'),
+                                    str(e2)
+                                )
+                                chunk['source_chunks_metadata'] = []
+            else:
+                logger.debug(
+                    "[PROCESS_DOCUMENTS] All %d chunks already have source_chunks_metadata",
+                    len(relevant_docs)
+                )
 
     # Fast path for frontend plumbing / smoke tests
     if config.simple_mode:
@@ -83,130 +213,40 @@ async def process_documents(
             stubbed.append(result)
         return {"document_outputs": stubbed}
 
-    # NEW: Group chunks by doc_id to avoid processing same document multiple times
-    # This is critical for fast path where all chunks from one document are fetched
-    # Instead of 150 LLM calls (one per chunk), we make 1 LLM call (one per document)
-    from collections import defaultdict
-    docs_by_id = defaultdict(lambda: {
-        'chunks': [],
-        'metadata': {}
-    })
-    
-    for doc in relevant_docs:
-        doc_id = doc.get("doc_id", "")
-        if doc_id:
-            docs_by_id[doc_id]['chunks'].append(doc)
-            # Store metadata from first chunk (they should all be the same for same doc)
-            if not docs_by_id[doc_id]['metadata']:
-                docs_by_id[doc_id]['metadata'] = {
-                    'property_id': doc.get("property_id"),
-                    'classification_type': doc.get('classification_type', 'Unknown'),
-                    'original_filename': doc.get('original_filename'),
-                    'property_address': doc.get('property_address'),
-                    'source': doc.get('source', 'unknown'),
-                }
-    
-    # Combine chunks for each document
-    combined_docs = []
-    for doc_id, doc_data in docs_by_id.items():
-        chunks = doc_data['chunks']
-        metadata = doc_data['metadata']
-        
-        if len(chunks) == 1:
-            # Single chunk - use as is but ensure bbox metadata is preserved
-            chunk = chunks[0]
-            chunk['source_chunks_metadata'] = [{
-                'chunk_index': chunk.get('chunk_index'),
-                'page_number': chunk.get('page_number'),
-                'bbox': chunk.get('bbox'),
-                'content': chunk.get('content', ''),  # Full content for accurate position mapping
-                'vector_id': chunk.get('vector_id')
-            }]
-            combined_docs.append(chunk)
-        else:
-            # Multiple chunks from same document - combine them
-            # Sort by page_number and chunk_index to maintain order
-            sorted_chunks = sorted(
-                chunks,
-                key=lambda x: (
-                    x.get('page_number', 0),
-                    x.get('chunk_index', 0)
-                )
-            )
-            
-            # Combine all chunk texts with page markers for better context
-            # Format: [Page X] content... [Page Y] content...
-            combined_content_parts = []
-            current_page = None
-            
-            for chunk in sorted_chunks:
-                chunk_text = chunk.get("content", "").strip()
-                if not chunk_text:
-                    continue
-                
-                page_num = chunk.get('page_number', 0)
-                
-                # Add page marker if page changed
-                if page_num != current_page:
-                    combined_content_parts.append(f"\n[Page {page_num}]\n")
-                    current_page = page_num
-                
-                combined_content_parts.append(chunk_text)
-            
-            combined_content = "\n".join(combined_content_parts)
-            
-            # Create combined document with all metadata preserved
-            combined_doc = {
-                "doc_id": doc_id,
-                "content": combined_content,
-                "property_id": metadata.get('property_id'),
-                "classification_type": metadata.get('classification_type', 'Unknown'),
-                "original_filename": metadata.get('original_filename'),
-                "property_address": metadata.get('property_address'),
-                "source": metadata.get('source', 'unknown'),
-                "similarity_score": max([chunk.get('similarity_score', 0.0) for chunk in chunks]),
-                # CRITICAL: Store all chunks metadata with bbox and blocks for citations
-                "source_chunks_metadata": [
-                    {
-                        'chunk_index': chunk.get('chunk_index'),
-                        'page_number': chunk.get('page_number'),
-                        'bbox': chunk.get('bbox'),  # Chunk-level bbox (fallback)
-                        'blocks': chunk.get('blocks', []),  # Block-level bboxes for precise citations
-                        'content': chunk.get('content', ''),  # Full content for accurate position mapping
-                        'vector_id': chunk.get('vector_id')  # For reference
-                    }
-                    for chunk in sorted_chunks
-                ],
-                # Store page range for display
-                "page_numbers": sorted(list(set([
-                    chunk.get('page_number', 0) for chunk in sorted_chunks
-                ]))),
-                "page_range": f"pages {min([chunk.get('page_number', 0) for chunk in sorted_chunks])}-{max([chunk.get('page_number', 0) for chunk in sorted_chunks])}"
-            }
-            combined_docs.append(combined_doc)
-            
-            logger.info(
-                "[PROCESS_DOCUMENTS] Combined %d chunks from document %s (%s) into single processing task",
-                len(chunks),
-                doc_id[:8],
-                metadata.get('original_filename', 'Unknown')
-            )
-    
     logger.info(
-        "[PROCESS_DOCUMENTS] Processing %d documents in parallel (reduced from %d chunks)",
-        len(combined_docs),
-        len(relevant_docs)
+        "[PROCESS_DOCUMENTS] Processing %d documents in parallel", len(relevant_docs)
     )
 
-    # Build subgraph once (inherits parent's checkpointer automatically)
     qa_subgraph = build_document_qa_subgraph()
-    
-    # Use provided config or empty dict (for stateless mode)
-    # LangGraph automatically passes config to nodes when graph has checkpointer
-    subgraph_config = graph_config if graph_config else {}
 
     async def process_one(doc) -> DocumentProcessingResult:
         doc_content = doc.get("content", "").strip()
+        
+        # #region agent log
+        # Debug: Log source_chunks_metadata in doc before processing for Hypothesis A
+        try:
+            source_chunks_metadata_in_doc = doc.get('source_chunks_metadata')
+            has_source_chunks_metadata = 'source_chunks_metadata' in doc
+            import json
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'A',
+                    'location': 'processing_nodes.py:126',
+                    'message': 'source_chunks_metadata in doc before processing',
+                    'data': {
+                        'doc_id': doc.get('doc_id', '')[:8] if doc.get('doc_id') else 'unknown',
+                        'has_source_chunks_metadata': has_source_chunks_metadata,
+                        'source_chunks_metadata_type': type(source_chunks_metadata_in_doc).__name__ if source_chunks_metadata_in_doc else 'None',
+                        'source_chunks_metadata_length': len(source_chunks_metadata_in_doc) if isinstance(source_chunks_metadata_in_doc, list) else 0,
+                        'doc_keys': list(doc.keys())[:15]
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except Exception:
+            pass
+        # #endregion
         
         # Log content length for debugging
         if not doc_content or len(doc_content) < 50:
@@ -223,18 +263,42 @@ async def process_documents(
             "doc_content": doc_content,
             "user_query": state.get("user_query", ""),
             "answer": "",
+            "detail_level": state.get("detail_level", "concise"),  # Pass detail_level to document QA
         }
 
         try:
-            # CRITICAL: Pass config to subgraph so it inherits checkpointer and uses same thread_id
-            # This ensures all subgraphs checkpoint correctly under the same thread_id
-            # Each subgraph gets unique step_path: main_graph.process_documents.doc1, doc2, etc.
-            output_state = await qa_subgraph.ainvoke(subgraph_state, config=subgraph_config)
+            output_state = await qa_subgraph.ainvoke(subgraph_state)
             
             # NEW: Extract source chunks metadata from doc (preserved from clarify_relevant_docs)
             source_chunks_metadata = doc.get('source_chunks_metadata')
             
             result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
+            
+            # #region agent log
+            # Debug: Log source_chunks_metadata after _build_processing_result for Hypothesis A
+            try:
+                result_has_source_chunks_metadata = 'source_chunks_metadata' in result
+                result_source_chunks_metadata_length = len(result.get('source_chunks_metadata', [])) if isinstance(result.get('source_chunks_metadata'), list) else 0
+                import json
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'A',
+                        'location': 'processing_nodes.py:153',
+                        'message': 'source_chunks_metadata after _build_processing_result',
+                        'data': {
+                            'doc_id': doc.get('doc_id', '')[:8] if doc.get('doc_id') else 'unknown',
+                            'result_has_source_chunks_metadata': result_has_source_chunks_metadata,
+                            'result_source_chunks_metadata_length': result_source_chunks_metadata_length,
+                            'input_source_chunks_metadata_length': len(source_chunks_metadata) if isinstance(source_chunks_metadata, list) else 0,
+                            'result_keys': list(result.keys())[:15]
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except Exception:
+                pass
+            # #endregion
             
             # Add metadata from original doc (page numbers, classification, filename, address)
             # Ensure doc_id comes from original doc (subgraph may not preserve it)
@@ -248,6 +312,31 @@ async def process_documents(
             result['search_source'] = doc.get('source', 'unknown')
             result['similarity_score'] = doc.get('similarity_score', 0.0)
             
+            # OPTIMIZATION: Pre-format document during processing to parallelize with LLM calls
+            # This saves time in summarize_results by doing formatting work in parallel
+            # Format after all metadata is added to ensure complete data
+            try:
+                # Format document with block IDs and create metadata lookup table
+                formatted_content, metadata_table = format_document_with_block_ids(result)
+                
+                # Store formatted content and metadata in result
+                result['formatted_content'] = formatted_content
+                result['formatted_metadata_table'] = metadata_table
+                result['is_formatted'] = True  # Flag to skip formatting in summarize_results
+                
+                logger.debug(
+                    "[PROCESS_DOCUMENTS] Pre-formatted doc %s with %d block IDs",
+                    result.get("doc_id", "")[:8],
+                    len(metadata_table) if metadata_table else 0
+                )
+            except Exception as format_error:
+                logger.warning(
+                    "[PROCESS_DOCUMENTS] Failed to pre-format doc %s: %s (will format in summarize_results)",
+                    result.get("doc_id", "")[:8],
+                    str(format_error)
+                )
+                result['is_formatted'] = False
+            
             logger.info(
                 "[PROCESS_DOCUMENTS] Completed doc %s (%s)", 
                 result["doc_id"][:8],
@@ -256,37 +345,6 @@ async def process_documents(
             # TODO: stream partial result to frontend if streaming enabled
             return result
         except Exception as exc:  # pylint: disable=broad-except
-            # Handle prepared statement errors gracefully (non-fatal, LangGraph retries internally)
-            error_msg = str(exc)
-            if "DuplicatePreparedStatement" in error_msg or "_pg3_" in error_msg:
-                logger.debug(
-                    "[PROCESS_DOCUMENTS] Prepared statement conflict for doc %s (non-fatal, retrying): %s",
-                    subgraph_state["doc_id"][:8],
-                    error_msg[:100]
-                )
-                # Retry once - LangGraph's checkpointer will handle the retry
-                try:
-                    await asyncio.sleep(0.1)  # Brief delay to avoid immediate retry conflict
-                    output_state = await qa_subgraph.ainvoke(subgraph_state, config=subgraph_config)
-                    source_chunks_metadata = doc.get('source_chunks_metadata')
-                    result = _build_processing_result(output_state, source_chunks_metadata=source_chunks_metadata)
-                    # Add metadata
-                    result['doc_id'] = doc.get('doc_id', '')
-                    result['classification_type'] = doc.get('classification_type', 'Unknown')
-                    result['page_range'] = doc.get('page_range', 'unknown')
-                    result['page_numbers'] = doc.get('page_numbers', [])
-                    result['original_filename'] = doc.get('original_filename')
-                    result['property_address'] = doc.get('property_address')
-                    result['search_source'] = doc.get('source', 'unknown')
-                    result['similarity_score'] = doc.get('similarity_score', 0.0)
-                    return result
-                except Exception as retry_exc:
-                    logger.warning(
-                        "[PROCESS_DOCUMENTS] Retry also failed for doc %s: %s",
-                        subgraph_state["doc_id"][:8],
-                        retry_exc
-                    )
-            
             logger.error(
                 "[PROCESS_DOCUMENTS] Error processing doc %s: %s",
                 subgraph_state["doc_id"],
@@ -300,13 +358,28 @@ async def process_documents(
                 source_chunks=[],
             )
 
-    # Run all subgraphs concurrently - each gets unique step_path in checkpoints
-    # All share same thread_id from config, so they checkpoint under same conversation
-    # Process combined documents (not individual chunks)
-    results: List[DocumentProcessingResult] = await asyncio.gather(
-        *(process_one(doc) for doc in combined_docs)
-    )
-
+    # PERFORMANCE OPTIMIZATION: Process documents and collect results as they complete
+    # This allows the frontend to see progress, though we still need to return all results
+    # Note: Individual completions can't be streamed from here, but we process efficiently
+    tasks = [asyncio.create_task(process_one(doc)) for doc in relevant_docs]
+    results: List[DocumentProcessingResult] = []
+    
+    # Collect results as they complete (faster than gather for user perception)
+    # Even though we can't stream from here, processing happens as fast as possible
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        results.append(result)
+        logger.info(
+            "[PROCESS_DOCUMENTS] ✅ Document %s completed (%d/%d)", 
+            result["doc_id"][:8],
+            len(results),
+            len(relevant_docs)
+        )
+    
+    # Sort results to maintain original document order (as_completed returns in completion order)
+    doc_id_to_result = {r['doc_id']: r for r in results}
+    results = [doc_id_to_result.get(doc.get('doc_id'), r) for doc, r in zip(relevant_docs, results) if doc.get('doc_id') in doc_id_to_result]
+    
     logger.info("[PROCESS_DOCUMENTS] Completed all %d documents", len(results))
     return {"document_outputs": results}
 
