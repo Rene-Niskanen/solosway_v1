@@ -1054,6 +1054,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
+  // Track custom dragged width for resizing
+  const [draggedWidth, setDraggedWidth] = React.useState<number | null>(null);
+  const [isResizing, setIsResizing] = React.useState<boolean>(false);
+  
+  // Use refs to store resize state for performance (avoid re-renders during drag)
+  const resizeStateRef = React.useRef<{
+    startPos: { x: number };
+    startWidth: number;
+  } | null>(null);
+  const rafIdRef = React.useRef<number | null>(null);
+  const panelElementRef = React.useRef<HTMLElement | null>(null);
   
   // State for reasoning trace toggle - persisted to localStorage
   const [showReasoningTrace, setShowReasoningTrace] = React.useState<boolean>(() => {
@@ -1118,52 +1129,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Set the bottom position
       setQuickStartBarBottom(`${bottomPosition}px`);
       
-      // Set maxWidth to match chat bar width, but let content be fit-content
-      // This allows the QuickStartBar to size naturally while preventing overflow
-      const formWidth = formInnerDiv.offsetWidth;
-      const containerWidth = container.offsetWidth;
-      
-      if (formWidth > 0 && containerWidth > 0) {
-        // Calculate the percentage width the form uses relative to container
-        const formWidthPercentage = (formWidth / containerWidth) * 100;
-        
-        // Set maxWidth to prevent overflow beyond chat bar width
-        // But don't set width - let it be fit-content so content can be its natural size
-        quickStartWrapper.style.width = 'fit-content';
-        // Use pixel-based buffer for more reliable overhang prevention
-        const bufferPixels = 2; // 20px buffer to prevent overhang
-        const formWidthPixels = (formWidthPercentage / 100) * containerWidth;
-        const maxWidthPixels = formWidthPixels - bufferPixels;
-        quickStartWrapper.style.maxWidth = `${maxWidthPixels}px`; // Pixel-based buffer to prevent overhang0
-        
-        // Check if items are selected by looking for property/file pills or white background container
-        // Only apply wrapper transform when items are selected (to avoid conflict with search bar positioning)
-        const hasPropertyPill = quickStartWrapper.querySelector('[class*="bg-white"][class*="border"]') !== null;
-        const hasSelectedItems = hasPropertyPill || 
-          (quickStartWrapper.querySelector('div')?.style.backgroundColor === 'white' ||
-           quickStartWrapper.querySelector('div')?.style.backgroundColor === 'rgb(255, 255, 255)');
-        
-        // Only apply transform positioning when items are selected
-        // When nothing is selected, the inner container transform handles positioning
-        if (hasSelectedItems) {
-          // Detect smallest chat view (when not expanded, typically 450px fixed width)
-          const isSmallestView = !isExpanded && formWidth <= 460; // 450px + small buffer
-          
-          if (isSmallestView) {
-            // Shift left to prevent right overhang
-            setQuickStartBarTransform('translateX(-58%)');
-          } else {
-            // Shift left slightly for all views to prevent right overhang
-            setQuickStartBarTransform('translateX(-82%)');
-          }
-        } else {
-          // No items selected - use default centering, let inner container handle positioning
-          setQuickStartBarTransform('translateX(-58%)');
-        }
-        
-        // This allows the QuickStartBar content to be as large as it needs to be
-        // while still staying within the chat bar's width boundaries
-      }
+      // QuickStartBar is now centered, so we just need to set maxWidth to match chat bar
+      quickStartWrapper.style.width = 'fit-content';
+      quickStartWrapper.style.maxWidth = '768px'; // Match chat bar max width
+      setQuickStartBarTransform('translateX(-50%)'); // Always center
     };
 
     // Initial calculation with a small delay to ensure DOM is ready
@@ -1200,12 +1169,113 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isExpanded, isPropertyDetailsOpen]);
   
+  // Handle resize functionality - similar to PDF preview modal
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const panelElement = e.currentTarget.closest('[class*="fixed"]') as HTMLElement;
+    if (!panelElement) return;
+    
+    panelElementRef.current = panelElement;
+    const rect = panelElement.getBoundingClientRect();
+    const currentWidth = draggedWidth !== null 
+      ? draggedWidth 
+      : (isExpanded 
+        ? (isPropertyDetailsOpen 
+          ? window.innerWidth * 0.35 
+          : window.innerWidth * 0.5)
+        : 450);
+    
+    setIsResizing(true);
+    
+    // Store in ref for fast access during drag
+    resizeStateRef.current = {
+      startPos: { x: e.clientX },
+      startWidth: currentWidth
+    };
+  };
+
+  // Handle resize mouse move and cleanup - using useEffect like PDF preview modal
+  React.useEffect(() => {
+    if (!isResizing || !resizeStateRef.current || !panelElementRef.current) {
+      return;
+    }
+
+    const state = resizeStateRef.current;
+    const minWidth = 450;
+    const maxWidth = window.innerWidth - sidebarWidth - 100;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Cancel any pending RAF
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+
+      // Use requestAnimationFrame for smooth updates
+      rafIdRef.current = requestAnimationFrame(() => {
+        if (!panelElementRef.current || !resizeStateRef.current) return;
+
+        const deltaX = e.clientX - state.startPos.x;
+        
+        // Calculate new width based on delta (dragging right = positive delta = wider)
+        const newWidth = Math.min(Math.max(state.startWidth + deltaX, minWidth), maxWidth);
+        
+        // Direct DOM manipulation for immediate visual feedback
+        if (panelElementRef.current) {
+          panelElementRef.current.style.width = `${newWidth}px`;
+        }
+        
+        // Update state
+        setDraggedWidth(newWidth);
+        if (onChatWidthChange) {
+          onChatWidthChange(newWidth);
+        }
+      });
+    };
+
+    const handleMouseUp = () => {
+      // Cancel any pending RAF
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+
+      setIsResizing(false);
+      resizeStateRef.current = null;
+      panelElementRef.current = null;
+      
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    // Use passive listeners for better performance
+    document.addEventListener('mousemove', handleMouseMove, { passive: true });
+    document.addEventListener('mouseup', handleMouseUp, { passive: true });
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      // Cleanup
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing, sidebarWidth, onChatWidthChange]);
+
   // Calculate and notify parent of chat panel width changes
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
-      // Use locked width if available, otherwise calculate based on current state
+      // Use dragged width if set, otherwise use locked width or calculate based on current state
       let chatWidth: number;
-      if (isExpanded) {
+      if (draggedWidth !== null) {
+        chatWidth = draggedWidth;
+      } else if (isExpanded) {
         if (lockedWidthRef.current) {
           // Use locked width (convert vw to pixels)
           const vwValue = parseFloat(lockedWidthRef.current);
@@ -1222,7 +1292,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, onChatWidthChange]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange]);
+  
+  // Don't reset dragged width when collapsing - allow custom width to persist
+  // User can resize in both expanded and collapsed states
   const hasInitializedAttachmentsRef = React.useRef(false);
   const attachedFilesRef = React.useRef<FileAttachmentData[]>([]);
   const abortControllerRef = React.useRef<AbortController | null>(null); // For cancelling streaming queries
@@ -3376,19 +3449,49 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }}
           layout
           className="fixed top-0 bottom-0 z-30"
-          style={{
+            style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
-            width: isExpanded 
-              ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
-              : '450px', // Fixed width when collapsed
+            width: draggedWidth !== null 
+              ? `${draggedWidth}px` // Use dragged width if set (works for both expanded and collapsed)
+              : (isExpanded 
+                ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
+                : '450px'), // Fixed width when collapsed (but can be resized via drag)
             backgroundColor: '#F9F9F9',
             boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
-            transition: 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Smooth transition matching map clip-path animation
+            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
             willChange: 'width', // Optimize for smooth width changes
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
         >
+          {/* Drag handle for resizing from right edge - available in both expanded and collapsed states */}
+          <div
+            onMouseDown={handleResizeStart}
+            style={{
+              position: 'absolute',
+              right: '-2px', // Extend slightly beyond the edge for easier grabbing
+              top: 0,
+              bottom: 0,
+              width: '12px', // Wider handle for better visibility and easier grabbing
+              cursor: 'ew-resize',
+              zIndex: 50, // High z-index to ensure it's on top
+              backgroundColor: 'transparent', // No background color
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'auto', // Ensure it captures mouse events
+            }}
+          >
+            {/* Very subtle visual indicator - no blue line */}
+            <div
+              style={{
+                width: '1px',
+                height: '100%',
+                backgroundColor: 'rgba(156, 163, 175, 0.15)', // Very subtle gray line
+              }}
+            />
+          </div>
+          
           {/* Panel content will go here */}
           <div className="h-full flex flex-col">
             {/* Header */}
@@ -3478,21 +3581,96 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <button
                     type="button"
                     onClick={() => {
-                      // Clear locked width when user manually toggles expand/collapse
-                      lockedWidthRef.current = null;
-                      setIsExpanded(!isExpanded);
+                      // Get current width in pixels (same logic as drag resizing uses)
+                      let currentWidth: number;
+                      if (draggedWidth !== null) {
+                        currentWidth = draggedWidth;
+                      } else if (lockedWidthRef.current) {
+                        // Convert vw to pixels if locked width is set
+                        const vwValue = parseFloat(lockedWidthRef.current);
+                        currentWidth = window.innerWidth * (vwValue / 100);
+                      } else if (isExpanded) {
+                        currentWidth = isPropertyDetailsOpen 
+                          ? window.innerWidth * 0.35 
+                          : window.innerWidth * 0.5;
+                      } else {
+                        currentWidth = 450;
+                      }
+                      
+                      // Define threshold: if width is >= 600px, consider it "large" and make it smaller
+                      // Otherwise, make it larger
+                      const SMALL_SIZE = 450; // Minimum/collapsed size
+                      const LARGE_SIZE = isPropertyDetailsOpen 
+                        ? window.innerWidth * 0.35 
+                        : window.innerWidth * 0.5;
+                      const THRESHOLD = 600; // Threshold between small and large
+                      
+                      let newWidth: number;
+                      let newExpandedState: boolean;
+                      
+                      if (currentWidth >= THRESHOLD) {
+                        // Currently large - make it smaller
+                        newWidth = SMALL_SIZE;
+                        newExpandedState = false;
+                      } else {
+                        // Currently small - make it larger
+                        newWidth = LARGE_SIZE;
+                        newExpandedState = true;
+                      }
+                      
+                      // Use the same pixel-based sizing as drag resizing
+                      setDraggedWidth(newWidth);
+                      setIsExpanded(newExpandedState);
+                      lockedWidthRef.current = null; // Clear locked width to use dragged width
+                      
+                      // Notify parent of width change
+                      if (onChatWidthChange) {
+                        onChatWidthChange(newWidth);
+                      }
                     }}
                     className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
                     style={{
                       marginLeft: '4px'
                     }}
-                    title={isExpanded ? "Collapse chat" : "Expand chat"}
+                    title={(() => {
+                      // Calculate current width using same logic as onClick
+                      let currentWidth: number;
+                      if (draggedWidth !== null) {
+                        currentWidth = draggedWidth;
+                      } else if (lockedWidthRef.current) {
+                        const vwValue = parseFloat(lockedWidthRef.current);
+                        currentWidth = window.innerWidth * (vwValue / 100);
+                      } else if (isExpanded) {
+                        currentWidth = isPropertyDetailsOpen 
+                          ? window.innerWidth * 0.35 
+                          : window.innerWidth * 0.5;
+                      } else {
+                        currentWidth = 450;
+                      }
+                      return currentWidth >= 600 ? "Make chat smaller" : "Make chat larger";
+                    })()}
                   >
-                    {isExpanded ? (
-                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
-                    ) : (
-                      <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
-                    )}
+                    {(() => {
+                      // Calculate current width using same logic as onClick
+                      let currentWidth: number;
+                      if (draggedWidth !== null) {
+                        currentWidth = draggedWidth;
+                      } else if (lockedWidthRef.current) {
+                        const vwValue = parseFloat(lockedWidthRef.current);
+                        currentWidth = window.innerWidth * (vwValue / 100);
+                      } else if (isExpanded) {
+                        currentWidth = isPropertyDetailsOpen 
+                          ? window.innerWidth * 0.35 
+                          : window.innerWidth * 0.5;
+                      } else {
+                        currentWidth = 450;
+                      }
+                      return currentWidth >= 600 ? (
+                        <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      ) : (
+                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      );
+                    })()}
                   </button>
                   <button
                     onClick={onMapToggle}
@@ -3511,17 +3689,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               className="flex-1 overflow-y-auto sidechat-scroll" 
               style={{ 
                 backgroundColor: '#F9F9F9',
-                padding: isExpanded 
-                  ? '16px calc(36px + 7.5%) 16px calc(36px + 7.5%)' // Align with centered chat bar when expanded (36px container padding + 7.5% offset on both sides for centered 85% width)
-                  : '16px 20px 16px 12px', // Normal padding when collapsed
+                padding: '16px 0', // Simplified padding - content will be centered
                 scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(0, 0, 0, 0.1) transparent'
+                scrollbarColor: 'rgba(0, 0, 0, 0.1) transparent',
+                minWidth: '300px', // Prevent squishing of content area
+                flexShrink: 1, // Allow shrinking but with minWidth constraint
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center' // Center content like ChatGPT
               }}
             >
-              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
-                <AnimatePresence>
-                  {renderedMessages}
-                </AnimatePresence>
+              {/* Centered content wrapper - ChatGPT-like centered layout */}
+              <div style={{ 
+                width: '100%', 
+                maxWidth: '768px', // Match chat bar max width
+                paddingLeft: '16px',
+                paddingRight: '16px',
+                margin: '0 auto' // Center the content wrapper
+              }}>
+                <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
+                  <AnimatePresence>
+                    {renderedMessages}
+                  </AnimatePresence>
+                </div>
               </div>
             </div>
             
@@ -3529,7 +3719,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             {/* Chat Input at Bottom - Condensed SearchBar design */}
             <div 
               ref={chatInputContainerRef}
-              style={{ backgroundColor: '#F9F9F9', paddingTop: '16px', paddingBottom: '34px', paddingLeft: '36px', paddingRight: '36px', position: 'relative', overflow: 'visible' }}
+              style={{ 
+                backgroundColor: '#F9F9F9', 
+                paddingTop: '16px', 
+                paddingBottom: '34px', 
+                paddingLeft: '0', // Remove left padding - centering handled by form
+                paddingRight: '0', // Remove right padding - centering handled by form
+                position: 'relative', 
+                overflow: 'visible',
+                minWidth: '300px', // Prevent squishing of chat input container
+                flexShrink: 0, // Prevent flex shrinking
+                display: 'flex',
+                justifyContent: 'center', // Center the form
+                width: '100%'
+              }}
                 >
                   {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
                   {isQuickStartBarVisible && (
@@ -3538,11 +3741,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       style={{
                         position: 'absolute',
                     bottom: quickStartBarBottom, // Dynamically calculated position
-                    left: '58%',
-                    transform: quickStartBarTransform, // Dynamically adjusted for smallest view
+                    left: '50%',
+                    transform: 'translateX(-50%)', // Center the QuickStartBar
                         zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
-                    maxWidth: isExpanded ? '85%' : '100%', // Initial maxWidth, will be updated by layout effect
+                    maxWidth: '768px', // Match chat bar max width
                     display: 'flex',
                     justifyContent: 'center'
                       }}
@@ -3564,7 +3767,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 ref={chatFormRef}
                 onSubmit={handleSubmit} 
                 className="relative" 
-                style={{ overflow: 'visible', height: 'auto', width: '100%', display: 'flex', justifyContent: 'center', position: 'relative' }}
+                style={{ 
+                  overflow: 'visible', 
+                  height: 'auto', 
+                  width: '100%', 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center',
+                  position: 'relative',
+                  paddingLeft: '16px', // Add horizontal padding for edge spacing
+                  paddingRight: '16px'
+                }}
               >
                 <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
@@ -3578,12 +3791,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    width: isExpanded ? '85%' : '100%', // Narrower when expanded
-                    minWidth: '0',
+                    width: 'min(100%, 768px)', // ChatGPT-like: full width when narrow, max 768px when wide (centered by parent)
+                    minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
                     minHeight: 'fit-content',
                     boxSizing: 'border-box',
                     borderRadius: '12px' // Always use rounded square corners
+                    // Centered by parent form's justifyContent: 'center'
                   }}
                 >
                   {/* Input row */}
