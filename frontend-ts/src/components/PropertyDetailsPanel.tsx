@@ -571,6 +571,25 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 }) => {
   // Determine if chat panel is actually open based on width
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
+  
+  // Track when chat panel is resizing to disable layout animations
+  const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
+  const prevChatPanelWidthRef = React.useRef<number>(chatPanelWidth);
+  
+  // Detect when chatPanelWidth is changing (resizing) and disable layout animations
+  React.useEffect(() => {
+    if (prevChatPanelWidthRef.current !== chatPanelWidth && isChatPanelOpen) {
+      setIsChatPanelResizing(true);
+      // Reset after resize completes (typically fast, but allow some buffer)
+      const timeout = setTimeout(() => {
+        setIsChatPanelResizing(false);
+      }, 150);
+      prevChatPanelWidthRef.current = chatPanelWidth;
+      return () => clearTimeout(timeout);
+    } else {
+      prevChatPanelWidthRef.current = chatPanelWidth;
+    }
+  }, [chatPanelWidth, isChatPanelOpen]);
   const backendApiContext = useBackendApi();
   const { isSelectionModeActive, addPropertyAttachment, propertyAttachments } = usePropertySelection();
   
@@ -1924,7 +1943,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
           {/* Main Window - Compact Grid Layout (Artboard Style) */}
           <motion.div
-            layout={selectedCardIndex === null} // Only enable layout animations when preview is NOT open
+            layout={selectedCardIndex === null && !isChatPanelResizing} // Disable layout animations when chat panel is resizing
             initial={{ opacity: 1, scale: 1, y: 0 }}
             animate={{ 
               opacity: 1, 
@@ -1935,7 +1954,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             transition={{ 
               duration: 0, // Instant appearance - no opening transition
               ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
-              layout: { duration: 0.3 } // Smooth layout transitions
+              layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
             }}
             className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
             style={{ 
@@ -1949,7 +1968,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               bottom: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
-              transition: 'none', // No transition for width changes - instant like chat
+              transition: 'none', // No transition for width/position changes - instant like chat
               
               // Normal Mode: Centered with margins
               marginBottom: isChatPanelOpen ? '0' : '15vh',
