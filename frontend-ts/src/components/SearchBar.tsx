@@ -218,7 +218,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               if (inputRef.current) {
                 inputRef.current.style.height = 'auto';
                 const scrollHeight = inputRef.current.scrollHeight;
-                const maxHeight = 350;
+                // Calculate viewport-aware maxHeight to prevent overflow
+                // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+                const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
                 const newHeight = Math.min(scrollHeight, maxHeight);
                 inputRef.current.style.height = `${newHeight}px`;
                 inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
@@ -644,7 +646,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Adjust height - let CSS transition handle the animation
           inputRef.current.style.height = 'auto';
           const scrollHeight = inputRef.current.scrollHeight;
-          const maxHeight = 350;
+          // Calculate viewport-aware maxHeight to prevent overflow
+          // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+          const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -715,7 +719,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         if (inputRef.current) {
           inputRef.current.style.height = 'auto';
           const scrollHeight = inputRef.current.scrollHeight;
-          const maxHeight = 350;
+          // Calculate viewport-aware maxHeight to prevent overflow
+          // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+          const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -1081,6 +1087,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             : "w-full flex justify-center px-6"
       }`}
       style={{
+        ...(contextConfig.position === "bottom" && !isMapVisible && { 
+          // Constrain height to stay within viewport when fixed at bottom
+          maxHeight: 'calc(100vh - 40px)', // Viewport height minus bottom offset (20px) and padding
+          overflowY: 'auto', // Allow scrolling if content exceeds max height
+          overflowX: 'visible'
+        }),
         ...(contextConfig.position !== "bottom" && !isMapVisible && { 
           height: 'auto', 
           minHeight: 'fit-content',
@@ -1096,7 +1108,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           display: 'block',
           padding: '0' // Remove any padding in map view
         }),
-        overflow: 'visible'
+        overflow: contextConfig.position === "bottom" && !isMapVisible ? 'auto' : 'visible'
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -1201,7 +1213,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 height: 'auto', 
                 minHeight: '24px',
                 width: '100%',
-                minWidth: '0' // Prevent width constraints
+                minWidth: '0', // Prevent width constraints
+                gap: '12px' // Use gap instead of marginBottom for consistent spacing
               }}
             >
               {/* Textarea always above icons */}
@@ -1210,15 +1223,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 style={{ 
                   minHeight: '24px',
                   width: '100%',
-                  marginTop: '4px', // Additional padding above textarea
-                  marginBottom: '12px' // Space between text and icons
+                  marginTop: '0px', // Fixed at 0 - no conditional changes to prevent shifts
+                  marginBottom: '0px', // Use parent gap instead
+                  paddingTop: '0px',
+                  paddingBottom: '0px'
                 }}
               >
                   <div className="flex-1 relative flex items-start w-full" style={{ 
                     overflow: 'visible', 
                     minHeight: '24px',
                     width: '100%',
-                    minWidth: '0'
+                    minWidth: '0',
+                    alignSelf: 'flex-start' // Ensure consistent top alignment
                   }}>
                     {/* Textarea - always rendered */}
                     <textarea 
@@ -1253,7 +1269,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
                         minHeight: '24px',
-                        maxHeight: '350px',
+                        maxHeight: contextConfig.position === "bottom" && !isMapVisible 
+                          ? 'calc(100vh - 200px)' // Viewport-aware: account for container padding, icons, and spacing
+                          : '350px', // Default max height for other positions
                         fontSize: '14px',
                         lineHeight: '20px',
                         paddingTop: '0px',
@@ -1268,7 +1286,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         transition: 'none',
                         resize: 'none',
                         width: '100%',
-                        minWidth: '0'
+                        minWidth: '0',
+                        verticalAlign: 'top', // Ensure text aligns to top consistently
+                        display: 'block' // Ensure block display for consistent positioning
                       }}
                       autoComplete="off"
                       disabled={isSubmitted}

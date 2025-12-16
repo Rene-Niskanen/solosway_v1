@@ -25,6 +25,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
+import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
@@ -1707,7 +1708,9 @@ export const MainContent = ({
     setActivePreviewTabIndex,
     setIsPreviewOpen,
     addPreviewFile,
-    MAX_PREVIEW_TABS
+    MAX_PREVIEW_TABS,
+    expandedCardViewDoc,
+    closeExpandedCardView
   } = usePreview();
   
   // Use the prop value for chat mode
@@ -2518,7 +2521,12 @@ export const MainContent = ({
           }} transition={{
             duration: 0.3,
             ease: [0.23, 1, 0.32, 1]
-          }} className="flex flex-col items-center flex-1 relative" style={{ height: '100%', minHeight: '100%' }}>
+          }} className="flex flex-col items-center flex-1 relative" style={{ 
+            height: '100%', 
+            minHeight: '100%',
+            backgroundColor: 'transparent', // Ensure transparent to show background
+            background: 'transparent' // Ensure transparent to show background
+          }}>
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
                 
@@ -2814,8 +2822,9 @@ export const MainContent = ({
                             width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
                             maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
                             boxSizing: 'border-box', // Include padding in width calculation
-                            backgroundColor: shouldPositionAtBottom ? 'rgba(255, 255, 255, 0.95)' : 'transparent', // Subtle background when fixed at bottom
-                            backdropFilter: shouldPositionAtBottom ? 'blur(10px)' : 'none' // Blur effect when fixed at bottom (ChatGPT-style)
+                            backgroundColor: 'transparent', // Fully transparent - background shows through
+                            background: 'transparent', // Fully transparent - background shows through
+                            backdropFilter: 'none' // No backdrop filter to ensure full transparency
                           }}>
                 <SearchBar 
                   onSearch={handleSearch} 
@@ -3470,12 +3479,15 @@ export const MainContent = ({
             zIndex: 10000, // VERY HIGH z-index to ensure it's on top
             width: 'clamp(400px, 85vw, 650px)',
             maxWidth: 'clamp(400px, 85vw, 650px)',
+            maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
             boxSizing: 'border-box',
             pointerEvents: 'auto', // Ensure it's clickable
             // Remove flex from container - let SearchBar determine its own size
             display: 'block',
             // Add minHeight to prevent collapse before content renders
-            minHeight: '60px'
+            minHeight: '60px',
+            overflowY: 'auto', // Allow scrolling if content exceeds max height
+            overflowX: 'visible'
           }}>
           <SearchBar 
             ref={mapSearchBarRefCallback}
@@ -3763,6 +3775,18 @@ export const MainContent = ({
       </div>
       
       {/* MapChatBar removed - using unified SearchBar instead */}
+      
+      {/* Standalone ExpandedCardView - for citations */}
+      {expandedCardViewDoc && (
+        <StandaloneExpandedCardView
+          docId={expandedCardViewDoc.docId}
+          filename={expandedCardViewDoc.filename}
+          highlight={expandedCardViewDoc.highlight}
+          onClose={closeExpandedCardView}
+          chatPanelWidth={chatPanelWidth}
+          sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+        />
+      )}
       
       {/* Shared Document Preview Modal - used by SearchBar, ChatInterface, and PropertyFilesModal */}
       <DocumentPreviewModal
