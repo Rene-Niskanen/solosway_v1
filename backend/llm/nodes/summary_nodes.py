@@ -125,10 +125,23 @@ def _extract_citations_from_text(
             if found_block:
                 # Validate BBOX coordinates (check not fallback 0,0,1,1)
                 block_metadata = found_block['block_metadata']
-                bbox_left = block_metadata.get('bbox_left', 0.0)
-                bbox_top = block_metadata.get('bbox_top', 0.0)
-                bbox_width = block_metadata.get('bbox_width', 1.0)
-                bbox_height = block_metadata.get('bbox_height', 1.0)
+                # CRITICAL: Use single source of truth for bbox extraction
+                from backend.llm.citation_mapping import map_block_id_to_bbox
+                single_block_table = {block_id_from_text: found_block['block_metadata']}
+                bbox_data = map_block_id_to_bbox(block_id_from_text, single_block_table)
+                
+                if bbox_data:
+                    bbox = bbox_data.get('bbox', {})
+                    bbox_left = bbox.get('left', 0.0)
+                    bbox_top = bbox.get('top', 0.0)
+                    bbox_width = bbox.get('width', 1.0)
+                    bbox_height = bbox.get('height', 1.0)
+                else:
+                    # Fallback if mapping fails
+                    bbox_left = found_block['block_metadata'].get('bbox_left', 0.0)
+                    bbox_top = found_block['block_metadata'].get('bbox_top', 0.0)
+                    bbox_width = found_block['block_metadata'].get('bbox_width', 1.0)
+                    bbox_height = found_block['block_metadata'].get('bbox_height', 1.0)
                 
                 is_fallback_bbox = (
                     bbox_left == 0.0 and
@@ -313,64 +326,81 @@ def _extract_citations_from_text(
     return citation_tool_instance.citations, summary
 
 
-def _renumber_citations_by_appearance(summary: str, citations: List[Dict]) -> Tuple[str, List[Dict]]:
+def _renumber_citations_by_appearance(
+    summary: str, 
+    citations: List[Dict],
+    metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]] = None
+) -> Tuple[str, List[Dict]]:
+    # #region agent log
+    import json
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'H',
+                'location': 'summary_nodes.py:329',
+                'message': 'ENTRY: _renumber_citations_by_appearance - checking metadata_lookup_tables',
+                'data': {
+                    'has_metadata_lookup_tables': metadata_lookup_tables is not None,
+                    'num_docs_in_tables': len(metadata_lookup_tables) if metadata_lookup_tables else 0,
+                    'doc_ids': list(metadata_lookup_tables.keys()) if metadata_lookup_tables else [],
+                    'num_citations': len(citations),
+                    'citation_numbers': [c.get('citation_number') for c in citations]
+                },
+                'timestamp': int(__import__('time').time() * 1000)
+            }) + '\n')
+    except: pass
+    # #endregion
     """
     Renumber citations based on their order of appearance in the response text.
     
     This ensures citations are sequential (1, 2, 3...) based on when they first appear,
     not based on when they were extracted in Phase 1.
     
+    CRITICAL: Validates that the fact in the text matches the Phase 1 cited_text.
+    If they don't match, uses semantic search to find the correct block_id.
+    
     Args:
-        summary: The LLM response text with citation superscripts
+        summary: The LLM response text with citation markers in bracket format [1], [2], [3]
         citations: List of citation dictionaries with citation_number, block_id, etc.
+        metadata_lookup_tables: Map of doc_id -> block_id -> metadata (for semantic search if needed)
     
     Returns:
         Tuple of (renumbered_summary, renumbered_citations)
     """
     import re
+    from backend.llm.tools.citation_mapping import verify_citation_match
     
-    # Map of superscript characters to numbers
-    superscript_to_num = {
-        '¹': 1, '²': 2, '³': 3, '⁴': 4, '⁵': 5, '⁶': 6, '⁷': 7, '⁸': 8, '⁹': 9, '¹⁰': 10,
-        '¹¹': 11, '¹²': 12, '¹³': 13, '¹⁴': 14, '¹⁵': 15, '¹⁶': 16, '¹⁷': 17, '¹⁸': 18, '¹⁹': 19, '²⁰': 20
-    }
-    
-    # Find all citation superscripts in order of appearance
-    # Pattern matches individual superscripts (¹, ², ³) or combined (¹², ¹²³)
-    # We'll handle both individual and combined, but prefer individual
-    citation_pattern = r'[¹²³⁴⁵⁶⁷⁸⁹]+'
+    # Find all citation brackets in order of appearance: [1], [2], [3], etc.
+    # Pattern matches bracket format: [1], [2], [123], etc.
+    citation_pattern = r'\[(\d+)\]'
     matches = list(re.finditer(citation_pattern, summary))
     
     if not matches:
-        logger.debug("[RENUMBER_CITATIONS] No citation superscripts found in summary")
+        logger.debug("[RENUMBER_CITATIONS] No citation brackets found in summary")
         return summary, citations
     
-    # Extract citation numbers in order of appearance
-    # For combined superscripts like "¹²³", we need to split them
+    # Extract citation numbers in order of appearance from brackets [1], [2], [3]
     appearance_order = []
     seen_citation_nums = set()
     
+    # Log all citation numbers found in text
+    all_citation_nums_in_text = [int(m.group(1)) for m in matches]
+    logger.info(
+        f"[RENUMBER_CITATIONS] Found {len(all_citation_nums_in_text)} citation markers in text: "
+        f"{all_citation_nums_in_text[:20]}{'...' if len(all_citation_nums_in_text) > 20 else ''}"
+    )
+    
     for match in matches:
-        superscript_text = match.group()
-        # Handle combined superscripts (e.g., "¹²" = 12, "¹²³" = 123)
-        # But we want individual citations, so split them
-        citation_nums = []
-        
-        # Try to parse as combined first (for backwards compatibility)
-        if superscript_text in superscript_to_num:
-            citation_nums = [superscript_to_num[superscript_text]]
-        else:
-            # Split combined superscripts into individual ones
-            # "¹²" -> [1, 2], "¹²³" -> [1, 2, 3]
-            for char in superscript_text:
-                if char in superscript_to_num:
-                    citation_nums.append(superscript_to_num[char])
-        
-        # Add citation numbers in order, avoiding duplicates
-        for cit_num in citation_nums:
-            if cit_num not in seen_citation_nums:
-                appearance_order.append(cit_num)
-                seen_citation_nums.add(cit_num)
+        citation_num = int(match.group(1))  # Extract number from [1], [2], etc.
+        if citation_num not in seen_citation_nums:
+            appearance_order.append(citation_num)
+            seen_citation_nums.add(citation_num)
+    
+    logger.info(
+        f"[RENUMBER_CITATIONS] Unique citation numbers in appearance order: {appearance_order}"
+    )
     
     if not appearance_order:
         logger.debug("[RENUMBER_CITATIONS] No valid citation numbers extracted")
@@ -381,29 +411,11 @@ def _renumber_citations_by_appearance(summary: str, citations: List[Dict]) -> Tu
     for new_num, old_num in enumerate(appearance_order, start=1):
         old_to_new[old_num] = new_num
     
-    # Create reverse mapping for superscript characters
-    num_to_superscript = {
-        1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹', 10: '¹⁰',
-        11: '¹¹', 12: '¹²', 13: '¹³', 14: '¹⁴', 15: '¹⁵', 16: '¹⁶', 17: '¹⁷', 18: '¹⁸', 19: '¹⁹', 20: '²⁰'
-    }
-    
-    # Replace citation numbers in summary text
+    # Replace citation numbers in summary text with renumbered brackets
     def replace_citation(match):
-        superscript_text = match.group()
-        # Extract citation numbers from this superscript
-        citation_nums = []
-        if superscript_text in superscript_to_num:
-            citation_nums = [superscript_to_num[superscript_text]]
-        else:
-            for char in superscript_text:
-                if char in superscript_to_num:
-                    citation_nums.append(superscript_to_num[char])
-        
-        # Map to new numbers and format with spaces
-        new_nums = [old_to_new.get(num, num) for num in citation_nums]
-        # Format as individual superscripts with spaces: "¹ ² ³"
-        new_superscripts = ' '.join([num_to_superscript.get(num, str(num)) for num in new_nums])
-        return new_superscripts
+        old_num = int(match.group(1))
+        new_num = old_to_new.get(old_num, old_num)
+        return f"[{new_num}]"
     
     renumbered_summary = re.sub(citation_pattern, replace_citation, summary)
     
@@ -411,12 +423,393 @@ def _renumber_citations_by_appearance(summary: str, citations: List[Dict]) -> Tu
     # Create lookup: old citation_number -> citation dict
     citations_by_old_num = {cit.get('citation_number', 0): cit for cit in citations}
     
+    # Log Phase 1 citations for debugging
+    logger.info(
+        f"[RENUMBER_CITATIONS] Phase 1 citations available: {list(citations_by_old_num.keys())} "
+        f"({len(citations_by_old_num)} total)"
+    )
+    for old_num, cit in citations_by_old_num.items():
+        block_id = cit.get('block_id', 'UNKNOWN')
+        doc_id = cit.get('doc_id', 'UNKNOWN')[:8] if cit.get('doc_id') else 'UNKNOWN'
+        page = cit.get('page_number', 0)
+        logger.debug(
+            f"[RENUMBER_CITATIONS] Phase 1 citation {old_num}: block_id={block_id}, "
+            f"doc={doc_id}, page={page}"
+        )
+    
     renumbered_citations = []
     for new_num, old_num in enumerate(appearance_order, start=1):
         if old_num in citations_by_old_num:
-            cit = citations_by_old_num[old_num].copy()
-            cit['citation_number'] = new_num
-            renumbered_citations.append(cit)
+            old_cit = citations_by_old_num[old_num]
+            cited_text_from_phase1 = old_cit.get('cited_text', '')
+            block_id_from_phase1 = old_cit.get('block_id', 'UNKNOWN')
+            citation_appended = False  # Track if we've appended this citation
+            
+            # Extract the fact from the context around this citation in Phase 2 text
+            citation_matches = list(re.finditer(rf'\[{old_num}\]', summary))
+            if citation_matches:
+                first_match = citation_matches[0]
+                # Extract 100 chars before citation to get the fact
+                context_start = max(0, first_match.start() - 100)
+                context_before = summary[context_start:first_match.start()].strip()
+                # Extract the fact (last sentence or phrase before citation)
+                sentence_start = context_before.rfind('.') + 1
+                fact_from_phase2_text = context_before[sentence_start:].strip() if sentence_start > 0 else context_before[-50:].strip()
+                
+                # Verify that the fact in Phase 2 text matches the ACTUAL BLOCK CONTENT from Phase 1
+                # CRITICAL: We must verify against the block content, not just the cited_text
+                # The cited_text might match, but the block might not contain the actual figure
+                if cited_text_from_phase1 and fact_from_phase2_text:
+                    # #region agent log
+                    try:
+                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                'sessionId': 'debug-session',
+                                'runId': 'run1',
+                                'hypothesisId': 'H',
+                                'location': 'summary_nodes.py:438',
+                                'message': f'BEFORE VALIDATION: Citation {old_num} -> {new_num}',
+                                'data': {
+                                    'old_citation_number': old_num,
+                                    'new_citation_number': new_num,
+                                    'fact_from_phase2_text': fact_from_phase2_text,
+                                    'cited_text_from_phase1': cited_text_from_phase1,
+                                    'block_id_from_phase1': block_id_from_phase1,
+                                    'has_metadata_lookup_tables': metadata_lookup_tables is not None,
+                                    'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
+                                    'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text
+                                },
+                                'timestamp': int(__import__('time').time() * 1000)
+                            }) + '\n')
+                    except: pass
+                    # #endregion
+                    
+                    # Get the actual block content from Phase 1 to verify what it contains
+                    phase1_block_content = None
+                    if metadata_lookup_tables and block_id_from_phase1:
+                        for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
+                            if block_id_from_phase1 in search_metadata_table:
+                                phase1_block_content = search_metadata_table[block_id_from_phase1].get('content', '')
+                                # #region agent log
+                                try:
+                                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                        f.write(json.dumps({
+                                            'sessionId': 'debug-session',
+                                            'runId': 'run1',
+                                            'hypothesisId': 'H',
+                                            'location': 'summary_nodes.py:448',
+                                            'message': f'FOUND block content for citation {old_num}',
+                                            'data': {
+                                                'old_citation_number': old_num,
+                                                'block_id': block_id_from_phase1,
+                                                'doc_id': search_doc_id[:8],
+                                                'block_content_preview': phase1_block_content[:200] if phase1_block_content else None,
+                                                'block_contains_1_9m': '1.9' in (phase1_block_content or '') or '1,950' in (phase1_block_content or ''),
+                                                'block_contains_2_4m': '2.4' in (phase1_block_content or '') or '2,400' in (phase1_block_content or '')
+                                            },
+                                            'timestamp': int(__import__('time').time() * 1000)
+                                        }) + '\n')
+                                except: pass
+                                # #endregion
+                                break
+                    else:
+                        # #region agent log
+                        try:
+                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'H',
+                                    'location': 'summary_nodes.py:448',
+                                    'message': f'NO block content found for citation {old_num}',
+                                    'data': {
+                                        'old_citation_number': old_num,
+                                        'block_id': block_id_from_phase1,
+                                        'has_metadata_lookup_tables': metadata_lookup_tables is not None,
+                                        'has_block_id': bool(block_id_from_phase1)
+                                    },
+                                    'timestamp': int(__import__('time').time() * 1000)
+                                }) + '\n')
+                        except: pass
+                        # #endregion
+                    
+                    # Verify against the ACTUAL block content (not just cited_text)
+                    # This ensures the block actually contains the figure being cited
+                    if phase1_block_content:
+                        verification = verify_citation_match(fact_from_phase2_text, phase1_block_content)
+                    else:
+                        # Fallback to cited_text if block content not available
+                        verification = verify_citation_match(fact_from_phase2_text, cited_text_from_phase1)
+                    
+                    # #region agent log
+                    import json
+                    try:
+                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                            f.write(json.dumps({
+                                'sessionId': 'debug-session',
+                                'runId': 'run1',
+                                'hypothesisId': 'G',
+                                'location': 'summary_nodes.py:441',
+                                'message': 'CRITICAL: Validating citation fact match - checking block content contains figure',
+                                'data': {
+                                    'old_citation_number': old_num,
+                                    'new_citation_number': new_num,
+                                    'fact_from_phase2_text': fact_from_phase2_text,
+                                    'cited_text_from_phase1': cited_text_from_phase1,
+                                    'block_id_from_phase1': block_id_from_phase1,
+                                    'phase1_block_content_preview': phase1_block_content[:150] if phase1_block_content else None,
+                                    'verification_match': verification.get('match', False),
+                                    'verification_confidence': verification.get('confidence', 'low'),
+                                    'numeric_matches': verification.get('numeric_matches', []),
+                                    'matched_terms': verification.get('matched_terms', []),
+                                    'missing_terms': verification.get('missing_terms', []),
+                                    'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
+                                    'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text,
+                                    'block_contains_1_9m': '1.9' in (phase1_block_content or '') or '1,950' in (phase1_block_content or ''),
+                                    'block_contains_2_4m': '2.4' in (phase1_block_content or '') or '2,400' in (phase1_block_content or ''),
+                                    'verified_against_block_content': phase1_block_content is not None
+                                },
+                                'timestamp': int(__import__('time').time() * 1000)
+                            }) + '\n')
+                    except: pass
+                    # #endregion
+                    
+                    # If fact doesn't match, search for correct block_id using semantic search
+                    if not verification.get('match', False) or verification.get('confidence', 'low') == 'low':
+                        # #region agent log
+                        try:
+                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({
+                                    'sessionId': 'debug-session',
+                                    'runId': 'run1',
+                                    'hypothesisId': 'H',
+                                    'location': 'summary_nodes.py:492',
+                                    'message': f'VALIDATION FAILED: Starting semantic search for citation {old_num}',
+                                    'data': {
+                                        'old_citation_number': old_num,
+                                        'verification_match': verification.get('match', False),
+                                        'verification_confidence': verification.get('confidence', 'low'),
+                                        'fact_from_phase2_text': fact_from_phase2_text,
+                                        'phase1_block_content_preview': phase1_block_content[:200] if phase1_block_content else None,
+                                        'numeric_matches': verification.get('numeric_matches', [])
+                                    },
+                                    'timestamp': int(__import__('time').time() * 1000)
+                                }) + '\n')
+                        except: pass
+                        # #endregion
+                        
+                        logger.warning(
+                            f"[RENUMBER_CITATIONS] ⚠️ Citation {old_num} fact mismatch detected!\n"
+                            f"  Phase 2 fact: '{fact_from_phase2_text}'\n"
+                            f"  Phase 1 cited_text: '{cited_text_from_phase1}'\n"
+                            f"  Phase 1 block_id: {block_id_from_phase1}\n"
+                            f"  Verification: match={verification.get('match')}, confidence={verification.get('confidence')}\n"
+                            f"  Searching for correct block_id..."
+                        )
+                        
+                        # Search for correct block_id using semantic matching (same logic as _extract_citations_from_text)
+                        if metadata_lookup_tables:
+                            best_match = None
+                            best_score = -1
+                            best_confidence = 'low'
+                            
+                            # Key semantic terms
+                            valuation_terms = ['market value', 'assessed', 'valuation', 'valued at', 'professional', 'valuer', 'mrics', '90-day', '180-day', 'marketing period']
+                            market_activity_terms = ['offer', 'rejected', 'marketing', 'guide price', 'under offer', 'viewing', 'savills']
+                            
+                            fact_lower = fact_from_phase2_text.lower()
+                            is_valuation_query = any(term in fact_lower for term in valuation_terms)
+                            is_market_activity_query = any(term in fact_lower for term in market_activity_terms)
+                            
+                            for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
+                                for search_block_id, search_block_meta in search_metadata_table.items():
+                                    search_block_content = search_block_meta.get('content', '')
+                                    if not search_block_content:
+                                        continue
+                                    
+                                    block_lower = search_block_content.lower()
+                                    
+                                    # Verify match
+                                    search_verification = verify_citation_match(fact_from_phase2_text, search_block_content)
+                                    score = 0
+                                    
+                                    # Base score from verification
+                                    if search_verification['confidence'] == 'high':
+                                        score += 100
+                                    elif search_verification['confidence'] == 'medium':
+                                        score += 50
+                                    else:
+                                        score += 10
+                                    
+                                    # Semantic context bonus
+                                    if is_valuation_query:
+                                        if any(term in block_lower for term in valuation_terms):
+                                            score += 50
+                                        if not is_market_activity_query and any(term in block_lower for term in market_activity_terms):
+                                            score -= 30
+                                    
+                                    if is_market_activity_query:
+                                        if any(term in block_lower for term in market_activity_terms):
+                                            score += 50
+                                    
+                                    # Bonus for matching key terms
+                                    matched_terms = search_verification.get('matched_terms', [])
+                                    if len(matched_terms) > 2:
+                                        score += len(matched_terms) * 5
+                                    
+                                    # Penalty for missing important terms
+                                    missing_terms = search_verification.get('missing_terms', [])
+                                    if len(missing_terms) > 3:
+                                        score -= len(missing_terms) * 3
+                                    
+                                    # CRITICAL: Extra bonus for exact numeric matches
+                                    numeric_matches = search_verification.get('numeric_matches', [])
+                                    if numeric_matches:
+                                        score += len(numeric_matches) * 30
+                                    
+                                    # Update best match if this score is higher
+                                    if score > best_score:
+                                        best_score = score
+                                        best_confidence = 'high' if score >= 100 else ('medium' if score >= 50 else 'low')
+                                        best_match = {
+                                            'block_id': search_block_id,
+                                            'block_metadata': search_block_meta,
+                                            'doc_id': search_doc_id,
+                                            'verification': search_verification,
+                                            'score': score,
+                                            'content': search_block_content
+                                        }
+                            
+                            # #region agent log
+                            try:
+                                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({
+                                        'sessionId': 'debug-session',
+                                        'runId': 'run1',
+                                        'hypothesisId': 'H',
+                                        'location': 'summary_nodes.py:575',
+                                        'message': f'SEMANTIC SEARCH RESULT for citation {old_num}',
+                                        'data': {
+                                            'old_citation_number': old_num,
+                                            'found_best_match': best_match is not None,
+                                            'best_confidence': best_confidence,
+                                            'best_score': best_score if best_match else None,
+                                            'best_block_id': best_match['block_id'] if best_match else None,
+                                            'old_block_id': block_id_from_phase1,
+                                            'block_ids_different': best_match['block_id'] != block_id_from_phase1 if best_match else False,
+                                            'best_block_content_preview': best_match['content'][:200] if best_match else None,
+                                            'best_block_contains_1_9m': '1.9' in (best_match['content'] if best_match else '') or '1,950' in (best_match['content'] if best_match else ''),
+                                            'best_block_contains_2_4m': '2.4' in (best_match['content'] if best_match else '') or '2,400' in (best_match['content'] if best_match else ''),
+                                            'numeric_matches': best_match['verification']['numeric_matches'] if best_match else []
+                                        },
+                                        'timestamp': int(__import__('time').time() * 1000)
+                                    }) + '\n')
+                            except: pass
+                            # #endregion
+                            
+                            # Use best match if found and confidence is high/medium
+                            if best_match and best_confidence in ['high', 'medium']:
+                                if best_match['block_id'] != block_id_from_phase1:
+                                    logger.warning(
+                                        f"[RENUMBER_CITATIONS] ✅ Found better block match for citation {old_num}:\n"
+                                        f"  Phase 1 block_id: {block_id_from_phase1} (WRONG - fact mismatch)\n"
+                                        f"  Best match block_id: {best_match['block_id']} (score: {best_score}, confidence: {best_confidence})\n"
+                                        f"  Phase 2 fact: '{fact_from_phase2_text}'\n"
+                                        f"  Best block content: '{best_match['content'][:80]}...'\n"
+                                        f"  Numeric matches: {best_match['verification']['numeric_matches']}\n"
+                                        f"  Matched terms: {best_match['verification']['matched_terms']}"
+                                    )
+                                    
+                                    # Update citation with correct block_id and bbox
+                                    from backend.llm.citation_mapping import map_block_id_to_bbox
+                                    correct_bbox_data = map_block_id_to_bbox(
+                                        best_match['block_id'],
+                                        {best_match['doc_id']: metadata_lookup_tables[best_match['doc_id']]}
+                                    )
+                                    
+                                    if correct_bbox_data:
+                                        # Update citation with correct block_id and bbox
+                                        corrected_cit = old_cit.copy()
+                                        corrected_cit['block_id'] = best_match['block_id']
+                                        corrected_cit['doc_id'] = best_match['doc_id']
+                                        corrected_cit['bbox'] = correct_bbox_data.get('bbox', old_cit.get('bbox', {}))
+                                        corrected_cit['page_number'] = correct_bbox_data.get('page', old_cit.get('page_number', 0))
+                                        corrected_cit['cited_text'] = fact_from_phase2_text  # Update to match Phase 2 fact
+                                        corrected_cit['citation_number'] = new_num
+                                        renumbered_citations.append(corrected_cit)
+                                        citation_appended = True  # Mark as appended
+                                        
+                                        # #region agent log
+                                        try:
+                                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                                f.write(json.dumps({
+                                                    'sessionId': 'debug-session',
+                                                    'runId': 'run1',
+                                                    'hypothesisId': 'G',
+                                                    'location': 'summary_nodes.py:573',
+                                                    'message': 'CRITICAL: Corrected citation block_id - verifying it matches fact',
+                                                    'data': {
+                                                        'old_citation_number': old_num,
+                                                        'new_citation_number': new_num,
+                                                        'old_block_id': block_id_from_phase1,
+                                                        'new_block_id': best_match['block_id'],
+                                                        'fact_from_phase2_text': fact_from_phase2_text,
+                                                        'corrected_block_content_preview': best_match['content'][:150],
+                                                        'fact_contains_1_9m': '1.9' in fact_from_phase2_text or '1,950' in fact_from_phase2_text,
+                                                        'fact_contains_2_4m': '2.4' in fact_from_phase2_text or '2,400' in fact_from_phase2_text,
+                                                        'corrected_block_contains_1_9m': '1.9' in best_match['content'] or '1,950' in best_match['content'],
+                                                        'corrected_block_contains_2_4m': '2.4' in best_match['content'] or '2,400' in best_match['content'],
+                                                        'numeric_matches': best_match['verification']['numeric_matches'],
+                                                        'score': best_score,
+                                                        'confidence': best_confidence
+                                                    },
+                                                    'timestamp': int(__import__('time').time() * 1000)
+                                                }) + '\n')
+                                        except: pass
+                                        # #endregion
+                                    else:
+                                        logger.error(
+                                            f"[RENUMBER_CITATIONS] ❌ Could not map block_id {best_match['block_id']} to BBOX"
+                                        )
+                                else:
+                                    logger.info(
+                                        f"[RENUMBER_CITATIONS] ✅ Phase 1 block_id {block_id_from_phase1} matches best semantic match "
+                                        f"(score: {best_score}, confidence: {best_confidence})"
+                                    )
+                            elif best_match:
+                                logger.warning(
+                                    f"[RENUMBER_CITATIONS] ⚠️ Low confidence match for citation {old_num} "
+                                    f"(score: {best_score}, confidence: {best_confidence}) - using Phase 1 block_id anyway"
+                                )
+                            else:
+                                logger.error(
+                                    f"[RENUMBER_CITATIONS] ❌ No block match found for citation {old_num} fact: '{fact_from_phase2_text}'"
+                                )
+                        else:
+                            logger.warning(
+                                f"[RENUMBER_CITATIONS] ⚠️ Citation {old_num} fact mismatch but no metadata_lookup_tables provided for semantic search"
+                            )
+                    else:
+                        logger.info(
+                            f"[RENUMBER_CITATIONS] ✅ Citation {old_num} fact matches Phase 1 cited_text "
+                            f"(confidence: {verification.get('confidence')})"
+                        )
+            
+            # Use original Phase 1 citation (either matched or no metadata_lookup_tables for validation)
+            # Only append if we haven't already appended a corrected citation above
+            if not citation_appended:
+                cit = old_cit.copy()
+                cit['citation_number'] = new_num
+                renumbered_citations.append(cit)
+                logger.debug(
+                    f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
+                    f"→ new number {new_num}"
+                )
+        else:
+            logger.error(
+                f"[RENUMBER_CITATIONS] ❌ Citation {old_num} appears in text but NOT in Phase 1 citations! "
+                f"Available: {list(citations_by_old_num.keys())}"
+            )
     
     # Add any citations that weren't found in the text (shouldn't happen, but safety)
     for cit in citations:
@@ -430,7 +823,73 @@ def _renumber_citations_by_appearance(summary: str, citations: List[Dict]) -> Tu
     
     logger.info(
         f"[RENUMBER_CITATIONS] Renumbered {len(renumbered_citations)} citations "
-        f"based on appearance order"
+        f"based on appearance order. Citation order in text: {appearance_order}"
+    )
+    
+    # Log citation mapping for debugging with block_id and bbox info
+    for i, (old_num, new_num) in enumerate(old_to_new.items(), 1):
+        old_cit = citations_by_old_num.get(old_num)
+        if old_cit:
+            block_id = old_cit.get('block_id', 'UNKNOWN')
+            doc_id = old_cit.get('doc_id', 'UNKNOWN')[:8] if old_cit.get('doc_id') else 'UNKNOWN'
+            page = old_cit.get('page_number', 0)
+            bbox = old_cit.get('bbox', {})
+            cited_text = old_cit.get('cited_text', '')[:80] if old_cit.get('cited_text') else 'N/A'
+            bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f}" if bbox else "N/A"
+            logger.info(
+                f"[RENUMBER_CITATIONS] Citation {old_num} → {new_num} "
+                f"(appeared {i} in text) | block_id: {block_id} | doc: {doc_id} | page: {page} | "
+                f"bbox: {bbox_str} | cited_text: '{cited_text}...'"
+            )
+            
+            # Find the context in the summary where this citation appears
+            citation_matches = list(re.finditer(rf'\[{old_num}\]', summary))
+            if citation_matches:
+                first_match = citation_matches[0]
+                context_start = max(0, first_match.start() - 50)
+                context_end = min(len(summary), first_match.end() + 50)
+                context = summary[context_start:context_end].replace('\n', ' ')
+                logger.debug(
+                    f"[RENUMBER_CITATIONS] Citation {old_num} context in text: '...{context}...'"
+                )
+                
+                # #region agent log
+                import json
+                try:
+                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                        f.write(json.dumps({
+                            'sessionId': 'debug-session',
+                            'runId': 'run1',
+                            'hypothesisId': 'C',
+                            'location': 'summary_nodes.py:451',
+                            'message': 'Renumbering citation mapping',
+                            'data': {
+                                'old_citation_number': old_num,
+                                'new_citation_number': new_num,
+                                'appearance_order': i,
+                                'cited_text_from_phase1': cited_text,
+                                'context_in_phase2_text': context,
+                                'block_id': block_id,
+                                'bbox': bbox,
+                                'page': page
+                            },
+                            'timestamp': int(__import__('time').time() * 1000)
+                        }) + '\n')
+                except: pass
+                # #endregion
+        else:
+            logger.warning(
+                f"[RENUMBER_CITATIONS] ⚠️ Citation {old_num} → {new_num} "
+                f"but citation {old_num} not found in Phase 1 citations! "
+                f"Available citation numbers: {list(citations_by_old_num.keys())}"
+            )
+    
+    # Validate all citations were found
+    missing_citations = [old_num for old_num in appearance_order if old_num not in citations_by_old_num]
+    if missing_citations:
+        logger.error(
+            f"[RENUMBER_CITATIONS] ❌ CRITICAL: Citations {missing_citations} appear in text "
+            f"but were NOT created in Phase 1! Available Phase 1 citations: {list(citations_by_old_num.keys())}"
     )
     
     return renumbered_summary, renumbered_citations
@@ -825,6 +1284,20 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     )
     logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating answer (citations from Phase 1)")
     
+    # Log Phase 1 citations being passed to Phase 2
+    logger.info(
+        f"[SUMMARIZE_RESULTS] Phase 2: Passing {len(phase1_citations)} citations to LLM for answer generation"
+    )
+    for i, cit in enumerate(phase1_citations[:10], 1):  # Log first 10
+        block_id = cit.get('block_id', 'UNKNOWN')
+        doc_id = cit.get('doc_id', 'UNKNOWN')[:8] if cit.get('doc_id') else 'UNKNOWN'
+        page = cit.get('page_number', 0)
+        cited_text = cit.get('cited_text', '')[:50] if cit.get('cited_text') else 'N/A'
+        logger.debug(
+            f"[SUMMARIZE_RESULTS] Phase 1 citation {cit.get('citation_number', i)}: "
+            f"block_id={block_id}, doc={doc_id}, page={page}, text='{cited_text}...'"
+        )
+    
     final_prompt = get_final_answer_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
@@ -846,6 +1319,35 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     elif isinstance(final_response, str):
         summary = final_response.strip()
     
+    # #region agent log
+    # Log what citation numbers appear next to what facts in Phase 2 response
+    import re
+    import json
+    try:
+        citation_pattern = r'\[(\d+)\]'
+        citation_matches = list(re.finditer(citation_pattern, summary))
+        for match in citation_matches:
+            citation_num = match.group(1)
+            context_start = max(0, match.start() - 50)
+            context_end = min(len(summary), match.end() + 50)
+            context = summary[context_start:context_end].replace('\n', ' ')
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B',
+                    'location': 'summary_nodes.py:919',
+                    'message': 'Phase 2 citation in response text',
+                    'data': {
+                        'citation_number_in_text': citation_num,
+                        'context_around_citation': context,
+                        'fact_before_citation': summary[max(0, match.start() - 30):match.start()].strip()
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+    except: pass
+    # #endregion
+    
     
     # Use citations from Phase 1 (already extracted)
     citations_from_state = phase1_citations
@@ -864,7 +1366,7 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # This ensures citations are sequential (1, 2, 3...) based on when they appear in text
     # Only renumber if we have citations from Phase 1
     if citations_from_state and summary:
-        summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state)
+        summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state, metadata_lookup_tables)
     
     summary_complete_time = time.time()
     total_duration = summary_complete_time - llm_call_start_time
