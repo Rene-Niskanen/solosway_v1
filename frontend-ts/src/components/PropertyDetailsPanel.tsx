@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, FolderOpen } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -12,6 +12,7 @@ import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -571,6 +572,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 }) => {
   // Determine if chat panel is actually open based on width
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
+  
+  // FilingSidebar integration
+  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode } = useFilingSidebar();
   
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
@@ -2216,6 +2220,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         title="Select documents to delete"
                       >
                         <SquareMousePointer size={18} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (property?.id) {
+                          const propertyId = typeof property.id === 'string' ? property.id : String(property.id);
+                          setSelectedProperty(propertyId);
+                          setViewMode('property');
+                          openFilingSidebar();
+                        }
+                      }}
+                      className="p-2 rounded-lg border bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-all"
+                      title="Open in Filing Sidebar"
+                    >
+                      <FolderOpen size={18} />
                     </button>
                   </div>
                   </>

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home, FolderOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
@@ -1052,6 +1053,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  // State for drag over feedback
+  const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
   // Track custom dragged width for resizing
@@ -1130,7 +1133,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setQuickStartBarBottom(`${bottomPosition}px`);
       
       // QuickStartBar is now centered, so we just need to set maxWidth to match chat bar
-      quickStartWrapper.style.width = 'fit-content';
+        quickStartWrapper.style.width = 'fit-content';
       quickStartWrapper.style.maxWidth = '768px'; // Match chat bar max width
       setQuickStartBarTransform('translateX(-50%)'); // Always center
     };
@@ -1204,6 +1207,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
     const state = resizeStateRef.current;
     const minWidth = 450;
+    // Account for sidebar, FilingSidebar (if open), and some padding
     const maxWidth = window.innerWidth - sidebarWidth - 100;
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -1267,7 +1271,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       document.body.style.userSelect = '';
     };
   }, [isResizing, sidebarWidth, onChatWidthChange]);
-
+  
   // Calculate and notify parent of chat panel width changes
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
@@ -1375,6 +1379,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearSelectedDocuments,
     setDocumentSelectionMode
   } = useDocumentSelection();
+  
+  // Filing sidebar integration
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
   
   // Store queries with their attachments
   interface SubmittedQuery {
@@ -1536,11 +1543,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Add query message to chat (similar to handleSubmit)
         // CRITICAL: Use performance.now() + random to ensure uniqueness
         const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Use attachments from state, but fallback to initialAttachedFiles if state is empty
+        // This handles the case where query arrives before attachments are synced to state
+        // Also check the ref for the most up-to-date attachments
+        const attachmentsFromRef = attachedFilesRef.current;
+        const attachmentsToUse = attachmentsFromRef.length > 0 
+          ? attachmentsFromRef 
+          : (attachedFiles.length > 0 
+            ? attachedFiles 
+            : (initialAttachedFiles || []));
+        
+        console.log('📎 SideChatPanel: Using attachments for query message:', {
+          fromRef: attachmentsFromRef.length,
+          fromState: attachedFiles.length,
+          fromInitial: initialAttachedFiles?.length || 0,
+          final: attachmentsToUse.length
+        });
+        
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
           text: queryText,
-          attachments: [...attachedFiles],
+          attachments: [...attachmentsToUse],
           propertyAttachments: [...propertyAttachments],
           selectedDocumentIds: selectedDocIds,
           selectedDocumentNames: selectedDocNames
@@ -1587,7 +1612,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ? Array.from(selectedDocumentIds) 
               : undefined;
             
-            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds));
+            // Also check if we need to convert file attachments to document IDs
+            // If attachments are from FilingSidebar (have document IDs), extract them
+            const attachmentDocumentIds: string[] = [];
+            attachmentsToUse.forEach(att => {
+              // Check if attachment has a document ID (from FilingSidebar drag)
+              // This would be stored in the file name or metadata
+              // For now, we'll rely on the backend to handle file attachments
+            });
+            
+            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds), 'attachments:', attachmentsToUse.length);
             
             const abortController = new AbortController();
             abortControllerRef.current = abortController;
@@ -1667,12 +1701,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error:', error);
                 
+                // Check if this is an attachment without query error
+                // Note: documentIdsArray is defined in the parent scope
+                const hasAttachments = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
+                const isQueryRequiredError = error.includes('Query is required') || 
+                                           error.includes('HTTP 400') || 
+                                           error.includes('BAD REQUEST');
+                const isEmptyQuery = !queryText || queryText.trim() === '';
+                
+                let errorText: string;
+                if (hasAttachments && (isQueryRequiredError || isEmptyQuery)) {
+                  // Show helpful prompt for attachments without query
+                  errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+                } else {
+                  // Show generic error for other cases
+                  errorText = error || 'Sorry, I encountered an error processing your query.';
+                }
+                
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: error || 'Sorry, I encountered an error processing your query.',
+                  text: errorText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
@@ -1763,29 +1814,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : [],
                   bboxValue: citation.data.bbox
                 });
-                
-                // #region agent log
-                // Debug: Log citation reception for Hypothesis E and F
-                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    sessionId: 'debug-session',
-                    runId: 'run1',
-                    hypothesisId: 'E,F',
-                    location: 'SideChatPanel.tsx:1642',
-                    message: 'Citation event received',
-                    data: {
-                      citation_number: citation.citation_number,
-                      hasDocId: !!citation.data.doc_id,
-                      hasPage: !!citation.data.page,
-                      hasBbox: !!citation.data.bbox,
-                      bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : []
-                    },
-                    timestamp: Date.now()
-                  })
-                }).catch(() => {});
-                // #endregion
                 
                 // Convert citation_number to string (backend may send as int)
                 const citationNumStr = String(citation.citation_number);
@@ -1946,35 +1974,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                 }
                 
-                // #region agent log
-                // Debug: Log citation accumulation for Hypothesis F
-                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    sessionId: 'debug-session',
-                    runId: 'run1',
-                    hypothesisId: 'F',
-                    location: 'SideChatPanel.tsx:1700',
-                    message: 'Citation accumulated',
-                    data: {
-                      citation_number: citationNumStr,
-                      doc_id: citation.data.doc_id,
-                      has_bbox: !!normalizedBbox,
-                      bbox_valid: normalizedBbox && typeof normalizedBbox.left === 'number'
-                    },
-                    timestamp: Date.now()
-                  })
-                }).catch(() => {});
-                // #endregion
-                
                 // Update message with citations in real-time
+                // Merge with previous citations to avoid overwriting when multiple citations arrive quickly
                 setChatMessages(prev => {
                   return prev.map(msg => 
                     msg.id === loadingResponseId
                       ? {
                           ...msg,
-                          citations: { ...accumulatedCitations }
+                          citations: { ...(msg.citations || {}), ...accumulatedCitations }
                         }
                       : msg
                   );
@@ -2000,7 +2007,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [query, isVisible, chatMessages, attachedFiles, propertyAttachments, selectedDocumentIds]);
+  }, [query, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds]);
   
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -2227,29 +2234,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
       });
       
-      // #region agent log
-      // Debug: Log citation click for Hypothesis F
-      fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: 'debug-session',
-          runId: 'run1',
-          hypothesisId: 'F',
-          location: 'SideChatPanel.tsx:2005',
-          message: 'Citation clicked - highlight prepared',
-          data: {
-            hasHighlightData: !!highlightData,
-            fileDataId: fileData.id,
-            highlightFileId: highlightData?.fileId,
-            fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : false,
-            hasBbox: !!highlightData?.bbox,
-            bboxPage: highlightData?.bbox?.page
-          },
-          timestamp: Date.now()
-        })
-      }).catch(() => {});
-      // #endregion
 
       // Open document in preview modal with highlight
       // CRITICAL: fileData.id must match highlightData.fileId for highlighting to work
@@ -2858,6 +2842,144 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
   }, [attachedFiles.length]);
 
+  // Handle drop from FilingSidebar
+  const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    
+    try {
+      // Check if this is a document from FilingSidebar
+      const jsonData = e.dataTransfer.getData('application/json');
+      if (jsonData) {
+        const data = JSON.parse(jsonData);
+        if (data.type === 'filing-sidebar-document') {
+          console.log('📥 SideChatPanel: Dropped document from FilingSidebar:', data.filename);
+          
+          // Create optimistic attachment immediately with placeholder file
+          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const placeholderFile = new File([], data.filename, {
+            type: data.fileType || 'application/pdf',
+          });
+          
+          const optimisticFileData: FileAttachmentData = {
+            id: attachmentId,
+            file: placeholderFile,
+            name: data.filename,
+            type: data.fileType || 'application/pdf',
+            size: 0, // Will be updated when file is fetched
+          };
+          
+          // Add attachment immediately for instant feedback
+          setAttachedFiles(prev => {
+            const updated = [...prev, optimisticFileData];
+            attachedFilesRef.current = updated;
+            return updated;
+          });
+          
+          // Fetch the actual file in the background
+          (async () => {
+            try {
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              let downloadUrl: string;
+              
+              if (data.s3Path) {
+                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
+              } else {
+                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+              }
+              
+              const response = await fetch(downloadUrl, { credentials: 'include' });
+              if (!response.ok) {
+                throw new Error('Failed to fetch document');
+              }
+              
+              const blob = await response.blob();
+              const actualFile = new File([blob], data.filename, {
+                type: data.fileType || blob.type || 'application/pdf',
+              });
+              
+              // Update the attachment with the actual file
+              setAttachedFiles(prev => {
+                const updated = prev.map(att => 
+                  att.id === attachmentId 
+                    ? { ...att, file: actualFile, size: actualFile.size }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+              
+              // Preload blob URL for preview
+              try {
+                const blobUrl = URL.createObjectURL(actualFile);
+                if (!(window as any).__preloadedAttachmentBlobs) {
+                  (window as any).__preloadedAttachmentBlobs = {};
+                }
+                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+              } catch (preloadError) {
+                console.error('Error preloading blob URL:', preloadError);
+              }
+              
+              console.log('✅ SideChatPanel: Document fetched and updated:', actualFile.name);
+            } catch (error) {
+              console.error('❌ SideChatPanel: Error fetching document:', error);
+              // Remove the optimistic attachment on error
+              setAttachedFiles(prev => {
+                const updated = prev.filter(att => att.id !== attachmentId);
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+              toast({
+                description: 'Failed to load document. Please try again.',
+                duration: 3000,
+              });
+            }
+          })();
+          
+          return;
+        }
+      }
+      
+      // Fallback: check for regular file drops
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => handleFileUpload(file));
+      }
+    } catch (error) {
+      console.error('❌ SideChatPanel: Error handling drop:', error);
+      toast({
+        description: 'Failed to add document. Please try again.',
+        duration: 3000,
+      });
+    }
+  }, [handleFileUpload]);
+
+  const handleDragOver = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if this is a document from FilingSidebar (has application/json type) or regular files
+    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    
+    if (hasFilingSidebarDocument || hasFiles) {
+      e.dataTransfer.dropEffect = 'move';
+      setIsDragOver(true);
+    } else {
+      e.dataTransfer.dropEffect = 'none';
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragLeave = React.useCallback((e: React.DragEvent) => {
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
   // Handle opening document selection mode
   const handleOpenDocumentSelection = React.useCallback(() => {
     toggleDocumentSelectionMode();
@@ -3013,8 +3135,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s):`, documentIdsArray);
           }
           
+          // Store these values for use in error handler
+          const hasAttachmentsForError = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
+          const submittedQuery = submitted || '';
+          
           await backendApi.queryDocumentsStreamFetch(
-            submitted || '',
+            submittedQuery,
             propertyId,
             messageHistory,
             `session_${Date.now()}`,
@@ -3075,12 +3201,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (error: string) => {
               console.error('❌ SideChatPanel: Streaming error:', error);
               
+              // Check if this is an attachment without query error
+              const isQueryRequiredError = error.includes('Query is required') || 
+                                         error.includes('HTTP 400') || 
+                                         error.includes('BAD REQUEST');
+              const isEmptyQuery = !submittedQuery || submittedQuery.trim() === '';
+              
+              let errorText: string;
+              if (hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery)) {
+                // Show helpful prompt for attachments without query
+                errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+              } else {
+                // Show generic error for other cases
+                errorText = `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`;
+              }
+              
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
               const errorMessage: ChatMessage = {
                 id: loadingResponseId,
                 type: 'response',
-                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                text: errorText,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
               };
@@ -3094,11 +3235,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 return updated;
               });
               
-              toast({
-                description: 'Failed to get AI response. Please try again.',
-                duration: 5000,
-                variant: 'destructive',
-              });
+              if (!(hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery))) {
+                // Only show toast for non-attachment errors
+                toast({
+                  description: 'Failed to get AI response. Please try again.',
+                  duration: 5000,
+                  variant: 'destructive',
+                });
+              }
             },
             // onStatus: Show status messages
             (message: string) => {
@@ -3182,32 +3326,52 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             console.error('❌ SideChatPanel: Error calling LLM API:', error);
           }
           
+          // Check if this is an attachment without query error
+          // Note: documentIdsArray is defined in the try block above, but we need to check selectedDocumentIds here
+          const hasAttachments = attachedFiles.length > 0 || selectedDocumentIds.size > 0;
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const isQueryRequiredError = errorMessage.includes('Query is required') || 
+                                      errorMessage.includes('HTTP 400') || 
+                                      errorMessage.includes('BAD REQUEST');
+          const isEmptyQuery = !submitted || submitted.trim() === '';
+          
+          let errorText: string;
+          if (hasAttachments && (isQueryRequiredError || isEmptyQuery)) {
+            // Show helpful prompt for attachments without query
+            errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+          } else {
+            // Show generic error for other cases
+            errorText = `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${errorMessage}`;
+          }
+          
           // Show error message instead of mock response
           setChatMessages(prev => {
             const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-          const errorMessage: ChatMessage = {
+          const errorMessageObj: ChatMessage = {
             id: `response-${Date.now()}`,
             type: 'response',
-            text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            text: errorText,
               isLoading: false,
               reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
           };
           
             const updated = prev.map(msg => 
               msg.id === loadingResponseId 
-                ? errorMessage
+                ? errorMessageObj
                 : msg
             );
             persistedChatMessagesRef.current = updated;
             return updated;
           });
           
-          // Show error toast
-          toast({
-            description: 'Failed to get AI response. Please try again.',
-            duration: 5000,
-            variant: 'destructive',
-          });
+          if (!(hasAttachments && (isQueryRequiredError || isEmptyQuery))) {
+            // Only show toast for non-attachment errors
+            toast({
+              description: 'Failed to get AI response. Please try again.',
+              duration: 5000,
+              variant: 'destructive',
+            });
+          }
         }
       })();
       
@@ -3342,7 +3506,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               children: processChildren(childChildren)
                             } as any);
                           }
-                        }
+                    }
                     return child;
                   });
                     };
@@ -3368,7 +3532,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               children: processChildren(childChildren)
                             } as any);
                           }
-                        }
+                    }
                     return child;
                   });
                     };
@@ -3449,16 +3613,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }}
           layout
           className="fixed top-0 bottom-0 z-30"
-            style={{
+          style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
             width: draggedWidth !== null 
               ? `${draggedWidth}px` // Use dragged width if set (works for both expanded and collapsed)
               : (isExpanded 
-                ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
+              ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
                 : '450px'), // Fixed width when collapsed (but can be resized via drag)
             backgroundColor: '#F9F9F9',
-            boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
-            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
+            boxShadow: 'none',
+            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
             willChange: 'width', // Optimize for smooth width changes
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
@@ -3497,14 +3661,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             {/* Header */}
             <div className="p-4 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
-                <button
-                  onClick={onSidebarToggle}
-                  className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-all duration-200"
-                  title="Toggle sidebar"
-                  type="button"
-                >
-                  <PanelLeft className="w-5 h-5 lg:w-5 lg:h-5" strokeWidth={1.5} />
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={onSidebarToggle}
+                    className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-all duration-200"
+                    title="Toggle sidebar"
+                    type="button"
+                  >
+                    <PanelLeft className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} style={{ color: '#8B8B8B' }} />
+                  </button>
+                  <AnimatePresence mode="wait">
+                    {!isFilingSidebarOpen && (
+                      <motion.button
+                        key="folder-icon"
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                        onClick={toggleFilingSidebar}
+                        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200"
+                        title="Toggle Files sidebar"
+                        type="button"
+                      >
+                        <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} style={{ color: '#8B8B8B' }} />
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <div className="flex items-center space-x-2">
                   <motion.button
                     onClick={() => {
@@ -3666,9 +3849,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         currentWidth = 450;
                       }
                       return currentWidth >= 600 ? (
-                        <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
-                      ) : (
-                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                    ) : (
+                      <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                       );
                     })()}
                   </button>
@@ -3707,10 +3890,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 paddingRight: '16px',
                 margin: '0 auto' // Center the content wrapper
               }}>
-                <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
-                  <AnimatePresence>
-                    {renderedMessages}
-                  </AnimatePresence>
+              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
+                <AnimatePresence>
+                  {renderedMessages}
+                </AnimatePresence>
                 </div>
               </div>
             </div>
@@ -3778,13 +3961,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   paddingLeft: '16px', // Add horizontal padding for edge spacing
                   paddingRight: '16px'
                 }}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
               >
                 <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                   style={{
-                    background: '#ffffff',
-                    border: '1px solid #E5E7EB',
-                    boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                    background: isDragOver ? '#F5F5F5' : '#ffffff',
+                    border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
+                    boxShadow: isDragOver 
+                      ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
+                      : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                     position: 'relative',
                     paddingTop: '12px', // More padding top
                     paddingBottom: '12px', // More padding bottom
@@ -3796,7 +3984,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     height: 'auto',
                     minHeight: 'fit-content',
                     boxSizing: 'border-box',
-                    borderRadius: '12px' // Always use rounded square corners
+                    borderRadius: '12px', // Always use rounded square corners
+                    transition: 'all 0.2s ease-in-out'
                     // Centered by parent form's justifyContent: 'center'
                   }}
                 >

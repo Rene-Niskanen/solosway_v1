@@ -108,16 +108,16 @@ async def create_checkpointer_for_current_loop():
                 # We'll need to handle prepared statement errors with retry logic
                 logger.warning("connection_factory not supported, using basic pool (errors will be handled gracefully)")
                 pool = AsyncConnectionPool(
-                    conninfo=conn_params,
+                    conninfo=conn_params, 
                     min_size=3,
                     max_size=7,
                     open=True,
                     timeout=20,
                 )
                 logger.info("✅ Checkpointer pool created (prepared statement errors will be handled gracefully)")
-            
-            # Create checkpointer instance for this event loop
-            checkpointer = AsyncPostgresSaver(pool)
+        
+        # Create checkpointer instance for this event loop
+        checkpointer = AsyncPostgresSaver(pool)
         
         # Setup tables with timeout to prevent hanging
         # Idempotent - safe to call multiple times
@@ -158,7 +158,7 @@ async def create_checkpointer_for_current_loop():
 async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=None):
     """
     Build and compile the main LangGraph orchestration with intelligent routing.
-    
+
     NEW: Includes intelligent routing for performance optimization:
     - Direct document path (~2s): User attached files → fetch chunks → process → summarize
     - Simple search path (~6s): Simple query → vector search → process → summarize
@@ -283,7 +283,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Uses natural language (addresses and filenames, not IDs)
     - Output: final_summary, updated conversation_history
     """
-    
+
     builder.add_node("format_response", format_response)
     """
     Node 7: Format Response

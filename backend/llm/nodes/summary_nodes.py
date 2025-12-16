@@ -575,32 +575,6 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         search_source = output.get('search_source', 'unknown')
         similarity_score = output.get('similarity_score', 0.0)
         
-        # #region agent log
-        # Debug: Log source_chunks_metadata before format_document_with_block_ids for Hypothesis A
-        try:
-            source_chunks_metadata = output.get('source_chunks_metadata', [])
-            chunks_with_blocks = sum(1 for chunk in source_chunks_metadata if chunk.get('blocks') and isinstance(chunk.get('blocks'), list) and len(chunk.get('blocks')) > 0) if source_chunks_metadata else 0
-            import json
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'A',
-                    'location': 'summary_nodes.py:147',
-                    'message': 'source_chunks_metadata before format_document_with_block_ids',
-                    'data': {
-                        'doc_id': doc_id[:8] if doc_id else 'unknown',
-                        'has_source_chunks_metadata': 'source_chunks_metadata' in output,
-                        'source_chunks_metadata_type': type(source_chunks_metadata).__name__,
-                        'source_chunks_metadata_length': len(source_chunks_metadata) if isinstance(source_chunks_metadata, list) else 0,
-                        'chunks_with_blocks': chunks_with_blocks,
-                        'output_keys': list(output.keys())[:10]
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except Exception:
-            pass
-        # #endregion
         
         # Track search sources
         search_source_summary[search_source] = search_source_summary.get(search_source, 0) + 1
@@ -652,27 +626,6 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             logger.info(
                 f"[SUMMARIZE_RESULTS] Formatted doc {doc_id[:8]} with {len(metadata_table)} block IDs"
             )
-            # #region agent log
-            # Debug: Log metadata lookup table for Hypothesis C
-            try:
-                import json
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'C',
-                        'location': 'summary_nodes.py:188',
-                        'message': 'Metadata lookup table stored',
-                        'data': {
-                            'doc_id': doc_id[:8] if doc_id else 'unknown',
-                            'metadata_table_size': len(metadata_table),
-                            'total_lookup_tables': len(metadata_lookup_tables)
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-            except Exception:
-                pass  # Silently fail instrumentation
-            # #endregion
     
     # Create citation tool with metadata lookup tables
     citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
@@ -861,28 +814,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # ============================================================
     logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating final answer with citations")
     
-    # #region agent log
-    # Debug: Log timing for Hypothesis E - LLM call duration
     import time
     llm_call_start_time = time.time()
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'E',
-                'location': 'summary_nodes.py:485',
-                'message': 'Starting LLM call for answer generation (no tool binding for speed)',
-                'data': {
-                    'formatted_outputs_length': len(formatted_outputs_str),
-                    'prompt_length': 0  # Will be updated after prompt creation
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
     
     # Generate answer WITHOUT tool binding (citations already extracted in Phase 1)
     final_llm = ChatOpenAI(
@@ -899,105 +832,12 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         citations=phase1_citations  # Use citations extracted in Phase 1
     )
     
-    # #region agent log
-    # Debug: Log prompt creation timing
-    prompt_creation_time = time.time()
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'E',
-                'location': 'summary_nodes.py:500',
-                'message': 'Prompt created, about to call LLM',
-                'data': {
-                    'prompt_length': len(final_prompt),
-                    'time_since_start_ms': int((prompt_creation_time - llm_call_start_time) * 1000)
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
-    
     final_messages = [system_msg, HumanMessage(content=final_prompt)]
     
-    # #region agent log
-    # Debug: Log just before LLM invoke
     llm_invoke_start_time = time.time()
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'E',
-                'location': 'summary_nodes.py:506',
-                'message': 'About to invoke LLM - this is where delay might occur',
-                'data': {
-                    'messages_count': len(final_messages),
-                    'time_since_start_ms': int((llm_invoke_start_time - llm_call_start_time) * 1000)
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
-    
     final_response = await final_llm.ainvoke(final_messages)
-    
-    # #region agent log
-    # Debug: Log LLM call completion timing
     llm_call_end_time = time.time()
     llm_call_duration = llm_call_end_time - llm_invoke_start_time
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'E',
-                'location': 'summary_nodes.py:506',
-                'message': 'LLM call completed',
-                'data': {
-                    'llm_call_duration_seconds': round(llm_call_duration, 2),
-                    'total_time_since_start_ms': int((llm_call_end_time - llm_call_start_time) * 1000),
-                    'has_response': final_response is not None
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
-    
-    # #region agent log
-    # Debug: Log final_response structure for Hypothesis A
-    try:
-        has_content = hasattr(final_response, 'content') and final_response.content
-        has_tool_calls = hasattr(final_response, 'tool_calls') and final_response.tool_calls
-        content_length = len(str(final_response.content)) if has_content else 0
-        tool_calls_count = len(final_response.tool_calls) if has_tool_calls else 0
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'A',
-                'location': 'summary_nodes.py:506',
-                'message': 'Final response structure after LLM call',
-                'data': {
-                    'has_content': has_content,
-                    'content_length': content_length,
-                    'has_tool_calls': has_tool_calls,
-                    'tool_calls_count': tool_calls_count,
-                    'content_preview': str(final_response.content)[:200] if has_content else None
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
     
     # Extract summary from answer generation
     summary = ''
@@ -1006,27 +846,6 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     elif isinstance(final_response, str):
         summary = final_response.strip()
     
-    # #region agent log
-    # Debug: Log extracted summary for Hypothesis C
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'C',
-                'location': 'summary_nodes.py:680',
-                'message': 'Extracted summary from response',
-                'data': {
-                    'summary_length': len(summary),
-                    'summary_preview': summary[:200] if summary else None,
-                    'summary_empty': not summary
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
     
     # Use citations from Phase 1 (already extracted)
     citations_from_state = phase1_citations
@@ -1047,30 +866,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     if citations_from_state and summary:
         summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state)
     
-    # #region agent log
-    # Debug: Log final summary completion timing
     summary_complete_time = time.time()
     total_duration = summary_complete_time - llm_call_start_time
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'E',
-                'location': 'summary_nodes.py:690',
-                'message': 'Summary generation complete',
-                'data': {
-                    'summary_length': len(summary),
-                    'citations_count': len(citations_from_state),
-                    'total_duration_seconds': round(total_duration, 2),
-                    'summary_empty': not summary
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass
-    # #endregion
     
     logger.info(
         f"[SUMMARIZE_RESULTS] Generated answer with {len(citations_from_state)} citations from blocks used "
@@ -1096,27 +893,6 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         "relevant_documents": state.get('relevant_documents', [])  # Preserve relevant docs
     }
     
-    # #region agent log
-    # Debug: Log state update for Hypothesis D
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'D',
-                'location': 'summary_nodes.py:361',
-                'message': 'State update with citations',
-                'data': {
-                    'citations_count': len(citations_from_state),
-                    'citations_in_state_update': 'citations' in state_update,
-                    'summary_length': len(summary)
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass  # Silently fail instrumentation
-    # #endregion
     
     return state_update
 

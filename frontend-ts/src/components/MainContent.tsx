@@ -30,6 +30,8 @@ import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
+import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { FilingSidebar } from './FilingSidebar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1405,20 +1407,10 @@ const SettingsView: React.FC<{
         );
       case 'background':
         return <BackgroundSettings />;
-      case 'notifications':
-        return (
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Notifications</h3>
-              <p className="text-sm text-slate-600">
-                Manage your notification preferences.
-              </p>
-            </div>
-            <div className="text-slate-500 text-sm">
-              Notification settings coming soon...
-            </div>
-          </div>
-        );
+      case 'database':
+        // Database/Files section is now handled by FilingSidebar popout
+        // Return empty div - the sidebar will be rendered globally
+        return <div />;
       case 'privacy':
         return (
           <div className="space-y-6">
@@ -1565,6 +1557,7 @@ export const MainContent = ({
   onMapVisibilityChange
 }: MainContentProps) => {
   const { addActivity } = useSystem();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
   const [chatQuery, setChatQuery] = React.useState<string>("");
   const [chatMessages, setChatMessages] = React.useState<any[]>([]);
   const [resetTrigger, setResetTrigger] = React.useState<number>(0);
@@ -2209,7 +2202,44 @@ export const MainContent = ({
   };
 
   const handleSearch = (query: string) => {
-    // Clear stored attachments when search is submitted
+    // CRITICAL: Capture attachments from dashboard SearchBar BEFORE clearing
+    let dashboardAttachments: FileAttachmentData[] = [];
+    if (searchBarRef.current?.getAttachments) {
+      try {
+        const capturedAttachments = searchBarRef.current.getAttachments();
+        // Also check stored attachments (more reliable)
+        const storedAttachments = pendingDashboardAttachmentsRef.current.length > 0 
+          ? pendingDashboardAttachmentsRef.current 
+          : pendingDashboardAttachments;
+        
+        // Use captured if available, otherwise use stored
+        dashboardAttachments = capturedAttachments.length > 0 
+          ? capturedAttachments 
+          : storedAttachments;
+        
+        console.log('📎 MainContent: Captured attachments from dashboard SearchBar:', dashboardAttachments.length);
+      } catch (error) {
+        console.error('Error capturing attachments from SearchBar:', error);
+        // Fallback to stored attachments
+        dashboardAttachments = pendingDashboardAttachmentsRef.current.length > 0 
+          ? pendingDashboardAttachmentsRef.current 
+          : pendingDashboardAttachments;
+      }
+    } else {
+      // Fallback to stored attachments if ref not available
+      dashboardAttachments = pendingDashboardAttachmentsRef.current.length > 0 
+        ? pendingDashboardAttachmentsRef.current 
+        : pendingDashboardAttachments;
+    }
+    
+    // Store attachments for SideChatPanel BEFORE clearing
+    if (dashboardAttachments.length > 0) {
+      pendingSideChatAttachmentsRef.current = dashboardAttachments;
+      setPendingSideChatAttachments(dashboardAttachments);
+      console.log('📎 MainContent: Stored attachments for SideChatPanel:', dashboardAttachments.length);
+    }
+    
+    // Clear stored attachments when search is submitted (after capturing)
     pendingMapAttachmentsRef.current = [];
     setPendingMapAttachments([]);
     pendingDashboardAttachmentsRef.current = [];
@@ -2837,10 +2867,10 @@ export const MainContent = ({
           </AnimatePresence>
           
         </>
-      case 'notifications':
-        return <div className="w-full h-full max-w-none m-0 p-0">
-            <FileManager />
-          </div>;
+      case 'database':
+        // Database/Files section is now handled by FilingSidebar popout
+        // Return empty div - the sidebar will be rendered globally
+        return <div />;
       case 'profile':
         return <div className="w-full max-w-none">
             <Profile onNavigate={handleNavigate} />
@@ -3319,7 +3349,8 @@ export const MainContent = ({
   // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed
   const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
   
-  return <div 
+  return (
+    <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${leftMargin} ${className || ''}`} 
     style={{ backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', position: 'relative', zIndex: 1 }}
     onDragEnter={handleDragEnter}
@@ -3470,7 +3501,7 @@ export const MainContent = ({
               if (isPropertyDetailsOpen) {
                 // Open chat panel in expanded view - this will automatically expand property details
                 setShouldExpandChat(true); // Set flag to expand chat
-              if (previousSessionQuery) {
+                if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
                   setHasPerformedSearch(true);
                   pendingMapQueryRef.current = ""; // Clear ref
@@ -3481,12 +3512,25 @@ export const MainContent = ({
                 }
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
                 // Property details will automatically expand when chatPanelWidth > 0
-              } else if (previousSessionQuery) {
-                // Normal behavior when property details is not open
-                setMapSearchQuery(previousSessionQuery);
+              } else {
+                // Always open chat panel when button is clicked
+                // First ensure map is visible (needed for SideChatPanel to show)
+                if (!isMapVisible) {
+                  setIsMapVisible(true);
+                }
+                
+                // Set hasPerformedSearch to show the panel
                 setHasPerformedSearch(true);
-                pendingMapQueryRef.current = ""; // Clear ref
-                setPendingMapQuery(""); // Clear pending query when opening panel
+                
+                // If there's a previous session query, use it
+                if (previousSessionQuery) {
+                  setMapSearchQuery(previousSessionQuery);
+                  pendingMapQueryRef.current = ""; // Clear ref
+                  setPendingMapQuery(""); // Clear pending query when opening panel
+                } else {
+                  // No previous session - open with empty query
+                  setMapSearchQuery("");
+                }
                 // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
               }
             }}
@@ -3516,7 +3560,31 @@ export const MainContent = ({
           ref={sideChatPanelRef}
           isVisible={isMapVisible && hasPerformedSearch}
           query={mapSearchQuery}
-          sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+          sidebarWidth={(() => {
+            // Base sidebar width
+            const baseSidebarWidth = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
+            // Add FilingSidebar width when it's open (uses context width which tracks dragged width)
+            // FilingSidebar positioning (from FilingSidebar.tsx):
+            // - When collapsed (isSmallSidebarMode): starts at 12px (just toggle rail)
+            // - When NOT collapsed: starts at baseSidebarWidth + 12px (sidebar + toggle rail)
+            // So SideChatPanel should start after the FilingSidebar ends:
+            // - When collapsed and FilingSidebar open: 12px + filingSidebarWidth
+            // - When NOT collapsed and FilingSidebar open: baseSidebarWidth + 12px + filingSidebarWidth
+            // - When FilingSidebar closed: baseSidebarWidth
+            const toggleRailWidth = 12;
+            if (isFilingSidebarOpen) {
+              if (isSidebarCollapsed) {
+                // Collapsed: FilingSidebar starts at 12px, ends at 12px + filingSidebarWidth
+                return 12 + filingSidebarWidth;
+              } else {
+                // Not collapsed: FilingSidebar starts at baseSidebarWidth + 12px, ends at baseSidebarWidth + 12px + filingSidebarWidth
+                return baseSidebarWidth + toggleRailWidth + filingSidebarWidth;
+              }
+            } else {
+              // FilingSidebar closed: just use base sidebar width
+              return baseSidebarWidth;
+            }
+          })()}
           restoreChatId={restoreChatId}
           initialAttachedFiles={(() => {
             const attachments = pendingSideChatAttachmentsRef.current.length > 0 
@@ -3842,5 +3910,31 @@ export const MainContent = ({
           }
         }}
       />
-    </div>;
+      
+      {/* FilingSidebar - Global popout sidebar for document management */}
+      <FilingSidebar 
+        sidebarWidth={(() => {
+          // Calculate sidebar width based on state (matching ChatPanel logic exactly)
+          // Note: MainContent doesn't have isSidebarExpanded, so we only handle collapsed vs normal
+          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+          let calculatedWidth = 0;
+          
+          if (isSidebarCollapsed) {
+            calculatedWidth = 8; // w-2 = 8px
+            // Add toggle rail width when collapsed
+            return calculatedWidth + TOGGLE_RAIL_WIDTH;
+          } else {
+            // Normal state (small sidebar): position directly against sidebar (no toggle rail gap)
+            if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
+              calculatedWidth = 56; // lg:w-14
+            } else {
+              calculatedWidth = 40; // w-10
+            }
+            return calculatedWidth;
+          }
+        })()}
+        isSmallSidebarMode={!isSidebarCollapsed}
+      />
+    </div>
+  );
   };

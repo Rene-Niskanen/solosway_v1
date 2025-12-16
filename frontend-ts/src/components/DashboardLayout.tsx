@@ -11,6 +11,7 @@ import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { ProfileDropdown } from './ProfileDropdown';
 import { backendApi } from '@/services/backendApi';
+import { FilingSidebarProvider } from '../contexts/FilingSidebarContext';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -422,7 +423,9 @@ const DashboardLayoutContent = ({
 export const DashboardLayout = (props: DashboardLayoutProps) => {
   return (
     <ChatHistoryProvider>
+      <FilingSidebarProvider>
       <DashboardLayoutContent {...props} />
+      </FilingSidebarProvider>
     </ChatHistoryProvider>
   );
 };

@@ -120,11 +120,13 @@ class BackendApiService {
       }
 
       const data = await response.json();
+      
       return {
         success: true,
         data,
       };
     } catch (error) {
+      
       console.error(`API Error [${endpoint}]:`, error);
       return {
         success: false,
@@ -408,6 +410,37 @@ class BackendApiService {
     // OPTIMIZATION: Use lightweight documents endpoint (100x faster - no N+1 queries)
     return this.fetchApi<any>(`/api/properties/${propertyId}/documents`, {
       method: 'GET',
+    });
+  }
+
+  async getAllDocuments(): Promise<ApiResponse<any>> {
+    // Fetch all documents across all properties
+    // Use /api/files which is the old endpoint that worked
+    return this.fetchApi<any>('/api/files', {
+      method: 'GET',
+    });
+  }
+
+  async getDocumentsByFolder(folderId: string): Promise<ApiResponse<any>> {
+    // Fetch documents in a specific folder
+    return this.fetchApi<any>(`/api/documents/folder/${folderId}`, {
+      method: 'GET',
+    });
+  }
+
+  async createFolder(name: string, parentId?: string, propertyId?: string): Promise<ApiResponse<any>> {
+    // Create a new folder
+    return this.fetchApi<any>('/api/documents/folders', {
+      method: 'POST',
+      body: JSON.stringify({ name, parent_id: parentId, property_id: propertyId }),
+    });
+  }
+
+  async moveDocument(documentId: string, folderId: string | null): Promise<ApiResponse<any>> {
+    // Move a document to a folder (null folderId = root)
+    return this.fetchApi<any>(`/api/documents/${documentId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ folder_id: folderId }),
     });
   }
 
@@ -785,6 +818,25 @@ class BackendApiService {
         error: error instanceof Error ? error.message : 'Unknown error occurred',
       };
     }
+  }
+
+  /**
+   * Check if a document is a duplicate before uploading
+   */
+  async checkDuplicateDocument(filename: string, fileSize: number): Promise<ApiResponse<{
+    is_duplicate: boolean;
+    is_exact_duplicate?: boolean;
+    existing_document?: any;
+    existing_documents?: any[];
+    message?: string;
+  }>> {
+    return this.fetchApi('/api/documents/check-duplicate', {
+      method: 'POST',
+      body: JSON.stringify({
+        filename,
+        file_size: fileSize
+      }),
+    });
   }
 
   /**
@@ -1394,6 +1446,15 @@ class BackendApiService {
    */
   async deleteDocument(documentId: string): Promise<ApiResponse> {
     return this.fetchApi(`/api/documents/${documentId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  /**
+   * Delete a folder
+   */
+  async deleteFolder(folderId: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/documents/folders/${folderId}`, {
       method: 'DELETE'
     });
   }

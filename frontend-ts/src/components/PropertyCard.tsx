@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { MapPin, Home, Ruler, DollarSign, Bed, Bath, Sofa, Car, Upload, FileText } from "lucide-react";
 import { PropertyData } from './PropertyResultsDisplay';
 import { PropertyFilesModal } from './PropertyFilesModal';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 
 interface PropertyCardProps {
@@ -34,6 +35,9 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   const [hasFilesFetched, setHasFilesFetched] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const viewFilesButtonRef = useRef<HTMLButtonElement>(null);
+  
+  // FilingSidebar integration
+  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode } = useFilingSidebar();
   // Format price
   const formatPrice = (price: number) => {
     if (price >= 1000000) {
@@ -309,42 +313,47 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           <button
             ref={viewFilesButtonRef}
             onClick={(e) => {
-              if (isFilesModalOpen) {
-                // Close the modal if it's already open
-                setIsFilesModalOpen(false);
+              // Open FilingSidebar with property filter instead of modal
+              if (property?.id) {
+                const propertyId = typeof property.id === 'string' ? property.id : String(property.id);
+                setSelectedProperty(propertyId);
+                setViewMode('property');
+                openFilingSidebar();
+                onViewFiles?.(property);
               } else {
-                // Calculate position above the card using viewport coordinates
-                // Use requestAnimationFrame to ensure DOM is ready
+                // Fallback to modal if no property ID
+                if (isFilesModalOpen) {
+                  setIsFilesModalOpen(false);
+                  setHasFilesFetched(false);
+                } else {
                 requestAnimationFrame(() => {
                   if (cardRef.current) {
                     const cardRect = cardRef.current.getBoundingClientRect();
-                    // Position modal above the card, centered horizontally
-                    // Ensure modal doesn't go off-screen
-                    const modalWidth = 420; // Modal width (matches property card width)
+                      const modalWidth = 420;
                     const viewportWidth = window.innerWidth;
                     const leftPosition = Math.max(
-                      modalWidth / 2 + 10, // Minimum left position (10px padding)
+                        modalWidth / 2 + 10,
                       Math.min(
-                        cardRect.left + (cardRect.width / 2), // Center of card
-                        viewportWidth - (modalWidth / 2) - 10 // Maximum right position
+                          cardRect.left + (cardRect.width / 2),
+                          viewportWidth - (modalWidth / 2) - 10
                       )
                     );
-                    
                     setModalPosition({
-                      top: cardRect.top, // Top of the card
-                      left: leftPosition // Center of the card horizontally (constrained to viewport)
+                        top: cardRect.top,
+                        left: leftPosition
                     });
                     setIsFilesModalOpen(true);
                   }
                 });
                 onViewFiles?.(property);
+                }
               }
             }}
             className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100/80 backdrop-blur-sm border border-gray-300/50 rounded-md hover:bg-gray-200/90 transition-colors duration-100 shadow-sm"
           >
             <div className="flex items-center justify-center gap-1.5">
               <FileText className="w-4 h-4" />
-              <span>{isFilesModalOpen && hasFilesFetched ? 'Close Database' : 'View Files'}</span>
+              <span>View Files</span>
             </div>
           </button>
           

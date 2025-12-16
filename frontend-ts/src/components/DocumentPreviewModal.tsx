@@ -148,12 +148,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         const paddedTop = Math.max(0, top - MIN_PADDING_Y);
         const paddedWidth = Math.min(width + MIN_PADDING_X * 2, 1 - paddedLeft);
         const paddedHeight = Math.min(height + MIN_PADDING_Y * 2, 1 - paddedTop);
-        
-        left = paddedLeft;
-        top = paddedTop;
-        width = paddedWidth;
-        height = paddedHeight;
-        
+      
+      left = paddedLeft;
+      top = paddedTop;
+      width = paddedWidth;
+      height = paddedHeight;
+      
         console.log('📐 [BBOX] Using small bbox with minimal padding:', { left, top, width, height });
       } else {
         // For larger precise bboxes, use them as-is to prevent overlap

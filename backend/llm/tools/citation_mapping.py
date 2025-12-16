@@ -153,26 +153,6 @@ class CitationTool:
                 f"[CITATION_TOOL] Block ID {block_id} (citation {citation_number}) "
                 f"not found in metadata tables"
             )
-            # #region agent log
-            try:
-                import json
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'D',
-                        'location': 'citation_mapping.py:86',
-                        'message': 'Block ID not found in metadata tables',
-                        'data': {
-                            'block_id': block_id,
-                            'citation_number': citation_number,
-                            'available_doc_ids': list(self.metadata_lookup_tables.keys())[:3] if self.metadata_lookup_tables else []
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-            except Exception:
-                pass
-            # #endregion
             return f"⚠️ Citation {citation_number} recorded but block {block_id} not found"
         
         # Extract bbox coordinates
@@ -186,39 +166,6 @@ class CitationTool:
         
         page_number = int(block_metadata.get('page', 0))
         
-        # #region agent log
-        # Debug: Log bbox extraction from metadata for Hypothesis C, D
-        try:
-            is_fallback_bbox = (
-                bbox['left'] == 0.0 and bbox['top'] == 0.0 and
-                bbox['width'] == 1.0 and bbox['height'] == 1.0
-            )
-            import json
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'C,D',
-                    'location': 'citation_mapping.py:100',
-                    'message': 'Bbox extracted from metadata table',
-                    'data': {
-                        'block_id': block_id,
-                        'citation_number': citation_number,
-                        'bbox': bbox,
-                        'page_number': page_number,
-                        'is_fallback_bbox': is_fallback_bbox,
-                        'bbox_left': block_metadata.get('bbox_left'),
-                        'bbox_top': block_metadata.get('bbox_top'),
-                        'bbox_width': block_metadata.get('bbox_width'),
-                        'bbox_height': block_metadata.get('bbox_height'),
-                        'metadata_page': block_metadata.get('page'),
-                        'doc_id': doc_id[:8] if doc_id else 'unknown'
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except Exception:
-            pass
-        # #endregion
         
         # Create citation object
         citation: Citation = {

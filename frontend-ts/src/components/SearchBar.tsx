@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -100,6 +100,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   // Initialize attachedFiles from initialAttachedFiles prop if provided
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
@@ -889,6 +890,153 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     });
   };
 
+  // Handle drop from FilingSidebar
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    
+    try {
+      // Check if this is a document from FilingSidebar
+      const jsonData = e.dataTransfer.getData('application/json');
+      if (jsonData) {
+        const data = JSON.parse(jsonData);
+        if (data.type === 'filing-sidebar-document') {
+          console.log('📥 SearchBar: Dropped document from FilingSidebar:', data.filename);
+          
+          // Create optimistic attachment immediately with placeholder file
+          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const placeholderFile = new File([], data.filename, {
+            type: data.fileType || 'application/pdf',
+          });
+          
+          const optimisticFileData: FileAttachmentData = {
+            id: attachmentId,
+            file: placeholderFile,
+            name: data.filename,
+            type: data.fileType || 'application/pdf',
+            size: 0, // Will be updated when file is fetched
+          };
+          
+          // Add attachment immediately for instant feedback
+          setAttachedFiles(prev => {
+            const updated = [...prev, optimisticFileData];
+            attachedFilesRef.current = updated;
+            if (onAttachmentsChange) {
+              onAttachmentsChange(updated);
+            }
+            return updated;
+          });
+          
+          // Fetch the actual file in the background
+          (async () => {
+            try {
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              let downloadUrl: string;
+              
+              if (data.s3Path) {
+                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
+              } else {
+                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+              }
+              
+              const response = await fetch(downloadUrl, { credentials: 'include' });
+              if (!response.ok) {
+                throw new Error('Failed to fetch document');
+              }
+              
+              const blob = await response.blob();
+              const actualFile = new File([blob], data.filename, {
+                type: data.fileType || blob.type || 'application/pdf',
+              });
+              
+              // Update the attachment with the actual file
+              setAttachedFiles(prev => {
+                const updated = prev.map(att => 
+                  att.id === attachmentId 
+                    ? { ...att, file: actualFile, size: actualFile.size }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(updated);
+                }
+                return updated;
+              });
+              
+              // Preload blob URL for preview
+              try {
+                const blobUrl = URL.createObjectURL(actualFile);
+                if (!(window as any).__preloadedAttachmentBlobs) {
+                  (window as any).__preloadedAttachmentBlobs = {};
+                }
+                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+              } catch (preloadError) {
+                console.error('Error preloading blob URL:', preloadError);
+              }
+              
+              console.log('✅ SearchBar: Document fetched and updated:', actualFile.name);
+            } catch (error) {
+              console.error('❌ SearchBar: Error fetching document:', error);
+              // Remove the optimistic attachment on error
+              setAttachedFiles(prev => {
+                const updated = prev.filter(att => att.id !== attachmentId);
+                attachedFilesRef.current = updated;
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(updated);
+                }
+                return updated;
+              });
+              toast({
+                description: 'Failed to load document. Please try again.',
+                duration: 3000,
+              });
+            }
+          })();
+          
+          return;
+        }
+      }
+      
+      // Fallback: check for regular file drops
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => handleFileUpload(file));
+      }
+    } catch (error) {
+      console.error('❌ SearchBar: Error handling drop:', error);
+      toast({
+        description: 'Failed to add document. Please try again.',
+        duration: 3000,
+      });
+    }
+  }, [handleFileUpload, onAttachmentsChange]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if this is a document from FilingSidebar (has application/json type) or regular files
+    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    
+    if (hasFilingSidebarDocument || hasFiles) {
+      e.dataTransfer.dropEffect = 'move';
+      setIsDragOver(true);
+    } else {
+      e.dataTransfer.dropEffect = 'none';
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const submitted = searchValue.trim();
@@ -963,13 +1111,22 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         width: '100%', // Always 100% width - let parent container handle constraints
         boxSizing: 'border-box' // Ensure padding is included in width calculation
       }}>
-        <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
+        <form 
+          onSubmit={handleSubmit} 
+          className="relative" 
+          style={{ overflow: 'visible', height: 'auto', width: '100%' }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
             <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
               style={{
-                background: '#ffffff',
-                border: '1px solid #E5E7EB',
-                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                background: isDragOver ? '#F0F9FF' : '#ffffff',
+                border: isDragOver ? '2px dashed #3B82F6' : '1px solid #E5E7EB',
+                boxShadow: isDragOver 
+                  ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.1)' 
+                  : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
                 paddingRight: '12px',
@@ -980,7 +1137,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 height: 'auto',
                 minHeight: 'fit-content',
                 boxSizing: 'border-box',
-                borderRadius: '12px' // Always 12px rounded corners
+                borderRadius: '12px', // Always 12px rounded corners
+                transition: 'all 0.2s ease-in-out',
+                position: 'relative'
               }}
             >
             {/* Property Attachments Display - Above textarea (like MapChatBar) */}
@@ -1129,8 +1288,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               >
                 {/* Left group: Panel toggle and Map toggle */}
                 <div className="flex items-center flex-shrink-0">
-                  {/* Panel Toggle Button (show when property details is open OR when in map view with previous session) */}
-                  {((isPropertyDetailsOpen && onPanelToggle) || (isMapVisible && hasPreviousSession && onPanelToggle)) && (
+                  {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
+                  {onPanelToggle && (
                     isPropertyDetailsOpen ? (
                     <button
                       type="button"
@@ -1178,7 +1337,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         }}
                         title="Expand chat"
                       >
-                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                        <MessageSquareShare className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2.5} />
                       </button>
                     )
                   )}
@@ -1227,7 +1386,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         {isMapVisible ? (
                           <LayoutDashboard className="w-3.5 h-3.5" strokeWidth={2} />
                         ) : (
-                          <Map className="w-3.5 h-3.5" strokeWidth={2} />
+                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={2} />
                         )}
                     </button>
                   )}

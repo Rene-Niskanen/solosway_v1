@@ -655,7 +655,7 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
    
    {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
    
-   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
 {_get_citation_instructions()}
 
@@ -698,6 +698,24 @@ def get_summary_human_content(
     from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
     query_characteristics = detect_query_characteristics(user_query)
     is_valuation_query = query_characteristics.get('query_type') == 'assessment'
+    
+    # #region agent log
+    import json, time
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"prompts.py:700","message":"get_summary_human_content - valuation check","data":{"user_query":user_query,"query_type":query_characteristics.get('query_type'),"is_valuation_query":is_valuation_query},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"B"})+"\n")
+    except: pass
+    # #endregion
+    
+    # Also check fallback condition (line 748)
+    fallback_is_valuation = 'valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()
+    
+    # #region agent log
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"prompts.py:710","message":"Fallback valuation check","data":{"user_query":user_query,"fallback_is_valuation":fallback_is_valuation},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"B"})+"\n")
+    except: pass
+    # #endregion
     
     return f"""**USER QUESTION:**  
 "{user_query}"
@@ -745,7 +763,7 @@ def get_summary_human_content(
    
    {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
    
-   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
 {_get_verified_property_details_instructions(is_single_doc=False)}
 

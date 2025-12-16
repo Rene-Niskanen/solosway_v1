@@ -49,15 +49,58 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
     """
     query_lower = query.lower()
     
+    # #region agent log
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"retrieval_nodes.py:50","message":"detect_query_characteristics called","data":{"query":query,"query_lower":query_lower},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
+    except: pass
+    # #endregion
+    
     # Detect query type
-    assessment_terms = ['valuation', 'value', 'assess', 'opinion', 'appraisal', 'evaluate', 'determine']
+    # FIXED: Make assessment detection more precise - require context around "value"
+    # Only classify as assessment if "value" appears with property/valuation context
+    assessment_terms_precise = ['valuation', 'market value', 'property value', 'assess', 'opinion', 'appraisal', 'evaluate', 'determine']
     activity_terms = ['sold', 'offer', 'listed', 'marketing', 'transaction', 'history']
     attribute_terms = ['bedroom', 'bathroom', 'size', 'area', 'floor', 'feature', 'amenity', 'condition']
     relationship_terms = ['who', 'valued', 'inspected', 'prepared', 'author', 'company']
     
     query_type = 'general'
-    if any(term in query_lower for term in assessment_terms):
+    
+    # Check precise terms first
+    if any(term in query_lower for term in assessment_terms_precise):
         query_type = 'assessment'
+        # #region agent log
+        try:
+            matched = [term for term in assessment_terms_precise if term in query_lower]
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location":"retrieval_nodes.py:68","message":"Assessment detected via precise terms","data":{"query":query,"matched_term":matched},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
+        except: pass
+        # #endregion
+    # Check broad "value" term only if it appears with property/valuation context
+    elif 'value' in query_lower:
+        # Require context: property value, market value, value of property, value of the property, etc.
+        value_context_patterns = [
+            'property value', 'market value', 'value of', 'value for', 
+            'value is', 'value was', 'value at', 'value:', 'value =',
+            'the value', 'its value', 'property\'s value', 'property value'
+        ]
+        has_value_context = any(pattern in query_lower for pattern in value_context_patterns)
+        if has_value_context:
+            query_type = 'assessment'
+            # #region agent log
+            try:
+                matched = [p for p in value_context_patterns if p in query_lower]
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"location":"retrieval_nodes.py:80","message":"Assessment detected via value with context","data":{"query":query,"matched_pattern":matched},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
+            except: pass
+            # #endregion
+        else:
+            # #region agent log
+            try:
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"location":"retrieval_nodes.py:85","message":"Value found but no property context - NOT assessment","data":{"query":query},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
+            except: pass
+            # #endregion
     elif any(term in query_lower for term in activity_terms):
         query_type = 'activity'
     elif any(term in query_lower for term in attribute_terms):
@@ -104,12 +147,21 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
         needs_comprehensive
     )
     
-    return {
+    result = {
         'complexity_score': complexity_score,
         'needs_comprehensive': needs_comprehensive,
         'query_type': query_type,
         'expects_later_pages': expects_later_pages
     }
+    
+    # #region agent log
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"retrieval_nodes.py:130","message":"detect_query_characteristics result","data":{"query":query,"result":result},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
+    except: pass
+    # #endregion
+    
+    return result
 
 
 def detect_semantic_authority(chunk_content: str, query_type: str) -> float:
