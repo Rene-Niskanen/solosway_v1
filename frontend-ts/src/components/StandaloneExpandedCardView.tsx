@@ -51,8 +51,16 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const prevScaleRef = useRef<number>(1.0); // Track previous scale for scroll position preservation
   const targetScaleRef = useRef<number>(1.0); // Track target scale for smooth transitions
   const firstPageCacheRef = useRef<{ page: any; viewport: any } | null>(null); // Cache first page for instant scale calculation
+
+  // Build a stable key for the current highlight target (doc + page + bbox coords).
+  // Used to coordinate one-time "jump to bbox" with resize scroll-preservation logic.
+  const getHighlightKey = useCallback(() => {
+    if (!highlight || highlight.fileId !== docId || !highlight.bbox) return null;
+    const b = highlight.bbox;
+    return `${docId}:${b.page}:${b.left.toFixed(4)}:${b.top.toFixed(4)}:${b.width.toFixed(4)}:${b.height.toFixed(4)}`;
+  }, [highlight, docId]);
   
-  const { getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
+  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
 
   // Load document
@@ -67,6 +75,23 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         if (cachedBlob && cachedBlob.url) {
           setPreviewUrl(cachedBlob.url);
           setBlobType(cachedBlob.type);
+          setLoading(false);
+          return;
+        }
+
+        // Reuse PreviewContext preloaded File (from citation preloading) to avoid a second download.
+        const cachedFileEntry = previewFiles.find(f => f.id === docId);
+        if (cachedFileEntry?.file) {
+          const url = URL.createObjectURL(cachedFileEntry.file);
+          const type = cachedFileEntry.type || cachedFileEntry.file.type || 'application/pdf';
+          
+          if (!(window as any).__preloadedDocumentBlobs) {
+            (window as any).__preloadedDocumentBlobs = {};
+          }
+          (window as any).__preloadedDocumentBlobs[docId] = { url, type, timestamp: Date.now() };
+          
+          setPreviewUrl(url);
+          setBlobType(type);
           setLoading(false);
           return;
         }
@@ -107,7 +132,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     };
     
     loadDocument();
-  }, [docId]);
+  }, [docId, previewFiles]);
 
   // Load PDF with PDF.js and cache first page for instant scale calculation
   useEffect(() => {
@@ -218,27 +243,52 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   useEffect(() => {
     if (!pdfWrapperRef.current || !pdfDocument || totalPages === 0) return;
 
+    // Batch resize events to a single RAF to avoid jitter from rapid ResizeObserver spam.
+    const rafIdRef = { current: 0 as number };
+    const pendingWidthRef = { current: 0 as number };
+
+    const flushResize = () => {
+      rafIdRef.current = 0;
+      const newWidth = pendingWidthRef.current;
+      if (newWidth <= 50) return;
+
+      // Ignore tiny width deltas that cause re-render churn and visible jitter
+      const prev = prevContainerWidthRef.current;
+      if (Math.abs(newWidth - prev) < 2) return;
+
+      // If we haven't finished the initial citation jump-to-bbox, avoid triggering a rerender here.
+      // (Rerender changes scrollHeight and can fight highlight centering.)
+      const highlightKey = getHighlightKey();
+      const suppressDuringInitialHighlightJump =
+        !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
+      if (suppressDuringInitialHighlightJump) {
+        prevContainerWidthRef.current = newWidth;
+        setContainerWidth(newWidth);
+        return;
+      }
+
+      prevContainerWidthRef.current = newWidth;
+      setContainerWidth(newWidth);
+
+      // Update visual scale immediately
+      const targetScale = calculateTargetScale(newWidth);
+      if (targetScale !== null && !isRecalculatingRef.current) {
+        setVisualScale(targetScale);
+        targetScaleRef.current = targetScale;
+      }
+
+      // Trigger a single re-render pass
+      if (!isRecalculatingRef.current) {
+        setBaseScale(1.0);
+        hasRenderedRef.current = false;
+      }
+    };
+
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const newWidth = entry.contentRect.width;
-        // Update on any width change (real-time) - no threshold for maximum responsiveness
-        if (newWidth > 50 && newWidth !== prevContainerWidthRef.current) {
-          prevContainerWidthRef.current = newWidth;
-          setContainerWidth(newWidth);
-          
-          // Update visual scale immediately - synchronous calculation (no async delay)
-          const targetScale = calculateTargetScale(newWidth);
-          if (targetScale !== null && !isRecalculatingRef.current) {
-            setVisualScale(targetScale);
-            targetScaleRef.current = targetScale;
-          }
-          
-          // Trigger re-render immediately on every resize event - no delays
-          // This makes it feel instant as the user resizes
-          if (!isRecalculatingRef.current) {
-            setBaseScale(1.0);
-            hasRenderedRef.current = false;
-          }
+        pendingWidthRef.current = entry.contentRect.width;
+        if (!rafIdRef.current) {
+          rafIdRef.current = requestAnimationFrame(flushResize);
         }
       }
     });
@@ -246,9 +296,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     resizeObserver.observe(pdfWrapperRef.current);
 
     return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
       resizeObserver.disconnect();
     };
-  }, [pdfDocument, totalPages, calculateTargetScale, visualScale]);
+  }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey]);
 
   // Render PDF pages with responsive zoom - real-time updates
   useEffect(() => {
@@ -388,9 +439,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           prevContainerWidthRef.current = pdfWrapperRef.current?.clientWidth || containerWidth || 0;
           prevScaleRef.current = scale;
           
-          // Restore viewport center after re-render completes
-          // This is the ONLY place we adjust scroll - keeps viewport stable during resize
-          if (oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
+          // Restore viewport center after re-render completes.
+          // IMPORTANT: Don't fight the INITIAL citation jump-to-bbox.
+          // Once we've already jumped to the bbox, resume normal resize preservation.
+          const highlightKey = getHighlightKey();
+          const shouldSkipViewportRestoreForInitialHighlightJump =
+            !!highlightKey && didAutoScrollToHighlightRef.current !== highlightKey;
+
+          if (!shouldSkipViewportRestoreForInitialHighlightJump && oldScale > 0 && oldScale !== scale && savedScrollHeight > 0) {
             // Minimal delay for faster adjustment - single RAF is enough
             requestAnimationFrame(() => {
               if (pdfWrapperRef.current && !cancelled) {
@@ -424,15 +480,18 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       cancelled = true;
       isRecalculatingRef.current = false;
     };
-  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage]);
+  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey]);
 
   // Auto-scroll to highlight - center BBOX vertically in viewport
+  const didAutoScrollToHighlightRef = useRef<string | null>(null);
   useEffect(() => {
     if (highlight && highlight.fileId === docId && highlight.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
       const pageNum = highlight.bbox.page;
       const pageData = renderedPages.get(pageNum);
       
       if (pageData) {
+        const key = getHighlightKey() || `${docId}:${pageNum}`;
+        if (didAutoScrollToHighlightRef.current === key) return; // prevent repeated jittery scrolls
         const expandedBbox = highlight.bbox;
         
         // Calculate the vertical position of the BBOX center on the page
@@ -455,20 +514,19 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         // Scroll position = BBOX center - (viewport height / 2)
         const scrollTop = bboxCenterAbsolute - (viewportHeight / 2);
         
+        // Make the FIRST citation jump deterministic and non-jittery:
+        // - no timeout
+        // - no smooth animation (animation combined with re-render/scale can feel like "fighting")
         requestAnimationFrame(() => {
-          setTimeout(() => {
-            if (pdfWrapperRef.current) {
-              const maxScroll = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
-              pdfWrapperRef.current.scrollTo({
-                top: Math.max(0, Math.min(scrollTop, maxScroll)),
-                behavior: 'smooth'
-              });
-            }
-          }, 100);
+          if (pdfWrapperRef.current) {
+            const maxScroll = Math.max(0, pdfWrapperRef.current.scrollHeight - pdfWrapperRef.current.clientHeight);
+            pdfWrapperRef.current.scrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
+          }
         });
+        didAutoScrollToHighlightRef.current = key;
       }
     }
-  }, [highlight, docId, renderedPages]);
+  }, [highlight, docId, renderedPages, getHighlightKey]);
 
   const isPDF = blobType === 'application/pdf';
   const isImage = blobType?.startsWith('image/');

@@ -4,6 +4,7 @@ Summarization code - create final unified answer from all document outputs.
 
 import logging
 import os
+import os
 from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
@@ -19,6 +20,25 @@ from backend.llm.tools.citation_mapping import create_citation_tool
 from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
 
 logger = logging.getLogger(__name__)
+
+# Local debug log writes are expensive and should be disabled in production.
+_LLM_DEBUG = os.environ.get("LLM_DEBUG") == "1"
+# Default to /dev/null when debug is off to avoid disk I/O on the hot path.
+_DEBUG_LOG_PATH = (
+    os.environ.get("LLM_DEBUG_LOG_PATH", "/Users/thomashorner/solosway_v1/.cursor/debug.log")
+    if _LLM_DEBUG
+    else "/dev/null"
+)
+
+def _debug_log(payload: dict) -> None:
+    if not _LLM_DEBUG:
+        return
+    try:
+        import json
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
 
 
 def _extract_citations_from_text(
@@ -331,27 +351,16 @@ def _renumber_citations_by_appearance(
     citations: List[Dict],
     metadata_lookup_tables: Dict[str, Dict[str, Dict[str, Any]]] = None
 ) -> Tuple[str, List[Dict]]:
-    # #region agent log
-    import json
-    try:
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'H',
-                'location': 'summary_nodes.py:329',
-                'message': 'ENTRY: _renumber_citations_by_appearance - checking metadata_lookup_tables',
-                'data': {
-                    'has_metadata_lookup_tables': metadata_lookup_tables is not None,
-                    'num_docs_in_tables': len(metadata_lookup_tables) if metadata_lookup_tables else 0,
-                    'doc_ids': list(metadata_lookup_tables.keys()) if metadata_lookup_tables else [],
-                    'num_citations': len(citations),
-                    'citation_numbers': [c.get('citation_number') for c in citations]
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except: pass
-    # #endregion
+    _debug_log({
+        "location": "summary_nodes._renumber_citations_by_appearance:entry",
+        "data": {
+            "has_metadata_lookup_tables": metadata_lookup_tables is not None,
+            "num_docs_in_tables": (len(metadata_lookup_tables) if metadata_lookup_tables else 0),
+            "doc_ids": (list(metadata_lookup_tables.keys()) if metadata_lookup_tables else []),
+            "num_citations": len(citations),
+            "citation_numbers": [c.get("citation_number") for c in citations],
+        },
+    })
     """
     Renumber citations based on their order of appearance in the response text.
     
@@ -462,7 +471,7 @@ def _renumber_citations_by_appearance(
                 if cited_text_from_phase1 and fact_from_phase2_text:
                     # #region agent log
                     try:
-                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                        with open(_DEBUG_LOG_PATH, 'a') as f:
                             f.write(json.dumps({
                                 'sessionId': 'debug-session',
                                 'runId': 'run1',
@@ -492,7 +501,7 @@ def _renumber_citations_by_appearance(
                                 phase1_block_content = search_metadata_table[block_id_from_phase1].get('content', '')
                                 # #region agent log
                                 try:
-                                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                    with open(_DEBUG_LOG_PATH, 'a') as f:
                                         f.write(json.dumps({
                                             'sessionId': 'debug-session',
                                             'runId': 'run1',
@@ -515,7 +524,7 @@ def _renumber_citations_by_appearance(
                     else:
                         # #region agent log
                         try:
-                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                            with open(_DEBUG_LOG_PATH, 'a') as f:
                                 f.write(json.dumps({
                                     'sessionId': 'debug-session',
                                     'runId': 'run1',
@@ -544,7 +553,7 @@ def _renumber_citations_by_appearance(
                     # #region agent log
                     import json
                     try:
-                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                        with open(_DEBUG_LOG_PATH, 'a') as f:
                             f.write(json.dumps({
                                 'sessionId': 'debug-session',
                                 'runId': 'run1',
@@ -578,7 +587,7 @@ def _renumber_citations_by_appearance(
                     if not verification.get('match', False) or verification.get('confidence', 'low') == 'low':
                         # #region agent log
                         try:
-                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                            with open(_DEBUG_LOG_PATH, 'a') as f:
                                 f.write(json.dumps({
                                     'sessionId': 'debug-session',
                                     'runId': 'run1',
@@ -682,7 +691,7 @@ def _renumber_citations_by_appearance(
                             
                             # #region agent log
                             try:
-                                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                with open(_DEBUG_LOG_PATH, 'a') as f:
                                     f.write(json.dumps({
                                         'sessionId': 'debug-session',
                                         'runId': 'run1',
@@ -741,7 +750,7 @@ def _renumber_citations_by_appearance(
                                         
                                         # #region agent log
                                         try:
-                                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                            with open(_DEBUG_LOG_PATH, 'a') as f:
                                                 f.write(json.dumps({
                                                     'sessionId': 'debug-session',
                                                     'runId': 'run1',
@@ -856,7 +865,7 @@ def _renumber_citations_by_appearance(
                 # #region agent log
                 import json
                 try:
-                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    with open(_DEBUG_LOG_PATH, 'a') as f:
                         f.write(json.dumps({
                             'sessionId': 'debug-session',
                             'runId': 'run1',
@@ -1331,7 +1340,7 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             context_start = max(0, match.start() - 50)
             context_end = min(len(summary), match.end() + 50)
             context = summary[context_start:context_end].replace('\n', ' ')
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            with open(_DEBUG_LOG_PATH, 'a') as f:
                 f.write(json.dumps({
                     'sessionId': 'debug-session',
                     'runId': 'run1',

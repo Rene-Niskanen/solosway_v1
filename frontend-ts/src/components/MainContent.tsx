@@ -1595,6 +1595,16 @@ export const MainContent = ({
       setIsChatBubbleVisible(false);
     }
   }, [hasPerformedSearch, isChatBubbleVisible]);
+
+  // CRITICAL: FloatingChatBubble should never appear outside the map flow.
+  // If we leave map view or navigate away from search/home, force-hide it.
+  React.useEffect(() => {
+    const isSearchOrHome = currentView === 'search' || currentView === 'home';
+    if ((!isMapVisible || !isSearchOrHome) && isChatBubbleVisible) {
+      setIsChatBubbleVisible(false);
+      setMinimizedChatMessages([]);
+    }
+  }, [isMapVisible, currentView, isChatBubbleVisible]);
   
   // Reset shouldExpandChat flag after chat has been opened and expanded
   React.useEffect(() => {
@@ -2638,14 +2648,17 @@ export const MainContent = ({
                               filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
                               transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
-                              <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
-                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                color: '#333333', // Dark grey text
-                                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 2px rgba(255, 255, 255, 0.5)', // Light shadow for depth
-                                fontWeight: 500 // Slightly bolder
-                              } as React.CSSProperties}>
-                                Welcome back <span className="font-normal" style={{ color: '#333333', fontWeight: 500 } as React.CSSProperties}>{userName}</span>, your workspace is synced and ready for your next move
-                      </p>
+                              <p
+                                className="mb-0 text-center tracking-wide leading-relaxed"
+                                style={{
+                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                  color: '#111827', // Single, sleeker ink tone
+                                  fontWeight: 400,
+                                  opacity: 0.9
+                                } as React.CSSProperties}
+                              >
+                                {`Welcome back${userName ? ` ${userName}` : ''}, your workspace is synced and ready for your next move`}
+                              </p>
                             </div>
                     ) : (
                             <div style={{
@@ -2655,14 +2668,17 @@ export const MainContent = ({
                               filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
                               transition: 'filter 0.2s ease'
                             } as React.CSSProperties}>
-                              <p className="font-light mb-0 text-center tracking-wide leading-relaxed" style={{ 
-                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                color: '#333333', // Dark grey text
-                                textShadow: '0 2px 8px rgba(255, 255, 255, 0.3), 0 0 2px rgba(255, 255, 255, 0.5)', // Light shadow for depth
-                                fontWeight: 500 // Slightly bolder
-                              } as React.CSSProperties}>
-                        Welcome back, your workspace is synced and ready for your next move
-                      </p>
+                              <p
+                                className="mb-0 text-center tracking-wide leading-relaxed"
+                                style={{
+                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                  color: '#111827',
+                                  fontWeight: 400,
+                                  opacity: 0.9
+                                } as React.CSSProperties}
+                              >
+                                Welcome back, your workspace is synced and ready for your next move
+                              </p>
                             </div>
                     );
                   })()}
@@ -3619,7 +3635,12 @@ export const MainContent = ({
           onMinimize={(chatMessages) => {
             // Show bubble and hide full panel
             setMinimizedChatMessages(chatMessages);
-            setIsChatBubbleVisible(true);
+            // Only show bubble in map flow (never on dashboard/other views)
+            if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
+              setIsChatBubbleVisible(true);
+            } else {
+              setIsChatBubbleVisible(false);
+            }
             setHasPerformedSearch(false);
             // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
             // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
@@ -3690,7 +3711,7 @@ export const MainContent = ({
       )}
 
       {/* Floating Chat Bubble */}
-      {isChatBubbleVisible && (
+      {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
         <FloatingChatBubble
           chatMessages={minimizedChatMessages}
           onOpenChat={() => {

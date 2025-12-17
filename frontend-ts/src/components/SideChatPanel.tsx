@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Workflow, Home, FolderOpen } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -212,7 +212,7 @@ const DocumentPreviewOverlay: React.FC<{
               title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
             >
               {isFullscreen ? (
-                <Minimize className="w-4 h-4" />
+                <Minimize2 className="w-4 h-4" />
               ) : (
                 <Fullscreen className="w-4 h-4" />
               )}
@@ -418,7 +418,8 @@ const CitationLink: React.FC<{
 const renderTextWithCitations = (
   text: string, 
   citations: Record<string, CitationDataType> | undefined,
-  onCitationClick: (data: CitationDataType) => void
+  onCitationClick: (data: CitationDataType) => void,
+  seenCitationNums?: Set<string>
 ): React.ReactNode => {
   // Debug: Log when this function is called
   console.log('🔗 renderTextWithCitations called:', { 
@@ -452,6 +453,9 @@ const renderTextWithCitations = (
   }
   const citationPlaceholders: Record<string, CitationPlaceholder> = {};
   let placeholderIndex = 0;
+  // De-dupe citations across the whole response message render (not per text node).
+  // If no shared set is provided, fall back to per-call behavior.
+  const seen = seenCitationNums ?? new Set<string>();
   
   // Process superscript citations
   processedText = processedText.replace(superscriptPattern, (match) => {
@@ -462,9 +466,13 @@ const renderTextWithCitations = (
     }
     const citData = citations[numStr];
     if (citData) {
+      if (seen.has(numStr)) {
+        return ''; // Remove duplicate marker
+      }
       const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
       placeholderIndex++;
+      seen.add(numStr);
       console.log(`🔗 [CITATION] Matched superscript ${match} (${numStr}) with citation data:`, citData);
       return placeholder;
     } else {
@@ -477,9 +485,13 @@ const renderTextWithCitations = (
   processedText = processedText.replace(bracketPattern, (match, num) => {
     const citData = citations[num];
     if (citData) {
+      if (seen.has(num)) {
+        return ''; // Remove duplicate marker
+      }
       const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num, data: citData, original: match };
       placeholderIndex++;
+      seen.add(num);
       const citationDetails = {
         citationNumber: num,
         block_id: citData.block_id || 'UNKNOWN',
@@ -495,7 +507,8 @@ const renderTextWithCitations = (
         const contextStart = Math.max(0, processedText.indexOf(match) - 50);
         const contextEnd = Math.min(processedText.length, processedText.indexOf(match) + match.length + 50);
         const context = text.substring(contextStart, contextEnd);
-        fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b', {
+        // DEBUG ONLY: Local ingest for dev tracing. Disabled unless explicitly enabled.
+        if (import.meta.env.VITE_LOCAL_DEBUG_INGEST === '1') fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2218,7 +2231,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
       }
 
-      // Convert to FileAttachmentData format for DocumentPreviewModal
+      // Convert to FileAttachmentData format for PreviewContext cache
       const fileData: FileAttachmentData = {
         id: docId, // Use doc_id as the file ID
         file: file,
@@ -2226,6 +2239,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         type: fileType,
         size: fileSize
       };
+
+      // Ensure the ExpandedCardView can open instantly without a second download.
+      // (StandaloneExpandedCardView now reuses PreviewContext cache when available.)
+      preloadFile(fileData);
 
       // NEW: Validate bbox before using it
       const validateBbox = (bbox: any): boolean => {
@@ -2391,7 +2408,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         variant: "destructive",
       });
     }
-  }, [addPreviewFile, toast]);
+  }, [previewFiles, preloadFile, openExpandedCardView, toast]);
   
   // Handle document preview click from reasoning step cards
   // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
@@ -3627,11 +3644,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               <ReactMarkdown 
                 components={{
                 p: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process all text nodes to find citations
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                     if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                     }
                         if (React.isValidElement(child)) {
                           // Recursively process nested children
@@ -3650,10 +3668,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
                 },
                 h1: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                         if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                         }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -3677,11 +3696,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
                 li: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process all text nodes to find citations
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                     if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                     }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -3699,11 +3719,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
                 },
                   strong: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process citations in strong elements
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                         if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                         }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -3720,11 +3741,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
                   },
                   em: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process citations in em elements
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                         if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                         }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -4017,7 +4039,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         currentWidth = 450;
                       }
                       return currentWidth >= 600 ? (
-                      <Minimize className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                     ) : (
                       <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                       );

@@ -231,7 +231,9 @@ class BackendApiService {
       documentIds: documentIds || undefined
     };
     
-    console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'full body:', requestBody);
+    if (import.meta.env.DEV) {
+      console.log('🌐 backendApi.queryDocumentsStreamFetch: Sending request with documentIds:', documentIds, 'full body:', requestBody);
+    }
     
     try {
       const response = await fetch(url, {

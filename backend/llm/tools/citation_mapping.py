@@ -8,6 +8,7 @@ Uses CitationTool class to store citations with bbox lookup and state management
 """
 
 import logging
+import os
 from typing import Dict, List, Any, Tuple, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -15,6 +16,20 @@ from langchain_core.tools import StructuredTool
 from backend.llm.types import Citation
 
 logger = logging.getLogger(__name__)
+
+# Local debug log writes are expensive and should be disabled in production.
+_LLM_DEBUG = os.environ.get("LLM_DEBUG") == "1"
+_DEBUG_LOG_PATH = os.environ.get("LLM_DEBUG_LOG_PATH", "/Users/thomashorner/solosway_v1/.cursor/debug.log")
+
+def _debug_log(payload: dict) -> None:
+    if not _LLM_DEBUG:
+        return
+    try:
+        import json
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
 
 
 def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]:
@@ -48,28 +63,17 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     block_numbers = re.findall(numeric_pattern, block_content)
     block_numbers_normalized = [num.replace(',', '').replace('.', '') for num in block_numbers]
     
-    # #region agent log
-    import json
-    try:
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'I',
-                'location': 'citation_mapping.py:49',
-                'message': 'VERIFY_CITATION_MATCH: Number extraction',
-                'data': {
-                    'cited_text_preview': cited_text[:150],
-                    'block_content_preview': block_content[:150],
-                    'cited_numbers': cited_numbers,
-                    'cited_numbers_normalized': cited_numbers_normalized,
-                    'block_numbers': block_numbers,
-                    'block_numbers_normalized': block_numbers_normalized
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except: pass
-    # #endregion
+    _debug_log({
+        "location": "citation_mapping.verify_citation_match:number_extraction",
+        "data": {
+            "cited_text_preview": cited_text[:150],
+            "block_content_preview": block_content[:150],
+            "cited_numbers": cited_numbers,
+            "cited_numbers_normalized": cited_numbers_normalized,
+            "block_numbers": block_numbers,
+            "block_numbers_normalized": block_numbers_normalized,
+        },
+    })
     
     # Check for numeric matches
     numeric_matches = [num for num in cited_numbers_normalized if num in block_numbers_normalized]
@@ -91,28 +95,17 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     is_valuation_figure = any(keyword in cited_text.lower() for keyword in ['value', 'valuation', 'price', 'rent', 'amount', 'worth'])
     has_specific_amount = len(cited_numbers_normalized) > 0
     
-    # #region agent log
-    import json
-    try:
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'I',
-                'location': 'citation_mapping.py:68',
-                'message': 'VERIFY_CITATION_MATCH: Checking exact amount requirement',
-                'data': {
-                    'is_valuation_figure': is_valuation_figure,
-                    'has_specific_amount': has_specific_amount,
-                    'cited_numbers_normalized': cited_numbers_normalized,
-                    'block_numbers_normalized': block_numbers_normalized,
-                    'cited_text_preview': cited_text[:100],
-                    'block_content_preview': block_content[:100]
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except: pass
-    # #endregion
+    _debug_log({
+        "location": "citation_mapping.verify_citation_match:exact_amount_requirement",
+        "data": {
+            "is_valuation_figure": is_valuation_figure,
+            "has_specific_amount": has_specific_amount,
+            "cited_numbers_normalized": cited_numbers_normalized,
+            "block_numbers_normalized": block_numbers_normalized,
+            "cited_text_preview": cited_text[:100],
+            "block_content_preview": block_content[:100],
+        },
+    })
     
     # If it's a valuation figure with a specific amount, require that amount to be in the block
     if is_valuation_figure and has_specific_amount:
@@ -121,26 +114,16 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
         primary_amount = max(cited_numbers_normalized, key=lambda x: (len(x), int(x) if x.isdigit() else 0))
         amount_in_block = primary_amount in block_numbers_normalized
         
-        # #region agent log
-        try:
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'I',
-                    'location': 'citation_mapping.py:75',
-                    'message': 'VERIFY_CITATION_MATCH: Checking if primary amount (LARGEST) is in block',
-                    'data': {
-                        'cited_numbers_normalized': cited_numbers_normalized,
-                        'primary_amount': primary_amount,
-                        'amount_in_block': amount_in_block,
-                        'block_numbers_normalized': block_numbers_normalized,
-                        'will_return_false': not amount_in_block
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
+        _debug_log({
+            "location": "citation_mapping.verify_citation_match:primary_amount_check",
+            "data": {
+                "cited_numbers_normalized": cited_numbers_normalized,
+                "primary_amount": primary_amount,
+                "amount_in_block": amount_in_block,
+                "block_numbers_normalized": block_numbers_normalized,
+                "will_return_false": not amount_in_block,
+            },
+        })
         
         if not amount_in_block:
             # The block doesn't contain the specific amount being cited - this is a mismatch
@@ -244,12 +227,22 @@ class CitationTool:
             )
             return f"⚠️ Citation {citation_number} recorded but block {block_id} not found"
         
-        # CRITICAL: Use Phase 2 semantic matching approach - ignore LLM's block_id
-        # Search ALL blocks and find the best match using semantic scoring (same as Phase 2)
-        logger.info(
-            f"[CITATION_TOOL] 🔍 Phase 1: Searching for best block match for citation {citation_number}: "
-            f"'{cited_text[:80]}...' (LLM suggested block_id: {block_id}, but will find best match)"
-        )
+        # Prefer the LLM-provided block_id when it exists in the metadata table.
+        # Only fall back to semantic "best match" when the direct block content doesn't verify.
+        # The previous behavior (always overriding block_id) can cause citation # -> bbox mismatches,
+        # where clicking a citation opens an unrelated location.
+        direct_block_content = (block_metadata or {}).get('content', '') or ''
+        direct_verification = verify_citation_match(cited_text, direct_block_content) if direct_block_content else {'confidence': 'low'}
+        if direct_verification.get('confidence') in ('high', 'medium'):
+            logger.info(
+                f"[CITATION_TOOL] ✅ Using direct block_id for citation {citation_number}: {block_id} "
+                f"(confidence: {direct_verification.get('confidence')})"
+            )
+        else:
+            logger.info(
+                f"[CITATION_TOOL] 🔍 Direct block_id verification low for citation {citation_number}; "
+                f"falling back to semantic search. block_id={block_id}, confidence={direct_verification.get('confidence')}"
+            )
         
         # Key semantic terms that indicate professional valuation vs market activity
         valuation_terms = ['market value', 'assessed', 'valuation', 'valued at', 'professional', 'valuer', 'mrics', '90-day', '180-day', 'marketing period']
@@ -260,16 +253,17 @@ class CitationTool:
         is_valuation_query = any(term in cited_lower for term in valuation_terms)
         is_market_activity_query = any(term in cited_lower for term in market_activity_terms)
         
-        # Search all blocks using Phase 2 semantic matching logic
+        # Search all blocks using Phase 2 semantic matching logic (only used as fallback)
         best_match = None
         best_score = -1
         best_confidence = 'low'
         
-        for search_doc_id, search_metadata_table in self.metadata_lookup_tables.items():
-            for search_block_id, search_block_meta in search_metadata_table.items():
-                search_block_content = search_block_meta.get('content', '')
-                if not search_block_content:
-                    continue
+        if direct_verification.get('confidence') not in ('high', 'medium'):
+            for search_doc_id, search_metadata_table in self.metadata_lookup_tables.items():
+                for search_block_id, search_block_meta in search_metadata_table.items():
+                    search_block_content = search_block_meta.get('content', '')
+                    if not search_block_content:
+                        continue
                 
                 block_lower = search_block_content.lower()
                 
@@ -315,26 +309,26 @@ class CitationTool:
                     score += len(numeric_matches) * 30  # Strong bonus for numeric matches
                 
                 # Update best match if this score is higher
-                if score > best_score:
-                    best_score = score
-                    best_match = {
-                        'block_id': search_block_id,
-                        'block_metadata': search_block_meta,
-                        'doc_id': search_doc_id,
-                        'verification': verification,
-                        'score': score,
-                        'content': search_block_content
-                    }
-                    # Update confidence based on score (same as Phase 2)
-                    if score >= 100:
-                        best_confidence = 'high'
-                    elif score >= 50:
-                        best_confidence = 'medium'
-                    else:
-                        best_confidence = 'low'
+                    if score > best_score:
+                        best_score = score
+                        best_match = {
+                            'block_id': search_block_id,
+                            'block_metadata': search_block_meta,
+                            'doc_id': search_doc_id,
+                            'verification': verification,
+                            'score': score,
+                            'content': search_block_content
+                        }
+                        # Update confidence based on score (same as Phase 2)
+                        if score >= 100:
+                            best_confidence = 'high'
+                        elif score >= 50:
+                            best_confidence = 'medium'
+                        else:
+                            best_confidence = 'low'
         
-        # Use best match found (same logic as Phase 2)
-        if best_match and best_confidence in ['high', 'medium']:
+        # Use best match found (same logic as Phase 2) - only when direct verification failed.
+        if direct_verification.get('confidence') not in ('high', 'medium') and best_match and best_confidence in ['high', 'medium']:
             if best_match['block_id'] != block_id:
                 logger.warning(
                     f"[CITATION_TOOL] ✅ Phase 1: Found better block match for citation {citation_number}:\n"
@@ -388,32 +382,20 @@ class CitationTool:
             block_metadata = corrected_block_metadata
             doc_id = corrected_doc_id
             
-            # #region agent log
-            import json
-            try:
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'A',
-                        'location': 'citation_mapping.py:268',
-                        'message': 'Phase 1 citation created with verified block_id/block_metadata sync',
-                        'data': {
-                            'citation_number': citation_number,
-                            'cited_text': cited_text,
-                            'block_id': block_id,
-                            'doc_id': doc_id[:8] if doc_id else 'UNKNOWN',
-                            'block_id_in_metadata': block_id in self.metadata_lookup_tables.get(doc_id, {}),
-                            'block_content_preview': best_match['content'][:100],
-                            'numeric_matches': best_match['verification']['numeric_matches'],
-                            'matched_terms': best_match['verification']['matched_terms'],
-                            'score': best_score,
-                            'confidence': best_confidence
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-            except: pass
-            # #endregion
+            _debug_log({
+                "location": "citation_mapping.add_citation:verified_block_sync",
+                "data": {
+                    "citation_number": citation_number,
+                    "block_id": block_id,
+                    "doc_id": (doc_id[:8] if doc_id else "UNKNOWN"),
+                    "block_id_in_metadata": block_id in self.metadata_lookup_tables.get(doc_id, {}),
+                    "block_content_preview": best_match['content'][:100] if best_match else None,
+                    "numeric_matches": best_match['verification']['numeric_matches'] if best_match else None,
+                    "matched_terms": best_match['verification']['matched_terms'] if best_match else None,
+                    "score": best_score,
+                    "confidence": best_confidence
+                }
+            })
         elif best_match:
             logger.error(
                 f"[CITATION_TOOL] ❌ Phase 1: Low confidence match for citation {citation_number} "
@@ -500,30 +482,19 @@ class CitationTool:
         # CRITICAL: Ensure block_id and block_metadata are from the same block
         single_block_table = {block_id: block_metadata}
         
-        # #region agent log
-        import json
-        try:
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'F',
-                    'location': 'citation_mapping.py:345',
-                    'message': 'Verifying block_id and block_metadata sync before bbox mapping',
-                    'data': {
-                        'citation_number': citation_number,
-                        'block_id': block_id,
-                        'doc_id': doc_id[:8] if doc_id else 'UNKNOWN',
-                        'block_id_in_metadata_table': block_id in self.metadata_lookup_tables.get(doc_id, {}),
-                        'using_canonical_metadata': canonical_metadata is not None,
-                        'block_metadata_keys': list(block_metadata.keys()) if block_metadata else [],
-                        'has_bbox_left': 'bbox_left' in block_metadata if block_metadata else False,
-                        'has_bbox_top': 'bbox_top' in block_metadata if block_metadata else False
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
+        _debug_log({
+            "location": "citation_mapping.add_citation:pre_bbox_mapping_sync_check",
+            "data": {
+                "citation_number": citation_number,
+                "block_id": block_id,
+                "doc_id": (doc_id[:8] if doc_id else "UNKNOWN"),
+                "block_id_in_metadata_table": block_id in self.metadata_lookup_tables.get(doc_id, {}),
+                "using_canonical_metadata": canonical_metadata is not None,
+                "block_metadata_keys": list(block_metadata.keys()) if block_metadata else [],
+                "has_bbox_left": ("bbox_left" in block_metadata) if block_metadata else False,
+                "has_bbox_top": ("bbox_top" in block_metadata) if block_metadata else False,
+            },
+        })
         
         bbox_data = map_block_id_to_bbox(block_id, single_block_table)
         
@@ -581,32 +552,17 @@ class CitationTool:
         
         self.citations.append(citation)
         
-        # #region agent log
-        import json
-        try:
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'G',
-                    'location': 'citation_mapping.py:360',
-                    'message': 'CRITICAL: Phase 1 citation created - checking for £1.9m vs £2.4m mismatch',
-                    'data': {
-                        'citation_number': citation_number,
-                        'cited_text': cited_text,
-                        'block_id': block_id,
-                        'block_content_preview': block_content[:150],
-                        'cited_text_contains_1_9m': '1.9' in cited_text or '1,950' in cited_text,
-                        'cited_text_contains_2_4m': '2.4' in cited_text or '2,400' in cited_text,
-                        'block_content_contains_1_9m': '1.9' in block_content or '1,950' in block_content,
-                        'block_content_contains_2_4m': '2.4' in block_content or '2,400' in block_content,
-                        'page': page_number,
-                        'bbox': bbox
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
+        _debug_log({
+            "location": "citation_mapping.add_citation:mismatch_check",
+            "data": {
+                "citation_number": citation_number,
+                "block_id": block_id,
+                "cited_text_preview": cited_text[:150],
+                "block_content_preview": block_content[:150],
+                "page": page_number,
+                "bbox": bbox,
+            },
+        })
         
         logger.info(
             f"[CITATION_TOOL] ✅ Citation {citation_number} added: {block_id} "
@@ -615,28 +571,16 @@ class CitationTool:
             f"fallback: {is_fallback_bbox})"
         )
         
-        # #region agent log
-        import json
-        try:
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'A',
-                    'location': 'citation_mapping.py:330',
-                    'message': 'Phase 1 citation finalized with BBOX',
-                    'data': {
-                        'citation_number': citation_number,
-                        'cited_text': cited_text,
-                        'block_id': block_id,
-                        'bbox': bbox,
-                        'page': page_number,
-                        'doc_id': doc_id[:8] if doc_id else 'UNKNOWN'
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
+        _debug_log({
+            "location": "citation_mapping.add_citation:finalized",
+            "data": {
+                "citation_number": citation_number,
+                "block_id": block_id,
+                "page": page_number,
+                "doc_id": (doc_id[:8] if doc_id else "UNKNOWN"),
+                "bbox": bbox,
+            },
+        })
         
         return f"✅ Citation {citation_number} recorded for {block_id}"
 

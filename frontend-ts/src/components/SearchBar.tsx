@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronLeft, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -220,7 +220,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 const scrollHeight = inputRef.current.scrollHeight;
                 // Calculate viewport-aware maxHeight to prevent overflow
                 // Constrain to viewport height minus safe margins (container padding, icons, spacing)
-                const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
+                // Dashboard: cap earlier so the bar never rises into the Recent Projects area.
+                const maxHeight = isDashboardView
+                  ? 160
+                  : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
                 const newHeight = Math.min(scrollHeight, maxHeight);
                 inputRef.current.style.height = `${newHeight}px`;
                 inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
@@ -289,6 +292,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   
   // Determine if we should use rounded corners (when there's content or attachment)
   const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0 || propertyAttachments.length > 0;
+  const isDashboardView = !isMapVisible && !isInChatMode;
   
   // Adjust font size and padding on very small screens to ensure placeholder text fits
   // Use a more aggressive threshold to catch smaller screens
@@ -615,23 +619,27 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
     
     // Dashboard view: always multi-line (like MapChatBar)
-    // Map/Chat view: use character-count based logic
+    // Map view: always multi-line (like MapChatBar) and NEVER collapse back to single-line.
+    // Chat view: switch to multi-line ONLY when the content actually wraps (or contains a newline).
+    // This prevents the "jump" caused by a character-count threshold toggling multi-line too early.
     let shouldBeMultiLine = false;
-    if (!isMapVisible && !isInChatMode) {
-      // Dashboard view: always multi-line
+    if (isMapVisible) {
+      shouldBeMultiLine = true;
+    } else if (!isMapVisible && !isInChatMode) {
       shouldBeMultiLine = true;
     } else {
-      // Map/Chat view: character-count based logic
-      const charCount = value.trim().length;
-      const multiLineCharThreshold = 40; // Switch to multi-line at 40 characters
-      const singleLineCharThreshold = 35; // Switch back to single-line at 35 characters (hysteresis)
+      const el = e.target;
+      const baseHeight = initialScrollHeightRef.current ?? 28.1;
+      const hasExplicitNewline = value.includes('\n');
+      // scrollHeight increases as soon as content wraps, even if the visible height is still 1 line.
+      const hasWrapped = el.scrollHeight > baseHeight + 1; // +1px tolerance for rounding
       
       if (isMultiLine) {
-        // Already in multi-line: only exit if character count is below single-line threshold
-        shouldBeMultiLine = charCount >= singleLineCharThreshold;
+        // Stay multiline until content is back to a single line (no wrap + no newline).
+        shouldBeMultiLine = hasExplicitNewline || hasWrapped;
       } else {
-        // Not in multi-line: only enter if character count reaches multi-line threshold
-        shouldBeMultiLine = charCount >= multiLineCharThreshold;
+        // Enter multiline only when we actually need more than one line.
+        shouldBeMultiLine = hasExplicitNewline || hasWrapped;
       }
     }
     
@@ -648,7 +656,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           const scrollHeight = inputRef.current.scrollHeight;
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
-          const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
+          const maxHeight = isDashboardView
+            ? 160
+            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -721,7 +731,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           const scrollHeight = inputRef.current.scrollHeight;
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
-          const maxHeight = Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
+          const maxHeight = isDashboardView
+            ? 160
+            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 260 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -1150,14 +1162,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 paddingBottom: '12px',
                 paddingRight: '12px',
                 paddingLeft: '12px',
-                overflow: 'visible',
+                // Keep the bar bottom-anchored by capping overall card height; allow children to scroll within.
+                overflow: 'hidden',
                 width: '100%',
                 minWidth: '0',
                 height: 'auto',
                 minHeight: 'fit-content',
+                // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
+                // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
+                maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
                 boxSizing: 'border-box',
                 borderRadius: '12px', // Always 12px rounded corners
-                transition: 'all 0.2s ease-in-out',
+                // IMPORTANT: don't animate layout (height) while typing; textarea auto-resizes on keystrokes.
+                // Restrict transitions to purely visual properties to avoid "step up" / reflow animations.
+                transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
                 position: 'relative'
               }}
             >
@@ -1278,7 +1296,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         minHeight: '24px',
                         maxHeight: contextConfig.position === "bottom" && !isMapVisible 
                           ? 'calc(100vh - 200px)' // Viewport-aware: account for container padding, icons, and spacing
-                          : '350px', // Default max height for other positions
+                          : (isMapVisible 
+                              ? 'min(350px, calc(100vh - 260px))' // Map: prevent growing off-screen
+                              : (isDashboardView ? '160px' : '350px')), // Dashboard: stop before Recent Projects; others: fixed cap
                         fontSize: '14px',
                         lineHeight: '20px',
                         paddingTop: '0px',
@@ -1512,7 +1532,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? (
                     <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                   ) : (
-                    <ChevronLeft className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
                   )}
                 </button>
                 </div>

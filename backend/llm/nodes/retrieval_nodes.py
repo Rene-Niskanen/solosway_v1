@@ -5,6 +5,7 @@ Retrieval nodes: Query classification, vector search, SQL search, deduplication,
 import json
 import logging
 import os
+import os
 import re
 import time
 from typing import Optional, List, Dict, Any, Tuple
@@ -31,6 +32,20 @@ from backend.llm.prompts import (
 
 logger = logging.getLogger(__name__)
 
+# Local debug log writes are expensive and should be disabled in production.
+_LLM_DEBUG = os.environ.get("LLM_DEBUG") == "1"
+_DEBUG_LOG_PATH = os.environ.get("LLM_DEBUG_LOG_PATH", "/Users/thomashorner/solosway_v1/.cursor/debug.log")
+
+def _debug_log(payload: dict) -> None:
+    if not _LLM_DEBUG:
+        return
+    try:
+        import json
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
+
 
 # ============================================================================
 # SMART RETRIEVAL ALGORITHM - Multi-Factor Chunk Selection
@@ -49,12 +64,10 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
     """
     query_lower = query.lower()
     
-    # #region agent log
-    try:
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({"location":"retrieval_nodes.py:50","message":"detect_query_characteristics called","data":{"query":query,"query_lower":query_lower},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
-    except: pass
-    # #endregion
+    _debug_log({
+        "location": "retrieval_nodes.detect_query_characteristics:called",
+        "data": {"query": query, "query_lower": query_lower},
+    })
     
     # Detect query type
     # FIXED: Make assessment detection more precise - require context around "value"
@@ -69,13 +82,11 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
     # Check precise terms first
     if any(term in query_lower for term in assessment_terms_precise):
         query_type = 'assessment'
-        # #region agent log
-        try:
-            matched = [term for term in assessment_terms_precise if term in query_lower]
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location":"retrieval_nodes.py:68","message":"Assessment detected via precise terms","data":{"query":query,"matched_term":matched},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
-        except: pass
-        # #endregion
+        matched = [term for term in assessment_terms_precise if term in query_lower]
+        _debug_log({
+            "location": "retrieval_nodes.detect_query_characteristics:assessment_precise",
+            "data": {"query": query, "matched_term": matched},
+        })
     # Check broad "value" term only if it appears with property/valuation context
     elif 'value' in query_lower:
         # Require context: property value, market value, value of property, value of the property, etc.
@@ -87,20 +98,16 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
         has_value_context = any(pattern in query_lower for pattern in value_context_patterns)
         if has_value_context:
             query_type = 'assessment'
-            # #region agent log
-            try:
-                matched = [p for p in value_context_patterns if p in query_lower]
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"location":"retrieval_nodes.py:80","message":"Assessment detected via value with context","data":{"query":query,"matched_pattern":matched},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
-            except: pass
-            # #endregion
+            matched = [p for p in value_context_patterns if p in query_lower]
+            _debug_log({
+                "location": "retrieval_nodes.detect_query_characteristics:assessment_value_context",
+                "data": {"query": query, "matched_pattern": matched},
+            })
         else:
-            # #region agent log
-            try:
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"location":"retrieval_nodes.py:85","message":"Value found but no property context - NOT assessment","data":{"query":query},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
-            except: pass
-            # #endregion
+            _debug_log({
+                "location": "retrieval_nodes.detect_query_characteristics:value_no_context",
+                "data": {"query": query},
+            })
     elif any(term in query_lower for term in activity_terms):
         query_type = 'activity'
     elif any(term in query_lower for term in attribute_terms):
@@ -154,12 +161,10 @@ def detect_query_characteristics(query: str) -> Dict[str, Any]:
         'expects_later_pages': expects_later_pages
     }
     
-    # #region agent log
-    try:
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({"location":"retrieval_nodes.py:130","message":"detect_query_characteristics result","data":{"query":query,"result":result},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"A"})+"\n")
-    except: pass
-    # #endregion
+    _debug_log({
+        "location": "retrieval_nodes.detect_query_characteristics:result",
+        "data": {"query": query, "result": result},
+    })
     
     return result
 

@@ -15,6 +15,7 @@ import logging
 import boto3
 import time
 import re
+import math
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
@@ -82,6 +83,33 @@ views = Blueprint('views', __name__)
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Performance timing helpers (lightweight, server-side only)
+# ---------------------------------------------------------------------------
+def _perf_ms(start: float, end: float) -> int:
+    """Return elapsed milliseconds as int (clamped >= 0)."""
+    return max(0, int(round((end - start) * 1000)))
+
+class _Timing:
+    """Tiny timing utility for per-request performance logs."""
+    def __init__(self) -> None:
+        self._t0 = time.perf_counter()
+        self.marks: dict[str, float] = {"t0": self._t0}
+
+    def mark(self, name: str) -> None:
+        self.marks[name] = time.perf_counter()
+
+    def to_ms(self) -> dict[str, int]:
+        # Convert sequential mark deltas to ms for quick reading.
+        ordered = sorted(self.marks.items(), key=lambda kv: kv[1])
+        out: dict[str, int] = {}
+        prev_name, prev_t = ordered[0]
+        for name, t in ordered[1:]:
+            out[f"{prev_name}->{name}_ms"] = _perf_ms(prev_t, t)
+            prev_name, prev_t = name, t
+        out["total_ms"] = _perf_ms(self._t0, time.perf_counter())
+        return out
 
 # ============================================================================
 # HEALTH & STATUS ENDPOINTS
@@ -301,6 +329,7 @@ def query_documents_stream():
         if not config.openai_api_key:
             logger.error("❌ [STREAM] OpenAI API key is not configured!")
         
+        timing = _Timing()
         data = request.get_json()
         if data is None:
             response = jsonify({
@@ -313,6 +342,7 @@ def query_documents_stream():
             response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
             return response, 400
         
+        timing.mark("parsed_request")
         query = data.get('query', '')
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
@@ -357,6 +387,7 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Getting business_id...")
                 # Get business_id
                 business_id = _ensure_business_uuid()
+                timing.mark("business_id")
                 logger.info(f"🟢 [STREAM] Business ID: {business_id}")
                 if not business_id:
                     logger.error("❌ [STREAM] No business_id found")
@@ -485,6 +516,7 @@ def query_documents_stream():
                         return f"Searching for {target_str}"
                 
                 intent_message = extract_query_intent(query)
+                timing.mark("intent_extracted")
                 
                 # Emit initial reasoning step with extracted intent
                 initial_reasoning = {
@@ -503,33 +535,26 @@ def query_documents_stream():
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
                         
-                        # Create checkpointer for THIS event loop (the one in the thread)
-                        # This avoids "bound to different event loop" errors
-                        from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-                        
+                        # Use persistent GraphRunner graph (compiled once on startup).
+                        # Falls back to legacy behavior if runner isn't available.
+                        graph = None
                         checkpointer = None
                         try:
-                            logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
+                            from backend.llm.runtime.graph_runner import graph_runner
+                            graph = graph_runner.get_graph()
+                            checkpointer = graph_runner.get_checkpointer()
+                            timing.mark("checkpointer_created")
+                            timing.mark("graph_built")
+                        except Exception as runner_err:
+                            logger.warning(f"🟡 [STREAM] GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
+                            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                             checkpointer = await create_checkpointer_for_current_loop()
-                        except Exception as checkpointer_error:
-                            error_msg = str(checkpointer_error)
-                            # Handle connection timeout errors gracefully
-                            if "couldn't get a connection" in error_msg.lower() or "timeout" in error_msg.lower():
-                                logger.warning(f"🟡 [STREAM] Connection pool timeout creating checkpointer: {checkpointer_error}")
-                                logger.info("🟡 [STREAM] Falling back to stateless mode (no conversation memory)")
-                                checkpointer = None
+                            timing.mark("checkpointer_created")
+                            if checkpointer:
+                                graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                             else:
-                                # Re-raise unexpected errors
-                                raise
-                        
-                        if checkpointer:
-                            # Build graph with checkpointer for this event loop
-                            # All checkpointers point to same database, so state is shared via thread_id
-                            logger.info("🟡 [STREAM] Building graph with checkpointer for this event loop")
-                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                        else:
-                            logger.warning("🟡 [STREAM] Using stateless mode (no checkpointer)")
-                            graph, _ = await build_main_graph(use_checkpointer=False)
+                                graph, _ = await build_main_graph(use_checkpointer=False)
+                            timing.mark("graph_built")
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
@@ -1186,6 +1211,7 @@ def query_documents_stream():
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
+                        timing.mark("prepare_complete")
                         # Send complete message with metadata
                         complete_data = {
                             'type': 'complete',
@@ -1199,6 +1225,13 @@ def query_documents_stream():
                             }
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"
+                        timing.mark("complete_sent")
+                        logger.info("🟣 [PERF][STREAM] %s", json.dumps({
+                            "endpoint": "/api/llm/query/stream",
+                            "session_id": session_id,
+                            "doc_ids_count": len(document_ids) if document_ids else 0,
+                            "timing": timing.to_ms()
+                        }))
                     
                     except Exception as e:
                         logger.error(f"Error in run_and_stream: {e}")
@@ -1355,6 +1388,7 @@ def query_documents():
     import time
     from backend.llm.graphs.main_graph import main_graph, checkpointer
     
+    timing = _Timing()
     data = request.get_json()
     if data is None:
         response = jsonify({
@@ -1367,6 +1401,7 @@ def query_documents():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 400
     
+    timing.mark("parsed_request")
     query = data.get('query', '')
     property_id = data.get('propertyId')  # From property attachment
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
@@ -1394,6 +1429,7 @@ def query_documents():
     try:
         # Get business_id from session
         business_id = _ensure_business_uuid()
+        timing.mark("business_id")
         if not business_id:
             return jsonify({
                 'success': False,
@@ -1431,24 +1467,31 @@ def query_documents():
             "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
         }
         
-        # Use global graph instance (initialized on app startup)
         async def run_query():
-            # Create checkpointer for THIS event loop (created by asyncio.run())
-            # This avoids "bound to different event loop" errors
-            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-            
             try:
-                logger.info("Creating checkpointer for current event loop...")
-                checkpointer = await create_checkpointer_for_current_loop()
-                
-                if checkpointer:
-                    # Build graph with checkpointer for this event loop
-                    # All checkpointers point to same database, so state is shared via thread_id
-                    logger.info("Building graph with checkpointer for this event loop")
-                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                else:
-                    logger.warning("Failed to create checkpointer - using stateless mode")
-                    graph, _ = await build_main_graph(use_checkpointer=False)
+                # Prefer persistent GraphRunner graph (compiled once on startup).
+                # Falls back to legacy behavior if runner isn't available.
+                graph = None
+                checkpointer = None
+                try:
+                    from backend.llm.runtime.graph_runner import graph_runner
+                    graph = graph_runner.get_graph()
+                    checkpointer = graph_runner.get_checkpointer()
+                    timing.mark("checkpointer_created")
+                    timing.mark("graph_built")
+                except Exception as runner_err:
+                    logger.warning(f"GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
+                    from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                    logger.info("Creating checkpointer for current event loop...")
+                    checkpointer = await create_checkpointer_for_current_loop()
+                    timing.mark("checkpointer_created")
+                    if checkpointer:
+                        logger.info("Building graph with checkpointer for this event loop")
+                        graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                    else:
+                        logger.warning("Failed to create checkpointer - using stateless mode")
+                        graph, _ = await build_main_graph(use_checkpointer=False)
+                    timing.mark("graph_built")
                 
                 config = {
                     "configurable": {
@@ -1456,6 +1499,7 @@ def query_documents():
                     }
                 }
                 result = await graph.ainvoke(initial_state, config)
+                timing.mark("graph_done")
                 return result
             except Exception as graph_error:
                 # Handle connection closed errors gracefully
@@ -1473,6 +1517,7 @@ def query_documents():
         # Run async graph
         logger.info(f"Running LangGraph query: '{query[:50]}...' (property_id: {property_id}, session: {session_id})")
         result = asyncio.run(run_query())
+        timing.mark("response_ready")
         
         # Format response for frontend
         final_summary = result.get("final_summary", "")
@@ -1495,6 +1540,13 @@ def query_documents():
         
         logger.info(f"LangGraph query completed: {len(result.get('relevant_documents', []))} documents found")
         
+        logger.info("🟣 [PERF][QUERY] %s", json.dumps({
+            "endpoint": "/api/llm/query",
+            "session_id": session_id,
+            "doc_ids_count": len(document_ids) if document_ids else 0,
+            "timing": timing.to_ms()
+        }))
+
         return jsonify({
             'success': True,
             'data': response_data
