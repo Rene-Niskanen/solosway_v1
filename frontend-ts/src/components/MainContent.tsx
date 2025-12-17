@@ -947,7 +947,7 @@ const LocationPickerModal: React.FC<{
         whileHover={{ scale: 1.001 }}
         whileTap={{ scale: 0.999 }}
       >
-        <div className="flex items-start gap-4 px-5 py-4">
+          <div className="flex items-start gap-3 px-5 py-4">
           {/* Minimal icon */}
           <div className="flex-shrink-0 pt-0.5">
             <MapPin className="w-5 h-5 text-slate-400 group-hover:text-slate-600 transition-colors" strokeWidth={1.5} />
@@ -970,7 +970,7 @@ const LocationPickerModal: React.FC<{
           
           {/* Subtle arrow */}
           <div className="flex-shrink-0 text-slate-300 group-hover:text-slate-400 transition-colors pt-0.5">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </div>
@@ -3486,8 +3486,8 @@ export const MainContent = ({
             display: 'block',
             // Add minHeight to prevent collapse before content renders
             minHeight: '60px',
-            overflowY: 'auto', // Allow scrolling if content exceeds max height
-            overflowX: 'visible'
+            // Don't clip the SearchBar shadow
+            overflow: 'visible'
           }}>
           <SearchBar 
             ref={mapSearchBarRefCallback}
@@ -3572,6 +3572,7 @@ export const MainContent = ({
           ref={sideChatPanelRef}
           isVisible={isMapVisible && hasPerformedSearch}
           query={mapSearchQuery}
+          isSidebarCollapsed={isSidebarCollapsed}
           sidebarWidth={(() => {
             // Base sidebar width
             const baseSidebarWidth = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);

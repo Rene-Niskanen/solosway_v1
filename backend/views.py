@@ -797,11 +797,15 @@ def query_documents_stream():
                                                         'doc_id': citation.get('doc_id'),
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Should already have bbox from CitationTool
-                                                        'method': citation.get('method', 'block-id-lookup')
+                                                        'method': citation.get('method', 'block-id-lookup'),
+                                                        'block_id': citation.get('block_id'),  # Include block_id for debugging
+                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
                                                     }
                                                     
+                                                    block_id = citation.get('block_id', 'UNKNOWN')
                                                     logger.info(
                                                         f"🟢 [CITATION_STREAM] Citation {citation_num_str} data: "
+                                                        f"block_id={block_id}, "
                                                         f"doc_id={citation_data.get('doc_id', '')[:8]}, "
                                                         f"page={citation_data.get('page')}, "
                                                         f"has_bbox={bool(citation_bbox)}, "
@@ -809,6 +813,29 @@ def query_documents_stream():
                                                     )
                                                     
                                                     processed_citations[citation_num_str] = citation_data
+                                                    
+                                                    # #region agent log
+                                                    try:
+                                                        import json as json_module
+                                                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                                                            f.write(json_module.dumps({
+                                                                'sessionId': 'debug-session',
+                                                                'runId': 'run1',
+                                                                'hypothesisId': 'D',
+                                                                'location': 'views.py:815',
+                                                                'message': 'Backend sending citation to frontend',
+                                                                'data': {
+                                                                    'citation_number': citation_num_str,
+                                                                    'cited_text': citation.get('cited_text', ''),
+                                                                    'block_id': block_id,
+                                                                    'bbox': citation_bbox,
+                                                                    'page': citation_page,
+                                                                    'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'UNKNOWN'
+                                                                },
+                                                                'timestamp': int(__import__('time').time() * 1000)
+                                                            }) + '\n')
+                                                    except: pass
+                                                    # #endregion
                                                     
                                                     # Stream citation event
                                                     citation_event = {
@@ -819,7 +846,7 @@ def query_documents_stream():
                                                     yield f"data: {json.dumps(citation_event)}\n\n"
                                                     logger.info(
                                                         f"🟢 [CITATION_STREAM] Streamed citation {citation_num_str} "
-                                                        f"(doc: {citation_data.get('doc_id', '')[:8]}, page: {citation_data.get('page')})"
+                                                        f"(block_id: {block_id}, doc: {citation_data.get('doc_id', '')[:8]}, page: {citation_data.get('page')})"
                                                     )
                                                 
                                                 # Store processed citations in final_result for later use
@@ -1102,6 +1129,41 @@ def query_documents_stream():
                                 bbox = citation_data.get('bbox', {})
                                 page = citation_data.get('page', 0)
                                 doc_id = citation_data.get('doc_id', '')
+                                block_id = citation_data.get('block_id', 'UNKNOWN')
+                                cited_text = citation_data.get('cited_text', '')[:60] if citation_data.get('cited_text') else 'N/A'
+                                
+                                # Log citation details for debugging
+                                bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
+                                logger.info(
+                                    f"🟢 [CITATIONS] Citation {citation_num} (FINAL): block_id={block_id}, "
+                                    f"doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
+                                    f"cited_text='{cited_text}...'"
+                                )
+                                
+                                # Validate BBOX coordinates
+                                if bbox:
+                                    bbox_left = bbox.get('left', 0)
+                                    bbox_top = bbox.get('top', 0)
+                                    bbox_width = bbox.get('width', 0)
+                                    bbox_height = bbox.get('height', 0)
+                                    
+                                    # Check for fallback BBOX
+                                    is_fallback = (
+                                        bbox_left == 0.0 and bbox_top == 0.0 and
+                                        bbox_width == 1.0 and bbox_height == 1.0
+                                    )
+                                    if is_fallback:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (block_id: {block_id}) "
+                                            f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
+                                        )
+                                    
+                                    # Check for invalid dimensions
+                                    if bbox_width <= 0 or bbox_height <= 0:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (block_id: {block_id}) "
+                                            f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
+                                        )
                                 
                                 # Build structured citation for array format
                                 structured_citations.append({
@@ -1113,10 +1175,11 @@ def query_documents_stream():
                                                 
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
-                                                        'doc_id': doc_id,
+                                    'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
-                                    'method': citation_data.get('method', 'block-id-lookup')
+                                    'method': citation_data.get('method', 'block-id-lookup'),
+                                    'block_id': block_id  # Include block_id for debugging
                                 }
                         else:
                             logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")

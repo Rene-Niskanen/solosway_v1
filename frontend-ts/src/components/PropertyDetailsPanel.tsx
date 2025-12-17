@@ -2371,16 +2371,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
             }}
-            className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
+            className={`bg-white flex overflow-hidden pointer-events-auto ${
+              // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
+              isChatPanelOpen ? '' : 'shadow-2xl ring-1 ring-black/5'
+            }`}
             style={{ 
               // Switch to fixed positioning in chat mode to reliably fill screen
               position: isChatPanelOpen ? 'fixed' : 'relative',
               
               // Chat Mode: Anchored to screen edges (sidebar + margins)
-              left: isChatPanelOpen ? `${Math.max(chatPanelWidth, 320) + 22}px` : 'auto', // 320px width + 20px margin + 8px gap
-              right: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
-              top: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
-              bottom: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
+              // Split view: remove outer gaps so the panel sits flush against the chat panel and viewport edges
+              left: isChatPanelOpen ? `${Math.max(chatPanelWidth, 320)}px` : 'auto',
+              right: isChatPanelOpen ? '0px' : 'auto',
+              top: isChatPanelOpen ? '0px' : 'auto',
+              bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
               transition: 'none', // No transition for width/position changes - instant like chat

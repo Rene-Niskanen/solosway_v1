@@ -214,7 +214,7 @@ export const Sidebar = ({
                     className="w-7 h-7 lg:w-8 lg:h-8 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
                   />
                 ) : (
-                  <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
+                  <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
                 )}
               </div>
               <span className={`text-xs font-medium ${isChatPanelOpen ? 'text-gray-900' : 'text-gray-700'}`}>
@@ -235,7 +235,7 @@ export const Sidebar = ({
               className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center rounded-lg group cursor-pointer transition-colors duration-150 hover:bg-gray-100"
               aria-label="Close List"
             >
-              <ListEnd className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
+              <ListEnd className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
             </button>
           </div>
         ) : (
@@ -255,7 +255,7 @@ export const Sidebar = ({
                   className="w-5 h-5 lg:w-6 lg:h-6 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
             />
           ) : (
-                <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
+                <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
               )}
             </div>
           </button>
@@ -452,7 +452,7 @@ export const Sidebar = ({
         >
               {/* Icon */}
           <AnalyticsIcon 
-            className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0`} 
+            className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]`} 
             strokeWidth={1.8} 
             style={{ color: isActive ? '#22c55e' : '#8B8B8B' }} 
           />

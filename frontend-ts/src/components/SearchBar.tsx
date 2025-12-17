@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
+import { ChevronLeft, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -1134,11 +1134,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
               style={{
-                background: isDragOver ? '#F0F9FF' : '#ffffff',
-                border: isDragOver ? '2px dashed #3B82F6' : '1px solid #E5E7EB',
+                // Glassmorphism by default; keep strong affordances during drag-over.
+                background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                border: isDragOver
+                  ? '2px dashed rgb(36, 41, 50)'
+                  // Keep the outline consistently thin (no focus-thickening).
+                  : '1px solid rgba(82, 101, 128, 0.35)',
                 boxShadow: isDragOver 
-                  ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.1)' 
-                  : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                  ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                  // Keep shadow consistent as well; focus should not add a thick halo.
+                  : 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
                 paddingRight: '12px',
@@ -1351,13 +1358,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       <button
                         type="button"
                         onClick={onPanelToggle}
-                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
+                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 focus:outline-none outline-none"
                         style={{
                           marginLeft: '4px'
                         }}
                         title="Expand chat"
                       >
-                        <MessageSquareShare className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2.5} />
+                        <MessageSquareShare className="w-3.5 h-3.5 scale-x-[-1] text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.8} />
                       </button>
                     )
                   )}
@@ -1373,40 +1380,21 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         });
                         onMapToggle?.();
                       }}
-                      className="flex items-center justify-center focus:outline-none outline-none"
+                      className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group focus:outline-none outline-none ${
+                        !isMapVisible
+                          ? 'border-emerald-200/70 hover:border-emerald-300/80 bg-emerald-50/80 hover:bg-emerald-50 text-emerald-700'
+                          : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'
+                      }`}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        padding: '4px 8px',
-                        backgroundColor: '#ffffff',
-                        color: '#111827',
-                        border: '1px solid rgba(229, 231, 235, 0.8)',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: 500,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s ease',
-                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                        whiteSpace: 'nowrap',
+                        // Match "Expand chat" button shape (square/rounded-rect)
                         marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
                       }}
                       title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f9fafb';
-                        e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
-                        e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#ffffff';
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
-                      }}
                     >
                         {isMapVisible ? (
-                          <LayoutDashboard className="w-3.5 h-3.5" strokeWidth={2} />
+                          <LayoutDashboard className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
                         ) : (
-                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={2} />
+                          <MapPinHouse className="w-3.5 h-3.5 text-emerald-700 group-hover:text-emerald-800 transition-colors" strokeWidth={2} />
                         )}
                     </button>
                   )}
@@ -1524,7 +1512,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? (
                     <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
                   ) : (
-                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                    <ChevronLeft className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
                   )}
                 </button>
                 </div>

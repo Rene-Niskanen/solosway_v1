@@ -514,7 +514,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.2 }}
-      className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white shadow-2xl flex flex-col z-[9999]"}
+      className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white flex flex-col z-[9999]"}
       style={{
         ...(isFullscreen ? {
           position: 'fixed',
@@ -533,7 +533,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           top: '0px', // No gap from top
           bottom: '0px', // No gap from bottom
           borderRadius: '0px', // No border radius when edge-to-edge
-          boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+          // Remove the heavy shadow in split-view (it reads like a shadow on the chat edge).
+          // Use a subtle divider instead.
+          boxShadow: 'none',
+          borderLeft: '1px solid rgba(226, 232, 240, 0.9)',
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',

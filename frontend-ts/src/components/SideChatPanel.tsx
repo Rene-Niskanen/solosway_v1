@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home, FolderOpen } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Workflow, Home, FolderOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -212,7 +212,7 @@ const DocumentPreviewOverlay: React.FC<{
               title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
             >
               {isFullscreen ? (
-                <Minimize2 className="w-4 h-4" />
+                <Minimize className="w-4 h-4" />
               ) : (
                 <Fullscreen className="w-4 h-4" />
               )}
@@ -312,6 +312,7 @@ interface CitationDataType {
     page?: number;  // Optional page in bbox (for compatibility)
   };
   method?: string;  // Citation method (e.g., 'block-id-lookup')
+  block_id?: string;  // Block ID from Phase 1 citation extraction (for debugging)
   // Legacy fields (optional for backward compatibility)
   original_filename?: string | null;
   property_address?: string;
@@ -479,7 +480,51 @@ const renderTextWithCitations = (
       const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num, data: citData, original: match };
       placeholderIndex++;
+      const citationDetails = {
+        citationNumber: num,
+        block_id: citData.block_id || 'UNKNOWN',
+        page: citData.page || citData.bbox?.page || 'UNKNOWN',
+        bbox: citData.bbox ? `${citData.bbox.left?.toFixed(3)},${citData.bbox.top?.toFixed(3)} (${citData.bbox.width?.toFixed(3)}x${citData.bbox.height?.toFixed(3)})` : 'N/A',
+        doc_id: citData.doc_id?.substring(0, 8) || 'UNKNOWN',
+        method: citData.method || 'UNKNOWN'
+      };
+      console.log(`🔗 [CITATION] Matched bracket ${match} (${num}) with citation data:`, JSON.stringify(citationDetails, null, 2));
+      
+      // #region agent log
+      try {
+        const contextStart = Math.max(0, processedText.indexOf(match) - 50);
+        const contextEnd = Math.min(processedText.length, processedText.indexOf(match) + match.length + 50);
+        const context = text.substring(contextStart, contextEnd);
+        fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'debug-session',
+            runId: 'run1',
+            hypothesisId: 'D',
+            location: 'SideChatPanel.tsx:491',
+            message: 'Frontend matching citation to text',
+            data: {
+              citation_number: num,
+              citation_marker: match,
+              context_around_citation: context,
+              citation_data: {
+                block_id: citData.block_id || 'UNKNOWN',
+                cited_text: (citData as any).cited_text || '',
+                bbox: citData.bbox,
+                page: citData.page || citData.bbox?.page || 'UNKNOWN',
+                doc_id: citData.doc_id?.substring(0, 8) || 'UNKNOWN'
+              }
+            },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      } catch {}
+      // #endregion
+      
       return placeholder;
+    } else {
+      console.log(`⚠️ [CITATION] Bracket ${match} (${num}) found in text but no citation data available. Available keys:`, Object.keys(citations));
     }
     return match; // Keep original if no citation found
   });
@@ -800,6 +845,7 @@ interface SideChatPanelProps {
   isVisible: boolean;
   query: string;
   sidebarWidth?: number; // Width of the sidebar to offset the panel
+  isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
   onMapToggle?: () => void; // Callback for toggling map view
   onMinimize?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for minimizing to bubble with chat messages
@@ -824,6 +870,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isVisible,
   query,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
+  isSidebarCollapsed = false,
   onQuerySubmit,
   onMapToggle,
   onMinimize,
@@ -839,6 +886,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onQuickStartToggle,
   isQuickStartBarVisible = false // Default to false
 }, ref) => {
+  // Main navigation state:
+  // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
+  // - open: full sidebar visible
+  const isMainSidebarOpen = !isSidebarCollapsed;
+
   // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
   // This prevents artifacts from showing during streaming
   const cleanResponseText = (text: string): string => {
@@ -866,6 +918,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Remove complete [CHUNK:X] markers (including with PAGE:Y)
     // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
     cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
+    
+    // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)" or "BLOCK_CITE_ID_136")
+    // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, or any variation
+    cleaned = cleaned.replace(/\s*\(?BLOCK_CITE_ID_\d+\)?\s*/g, ' ');
     
     // Remove partial CHUNK markers that might appear during streaming
     // These appear at the end of the string as tokens arrive incrementally
@@ -1732,6 +1788,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return normalized;
                 };
                 
+                // Log what we're receiving before normalization
+                if (data.citations) {
+                  console.log('📚 [CITATIONS] Citations from complete message:', {
+                    count: Object.keys(data.citations).length,
+                    keys: Object.keys(data.citations),
+                    citations: Object.entries(data.citations).map(([key, cit]: [string, any]) => ({
+                      citationNumber: key,
+                      block_id: cit.block_id || 'UNKNOWN',
+                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                    }))
+                  });
+                }
+                if (Object.keys(accumulatedCitations).length > 0) {
+                  console.log('📚 [CITATIONS] Accumulated citations before complete:', {
+                    count: Object.keys(accumulatedCitations).length,
+                    keys: Object.keys(accumulatedCitations),
+                    citations: Object.entries(accumulatedCitations).map(([key, cit]: [string, any]) => ({
+                      citationNumber: key,
+                      block_id: cit.block_id || 'UNKNOWN',
+                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                    }))
+                  });
+                }
+                
                 const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
                 
                 console.log('📚 [CITATIONS] Final citations for message:', {
@@ -1739,7 +1823,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   fromAccumulated: Object.keys(accumulatedCitations).length,
                   finalCount: Object.keys(finalCitations).length,
                   finalKeys: Object.keys(finalCitations),
-                  sampleCitation: finalCitations[Object.keys(finalCitations)[0]]
+                  citations: Object.entries(finalCitations).map(([key, cit]) => ({
+                    citationNumber: key,
+                    block_id: cit.block_id || 'UNKNOWN',
+                    page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                    bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                    doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                  }))
                 });
                 
                 setChatMessages(prev => {
@@ -1955,6 +2045,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   page: citation.data.page || citation.data.page_number || 0,
                   bbox: finalBbox, // Use normalized bbox or default empty bbox
                   method: citation.data.method, // Include method field
+                  block_id: citation.data.block_id, // Include block_id for debugging and validation
                   original_filename: citation.data.original_filename // Include filename for preloading
                 };
                 
@@ -2392,11 +2483,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         background: transparent;
       }
       .sidechat-scroll::-webkit-scrollbar-thumb {
-        background: rgba(0, 0, 0, 0.1);
+        background: rgba(0, 0, 0, 0.001);
         border-radius: 3px;
       }
       .sidechat-scroll::-webkit-scrollbar-thumb:hover {
-        background: rgba(0, 0, 0, 0.15);
+        background: rgba(0, 0, 0, 0.004);
       }
       @keyframes pulse {
         0%, 100% {
@@ -3558,7 +3649,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     const processedChildren = processChildren(children);
                   return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
                 },
-                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
+                h1: ({ children }) => {
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                        }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                        }
+                        return child;
+                      });
+                    };
+                    return (
+                      <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>
+                        {processChildren(children)}
+                      </h1>
+                    );
+                  },
                 h2: () => null, h3: () => null,
                 ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
                 ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
@@ -3704,19 +3818,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Panel content will go here */}
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="p-4 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center gap-2">
                   <button
                     onClick={onSidebarToggle}
-                    className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-all duration-200"
-                    title="Toggle sidebar"
+                    className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200"
+                    title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
                     type="button"
                   >
-                    <PanelLeft className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} style={{ color: '#8B8B8B' }} />
+                    {isMainSidebarOpen ? (
+                      <PanelRightClose
+                        className="w-4 h-4 lg:w-4 lg:h-4 scale-x-[-1]"
+                        strokeWidth={1.5}
+                      />
+                    ) : (
+                      <PanelLeft className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                    )}
                   </button>
-                  <AnimatePresence mode="wait">
-                    {!isFilingSidebarOpen && (
+
+                  {/* Hide the Files sidebar icon when the main sidebar is open (the control exists there). */}
+                  {!isMainSidebarOpen && (
+                    <AnimatePresence mode="wait">
                       <motion.button
                         key="folder-icon"
                         initial={{ opacity: 0, scale: 0.8 }}
@@ -3724,14 +3847,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                         onClick={toggleFilingSidebar}
-                        className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors duration-200"
+                        className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-colors duration-200"
                         title="Toggle Files sidebar"
                         type="button"
                       >
-                        <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} style={{ color: '#8B8B8B' }} />
+                        <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
                       </motion.button>
-                    )}
-                  </AnimatePresence>
+                    </AnimatePresence>
+                  )}
                 </div>
                 <div className="flex items-center space-x-2">
                   <motion.button
@@ -3894,7 +4017,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         currentWidth = 450;
                       }
                       return currentWidth >= 600 ? (
-                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      <Minimize className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                     ) : (
                       <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                       );
@@ -3904,6 +4027,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onClick={onMapToggle}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
                     title="Close chat"
+                    style={isPropertyDetailsOpen ? { marginRight: '8px' } : undefined}
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -3918,8 +4042,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               style={{ 
                 backgroundColor: '#F9F9F9',
                 padding: '16px 0', // Simplified padding - content will be centered
+                // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
+                marginRight: '6px',
                 scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(0, 0, 0, 0.1) transparent',
+                scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
                 minWidth: '300px', // Prevent squishing of content area
                 flexShrink: 1, // Allow shrinking but with minWidth constraint
                 display: 'flex',
@@ -3930,9 +4056,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {/* Centered content wrapper - ChatGPT-like centered layout */}
               <div style={{ 
                 width: '100%', 
-                maxWidth: '768px', // Match chat bar max width
-                paddingLeft: '16px',
-                paddingRight: '16px',
+                maxWidth: '680px', // Tighter column for more breathing room at panel edges
+                paddingLeft: '32px',
+                paddingRight: '32px',
                 margin: '0 auto' // Center the content wrapper
               }}>
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
@@ -3973,7 +4099,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     transform: 'translateX(-50%)', // Center the QuickStartBar
                         zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
-                    maxWidth: '768px', // Match chat bar max width
+                    maxWidth: '680px', // Match tightened chat/message column
                     display: 'flex',
                     justifyContent: 'center'
                       }}
@@ -4003,8 +4129,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   justifyContent: 'center', 
                   alignItems: 'center',
                   position: 'relative',
-                  paddingLeft: '16px', // Add horizontal padding for edge spacing
-                  paddingRight: '16px'
+                  // Slightly larger left padding to match the right side after accounting for panel affordances
+                  paddingLeft: '36px',
+                  // Slightly larger right padding to visually balance the panel's right-edge drag/scroll affordances
+                  paddingRight: '44px'
                 }}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -4024,7 +4152,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    width: 'min(100%, 768px)', // ChatGPT-like: full width when narrow, max 768px when wide (centered by parent)
+                    width: 'min(100%, 680px)', // Match tightened chat/message column
                     minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
                     minHeight: 'fit-content',
@@ -4292,7 +4420,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-2"
                           title="Minimize chat to bubble"
                         >
-                          <Minimize2 className="w-5 h-5" strokeWidth={1.5} />
+                          <Minimize className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                       </div>
 

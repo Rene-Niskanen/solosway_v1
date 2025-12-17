@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, SquareMousePointer } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, CloudCheck, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, SquareMousePointer } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -1177,8 +1177,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         }}
       >
         {/* Header - Compact and Sleek */}
-        <div className="flex items-center justify-between px-6 py-2.5 border-b border-slate-200/40">
-          <h2 className="text-sm font-semibold text-slate-700 tracking-tight">Documents</h2>
+        <div className="flex items-center justify-between px-6 py-2.5 border-b border-slate-200/40" style={{ backgroundColor: '#F9F9F9' }}>
+          <div className="flex items-center gap-2">
+            <CloudCheck className="w-4 h-4 text-slate-400" strokeWidth={1.75} />
+            <h2 className="text-sm font-semibold text-slate-500 tracking-tight">Documents</h2>
+          </div>
           <motion.button
             onClick={closeSidebar}
             whileHover={{ scale: 1.05 }}
@@ -1191,7 +1194,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         </div>
 
         {/* Search and Actions - Compact Design */}
-        <div className="px-6 py-2.5 border-b border-slate-200/40 space-y-2">
+        <div className="px-6 pt-5 pb-4 border-b border-slate-200/40 space-y-5" style={{ backgroundColor: '#F9F9F9' }}>
           {/* Search Bar */}
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
@@ -1206,12 +1209,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           </div>
 
           {/* Actions Row */}
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 py-1">
             {/* View Mode Toggle - Sleeker Design */}
-            <div className="flex items-center gap-0.5 bg-slate-100/60 rounded-md p-0.5">
+            <div className="flex items-center gap-1 bg-slate-100/60 rounded-md p-1">
               <button
                 onClick={() => setViewMode('global')}
-                className={`px-2 py-0.5 text-xs font-medium rounded transition-all duration-150 ${
+                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
                   viewMode === 'global'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
@@ -1221,7 +1224,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               </button>
               <button
                 onClick={() => setViewMode('property')}
-                className={`px-2 py-0.5 text-xs font-medium rounded transition-all duration-150 ${
+                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
                   viewMode === 'property'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
@@ -1240,14 +1243,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     clearSelection();
                   }
                 }}
-                className={`flex items-center justify-center px-2 py-1 rounded-md border transition-all ${
+                className={`flex items-center justify-center px-2.5 py-1.5 rounded-md border transition-all ${
                   isSelectionMode 
                     ? 'bg-blue-50 border-blue-200 text-blue-600' 
                     : 'bg-white/70 border-slate-200/60 text-slate-500 hover:bg-slate-50/80 hover:text-slate-700 hover:border-slate-300/80'
                 }`}
                 title="Select documents to delete"
               >
-                <SquareMousePointer className="w-3 h-3" strokeWidth={1.5} />
+                <SquareMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
               </button>
 
               <div className="relative" ref={newMenuRef}>
@@ -1505,7 +1508,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       </div>
                       {/* Documents in this property - Only show when expanded */}
                       {isExpanded && (
-                        <div className="pt-2">
+                        <div className="pt-4">
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
@@ -1600,93 +1603,95 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 })
               ) : (
                 // Flat list for global view or when inside a folder
-                filteredItems.documents.map((doc) => {
-                  const isLinked = isDocumentLinked(doc);
-                  const isSelected = selectedItems.has(doc.id);
-                  
-                  return (
-                    <div
-                      key={doc.id}
-                      draggable={!isSelectionMode && !editingItemId}
-                      onDragStart={(e) => {
-                        if (!isSelectionMode && !editingItemId) {
-                          handleDragStart(e, doc);
-                        }
-                      }}
-                      onMouseEnter={() => setHoveredItemId(doc.id)}
-                      onMouseLeave={() => setHoveredItemId(null)}
-                      className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
-                        isSelectionMode 
-                          ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                          : 'bg-white hover:shadow'
-                      }`}
-                      onClick={(e) => {
-                        if (editingItemId) return;
-                        if (isSelectionMode) {
-                          e.stopPropagation();
-                          toggleItemSelection(doc.id);
-                        } else {
-                          handleDocumentClick(doc);
-                        }
-                      }}
-                    >
-                      {isSelectionMode && (
-                        <div className="flex-shrink-0">
-                          {isSelected ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                <div className="pt-4">
+                  {filteredItems.documents.map((doc) => {
+                    const isLinked = isDocumentLinked(doc);
+                    const isSelected = selectedItems.has(doc.id);
+                    
+                    return (
+                      <div
+                        key={doc.id}
+                        draggable={!isSelectionMode && !editingItemId}
+                        onDragStart={(e) => {
+                          if (!isSelectionMode && !editingItemId) {
+                            handleDragStart(e, doc);
+                          }
+                        }}
+                        onMouseEnter={() => setHoveredItemId(doc.id)}
+                        onMouseLeave={() => setHoveredItemId(null)}
+                        className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                          isSelectionMode 
+                            ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
+                            : 'bg-white hover:shadow'
+                        }`}
+                        onClick={(e) => {
+                          if (editingItemId) return;
+                          if (isSelectionMode) {
+                            e.stopPropagation();
+                            toggleItemSelection(doc.id);
+                          } else {
+                            handleDocumentClick(doc);
+                          }
+                        }}
+                      >
+                        {isSelectionMode && (
+                          <div className="flex-shrink-0">
+                            {isSelected ? (
+                              <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                            ) : (
+                              <Square className="w-3.5 h-3.5 text-gray-400" />
+                            )}
+                          </div>
+                        )}
+                        <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                        <div className="flex-1 min-w-0">
+                          {editingItemId === doc.id ? (
+                            <input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveRename(doc.id, false);
+                                if (e.key === 'Escape') {
+                                  setEditingItemId(null);
+                                  setEditingName('');
+                                }
+                              }}
+                              onBlur={() => handleSaveRename(doc.id, false)}
+                              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                            />
                           ) : (
-                            <Square className="w-3.5 h-3.5 text-gray-400" />
+                            <>
+                              <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <span className="text-xs text-gray-500">
+                                  {formatDate(doc.created_at || doc.updated_at)}
+                                </span>
+                                <span className="text-xs text-gray-400">•</span>
+                                <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
+                                  {isLinked ? 'Linked' : 'Unlinked'}
+                                </span>
+                              </div>
+                            </>
                           )}
                         </div>
-                      )}
-                      <div className="flex-shrink-0">{getFileIcon(doc)}</div>
-                      <div className="flex-1 min-w-0">
-                        {editingItemId === doc.id ? (
-                          <input
-                            type="text"
-                            value={editingName}
-                            onChange={(e) => setEditingName(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleSaveRename(doc.id, false);
-                              if (e.key === 'Escape') {
-                                setEditingItemId(null);
-                                setEditingName('');
-                              }
+                        {!editingItemId && hoveredItemId === doc.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleContextMenuClick(e, doc.id);
                             }}
-                            onBlur={() => handleSaveRename(doc.id, false)}
-                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
-                            autoFocus
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        ) : (
-                          <>
-                            <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-xs text-gray-500">
-                                {formatDate(doc.created_at || doc.updated_at)}
-                              </span>
-                              <span className="text-xs text-gray-400">•</span>
-                              <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                {isLinked ? 'Linked' : 'Unlinked'}
-                              </span>
-                            </div>
-                          </>
+                            className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
+                          </button>
                         )}
                       </div>
-                      {!editingItemId && hoveredItemId === doc.id && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleContextMenuClick(e, doc.id);
-                          }}
-                          className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               )}
             </div>
           )}
