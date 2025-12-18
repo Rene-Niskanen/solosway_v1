@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Maximize2, Minimize2, Crosshair } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -37,6 +37,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [displayFilename, setDisplayFilename] = useState<string>(filename || 'document.pdf');
   
   // PDF.js state
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -63,6 +64,27 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
 
+  // Try to get filename from cached file data if not provided
+  useEffect(() => {
+    if (!filename || filename === 'document.pdf') {
+      // Check if we have the file in previewFiles cache
+      const cachedFile = previewFiles.find(f => f.id === docId);
+      if (cachedFile?.name) {
+        setDisplayFilename(cachedFile.name);
+        return;
+      }
+      
+      // Check if we have it in preloaded blobs cache
+      const cachedBlob = (window as any).__preloadedDocumentBlobs?.[docId];
+      if (cachedBlob?.filename) {
+        setDisplayFilename(cachedBlob.filename);
+        return;
+      }
+    } else {
+      setDisplayFilename(filename);
+    }
+  }, [docId, filename, previewFiles]);
+
   // Load document
   useEffect(() => {
     const loadDocument = async () => {
@@ -75,6 +97,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         if (cachedBlob && cachedBlob.url) {
           setPreviewUrl(cachedBlob.url);
           setBlobType(cachedBlob.type);
+          // Update filename from cache if available
+          if (cachedBlob.filename && (!displayFilename || displayFilename === 'document.pdf')) {
+            setDisplayFilename(cachedBlob.filename);
+          }
           setLoading(false);
           return;
         }
@@ -85,10 +111,20 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           const url = URL.createObjectURL(cachedFileEntry.file);
           const type = cachedFileEntry.type || cachedFileEntry.file.type || 'application/pdf';
           
+          // Update filename from cached file if available
+          if (cachedFileEntry.name && (!displayFilename || displayFilename === 'document.pdf')) {
+            setDisplayFilename(cachedFileEntry.name);
+          }
+          
           if (!(window as any).__preloadedDocumentBlobs) {
             (window as any).__preloadedDocumentBlobs = {};
           }
-          (window as any).__preloadedDocumentBlobs[docId] = { url, type, timestamp: Date.now() };
+          (window as any).__preloadedDocumentBlobs[docId] = { 
+            url, 
+            type, 
+            filename: cachedFileEntry.name || displayFilename,
+            timestamp: Date.now() 
+          };
           
           setPreviewUrl(url);
           setBlobType(type);
@@ -111,6 +147,16 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         
+        // Try to extract filename from response headers or use current displayFilename
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let extractedFilename = displayFilename;
+        if (contentDisposition) {
+          const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+          if (filenameMatch && filenameMatch[1]) {
+            extractedFilename = filenameMatch[1].replace(/['"]/g, '');
+          }
+        }
+        
         // Cache it
         if (!(window as any).__preloadedDocumentBlobs) {
           (window as any).__preloadedDocumentBlobs = {};
@@ -118,8 +164,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         (window as any).__preloadedDocumentBlobs[docId] = {
           url: url,
           type: blob.type,
+          filename: extractedFilename,
           timestamp: Date.now()
         };
+        
+        // Update display filename if we extracted a better one
+        if (extractedFilename && extractedFilename !== 'document.pdf' && (!displayFilename || displayFilename === 'document.pdf')) {
+          setDisplayFilename(extractedFilename);
+        }
         
         setPreviewUrl(url);
         setBlobType(blob.type);
@@ -530,7 +582,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
   const isPDF = blobType === 'application/pdf';
   const isImage = blobType?.startsWith('image/');
-  const isDOCX = filename.toLowerCase().endsWith('.docx') || blobType?.includes('wordprocessingml');
+  const isDOCX = displayFilename.toLowerCase().endsWith('.docx') || blobType?.includes('wordprocessingml');
 
   const isChatPanelOpen = chatPanelWidth > 0;
   
@@ -609,11 +661,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       }}
     >
       {/* Header */}
-      <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <span className="text-sm font-medium text-gray-900 truncate">{filename}</span>
+      <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative">
+        <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
+          <Crosshair className="w-4 h-4 text-gray-600 flex-shrink-0" />
+          <span className="text-sm font-medium text-gray-900">
+            Document Reference View
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 ml-auto">
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
             className="p-2 hover:bg-gray-100 rounded transition-colors"
@@ -712,7 +767,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             
             {isImage && (
               <div className="flex items-center justify-center h-full p-4">
-                <img src={previewUrl} alt={filename} className="max-w-full max-h-full object-contain" />
+                <img src={previewUrl} alt={displayFilename} className="max-w-full max-h-full object-contain" />
               </div>
             )}
             
@@ -721,7 +776,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                 <iframe
                   src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl)}`}
                   className="w-full h-full border-0"
-                  title={filename}
+                  title={displayFilename}
                 />
               </div>
             )}

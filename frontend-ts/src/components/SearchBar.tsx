@@ -1167,7 +1167,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 width: '100%',
                 minWidth: '0',
                 height: 'auto',
-                minHeight: 'fit-content',
+                // Set a fixed minHeight to prevent container from growing when textarea expands slightly
+                // This prevents the "jump" when typing - container stays stable, only textarea scrolls internally
+                minHeight: '60px', // Minimum height to accommodate textarea + padding + icons
                 // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
                 // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),

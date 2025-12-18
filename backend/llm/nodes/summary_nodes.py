@@ -415,19 +415,6 @@ def _renumber_citations_by_appearance(
         logger.debug("[RENUMBER_CITATIONS] No valid citation numbers extracted")
         return summary, citations
     
-    # Create mapping: old_citation_number -> new_sequential_number
-    old_to_new = {}
-    for new_num, old_num in enumerate(appearance_order, start=1):
-        old_to_new[old_num] = new_num
-    
-    # Replace citation numbers in summary text with renumbered brackets
-    def replace_citation(match):
-        old_num = int(match.group(1))
-        new_num = old_to_new.get(old_num, old_num)
-        return f"[{new_num}]"
-    
-    renumbered_summary = re.sub(citation_pattern, replace_citation, summary)
-    
     # Renumber citations list
     # Create lookup: old citation_number -> citation dict
     citations_by_old_num = {cit.get('citation_number', 0): cit for cit in citations}
@@ -446,10 +433,96 @@ def _renumber_citations_by_appearance(
             f"doc={doc_id}, page={page}"
         )
     
+    # Deduplicate citations before renumbering - merge citations that refer to the same fact
+    # This catches duplicates that might have slipped through Phase 1
+    from backend.llm.tools.citation_mapping import CitationTool
+    # Create a temporary CitationTool instance to use its normalization method
+    temp_tool = CitationTool({})
+    seen_normalized_facts = {}
+    deduplicated_citations_by_old_num = {}
+    duplicate_mappings = {}  # Map duplicate old_num -> original old_num
+    
+    for old_num, old_cit in citations_by_old_num.items():
+        cited_text = old_cit.get('cited_text', '')
+        normalized = temp_tool._normalize_cited_text(cited_text)
+        
+        # Check if we've seen this normalized fact before
+        if normalized in seen_normalized_facts:
+            # This is a duplicate - use the first citation number we saw for this fact
+            existing_old_num = seen_normalized_facts[normalized]
+            logger.info(
+                f"[RENUMBER_CITATIONS] 🔍 Deduplicating: citation {old_num} is duplicate of {existing_old_num} "
+                f"(normalized: '{normalized}')"
+            )
+            # Map this old_num to the existing one
+            deduplicated_citations_by_old_num[old_num] = deduplicated_citations_by_old_num[existing_old_num]
+            duplicate_mappings[old_num] = existing_old_num
+        else:
+            # First time seeing this fact
+            seen_normalized_facts[normalized] = old_num
+            deduplicated_citations_by_old_num[old_num] = old_cit
+    
+    # Update citations_by_old_num to use deduplicated version
+    citations_by_old_num = deduplicated_citations_by_old_num
+    
+    # Update text to replace duplicate citation numbers with original ones
+    if duplicate_mappings:
+        for duplicate_old_num, original_old_num in duplicate_mappings.items():
+            # Replace [duplicate] with [original] in the text
+            summary = re.sub(rf'\[{duplicate_old_num}\]', f'[{original_old_num}]', summary)
+            logger.info(
+                f"[RENUMBER_CITATIONS] 🔄 Replaced duplicate citation [{duplicate_old_num}] with [{original_old_num}] in text"
+            )
+        
+        # Recalculate appearance_order after text replacement
+        matches = list(re.finditer(citation_pattern, summary))
+        appearance_order = []
+        seen_citation_nums = set()
+        for match in matches:
+            citation_num = int(match.group(1))
+            if citation_num not in seen_citation_nums:
+                appearance_order.append(citation_num)
+                seen_citation_nums.add(citation_num)
+    
+    # Create mapping: old_citation_number -> new_sequential_number
+    old_to_new = {}
+    for new_num, old_num in enumerate(appearance_order, start=1):
+        old_to_new[old_num] = new_num
+    
+    # Replace citation numbers in summary text with renumbered brackets
+    def replace_citation(match):
+        old_num = int(match.group(1))
+        new_num = old_to_new.get(old_num, old_num)
+        return f"[{new_num}]"
+    
+    renumbered_summary = re.sub(citation_pattern, replace_citation, summary)
+    
     renumbered_citations = []
+    seen_citation_objects = set()  # Track which citation objects we've already added
     for new_num, old_num in enumerate(appearance_order, start=1):
         if old_num in citations_by_old_num:
             old_cit = citations_by_old_num[old_num]
+            
+            # Check if we've already added this citation object (deduplication)
+            # Use block_id + cited_text as unique identifier
+            cit_id = (old_cit.get('block_id'), old_cit.get('cited_text', ''))
+            if cit_id in seen_citation_objects:
+                # This citation was already added - skip creating duplicate entry
+                # But we still need to update the text to use the correct citation number
+                logger.info(
+                    f"[RENUMBER_CITATIONS] 🔍 Skipping duplicate citation entry: old_num={old_num} -> new_num={new_num}, "
+                    f"already added as different number"
+                )
+                # Find which citation number this was already added as
+                for existing_cit in renumbered_citations:
+                    if (existing_cit.get('block_id'), existing_cit.get('cited_text', '')) == cit_id:
+                        # Update text to use the existing citation number instead
+                        existing_new_num = existing_cit.get('citation_number')
+                        renumbered_summary = renumbered_summary.replace(f'[{new_num}]', f'[{existing_new_num}]')
+                        break
+                continue
+            
+            seen_citation_objects.add(cit_id)
             cited_text_from_phase1 = old_cit.get('cited_text', '')
             block_id_from_phase1 = old_cit.get('block_id', 'UNKNOWN')
             citation_appended = False  # Track if we've appended this citation

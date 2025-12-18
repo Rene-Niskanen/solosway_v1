@@ -966,14 +966,15 @@ Example 3 - Multiple Values:
 5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
 6. ❌ Do NOT skip citations - if you see multiple values, cite each one
 7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
-8. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
+8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
+9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
    - Primary Market Value (e.g., "Market Value: £2,300,000")
    - 90-day value if mentioned (e.g., "90-day value: £1,950,000")
    - 180-day value if mentioned (e.g., "180-day value: £2,050,000")
    - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
    - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
    - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
-9. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
    - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
    - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
    - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
@@ -984,7 +985,7 @@ Example 3 - Multiple Values:
      * Block B: "under offer at £2,400,000"
      * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
      * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
-9. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
+11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
 
@@ -1297,14 +1298,15 @@ Example 3 - Multiple Values:
 5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
 6. ❌ Do NOT skip citations - if you see multiple values, cite each one
 7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
-8. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
+8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
+9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
    - Primary Market Value (e.g., "Market Value: £2,300,000")
    - 90-day value if mentioned (e.g., "90-day value: £1,950,000")
    - 180-day value if mentioned (e.g., "180-day value: £2,050,000")
    - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
    - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
    - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
-9. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
    - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
    - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
    - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
@@ -1315,7 +1317,7 @@ Example 3 - Multiple Values:
      * Block B: "under offer at £2,400,000"
      * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
      * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
-9. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
+11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
 

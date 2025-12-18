@@ -192,6 +192,102 @@ class CitationTool:
         self.metadata_lookup_tables = metadata_lookup_tables
         self.citations: List[Citation] = []
     
+    def _normalize_cited_text(self, text: str) -> str:
+        """
+        Normalize cited text for comparison - extract key facts.
+        
+        Args:
+            text: The cited text to normalize
+        
+        Returns:
+            Normalized string for comparison
+        """
+        import re
+        # Convert to lowercase
+        normalized = text.lower()
+        # Extract key information: ratings (e.g., "D", "D1"), values, dates, names
+        # For EPC ratings, extract the rating letter/number
+        epc_match = re.search(r'epc\s*rating[:\s]*([a-g]\d?)', normalized, re.IGNORECASE)
+        if epc_match:
+            return f"epc rating: {epc_match.group(1).upper()}"
+        # For values/amounts, extract the number
+        value_match = re.search(r'£?([\d,]+\.?\d*)', normalized)
+        if value_match:
+            value = value_match.group(1).replace(',', '').replace('.', '')
+            # Try to find context (e.g., "market value", "90-day")
+            context = ''
+            if 'market value' in normalized:
+                context = 'market value'
+            elif '90-day' in normalized or '90 day' in normalized:
+                context = '90-day'
+            elif '180-day' in normalized or '180 day' in normalized:
+                context = '180-day'
+            elif 'rent' in normalized:
+                context = 'rent'
+            return f"{context}: {value}" if context else value
+        # For dates, extract date pattern
+        date_match = re.search(r'(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})', normalized)
+        if date_match:
+            return f"date: {date_match.group(1)}"
+        # For names, extract name pattern
+        name_match = re.search(r'(?:valuer|inspector|by|conducted by)[:\s]+([a-z]+\s+[a-z]+)', normalized)
+        if name_match:
+            return f"name: {name_match.group(1)}"
+        # Fallback: return first 50 chars of key terms
+        key_terms = re.findall(r'\b\w{4,}\b', normalized)
+        return ' '.join(key_terms[:5])
+    
+    def _is_duplicate_citation(self, cited_text: str, block_id: str) -> bool:
+        """
+        Check if a citation is a duplicate of an existing one.
+        
+        Args:
+            cited_text: The text being cited
+            block_id: The block ID being cited
+        
+        Returns:
+            True if this is a duplicate, False otherwise
+        """
+        normalized_new = self._normalize_cited_text(cited_text)
+        
+        for existing_citation in self.citations:
+            # CRITICAL: Same block_id with same normalized fact = duplicate
+            # Even if block_id is different, if normalized facts match, it's likely a duplicate
+            existing_block_id = existing_citation.get('block_id')
+            normalized_existing = self._normalize_cited_text(existing_citation.get('cited_text', ''))
+            
+            # If same block_id, it's definitely a duplicate (same source)
+            if existing_block_id == block_id:
+                # Same block + same normalized fact = duplicate
+                if normalized_new == normalized_existing:
+                    logger.info(
+                        f"[CITATION_TOOL] 🔍 Duplicate citation detected (same block + same fact): "
+                        f"block_id={block_id}, existing='{existing_citation.get('cited_text', '')[:50]}...', "
+                        f"new='{cited_text[:50]}...', normalized='{normalized_new}'"
+                    )
+                    return True
+                # Same block + similar fact (subset) = duplicate
+                if normalized_new in normalized_existing or normalized_existing in normalized_new:
+                    logger.info(
+                        f"[CITATION_TOOL] 🔍 Similar citation detected (same block + similar fact): "
+                        f"block_id={block_id}, existing='{existing_citation.get('cited_text', '')[:50]}...', "
+                        f"new='{cited_text[:50]}...'"
+                    )
+                    return True
+            
+            # Even if different block_id, if normalized facts match exactly, it's likely the same fact
+            # (e.g., EPC rating D might appear in multiple blocks, but it's the same fact)
+            if normalized_new == normalized_existing and normalized_new.startswith(('epc rating:', 'date:', 'name:')):
+                logger.info(
+                    f"[CITATION_TOOL] 🔍 Duplicate citation detected (same fact, different block): "
+                    f"existing_block={existing_block_id}, new_block={block_id}, "
+                    f"existing='{existing_citation.get('cited_text', '')[:50]}...', "
+                    f"new='{cited_text[:50]}...', normalized='{normalized_new}'"
+                )
+                return True
+        
+        return False
+    
     def add_citation(
         self,
         cited_text: str,
@@ -210,6 +306,21 @@ class CitationTool:
         Returns:
             Confirmation string
         """
+        # Check for duplicate citations before processing
+        if self._is_duplicate_citation(cited_text, block_id):
+            existing_citation = next(
+                (c for c in self.citations if c.get('block_id') == block_id),
+                None
+            )
+            if existing_citation:
+                logger.info(
+                    f"[CITATION_TOOL] ⚠️ Skipping duplicate citation {citation_number}: "
+                    f"block_id={block_id}, already exists as citation {existing_citation.get('citation_number')}. "
+                    f"Existing: '{existing_citation.get('cited_text', '')[:50]}...', "
+                    f"New: '{cited_text[:50]}...'"
+                )
+                return f"⚠️ Citation {citation_number} skipped - duplicate of citation {existing_citation.get('citation_number')} for same fact"
+        
         # Find block in metadata tables
         block_metadata = None
         doc_id = None
