@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize2, Minimize2, Crosshair } from 'lucide-react';
+import { X, Maximize2, Minimize2, BotMessageSquare } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -305,8 +305,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       if (newWidth <= 50) return;
 
       // Ignore tiny width deltas that cause re-render churn and visible jitter
+      // Increased threshold to reduce jitter
       const prev = prevContainerWidthRef.current;
-      if (Math.abs(newWidth - prev) < 2) return;
+      if (Math.abs(newWidth - prev) < 5) return;
 
       // If we haven't finished the initial citation jump-to-bbox, avoid triggering a rerender here.
       // (Rerender changes scrollHeight and can fight highlight centering.)
@@ -591,7 +592,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   // When chat panel is open: chatPanelWidth is the width, chat panel's left = calculated sidebarWidth (includes filing sidebar)
   // So document preview left = chatPanelLeft + chatPanelWidth + gap
   // When chat panel is closed: position after sidebar (which may include filing sidebar) + gap
-  const calculateLeftPosition = () => {
+  // Memoized to prevent recalculation on every render
+  const calculateLeftPosition = useCallback(() => {
     const toggleRailWidth = 12;
     
     // Calculate the actual sidebar width (base + filing sidebar if open)
@@ -616,7 +618,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       // Chat panel closed - position immediately after sidebar (which may include filing sidebar)
       return actualSidebarWidth;
     }
-  };
+  }, [sidebarWidth, isFilingSidebarOpen, filingSidebarWidth, isChatPanelOpen, chatPanelWidth]);
+  
+  // Memoize the left position to prevent jitter
+  const leftPosition = useMemo(() => calculateLeftPosition(), [calculateLeftPosition]);
 
   const content = (
     <motion.div
@@ -638,10 +643,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           position: 'fixed',
           // Position alongside chat panel with no gaps
           // Calculates correct position accounting for filing sidebar
-          left: `${calculateLeftPosition()}px`,
-          right: '0px', // No gap from right edge
+          left: `${leftPosition}px`,
+          right: '0px', // No gap from right edge - this automatically calculates width
           top: '0px', // No gap from top
-          bottom: '0px', // No gap from bottom
+          bottom: '0px', // No gap from bottom - this automatically calculates height
           borderRadius: '0px', // No border radius when edge-to-edge
           // Remove the heavy shadow in split-view (it reads like a shadow on the chat edge).
           // Use a subtle divider instead.
@@ -651,7 +656,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           flexDirection: 'column',
           pointerEvents: 'auto',
           // No transition for left positioning - updates instantly when chatPanelWidth or filing sidebar changes
-          transition: 'none'
+          transition: 'none',
+          boxSizing: 'border-box' // Ensure padding/borders are included in width/height
         })
       }}
       onClick={(e) => {
@@ -663,9 +669,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       {/* Header */}
       <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative">
         <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
-          <Crosshair className="w-4 h-4 text-gray-600 flex-shrink-0" />
+          <BotMessageSquare className="w-4 h-4 text-gray-600 flex-shrink-0" />
           <span className="text-sm font-medium text-gray-900">
-            Document Reference View
+            Velora Reference Agent
           </span>
         </div>
         <div className="flex items-center gap-2 ml-auto">
@@ -686,7 +692,16 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto bg-gray-50" ref={pdfWrapperRef}>
+      <div 
+        className="flex-1 overflow-auto bg-gray-50" 
+        ref={pdfWrapperRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          minHeight: 0, // Allow flex item to shrink below content size
+          flex: '1 1 auto' // Ensure it takes available space
+        }}
+      >
         {error && (
           <div className="flex items-center justify-center h-full">
             <div className="text-red-500">Error: {error}</div>
