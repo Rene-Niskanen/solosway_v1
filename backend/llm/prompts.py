@@ -38,31 +38,34 @@ VALUATION_PRIORITIZATION_RULES = """
 """
 
 # Citation format rules (single source of truth)
+# NOTE: Using bracket format [1], [2], [3] instead of superscripts - frontend converts these to buttons
 CITATION_FORMAT_RULES = """
 **CITATION FORMAT (MUST FOLLOW - CRITICAL)**:
-- Use superscript numbers: ¹, ², ³, ⁴, ⁵, etc. (single Unicode characters)
+- Use bracket format: [1], [2], [3], [4], [5], etc. (these will be converted to citation buttons by the frontend)
 - **CRITICAL**: Place citations IMMEDIATELY after the specific fact/value being cited
-- **CRITICAL**: Use ONE citation per fact/value - do NOT use multiple citations (like "¹ ²") for the same value
+- **CRITICAL**: Use ONE citation per fact/value - do NOT use multiple citations (like "[1] [2]") for the same value
 - **DO NOT** place citations at the end of sentences or phrases - place them right after the cited information
-- If multiple facts appear together, each gets its own citation: "John Smith¹ MRICS on 12th February 2024²" (name and date are different facts)
+- If multiple facts appear together, each gets its own citation: "John Smith[1] MRICS on 12th February 2024[2]" (name and date are different facts)
 
 **CORRECT PLACEMENT EXAMPLES**:
-  * "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest..."
-  * "90-day marketing period value: £1,950,000¹ (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..."
-  * "Valuation conducted by John Smith¹ MRICS on 12th February 2024²"
-  * "The property has 5 bedrooms¹ and 3 bathrooms²"
-  * "Market Rent: £6,000¹ per calendar month (Six Thousand Pounds)"
-  * "180-day marketing period value: £2,050,000¹ (Two Million and Fifty Thousand Pounds). This valuation assumes..."
+  * "Market Value: £2,400,000[1] (Two Million, Four Hundred Thousand Pounds) for the freehold interest..."
+  * "90-day marketing period value: £1,950,000[1] (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..."
+  * "Valuation conducted by John Smith[1] MRICS on 12th February 2024[2]"
+  * "The property has 5 bedrooms[1] and 3 bathrooms[2]"
+  * "Market Rent: £6,000[1] per calendar month (Six Thousand Pounds)"
+  * "180-day marketing period value: £2,050,000[1] (Two Million and Fifty Thousand Pounds). This valuation assumes..."
+  * "Valuation conducted by Sukhbir Tiwana[1] MRICS and Graham Finegold[2] MRICS" (each valuer gets their own citation)
+  * "The valuation was conducted on 12th February 2024[1] by Sukhbir Tiwana[2] MRICS and Graham Finegold[3] MRICS" (date and each valuer cited separately)
 
 **INCORRECT PLACEMENT (DO NOT DO THIS)**:
-  * ❌ "Market Value: £2,400,000 (Two Million, Four Hundred Thousand Pounds) for the freehold interest... ¹ ²"
-  * ❌ "90-day marketing period value: £1,950,000³ ⁴ (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..." (multiple citations for same value)
-  * ❌ "90-day marketing period value: £1,950,000. This figure assumes a restricted marketing period... ¹ ² ³" (citations at end)
-  * ❌ "Valuation conducted by John Smith MRICS on 12th February 2024. ¹ ²" (citations at end)
+  * ❌ "Market Value: £2,400,000 (Two Million, Four Hundred Thousand Pounds) for the freehold interest... [1] [2]"
+  * ❌ "90-day marketing period value: £1,950,000[3][4] (One Million, Nine Hundred and Fifty Thousand Pounds). This figure assumes..." (multiple citations for same value)
+  * ❌ "90-day marketing period value: £1,950,000. This figure assumes a restricted marketing period... [1] [2] [3]" (citations at end)
+  * ❌ "Valuation conducted by John Smith MRICS on 12th February 2024. [1] [2]" (citations at end)
   * ❌ "Market Value: £2,400,000 (1, 2)" (wrong format)
-  * ❌ "Market Value: £2,400,000¹²" (no spaces, wrong format)
+  * ❌ "Market Value: £2,400,000[1][2]" (no spaces, wrong format)
 
-**RULE**: The citation number(s) must appear IMMEDIATELY after the specific value, amount, date, name, or fact being cited, not at the end of the sentence or phrase.
+**RULE**: The citation marker [number] must appear IMMEDIATELY after the specific value, amount, date, name, or fact being cited, not at the end of the sentence or phrase. The frontend will convert these markers to clickable citation buttons.
 """
 
 # ============================================================================
@@ -368,12 +371,14 @@ def _get_valuation_extraction_instructions(detail_level: str = 'concise', is_val
    - Example: "we are of the opinion that the Market Value... is: £2,300,000" → Professional valuation
    - Example: "under offer at £2,400,000" → Market activity (NOT a professional valuation)
 
-2. **Extract ALL Scenarios** (MUST)
+2. **Extract ALL Scenarios** (MANDATORY - DO NOT SKIP)
    - Primary Market Value (with vacant possession, normal marketing period)
-   - Reduced marketing periods (90 days, 180 days, etc.) - extract EACH one separately
+   - **MANDATORY**: Reduced marketing periods (90 days, 180 days, etc.) - extract EACH one separately
+   - **MANDATORY**: If you see "90-day" or "180-day" mentioned anywhere, you MUST include those values
    - Market Rent (if provided)
-   - Read entire valuation section - do not stop after first figure
-   - Each scenario has its own figure and assumptions - extract them separately
+   - **CRITICAL**: Read entire valuation section - do NOT stop after first figure
+   - **CRITICAL**: Each scenario has its own figure and assumptions - extract them separately
+   - **DO NOT**: Only extract the primary Market Value - you MUST extract ALL scenarios
 
 3. **Match Assumptions to Figures** (MUST)
    - Each valuation scenario has specific assumptions
@@ -384,10 +389,12 @@ def _get_valuation_extraction_instructions(detail_level: str = 'concise', is_val
 
 4. **Common Mistakes to Avoid** (IMPORTANT)
    - ❌ Using "under offer" price as Market Value
-   - ❌ Stopping after finding one valuation figure
+   - ❌ Stopping after finding one valuation figure - you MUST find ALL scenarios
+   - ❌ Omitting 90-day or 180-day values - if mentioned in documents, they are MANDATORY
    - ❌ Mixing assumptions between scenarios
    - ❌ Using figures from market activity sections instead of professional assessments
    - ✅ Correct: Extract all scenarios separately with their correct assumptions
+   - ✅ Correct: Include 90-day and 180-day values if mentioned in documents
 
 5. **Complete Example**
    Document states:
@@ -655,7 +662,7 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
    
    {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
    
-   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
 {_get_citation_instructions()}
 
@@ -698,6 +705,24 @@ def get_summary_human_content(
     from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
     query_characteristics = detect_query_characteristics(user_query)
     is_valuation_query = query_characteristics.get('query_type') == 'assessment'
+    
+    # #region agent log
+    import json, time
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"prompts.py:700","message":"get_summary_human_content - valuation check","data":{"user_query":user_query,"query_type":query_characteristics.get('query_type'),"is_valuation_query":is_valuation_query},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"B"})+"\n")
+    except: pass
+    # #endregion
+    
+    # Also check fallback condition (line 748)
+    fallback_is_valuation = 'valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()
+    
+    # #region agent log
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"location":"prompts.py:710","message":"Fallback valuation check","data":{"user_query":user_query,"fallback_is_valuation":fallback_is_valuation},"timestamp":int(time.time()*1000),"sessionId":"debug-session","runId":"run1","hypothesisId":"B"})+"\n")
+    except: pass
+    # #endregion
     
     return f"""**USER QUESTION:**  
 "{user_query}"
@@ -745,7 +770,7 @@ def get_summary_human_content(
    
    {get_rics_detailed_prompt_instructions() if detail_level == 'detailed' else ""}
    
-   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=('valuation' in user_query.lower() or 'value' in user_query.lower() or 'price' in user_query.lower()))}
+   {_get_valuation_extraction_instructions(detail_level, is_valuation_query=(lambda: (lambda q: ('valuation' in q.lower() or 'value' in q.lower() or 'price' in q.lower()))(user_query) or False)())}
 
 {_get_verified_property_details_instructions(is_single_doc=False)}
 
@@ -793,6 +818,29 @@ def get_summary_human_content(
 # CITATION MAPPING PROMPTS
 # ============================================================================
 
+def _format_bbox_for_prompt(bbox_data: dict) -> tuple:
+    """
+    Format bbox data for prompt display using same normalization as map_block_id_to_bbox().
+    
+    This ensures consistency between what the LLM sees in prompts and what gets mapped
+    during citation processing.
+    
+    Args:
+        bbox_data: Dictionary with bbox_left, bbox_top, bbox_width, bbox_height, page
+    
+    Returns:
+        Tuple of (bbox_left, bbox_top, bbox_width, bbox_height, page) with normalized values
+    """
+    # CRITICAL: Use same normalization as map_block_id_to_bbox() for consistency
+    # Round bbox coordinates to 4 decimal places (same as map_block_id_to_bbox)
+    bbox_left = round(float(bbox_data.get('bbox_left', 0.0)), 4)
+    bbox_top = round(float(bbox_data.get('bbox_top', 0.0)), 4)
+    bbox_width = round(float(bbox_data.get('bbox_width', 0.0)), 4)
+    bbox_height = round(float(bbox_data.get('bbox_height', 0.0)), 4)
+    page = int(bbox_data.get('page', 0)) if bbox_data.get('page') is not None else 0
+    return (bbox_left, bbox_top, bbox_width, bbox_height, page)
+
+
 def get_citation_extraction_prompt(
     user_query: str,
     conversation_history: str,
@@ -828,7 +876,9 @@ def get_citation_extraction_prompt(
             
             for block_id, bbox_data in sorted(limited_blocks):
                 total_blocks += 1
-                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                # Use helper function to ensure consistency with map_block_id_to_bbox()
+                bbox_left, bbox_top, bbox_width, bbox_height, page = _format_bbox_for_prompt(bbox_data)
+                metadata_section += f"  {block_id}: page={page}, bbox=({bbox_left:.4f},{bbox_top:.4f},{bbox_width:.4f},{bbox_height:.4f})"
                 if 'confidence' in bbox_data:
                     metadata_section += f", conf={bbox_data['confidence']}"
                 metadata_section += "\n"
@@ -868,8 +918,17 @@ Any specific information that answers the user's question, including:
 - **Details**: Property features, specifications, characteristics
 - **Any specific data point** that directly answers the question
 
+**⚠️ CRITICAL FOR VALUATION QUERIES:**
+If the user is asking about "value" or "valuation", you MUST extract citations for:
+- **Primary Market Value** (e.g., "Market Value: £2,300,000")
+- **ALL reduced marketing period values** (e.g., "90-day value: £1,950,000", "180-day value: £2,050,000")
+- **Market Rent** (e.g., "Market Rent: £6,000 per calendar month")
+- **Valuation assumptions** (discounts, marketing periods, conditions)
+- **DO NOT** skip any valuation scenarios - if you see "90-day" or "180-day" mentioned, you MUST find and cite those specific values
+- **SEARCH THOROUGHLY**: Reduced marketing period valuations may appear on later pages (page 28-30+) - read through ALL document extracts completely
+
 **WORKFLOW (FOLLOW EXACTLY):**
-1. Read through ALL document extracts carefully
+1. Read through ALL document extracts carefully (including later pages 28-30+ for valuation scenarios)
 2. Identify EVERY factual claim that is relevant to the user's question
 3. For EACH factual claim, you MUST call cite_source tool with:
    - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
@@ -883,9 +942,16 @@ Example 1 - Valuation:
 - You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
 - You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
 
-Example 2 - Names:
+Example 2 - Names (SINGLE valuer):
 - You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
 - You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 2b - Names (MULTIPLE valuers - CRITICAL):
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS and Graham Finegold MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+- You MUST call: cite_source(cited_text="Valuer: Graham Finegold MRICS", block_id="BLOCK_CITE_ID_15", citation_number=4)
+- **CRITICAL**: When multiple valuers are mentioned, you MUST extract a citation for EACH valuer separately
+- **CRITICAL**: Do NOT skip the second valuer - both must be cited
 
 Example 3 - Multiple Values:
 - You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
@@ -893,14 +959,33 @@ Example 3 - Multiple Values:
 - You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
 
 **CRITICAL RULES:**
-1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries, but for valuation queries you may need 6-8+ citations)
 2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
 3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
 4. ✅ Extract citations for ALL relevant information, not just one piece
 5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
 6. ❌ Do NOT skip citations - if you see multiple values, cite each one
 7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
-8. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use citations in sequential order (¹, ², ³, ⁴, ⁵...) as they appear in your response, and NEVER reuse a citation number
+8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
+9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
+   - Primary Market Value (e.g., "Market Value: £2,300,000")
+   - 90-day value if mentioned (e.g., "90-day value: £1,950,000")
+   - 180-day value if mentioned (e.g., "180-day value: £2,050,000")
+   - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
+   - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
+   - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
+   - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
+   - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
+   - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
+   - **VERIFY**: If you're citing "under offer at £2,400,000", make sure the block contains "£2,400,000" or "2,400,000" and mentions "under offer"
+   - **DO NOT** use a block_id just because it's on the same page - the block must contain the specific fact you're citing
+   - **EXAMPLE**: If you see two blocks on page 28:
+     * Block A: "90-day value: £1,950,000"
+     * Block B: "under offer at £2,400,000"
+     * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
+     * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
+11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
 
@@ -1065,6 +1150,29 @@ def get_sql_retriever_human_content(user_query: str) -> str:
 # CITATION MAPPING PROMPTS
 # ============================================================================
 
+def _format_bbox_for_prompt(bbox_data: dict) -> tuple:
+    """
+    Format bbox data for prompt display using same normalization as map_block_id_to_bbox().
+    
+    This ensures consistency between what the LLM sees in prompts and what gets mapped
+    during citation processing.
+    
+    Args:
+        bbox_data: Dictionary with bbox_left, bbox_top, bbox_width, bbox_height, page
+    
+    Returns:
+        Tuple of (bbox_left, bbox_top, bbox_width, bbox_height, page) with normalized values
+    """
+    # CRITICAL: Use same normalization as map_block_id_to_bbox() for consistency
+    # Round bbox coordinates to 4 decimal places (same as map_block_id_to_bbox)
+    bbox_left = round(float(bbox_data.get('bbox_left', 0.0)), 4)
+    bbox_top = round(float(bbox_data.get('bbox_top', 0.0)), 4)
+    bbox_width = round(float(bbox_data.get('bbox_width', 0.0)), 4)
+    bbox_height = round(float(bbox_data.get('bbox_height', 0.0)), 4)
+    page = int(bbox_data.get('page', 0)) if bbox_data.get('page') is not None else 0
+    return (bbox_left, bbox_top, bbox_width, bbox_height, page)
+
+
 def get_citation_extraction_prompt(
     user_query: str,
     conversation_history: str,
@@ -1100,7 +1208,9 @@ def get_citation_extraction_prompt(
             
             for block_id, bbox_data in sorted(limited_blocks):
                 total_blocks += 1
-                metadata_section += f"  {block_id}: page={bbox_data['page']}, bbox=({bbox_data['bbox_left']:.3f},{bbox_data['bbox_top']:.3f},{bbox_data['bbox_width']:.3f},{bbox_data['bbox_height']:.3f})"
+                # Use helper function to ensure consistency with map_block_id_to_bbox()
+                bbox_left, bbox_top, bbox_width, bbox_height, page = _format_bbox_for_prompt(bbox_data)
+                metadata_section += f"  {block_id}: page={page}, bbox=({bbox_left:.4f},{bbox_top:.4f},{bbox_width:.4f},{bbox_height:.4f})"
                 if 'confidence' in bbox_data:
                     metadata_section += f", conf={bbox_data['confidence']}"
                 metadata_section += "\n"
@@ -1140,8 +1250,17 @@ Any specific information that answers the user's question, including:
 - **Details**: Property features, specifications, characteristics
 - **Any specific data point** that directly answers the question
 
+**⚠️ CRITICAL FOR VALUATION QUERIES:**
+If the user is asking about "value" or "valuation", you MUST extract citations for:
+- **Primary Market Value** (e.g., "Market Value: £2,300,000")
+- **ALL reduced marketing period values** (e.g., "90-day value: £1,950,000", "180-day value: £2,050,000")
+- **Market Rent** (e.g., "Market Rent: £6,000 per calendar month")
+- **Valuation assumptions** (discounts, marketing periods, conditions)
+- **DO NOT** skip any valuation scenarios - if you see "90-day" or "180-day" mentioned, you MUST find and cite those specific values
+- **SEARCH THOROUGHLY**: Reduced marketing period valuations may appear on later pages (page 28-30+) - read through ALL document extracts completely
+
 **WORKFLOW (FOLLOW EXACTLY):**
-1. Read through ALL document extracts carefully
+1. Read through ALL document extracts carefully (including later pages 28-30+ for valuation scenarios)
 2. Identify EVERY factual claim that is relevant to the user's question
 3. For EACH factual claim, you MUST call cite_source tool with:
    - **block_id**: The BLOCK_CITE_ID from the <BLOCK> tag (e.g., "BLOCK_CITE_ID_42")
@@ -1155,9 +1274,16 @@ Example 1 - Valuation:
 - You MUST call: cite_source(cited_text="Market Value: £2,400,000", block_id="BLOCK_CITE_ID_42", citation_number=1)
 - You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_42", citation_number=2)
 
-Example 2 - Names:
+Example 2 - Names (SINGLE valuer):
 - You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS"</BLOCK>
 - You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+
+Example 2b - Names (MULTIPLE valuers - CRITICAL):
+- You see: <BLOCK id="BLOCK_CITE_ID_15">Content: "Valuation conducted by Sukhbir Tiwana MRICS and Graham Finegold MRICS"</BLOCK>
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_15", citation_number=3)
+- You MUST call: cite_source(cited_text="Valuer: Graham Finegold MRICS", block_id="BLOCK_CITE_ID_15", citation_number=4)
+- **CRITICAL**: When multiple valuers are mentioned, you MUST extract a citation for EACH valuer separately
+- **CRITICAL**: Do NOT skip the second valuer - both must be cited
 
 Example 3 - Multiple Values:
 - You see: <BLOCK id="BLOCK_CITE_ID_7">Content: "90-day value: £1,950,000. 180-day value: £2,050,000"</BLOCK>
@@ -1165,16 +1291,70 @@ Example 3 - Multiple Values:
 - You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
 
 **CRITICAL RULES:**
-1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries)
+1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries, but for valuation queries you may need 6-8+ citations)
 2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
 3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
 4. ✅ Extract citations for ALL relevant information, not just one piece
 5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
 6. ❌ Do NOT skip citations - if you see multiple values, cite each one
 7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
-8. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use citations in sequential order (¹, ², ³, ⁴, ⁵...) as they appear in your response, and NEVER reuse a citation number
+8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
+9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
+   - Primary Market Value (e.g., "Market Value: £2,300,000")
+   - 90-day value if mentioned (e.g., "90-day value: £1,950,000")
+   - 180-day value if mentioned (e.g., "180-day value: £2,050,000")
+   - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
+   - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
+   - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
+   - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
+   - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
+   - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
+   - **VERIFY**: If you're citing "under offer at £2,400,000", make sure the block contains "£2,400,000" or "2,400,000" and mentions "under offer"
+   - **DO NOT** use a block_id just because it's on the same page - the block must contain the specific fact you're citing
+   - **EXAMPLE**: If you see two blocks on page 28:
+     * Block A: "90-day value: £1,950,000"
+     * Block B: "under offer at £2,400,000"
+     * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
+     * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
+11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
+
+
+def _determine_conditional_sections(user_query: str, response_complexity: float = 0.5) -> dict:
+    """
+    Determine which conditional sections to include in the response.
+    
+    Args:
+        user_query: The user's query string
+        response_complexity: Complexity score (0.0 to 1.0) indicating how complex the response is
+    
+    Returns:
+        Dict with boolean flags for each conditional section
+    """
+    query_lower = user_query.lower()
+    
+    # Check for procedural queries (steps/process)
+    procedural_keywords = ['how to', 'steps', 'process', 'procedure', 'method']
+    include_steps = any(keyword in query_lower for keyword in procedural_keywords)
+    
+    # Check for application queries
+    application_keywords = ['use', 'apply', 'implement', 'practice']
+    include_practical = any(keyword in query_lower for keyword in application_keywords)
+    
+    # Risks/edge cases - include for complex queries or when explicitly asked
+    include_risks = response_complexity > 0.6 or 'risk' in query_lower or 'limitation' in query_lower
+    
+    # Next actions - include for most queries
+    include_next_actions = True
+    
+    return {
+        'include_steps': include_steps,
+        'include_practical': include_practical,
+        'include_risks': include_risks,
+        'include_next_actions': include_next_actions
+    }
 
 
 def get_final_answer_prompt(
@@ -1190,13 +1370,30 @@ def get_final_answer_prompt(
     # Format citations for prompt (only if provided - backward compatibility)
     citation_list = ""
     if citations and len(citations) > 0:
-        citation_list = "\n--- Extracted Citations (for reference) ---\n"
+        citation_list = "\n--- ⚠️ CRITICAL: Phase 1 Citations (YOU MUST USE THESE EXACT NUMBERS) ---\n"
+        citation_list += "**BEFORE writing each fact, find the matching citation below and use its EXACT number:**\n\n"
         for citation in sorted(citations, key=lambda x: x.get('citation_number', 0)):
             cit_num = citation.get('citation_number', 0)
             cit_text = citation.get('cited_text', '')
             block_id = citation.get('block_id', '')
-            citation_list += f"{cit_num}. {cit_text} [Block: {block_id}]\n"
-        citation_list += "\n"
+            # Extract key values/amounts from cited_text for easier matching
+            key_indicators = ""
+            if '£' in cit_text:
+                import re
+                amounts = re.findall(r'£[\d,]+', cit_text)
+                if amounts:
+                    key_indicators = f" (Amount: {', '.join(amounts)})"
+            if any(word in cit_text.lower() for word in ['90-day', '90 day', 'ninety']):
+                key_indicators += " [90-DAY VALUE]"
+            if any(word in cit_text.lower() for word in ['180-day', '180 day', 'one hundred eighty']):
+                key_indicators += " [180-DAY VALUE]"
+            if 'address' in cit_text.lower() or 'highlands' in cit_text.lower() or 'berden' in cit_text.lower():
+                key_indicators += " [PROPERTY ADDRESS]"
+            if 'date' in cit_text.lower() or 'february' in cit_text.lower() or '2024' in cit_text.lower():
+                key_indicators += " [DATE]"
+            citation_list += f"**Citation [{cit_num}]**: {cit_text}{key_indicators} [Block: {block_id}]\n"
+        citation_list += "\n**REMEMBER**: When you write a fact, use the EXACT citation number from above that matches that fact.\n"
+        citation_list += "Example: If you see '**Citation [4]**: 90-day marketing period value: £1,950,000 [90-DAY VALUE]', when you write '90-day value: £1,950,000', you MUST use [4], NOT [3] or any other number.\n\n"
     
     # Check if this is a valuation query and add valuation extraction instructions
     user_query_lower = user_query.lower()
@@ -1204,7 +1401,9 @@ def get_final_answer_prompt(
     # Check if this is a "value-only" query (user wants ONLY valuation figures, not property details)
     is_value_only_query = any(phrase in user_query_lower for phrase in [
         'value of', 'what is the value', 'what was the value', 'property valued', 
-        'valued at', 'valuation amount', 'valuation figure', 'how much is', 'how much was'
+        'valued at', 'valuation amount', 'valuation figure', 'how much is', 'how much was',
+        'tell me the value', 'tell me the valuation', 'what\'s the value', 'whats the value',
+        'please tell me the value', 'please tell me the valuation'
     ])
     valuation_instructions = ""
     if is_valuation_query:
@@ -1215,21 +1414,51 @@ def get_final_answer_prompt(
     value_only_instructions = ""
     if is_value_only_query:
         value_only_instructions = """
-**VALUE-ONLY QUERY DETECTED** (MUST):
-- The user is asking specifically for the VALUE/VALUATION amount
-- **MUST - Include FIRST:**
-  * Market Value figures (primary and all scenarios with their assumptions) - PRESENT THESE FIRST
-  * Valuation date
-  * Valuer information
-  * Valuation assumptions
-- **IMPORTANT - Include AFTER:**
-  * Market activity information (guide prices, under offer prices, pricing history) - these are important but come AFTER professional valuations
-- **MUST - Do NOT include:**
-  * Property features (bedrooms, bathrooms, amenities, floor areas)
-  * Property composition details
-  * Any other non-pricing information
-- **Structure: Professional valuations first, then market activity prices below**
+**⚠️ VALUE-ONLY QUERY DETECTED - MANDATORY REQUIREMENTS ⚠️**
+
+The user is asking specifically for the VALUE/VALUATION amount. You MUST include ALL valuation figures found in the documents.
+
+**MANDATORY - Include ALL of the following (if found in documents):**
+1. **Primary Market Value** - The main valuation figure (e.g., £2,300,000)
+2. **90-Day Value** - If the document mentions a 90-day marketing period value, you MUST include it (e.g., £1,950,000 with 15% discount)
+3. **180-Day Value** - If the document mentions a 180-day marketing period value, you MUST include it (e.g., £2,050,000 with 10% discount)
+4. **Market Rent** - If provided (e.g., £6,000 per calendar month)
+5. **Valuation Date** - When the valuation was conducted
+6. **Valuer Information** - Names and qualifications of valuers
+7. **Assumptions for EACH scenario** - Marketing periods, discounts, conditions for each value
+
+**CRITICAL RULES:**
+- ✅ **MUST**: If you see "90-day" or "180-day" mentioned anywhere in the documents, you MUST include those values
+- ✅ **MUST**: Include the specific assumptions for each scenario (e.g., "15% discount", "90-day marketing period")
+- ✅ **MUST**: Present ALL valuation scenarios found - do NOT skip any
+- ❌ **DO NOT**: Only include the primary Market Value - you MUST include ALL scenarios
+- ❌ **DO NOT**: Include property features (bedrooms, bathrooms, etc.) - focus ONLY on valuation figures
+
+**Structure:**
+1. Primary Market Value (with assumptions)
+2. 90-Day Value (with assumptions) - IF MENTIONED IN DOCUMENTS
+3. 180-Day Value (with assumptions) - IF MENTIONED IN DOCUMENTS
+4. Market Rent (if provided)
+5. Valuation Date and Valuer Information
+6. Market Activity (guide prices, under offer prices) - AFTER professional valuations
+
+**Example of what you MUST include:**
+- Market Value: £2,300,000[1] (vacant possession, normal marketing period)
+- 90-Day Value: £1,950,000[2] (vacant possession, 90-day marketing period, 15% discount applied)
+- 180-Day Value: £2,050,000[3] (vacant possession, 180-day marketing period, 10% discount applied)
+- Market Rent: £6,000[4] per calendar month
+- Valuation Date: 12th February 2024[5]
+- Valuers: Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS
 """
+    
+    # Determine conditional sections based on query characteristics
+    conditional_sections = _determine_conditional_sections(user_query)
+    
+    # Build conditional sections instruction text for each section
+    steps_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_steps'] else ""
+    practical_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_practical'] else ""
+    risks_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_risks'] else ""
+    next_actions_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_next_actions'] else ""
     
     return f"""**USER QUESTION:**  
 "{user_query}"
@@ -1244,52 +1473,156 @@ def get_final_answer_prompt(
 {valuation_instructions}
 {value_only_instructions}
 
-**CRITICAL - CITATION USAGE AS YOU WRITE YOUR ANSWER**:
+**CRITICAL - CITATION MARKERS (INVISIBLE)**:
 - Citations have already been extracted in Phase 1 (see list above)
-- As you write your answer, you MUST add citation superscripts (¹, ², ³, ⁴, ⁵...) for EACH fact you include
-- Match your facts to the citations extracted in Phase 1 - use the citation numbers that correspond to the facts you're stating
-- Example: If Phase 1 extracted "1. Market Value: £2,300,000 [Block: BLOCK_CITE_ID_42]", when you write "Market Value: £2,300,000", add superscript ¹
-- Citations must be sequential: ¹, ², ³, ⁴, ⁵... (never reuse numbers)
-- Place citations IMMEDIATELY after the specific value/amount/date/name being cited
-- **CRITICAL - SEQUENTIAL CITATION ORDER (MUST FOLLOW)**:
-  * Citations MUST be used in sequential order as they appear in your response
-  * The FIRST citation in your response must be ¹ (or the first available citation number)
-  * The SECOND citation must be ² (or the next sequential number)
-  * The THIRD citation must be ³ (or the next sequential number)
-  * **NEVER reuse a citation number** - once you use ¹, the next citation must be ², then ³, then ⁴, etc.
-  * **NEVER restart the sequence** - if you've used ¹, ², ³, the next citation must be ⁴, NOT ¹ again
-  * Citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ... (never go backwards or repeat)
+- As you write your answer, you MUST add invisible citation markers using bracket format [1], [2], [3], [4], [5]... for EACH fact you include
+- **⚠️ CRITICAL - MATCHING FACTS TO CITATIONS (READ THIS CAREFULLY)**:
+  * **STEP 1**: Look at the Phase 1 citation list above - each citation has a number and the fact it represents
+  * **STEP 2**: Before writing each fact in your answer, STOP and find the EXACT matching citation in Phase 1
+  * **STEP 3**: Use the EXACT citation number from Phase 1 that matches your fact
+  * **STEP 4**: Write the fact with the citation marker immediately after it
+  * **MATCHING RULES**:
+    - Match by VALUE/AMOUNT: If you're writing "£1,950,000", find the citation that mentions "£1,950,000" and use its number
+    - Match by CONCEPT: If you're writing "90-day value", find the citation that mentions "90-day" and use its number
+    - Match by DATE: If you're writing "12th February 2024", find the citation that mentions this date and use its number
+    - Match by NAME: If you're writing "Highlands", find the citation that mentions "Highlands" or "Property Address" and use its number
+  * **EXAMPLES**:
+    - If Phase 1 has "**Citation [4]**: 90-day marketing period value: £1,950,000 [90-DAY VALUE] [Block: BLOCK_CITE_ID_570]", when you write "90-day value: £1,950,000", you MUST use [4] (NOT [1], [2], [3], or any other number)
+    - If Phase 1 has "**Citation [1]**: Market Value: £2,300,000 [Block: BLOCK_CITE_ID_566]", when you write "Market Value: £2,300,000", you MUST use [1]
+    - If Phase 1 has "**Citation [3]**: Property Address: Highlands, Berden Road [PROPERTY ADDRESS] [Block: BLOCK_CITE_ID_50]", when you write "Property Address: Highlands, Berden Road", you MUST use [3] (NOT [1] or [2])
+- **CRITICAL**: Use the ORIGINAL Phase 1 citation numbers - do NOT create sequential numbers. The system will automatically renumber them based on appearance order.
+- **CRITICAL**: Place citation markers IMMEDIATELY after the specific value/amount/date/name being cited - NO SPACE between the fact and citation
+- **CRITICAL**: Each citation marker is permanently attached to its fact - write them together as a unit with NO separation
+- **CRITICAL**: Write fact and citation as ONE unit: "£2,300,000[1]" NOT "£2,300,000 [1]" and NOT "£2,300,000. [1]"
+- **WORKFLOW**: Before writing each fact, check the Phase 1 citation list to find the matching citation number
+- **Example CORRECT**: If Phase 1 has citations [1]=Market Value, [2]=Valuation date, [3]=Property Address, [4]=90-day value, write: "Market Value: £2,300,000[1]. Property Address: Highlands[3]. 90-day value: £1,950,000[4]. Valuation date: 12th February 2024[2]."
+- **Example CORRECT (Multiple Valuers)**: If Phase 1 has [6]=Sukhbir Tiwana, [7]=Graham Finegold, write: "Valuation conducted by Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS"
+- **Example INCORRECT**: "Market Value: £2,300,000[1]. Property Address: Highlands[2]. 90-day value: £1,950,000[3]." (WRONG - used [2] for property address when Phase 1 has it as [3], used [3] for 90-day value when Phase 1 has it as [4])
+- **Example INCORRECT**: "Market Value: £2,300,000 [1]" (WRONG - space before citation)
+- **Example INCORRECT**: "Market Value: £2,300,000. [1]" (WRONG - period and space before citation)
+- **Example INCORRECT**: "Valuation conducted by Sukhbir Tiwana MRICS and Graham Finegold MRICS. [6] [7]" (WRONG - citations at end, should be: "Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS")
+- **DO NOT** create sequential citation numbers - use the exact citation numbers from Phase 1 that match your facts
 
 ### TASK: Create Final Answer with Citations
 
 Create a comprehensive answer to the user's question using the document extracts above.
 
-**CITATION USAGE** (MUST FOLLOW - CRITICAL):
-{CITATION_FORMAT_RULES}
+**⚠️ CRITICAL FOR VALUATION QUERIES:**
+- If the user is asking about "value" or "valuation", you MUST include ALL valuation scenarios found in the documents
+- **MANDATORY**: If documents mention "90-day value" or "180-day value", you MUST include them with their assumptions
+- **MANDATORY**: Include Market Rent if mentioned in documents
+- **DO NOT**: Only include the primary Market Value - you MUST include ALL scenarios (90-day, 180-day, etc.)
+- **DO NOT**: Skip assumption scenarios - they are REQUIRED if mentioned in documents
 
-**Additional Rules**:
-- **MUST**: Use sequential citation numbers (¹, ², ³, ⁴, ⁵...) as you write
-- **MUST**: Place citations IMMEDIATELY after the specific value/amount/date/name being cited
-- **DO NOT** place citations at the end of sentences - place them right after the cited fact
-- **MUST**: Find the BLOCK_CITE_ID in the document extracts that matches each fact you cite
-- **CRITICAL - SEQUENTIAL CITATION ORDER (MUST FOLLOW)**:
-  * Citations MUST be used in sequential order as they appear in your response
-  * The FIRST citation in your response must be ¹ (or the first available citation number)
-  * The SECOND citation must be ² (or the next sequential number)
-  * The THIRD citation must be ³ (or the next sequential number)
-  * **NEVER reuse a citation number** - once you use ¹, the next citation must be ², then ³, then ⁴, etc.
-  * **NEVER restart the sequence** - if you've used ¹, ², ³, the next citation must be ⁴, NOT ¹ again
-  * Citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ... (never go backwards or repeat)
-- **CRITICAL**: Place superscripts IMMEDIATELY after the specific value/amount/date/name being cited
-- **DO NOT** place citations at the end of sentences - place them right after the cited fact
-- **MUST**: Every factual claim must have a superscript AND the BLOCK_CITE_ID in parentheses
-- **Examples of correct usage**:
-  * "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42) (Two Million, Three Hundred Thousand Pounds) for the freehold interest. Valuation date: 12th February 2024² (BLOCK_CITE_ID_42). Conducted by John Smith³ (BLOCK_CITE_ID_15) MRICS."
-  * "90-day value: £1,950,000¹ (BLOCK_CITE_ID_7) (assumes 90-day marketing period). 180-day value: £2,050,000² (BLOCK_CITE_ID_7) (assumes 180-day marketing period). Market Rent: £6,000³ (BLOCK_CITE_ID_23) per calendar month."
+**CITATION MARKERS (BRACKET FORMAT - INVISIBLE TO USER)**:
+- **MUST**: Use bracket format [1], [2], [3], [4], [5]... for citation markers (these will be converted to buttons by the frontend)
+- **MUST**: Place citation markers IMMEDIATELY after the specific value/amount/date/name being cited - NO SPACE, NO PUNCTUATION between fact and citation
+- **CRITICAL**: Write as ONE unit: "£2,300,000[1]" NOT "£2,300,000 [1]" and NOT "£2,300,000. [1]"
+- **CRITICAL**: For multiple valuers, cite each separately: "Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS" (NOT "Sukhbir Tiwana and Graham Finegold MRICS. [6] [7]")
+- **DO NOT** place citations at the end of sentences - place them right after the cited fact with NO separation
+- **CRITICAL**: Match facts to citations extracted in Phase 1 - use the EXACT citation number from Phase 1 that corresponds to the fact you're stating
+- **CRITICAL**: Use the ORIGINAL Phase 1 citation numbers - do NOT create sequential numbers. The system will automatically renumber them based on appearance order.
+- **CRITICAL**: Each citation marker is permanently attached to its fact - they must always appear together as a single unit
+- **DO NOT** place citations at the end of sentences, paragraphs, or after periods - place them immediately after the fact with no space or punctuation
+- **Examples of correct usage** (using original Phase 1 citation numbers):
+  * If Phase 1 has: "1. Market Value: £2,300,000", "2. Valuation date: 12th February 2024", "3. Property Address: Highlands"
+  * Write: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest. Property Address: Highlands[3]. Valuation date: 12th February 2024[2]."
+  * Notice: [1] for market value, [3] for property address (not [2]), [2] for valuation date (not [3])
 - **INCORRECT - DO NOT DO THIS**:
-  * ❌ "Market Value: £2,300,000¹" (missing block ID)
-  * ❌ "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42). Market Rent: £6,000¹ (BLOCK_CITE_ID_23)" (reused ¹)
-  * ❌ "Market Value: £2,300,000¹ (BLOCK_CITE_ID_42). Market Rent: £6,000¹ ² (BLOCK_CITE_ID_23)" (reused and multiple citations)
+  * ❌ "Market Value: £2,300,000[1]. Market Rent: £6,000[1]" (reused [1])
+  * ❌ "Market Value: £2,300,000[1][2]" (multiple citations for same value)
+  * ❌ "Market Value: £2,300,000 (Two Million, Three Hundred Thousand Pounds) for the freehold interest. [1] [2]" (citations at end)
+  * ❌ "Market Value: £2,300,000. Valuation date: 12th February 2024. [1] [2]" (citations separated from facts)
+  * ❌ Using sequential numbers [1], [2], [3] when Phase 1 citations are [1], [3], [5] - you MUST use [1], [3], [5]
+
+**⚠️ CRITICAL FOR VALUATION QUERIES:**
+- If the user is asking about "value" or "valuation", you MUST include ALL valuation scenarios found in the documents
+- **MANDATORY**: If documents mention "90-day value" or "180-day value", you MUST include them with their assumptions
+- **MANDATORY**: Include Market Rent if mentioned in documents
+- **DO NOT**: Only include the primary Market Value - you MUST include ALL scenarios (90-day, 180-day, etc.)
+- **DO NOT**: Skip assumption scenarios - they are REQUIRED if mentioned in documents
+
+**CANONICAL TEMPLATE STRUCTURE (MUST FOLLOW)**:
+
+1. **Primary Answer (H1)**:
+   - Use markdown heading # (single hash) for the final outcome/main answer
+   - Short, direct answer that resolves the user's question immediately
+   - No fluff, no justification yet
+   - Maximum 2-3 sentences
+   - Example: "# Market Value: £2,300,000[1]"
+
+2. **Key Concepts (H2)**:
+   - Use markdown heading ## (double hash) for "Key Concepts" section
+   - List 3-5 key concepts with one-line explanations
+   - Use bullet points (-) with **bold** concept names
+   - Format: "- **Concept Name**: One-line explanation"
+   - Maximum 5 bullet points
+   - **CRITICAL - NO DUPLICATION**: Key Concepts should be a BRIEF summary. Do NOT repeat these exact same facts in Detailed Explanation
+   - Example: "## Key Concepts\n- **Market Value**: £2,300,000[1] - The primary valuation figure"
+
+3. **Detailed Explanation (H2)**:
+   - Use markdown heading ## (double hash) for "Detailed Explanation"
+   - Use markdown heading ### (triple hash) for each subtopic within this section
+   - Each ### subtopic should have 1-3 paragraphs
+   - Maximum 3 sentences per paragraph
+   - Maximum ~50 words per paragraph (split if longer)
+   - One idea per paragraph
+   - **CRITICAL - NO DUPLICATION**: Detailed Explanation should EXPAND on Key Concepts with additional context, examples, and details. Do NOT repeat the exact same sentences from Key Concepts
+   - **CRITICAL - NO DUPLICATION**: If Key Concepts says "No obvious signs of contamination[1]", Detailed Explanation should say something like "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]" (expands with context, not repeats)
+
+4. **Process/Steps (H2 - Conditional)**{steps_note}:
+   - Only include if applicable (procedural queries)
+   - Use markdown heading ## (double hash) for "Process / Steps"
+   - Use numbered list (1., 2., 3.) for steps
+   - Each step: "1. **Step 1:** Clear action"
+   - Maximum 5 steps (split into sub-sections if more)
+
+5. **Practical Application (H2 - Conditional)**{practical_note}:
+   - Include if query requires real-world application guidance
+   - Use markdown heading ## (double hash) for "Practical Application"
+   - 1-2 paragraphs explaining how to use this information
+   - Maximum 3 sentences per paragraph
+
+6. **Risks/Edge Cases (H2 - Optional)**{risks_note}:
+   - Include only if relevant limitations or risks exist
+   - Use markdown heading ## (double hash) for "Risks / Edge Cases"
+   - Use bullet points (-) for list of risks/limitations
+   - Maximum 5 bullet points
+
+7. **Next Actions (H2 - Optional)**{next_actions_note}:
+   - Include if follow-up actions are suggested
+   - Use markdown heading ## (double hash) for "Next Actions"
+   - Use bullet points (-) for suggested follow-ups
+   - Maximum 5 bullet points
+
+**HEADING HIERARCHY RULES (CRITICAL)**:
+- NEVER skip heading levels (# → ## → ###, not # → ###)
+- If a section can be read independently → it deserves a ## (H2)
+- # (H1) = Final outcome/main answer (only one H1 per response)
+- ## (H2) = Major sections (Key Concepts, Detailed Explanation, etc.)
+- ### (H3) = Sub-sections within H2 sections
+- Regular paragraphs = Explanation text
+- Bullet points (-) or numbered lists (1., 2., 3.) = Scannable information lists
+
+**INFORMATION ORDERING (MUST FOLLOW)**:
+1. Answer first (# H1 - primary answer)
+2. Explain later (## H2 - Key Concepts, Detailed Explanation)
+3. Justify last (if needed - within Detailed Explanation)
+4. Extend optionally (Process, Practical Application, Risks, Next Actions)
+
+**MINIMAL COGNITIVE LOAD RULES**:
+- Maximum 3-5 bullet points per list
+- Maximum 3 sentences per paragraph
+- Maximum ~50 words per paragraph (automatically split if longer)
+- One idea per paragraph
+- Use lists instead of long paragraphs when possible
+
+**CONDITIONAL SECTIONS LOGIC**:
+- Include "Process / Steps" only if query involves procedures or sequential actions
+- Include "Practical Application" only if query requires real-world usage guidance
+- Include "Risks / Edge Cases" only if limitations or risks are relevant
+- Include "Next Actions" only if follow-up actions are appropriate
+- For simple queries: # H1 + ## Key Concepts + ## Brief Detailed Explanation may be sufficient
 
 **CONTENT GENERATION INSTRUCTIONS**:
 
@@ -1302,12 +1635,14 @@ Create a comprehensive answer to the user's question using the document extracts
 2. **Valuation Query Handling** (MUST for valuation queries)
    {VALUATION_PRIORITIZATION_RULES}
    
-   - Extract and include: Market Value (primary), all valuation scenarios (90-day, 180-day, etc.), assumptions, valuation date, valuer details
-   - **IMPORTANT**: If document mentions "90-day" or "180-day" marketing periods, you MUST find and extract those figures
+   - **CRITICAL**: Extract and include: Market Value (primary), ALL valuation scenarios (90-day, 180-day, etc.), assumptions for EACH scenario, valuation date, valuer details
+   - **MANDATORY**: You MUST include ALL assumption figures - if the document mentions "90-day" or "180-day" marketing periods, you MUST find and extract those figures with their assumptions
+   - **MANDATORY**: Include assumptions for EACH valuation scenario (e.g., "90-day value: £1,950,000 (15% discount, vacant possession, 90-day marketing period)")
    - **IMPORTANT**: Search through ALL document extracts thoroughly - reduced marketing period valuations may appear on later pages (page 30+)
    - **IMPORTANT**: If you see references to reduced marketing periods, the valuation figures MUST be present - continue searching until you find them
    - **IMPORTANT**: Read through ALL document extracts completely - valuation scenarios may be spread across multiple chunks or pages
    - **MUST**: Include citations for ALL valuation figures (including 90-day, 180-day, and all other scenarios)
+   - **EXAMPLE**: If document has "90-day value: £1,950,000 (15% discount)" and "180-day value: £2,050,000 (10% discount)", you MUST include BOTH with their assumptions
 
 3. **Value-Only Query Handling** (MUST for value-only queries)
    - **ONLY provide valuation information** - do NOT include property composition, features, floor areas, bedrooms, bathrooms
@@ -1316,9 +1651,9 @@ Create a comprehensive answer to the user's question using the document extracts
 
 4. **General Information Extraction** (MUST)
    - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, etc.
-   - **CRITICAL**: Include superscript citations (¹, ², ³, etc.) IMMEDIATELY after each specific fact/value being cited
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value being cited
    - **DO NOT** place citations at the end of sentences - place them right after the cited information
-   - **Example**: "Market Value: £2,300,000¹ (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
    - Be professional, factual, and detailed - include all relevant figures, dates, names, and details
 
 5. **Search Strategy** (IMPORTANT)
@@ -1330,14 +1665,16 @@ Create a comprehensive answer to the user's question using the document extracts
 **COMMON MISTAKES TO AVOID**:
 - ❌ Using "under offer" prices as Market Value
 - ❌ Stopping after finding one valuation figure
+- ❌ Omitting assumption figures (90-day, 180-day values) - these are MANDATORY if mentioned in documents
 - ❌ Saying "not specified" when reduced marketing periods are mentioned
 - ❌ Missing information on later pages (20-30+)
-- ✅ Search comprehensively, extract all scenarios, use professional valuations first
+- ❌ Including only primary Market Value without assumption scenarios
+- ✅ Search comprehensively, extract all scenarios WITH their assumptions, use professional valuations first
 
 **CONTENT GENERATION (Focus on completeness and accuracy):**
 - Organize information logically (primary information first, supporting details below)
 - Include ALL relevant information found in document extracts
-- Use citations inline (superscript format: ¹, ², ³) - see citation rules above
+- Use citations inline (bracket format: [1], [2], [3]) - see citation rules above
 - Ensure all valuation figures, assumptions, and details are included
 - Present information clearly and comprehensively
 - **Note: Formatting and structure will be handled in a separate step - focus on content completeness**
@@ -1375,65 +1712,147 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - Your job is ONLY to format and structure the existing content
 - **MUST**: Do NOT add, remove, or modify any information
 - **MUST**: Do NOT generate new content - only reorganize and format what's already there
+- **CRITICAL**: When reorganizing, citations MUST move WITH their associated facts - never separate them
+- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context, not repeat the same sentence
+- **CRITICAL - AVOID DUPLICATION**: Key Concepts = brief summary (one line). Detailed Explanation = expanded context with more detail. They should complement each other, not duplicate
 
-**FORMATTING INSTRUCTIONS**:
+**CRITICAL CITATION PRESERVATION RULES** (MUST FOLLOW):
 
-1. **Structure the Response Logically**:
-   - Primary answer/valuation at the top (most important information first)
-   - Supporting details in clear subsections below
-   - Use clear section headings with **bold** text
-   - Group related information together
+1. **Citation-to-Fact Mapping** (ABSOLUTELY CRITICAL):
+   - Each citation marker ([1], [2], [3], etc.) is attached to a SPECIFIC fact/value/name/date
+   - When you move or reorganize content, the citation marker MUST move WITH its fact
+   - **NEVER** separate a citation marker from its fact
+   - **Example**: If "£2,300,000[1]" appears in raw response, it must remain "£2,300,000[1]" in formatted response
+   - **Example**: If "12th February 2024[2]" appears, it must remain "12th February 2024[2]"
+   - **Example**: If "Sukhbir Tiwana[3] MRICS" appears, it must remain "Sukhbir Tiwana[3] MRICS"
 
-2. **Ensure Completeness**:
-   - Include ALL information from the raw response
-   - Do NOT omit any valuation figures, assumptions, or details
-   - Preserve all citations and references
+2. **Citation Placement** (MUST PRESERVE):
+   - Citation markers appear IMMEDIATELY after the specific fact being cited
+   - If raw response has "Market Value: £2,300,000[1]", formatted must keep "Market Value: £2,300,000[1]"
+   - If raw response has "valuation date: 12th February 2024[2]", formatted must keep "valuation date: 12th February 2024[2]"
+   - **DO NOT** move citations to end of sentences or paragraphs
+   - **DO NOT** group citations together - each stays with its fact
 
-3. **CITATION FORMAT** (MUST - Preserve Exactly):
+3. **Citation Sequence** (MUST PRESERVE):
+   - Maintain the exact sequential order: [1], [2], [3], [4], [5], [6]...
+   - Do NOT renumber citations
+   - Do NOT reuse citation numbers
+   - If raw response uses [1], [2], [3], formatted must use same sequence
+
+4. **When Reorganizing Content**:
+   - If moving "Market Value: £2,300,000[1]" to Key Concepts section, keep it as "Market Value: £2,300,000[1]"
+   - If moving "12th February 2024[2]" to Detailed Explanation, keep it as "12th February 2024[2]"
+   - Citations are part of the fact - they move together as a unit
+
+**CANONICAL TEMPLATE ENFORCEMENT**:
+
+1. **Verify Heading Hierarchy**:
+   - Ensure H1 (# single hash) exists for primary answer at the start
+   - Ensure H2 (## double hash) sections follow proper order
+   - Ensure H3 (### triple hash) only appear within H2 sections
+   - NEVER skip heading levels (# → ## → ###, not # → ###)
+   - If response lacks proper heading structure, reorganize to match canonical template
+   - **CRITICAL**: When creating H1 from primary answer, preserve all citations exactly as they appear
+
+2. **Verify Information Ordering**:
+   - H1 (#) primary answer must come first (with citations preserved)
+   - H2 (##) Key Concepts should come early (if applicable) - extract key facts WITH their citations
+   - H2 (##) Detailed Explanation should follow - preserve all citations when moving content
+   - Optional sections (Process, Practical Application, Risks, Next Actions) come last
+   - Reorganize content if ordering is incorrect, but keep citations with their facts
+
+3. **Enforce Cognitive Load Rules**:
+   - Split paragraphs longer than ~50 words into multiple paragraphs
+   - **CRITICAL**: When splitting paragraphs, preserve citations with their facts
+   - Limit lists to 3-5 items (split into multiple lists or sub-sections if longer)
+   - Limit paragraphs to 3 sentences maximum
+   - Break up long explanations into H3 (###) sub-sections
+   - One idea per paragraph
+
+4. **Apply Canonical Template Structure**:
+   - If response lacks H1, create one from the primary answer - preserve all citations
+   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Key Concepts" section, extract 3-5 key points WITH their citations and create H2 section
+   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Detailed Explanation" section, organize remaining content under H2 with H3 sub-sections - preserve all citations
+   - **CRITICAL - NO REPETITION**: Key Concepts should be a BRIEF summary (one-line per concept). Detailed Explanation should EXPAND on these concepts with more detail, NOT repeat the same information
+   - **CRITICAL - NO REPETITION**: If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context/explanation, not repeat the exact same fact
+   - **CRITICAL - NO REPETITION**: Do NOT copy the same sentences from Key Concepts into Detailed Explanation - use different wording and add more detail
+   - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy
+   - **CRITICAL**: When extracting key concepts, keep the citation with each concept (e.g., "- **Market Value**: £2,300,000[1] - The primary valuation figure")
+   - **EXAMPLE - CORRECT (No Duplication)**:
+     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
+     * Detailed Explanation: "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]. The assumption is made that the property has not been contaminated previously[2]."
+   - **EXAMPLE - INCORRECT (Duplication)**:
+     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
+     * Detailed Explanation: "No obvious signs of contamination[1]. The assumption is made that the property has not been contaminated[2]." (WRONG - repeats the same fact)
+
+**CITATION FORMAT** (MUST - Preserve Exactly):
 {CITATION_FORMAT_RULES}
 
 **CRITICAL - SEQUENTIAL CITATION ORDER**:
 - Citations MUST be used in sequential order as they appear in the response
-- First citation: ¹, Second: ², Third: ³, Fourth: ⁴, Fifth: ⁵, etc.
-- **NEVER reuse a citation number** - once you use ¹, the next must be ², then ³, etc.
-- **NEVER restart the sequence** - citations must always increase: ¹ → ² → ³ → ⁴ → ⁵ → ...
-- Example of correct sequential progression: "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest. Valuation date: 12th February 2024². Conducted by John Smith³ MRICS. 90-day value: £1,950,000⁴ (One Million, Nine Hundred and Fifty Thousand Pounds). 180-day value: £2,050,000⁵ (Two Million and Fifty Thousand Pounds)."
+- First citation: [1], Second: [2], Third: [3], Fourth: [4], Fifth: [5], etc.
+- **NEVER reuse a citation number** - once you use [1], the next must be [2], then [3], etc.
+- **NEVER restart the sequence** - citations must always increase: [1] → [2] → [3] → [4] → [5] → ...
 
-**CRITICAL PLACEMENT EXAMPLES**:
-- Value with citation: "Market Value: £2,400,000¹ (Two Million, Four Hundred Thousand Pounds) for the freehold interest..."
-- Multiple different facts: "Valuation by John Smith¹ MRICS on 12th February 2024²"
-- Multiple values (each gets its own sequential citation): "90-day value: £1,950,000¹ (One Million, Nine Hundred and Fifty Thousand Pounds). 180-day value: £2,050,000² (Two Million and Fifty Thousand Pounds)"
-- Date citation: "Valuation date: 12th February 2024²"
-- Name citation: "Conducted by Sukhbir Tiwana¹ MRICS and Graham Finegold² MRICS"
+**FORMATTING STANDARDS**:
+- Use markdown heading syntax: # for H1, ## for H2, ### for H3
+- Use **bold** for key figures, names, and important values within paragraphs
+- Use bullet points (-) for lists in Key Concepts and other sections
+- Use numbered lists (1., 2., 3.) for Process/Steps sections
+- **CRITICAL**: Maintain inline citation markers ([1], [2], [3]) IMMEDIATELY after the specific fact/value being cited
+- **CRITICAL**: If citations appear at the end of sentences or phrases, move them to immediately after the cited information
+- **NOTE**: Citation markers in bracket format will be converted to clickable buttons by the frontend - do not add visible superscripts
 
-**INCORRECT (DO NOT DO THIS)**:
-- ❌ "Market Value: £2,400,000¹. Valuation date: 12th February 2024². Market Rent: £6,000¹" (reused ¹ - should be ³)
-- ❌ "Market Value: £2,400,000 (Two Million, Four Hundred Thousand Pounds) for the freehold interest... ¹ ²" (citations at end)
-- ❌ "90-day value: £1,950,000¹ ² (One Million, Nine Hundred and Fifty Thousand Pounds)" (multiple citations for same value)
-- ❌ "Market Value: £2,400,000 (1, 2)" (wrong format)
-- ❌ "Market Value: £2,400,000¹²" (no spaces, wrong format)
-- ❌ "Valuation by John Smith MRICS on 12th February 2024. ¹ ²" (citations at end of sentence)
+**CORRECT CITATION EXAMPLES** (Follow These Patterns):
 
-4. **Formatting Standards**:
-   - Use **bold** for key figures, names, and important values
-   - Use bullet points (-) for lists
-   - Use numbered lists for sequences or scenarios
-   - Use clear section headings (e.g., "## Valuation Information", "## Market Activity")
-   - **CRITICAL**: Maintain inline citations (superscript numbers) IMMEDIATELY after the specific fact/value being cited
-   - **CRITICAL**: If citations appear at the end of sentences or phrases, move them to immediately after the cited information
-   - **Example**: "£2,300,000¹ (Two Million, Three Hundred Thousand Pounds) for the freehold interest..." NOT "£2,300,000 (Two Million, Three Hundred Thousand Pounds) for the freehold interest... ¹"
+✅ **CORRECT - H1 with citation**:
+```
+# Market Value: £2,300,000[1]
 
-5. **Organization**:
-   - Start with the main answer to the user's question
-   - Then provide detailed scenarios/assumptions
-   - Then provide supporting information (market activity, context, etc.)
-   - End with any additional relevant details
+The property has a market value of £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest as of 12th February 2024[2].
+```
 
-6. **Readability**:
-   - Use clear, professional language
-   - Break up long paragraphs into shorter ones
-   - Use whitespace effectively
-   - Ensure the response flows logically
+✅ **CORRECT - Key Concepts with citations**:
+```
+## Key Concepts
+
+- **Market Value**: £2,300,000[1] - The primary valuation figure for the freehold interest
+- **Valuation Date**: 12th February 2024[2] - When the valuation was conducted
+- **Valuers**: Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS - The qualified professionals
+- **90-Day Value**: £1,950,000[5] - Reduced marketing period scenario (15% discount)
+- **180-Day Value**: £2,050,000[6] - Extended marketing period scenario (10% discount)
+```
+
+✅ **CORRECT - Detailed Explanation with citations**:
+```
+## Detailed Explanation
+
+### Primary Valuation
+The market value of £2,300,000[1] represents the estimated amount the property would sell for in the open market. This valuation assumes standard marketing conditions and a willing buyer and seller. The valuation was conducted on 12th February 2024[2] by Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS.
+```
+
+❌ **INCORRECT - Citations separated from facts**:
+```
+# Market Value: £2,300,000
+
+The property has a market value of £2,300,000 for the freehold interest. ¹ ² ³
+```
+
+❌ **INCORRECT - Citations at end of sentences**:
+```
+# Market Value: £2,300,000
+
+The property has a market value of £2,300,000 (Two Million, Three Hundred Thousand Pounds) for the freehold interest.¹ The valuation was conducted on 12th February 2024.²
+```
+
+❌ **INCORRECT - Citations renumbered or reused**:
+```
+## Key Concepts
+
+- **Market Value**: £2,300,000¹
+- **Valuation Date**: 12th February 2024¹ (WRONG - should be ²)
+- **Valuers**: Sukhbir Tiwana¹ MRICS (WRONG - should be ³)
+```
 
 **MUST**: Do NOT remove or omit any information from the raw response. Your job is to organize and format it better, not to filter it. The content is already complete - only format and structure it.
 

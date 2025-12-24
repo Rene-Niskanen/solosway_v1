@@ -87,30 +87,6 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                 'confidence': 'low'  # Fallback confidence
             }
     
-    # #region agent log
-    # Debug: Log blocks availability for Hypothesis A and C
-    try:
-        total_chunks = len(source_chunks_metadata)
-        chunks_with_blocks = sum(1 for chunk in source_chunks_metadata if chunk.get('blocks') and isinstance(chunk.get('blocks'), list) and len(chunk.get('blocks')) > 0)
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'A,C',
-                'location': 'block_id_formatter.py:90',
-                'message': 'Checking blocks in source_chunks_metadata',
-                'data': {
-                    'doc_id': doc_id[:8] if doc_id else 'unknown',
-                    'total_chunks': total_chunks,
-                    'chunks_with_blocks': chunks_with_blocks,
-                    'has_source_chunks_metadata': bool(source_chunks_metadata)
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass  # Silently fail instrumentation
-    # #endregion
     
     for chunk in source_chunks_metadata:
         chunk_index = chunk.get('chunk_index', 0)
@@ -138,39 +114,6 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                 # Extract bbox coordinates from block
                 bbox = block.get('bbox', {})
                 
-                # #region agent log
-                # Debug: Log bbox extraction for Hypothesis B
-                try:
-                    has_bbox = bool(bbox and isinstance(bbox, dict))
-                    bbox_valid = False
-                    if has_bbox:
-                        bbox_valid = (
-                            isinstance(bbox.get('left'), (int, float)) and
-                            isinstance(bbox.get('top'), (int, float)) and
-                            isinstance(bbox.get('width'), (int, float)) and
-                            isinstance(bbox.get('height'), (int, float))
-                        )
-                    import json
-                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            'sessionId': 'debug-session',
-                            'runId': 'run1',
-                            'hypothesisId': 'B',
-                            'location': 'block_id_formatter.py:128',
-                            'message': 'Bbox extracted from block',
-                            'data': {
-                                'block_id': block_id,
-                                'has_bbox': has_bbox,
-                                'bbox_valid': bbox_valid,
-                                'bbox': bbox if has_bbox else None,
-                                'page_number': page_number,
-                                'doc_id': doc_id[:8] if doc_id else 'unknown'
-                            },
-                            'timestamp': int(__import__('time').time() * 1000)
-                        }) + '\n')
-                except Exception:
-                    pass  # Silently fail instrumentation
-                # #endregion
                 
                 # Normalize bbox values (ensure they're numbers, default to 0 if missing)
                 bbox_left = float(bbox.get('left', 0)) if bbox and isinstance(bbox, dict) else 0.0
@@ -196,31 +139,6 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
                     'content': block_content  # Store block content for verification
                 }
                 
-                # #region agent log
-                # Debug: Log bbox validity for Hypothesis C
-                try:
-                    bbox_valid = (0 <= bbox_left <= 1 and 0 <= bbox_top <= 1 and 
-                                 0 < bbox_width <= 1 and 0 < bbox_height <= 1 and
-                                 not (bbox_left == 0 and bbox_top == 0 and bbox_width == 0 and bbox_height == 0))
-                    import json
-                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({
-                            'sessionId': 'debug-session',
-                            'runId': 'run1',
-                            'hypothesisId': 'C',
-                            'location': 'block_id_formatter.py:128',
-                            'message': 'Block bbox added to metadata table',
-                            'data': {
-                                'block_id': block_id,
-                                'bbox': {'left': bbox_left, 'top': bbox_top, 'width': bbox_width, 'height': bbox_height, 'page': block_page},
-                                'bbox_valid': bbox_valid,
-                                'doc_id': doc_id[:8] if doc_id else 'unknown'
-                            },
-                            'timestamp': int(__import__('time').time() * 1000)
-                        }) + '\n')
-                except Exception:
-                    pass  # Silently fail instrumentation
-                # #endregion
                 
                 logger.debug(
                     f"[BLOCK_ID_FORMATTER] Created block {block_id} "
@@ -273,28 +191,6 @@ def format_document_with_block_ids(doc_output: dict) -> Tuple[str, Dict[str, Dic
     
     formatted_content = "\n".join(formatted_blocks)
     
-    # #region agent log
-    # Debug: Log metadata table summary for Hypothesis C
-    try:
-        import json
-        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-            f.write(json.dumps({
-                'sessionId': 'debug-session',
-                'runId': 'run1',
-                'hypothesisId': 'C',
-                'location': 'block_id_formatter.py:232',
-                'message': 'Metadata lookup table created',
-                'data': {
-                    'doc_id': doc_id[:8] if doc_id else 'unknown',
-                    'metadata_table_size': len(metadata_table),
-                    'formatted_blocks_count': len(formatted_blocks),
-                    'sample_block_ids': list(metadata_table.keys())[:5] if metadata_table else []
-                },
-                'timestamp': int(__import__('time').time() * 1000)
-            }) + '\n')
-    except Exception:
-        pass  # Silently fail instrumentation
-    # #endregion
     
     logger.info(
         f"[BLOCK_ID_FORMATTER] Formatted doc {doc_id[:8] if doc_id else 'UNKNOWN'} "

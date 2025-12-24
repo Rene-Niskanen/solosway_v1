@@ -383,8 +383,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [propertyMarkers, setPropertyMarkers] = useState<any[]>([]);
   const [selectedPropertyPosition, setSelectedPropertyPosition] = useState<{ x: number; y: number } | null>(null);
-  // Initialize to false to match the actual initial map style (light-v11)
-  const [isColorfulMap, setIsColorfulMap] = useState(false);
+  // Default to the colored map theme on first load (user preference)
+  const [isColorfulMap, setIsColorfulMap] = useState(true);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
   const [showPropertyTitleCard, setShowPropertyTitleCard] = useState(false);
@@ -2346,7 +2346,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         currentPropertiesCount: currentProperties.length 
       });
       
-      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/streets-v12' : 'mapbox://styles/mapbox/light-v11';
+      // Use a calmer colored map style (colored but less busy/overpowering).
+      const newStyle = willBeColorful ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11';
       
       // Set the new style
       map.current.setStyle(newStyle);
@@ -3977,7 +3978,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       // This ensures the map always starts at the user's default location (or London fallback)
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/light-v11', // Light style (no color) - default
+        // Default to a calmer colored style rather than the grey/light style.
+        style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11',
         center: defaultLocation.center, // Start at default location immediately - no Mapbox default
         zoom: defaultLocation.zoom, // Start at default zoom immediately - no Mapbox default
         bearing: 15, // Slight rotation for better view

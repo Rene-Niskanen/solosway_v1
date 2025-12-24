@@ -745,33 +745,56 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      onFocus={() => {
+                      onFocus={(e) => {
                         if (searchResults.length > 0) {
                           setShowResultsPopup(true);
                         }
+                        // Subtle focus, no thick/blue outline.
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.45)';
+                        e.currentTarget.style.boxShadow =
+                          'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 2px rgba(71, 85, 105, 0.08)';
                       }}
                       placeholder="Find property to link documents"
                       className="quick-start-search-input"
                       style={{
                         width: '100%',
                         padding: isInChatPanel ? '6px 10px 6px 10px' : '6px 12px 6px 12px',
-                        border: '1px solid rgba(0, 0, 0, 0.1)',
+                        // Glassmorphism (match SearchBar)
+                        background: 'rgba(255, 255, 255, 0.55)',
+                        backdropFilter: 'blur(16px) saturate(160%)',
+                        WebkitBackdropFilter: 'blur(16px) saturate(160%)',
+                        border: '1px solid rgba(82, 101, 128, 0.35)',
                         borderRadius: '6px',
                         fontSize: isInChatPanel ? '13px' : '14px',
                         outline: 'none',
-                        transition: 'border-color 0.2s',
+                        transition: 'all 0.2s ease-in-out',
                         position: 'relative',
                         zIndex: 1,
-                        background: 'white',
                         color: '#1F2937',
-                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
+                        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.65)';
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.45)';
+                      }}
+                      onMouseLeave={(e) => {
+                        // Keep focus styles if focused; otherwise revert to default glass state.
+                        if (document.activeElement === e.currentTarget) return;
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.55)';
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.35)';
+                        e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
+                      }}
+                      onBlur={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.55)';
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.35)';
+                        e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Escape') {
                           setShowResultsPopup(false);
                         }
                       }}
-                      onBlur={(e) => {
+                      onBlurCapture={() => {
                         // Don't close popup immediately on blur - wait a bit to allow clicks on popup items
                         setTimeout(() => {
                           // Check if the related target (what's being focused) is not inside the popup
@@ -950,21 +973,24 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                         justifyContent: 'center',
                         width: isInChatPanel ? '28px' : '32px',
                         height: isInChatPanel ? '28px' : '32px',
-                        border: '1px solid rgba(0, 0, 0, 0.1)',
+                        // Glassmorphism (match SearchBar)
+                        background: 'rgba(255, 255, 255, 0.55)',
+                        backdropFilter: 'blur(16px) saturate(160%)',
+                        WebkitBackdropFilter: 'blur(16px) saturate(160%)',
+                        border: '1px solid rgba(82, 101, 128, 0.35)',
                         borderRadius: '6px',
-                        background: 'white',
                         cursor: 'pointer',
-                        transition: 'all 0.2s',
+                        transition: 'all 0.2s ease-in-out',
                         color: '#374151',
-                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)'
+                        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)'
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f3f4f6';
-                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.2)';
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.65)';
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.45)';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = 'white';
-                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.1)';
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.55)';
+                        e.currentTarget.style.borderColor = 'rgba(82, 101, 128, 0.35)';
                       }}
                       title="Upload document"
                     >

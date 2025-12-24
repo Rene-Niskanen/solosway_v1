@@ -129,19 +129,25 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
         minHeight: `${cardHeight}px`, 
         flexShrink: 0, 
         aspectRatio: `${cardWidth}/${cardHeight}`,
-        background: 'rgba(255, 255, 255, 0.9)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
+        // Let inner sections provide the glass so they blur the *page* behind,
+        // not this card's own background (otherwise it can look "solid").
+        background: 'transparent',
+        border: '1px solid rgba(82, 101, 128, 0.35)',
         borderRadius: '6px',
-        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
+        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
         overflow: 'hidden'
       }}>
         {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
         <div className="flex items-center justify-center flex-[2] border-b" style={{ 
           minHeight: 0, 
           flexShrink: 0,
-          background: 'rgba(248, 250, 252, 0.6)',
-          borderColor: 'rgba(255, 255, 255, 0.3)'
+          // Glassmorphism (match SearchBar)
+          background: 'rgba(255, 255, 255, 0.82)',
+          backdropFilter: 'blur(16px) saturate(160%)',
+          WebkitBackdropFilter: 'blur(16px) saturate(160%)',
+          // Keep the outline/border thin & neutral (no blue focus thickening)
+          borderColor: 'rgba(82, 101, 128, 0.35)',
+          boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)'
         }}>
           <Plus className="text-gray-700" style={{ width: `${iconSize.medium}px`, height: `${iconSize.medium}px` }} strokeWidth={2.5} />
         </div>
@@ -149,7 +155,9 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
         <div className="flex items-center justify-center flex-1" style={{ 
           minHeight: 0, 
           flexShrink: 0,
-          background: 'rgba(255, 255, 255, 0.7)'
+          background: 'rgba(255, 255, 255, 0.82)',
+          backdropFilter: 'blur(16px) saturate(160%)',
+          WebkitBackdropFilter: 'blur(16px) saturate(160%)'
         }}>
           <span className="font-semibold" style={{ color: '#6E778D', fontSize: fontSize.large }}>New Project</span>
         </div>
@@ -191,11 +199,12 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       minHeight: `${cardHeight}px`, 
       flexShrink: 0, 
       aspectRatio: `${cardWidth}/${cardHeight}`,
-      background: 'rgba(255, 255, 255, 0.9)',
-      backdropFilter: 'blur(20px)',
-      WebkitBackdropFilter: 'blur(20px)',
+      // Transparent shell; glass is applied to the inner content section so it
+      // blurs the *page* behind the card (not a white card background).
+      background: 'transparent',
+      border: '1px solid rgba(82, 101, 128, 0.35)',
       borderRadius: '4px',
-      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
+      boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 4px 12px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08)',
       overflow: 'hidden'
     }}>
       {/* Preview Image - 2/3 of card height - Infinity Pool Style (no borders, extends to edges) */}
@@ -210,21 +219,25 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
       <div className="flex flex-col flex-1" style={{ 
         flexShrink: 0, 
         padding: `${padding * 0.5}px`,
-        background: 'rgba(255, 255, 255, 0.85)'
+        background: 'rgba(255, 255, 255, 0.82)',
+        backdropFilter: 'blur(16px) saturate(160%)',
+        WebkitBackdropFilter: 'blur(16px) saturate(160%)'
       }}>
         {/* Project Type Label */}
         {projectType && (
           <p className="font-medium text-gray-500 uppercase tracking-wide" style={{ 
             fontSize: fontSize.small, 
-            marginBottom: `${gap}px` 
+            marginBottom: `${gap}px`,
+            color: 'rgba(15, 23, 42, 0.72)'
           }}>{projectType}</p>
         )}
         
         {/* Property Address */}
         {propertyAddress && (
           <h3 className="font-semibold line-clamp-2" style={{ 
-            color: '#6E778D', 
+            color: 'rgba(15, 23, 42, 0.82)',
             fontSize: fontSize.medium,
+            fontWeight: 650,
             marginBottom: `${gap * 1.5}px`
           }}>
             {propertyAddress}
@@ -232,12 +245,12 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
         )}
         
         {/* Meta Row */}
-        <div className="flex items-center justify-between mt-auto border-t border-gray-200" style={{ paddingTop: `${gap * 1.5}px` }}>
-          <div className="flex items-center font-medium text-gray-600" style={{ fontSize: fontSize.small, gap: `${gap * 4}px` }}>
+        <div className="flex items-center justify-between mt-auto border-t border-gray-200" style={{ paddingTop: `${gap * 1.5}px`, borderColor: 'rgba(255, 255, 255, 0.35)' }}>
+          <div className="flex items-center reveal-meta" style={{ fontSize: fontSize.small, gap: `${gap * 4}px`, color: 'rgba(15, 23, 42, 0.72)', fontWeight: 600 }}>
             {/* Document Count */}
             {documentCount !== undefined && (
               <div className="flex items-center" style={{ gap: `${gap * 0.5}px` }}>
-                <FileCheckCorner className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
+                <FileCheckCorner className="text-slate-700" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px`, opacity: 0.85 }} />
                 <span>{documentCount}</span>
               </div>
             )}
@@ -245,7 +258,7 @@ export const RecentProjectCard: React.FC<RecentProjectCardProps> = ({
             {/* Last Opened */}
             {lastOpened && (
               <div className="flex items-center" style={{ gap: `${gap * 0.5}px` }}>
-                <Clock className="text-gray-600" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px` }} />
+                <Clock className="text-slate-700" style={{ width: `${iconSize.small}px`, height: `${iconSize.small}px`, opacity: 0.85 }} />
                 <span>{lastOpened}</span>
               </div>
             )}

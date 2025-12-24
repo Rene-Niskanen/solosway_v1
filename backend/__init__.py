@@ -94,6 +94,11 @@ def create_app():
     def unauthorized():
         """Handle unauthorized requests with CORS headers"""
         from flask import request, jsonify
+        # CRITICAL: OPTIONS requests should be handled by Flask-CORS, not blocked by auth
+        # Return None to let Flask-CORS handle OPTIONS preflight requests
+        if request.method == 'OPTIONS':
+            return None
+        
         response = jsonify({
             'success': False,
             'error': 'Authentication required'

@@ -293,7 +293,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           marginTop: '6px',
           marginLeft: '0',
           backgroundColor: '#FFFFFF',
-          borderRadius: '12px',
+          borderRadius: '8px',
           border: '1px solid rgba(0, 0, 0, 0.08)',
           cursor: onClick ? 'pointer' : 'default',
           width: '100%',
@@ -339,7 +339,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
             style={{
               fontSize: '12px',
               fontWeight: 500,
-              color: '#888888',
+              color: '#B3B3B3',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',

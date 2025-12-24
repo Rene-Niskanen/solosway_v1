@@ -51,6 +51,11 @@ interface PreviewContextType {
   getCachedRenderedPage: (fileId: string, pageNumber: number) => ImageData | null; // NEW: Get cached rendered page
   setCachedRenderedPage: (fileId: string, pageNumber: number, imageData: ImageData | null) => void; // NEW: Cache rendered page
   preloadPdfPage: (fileId: string, pageNumber: number, pdf: PDFDocumentProxy, scale: number) => Promise<void>; // NEW: Pre-render page
+  // NEW: Standalone ExpandedCardView support
+  expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
+  setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight } | null>>;
+  openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight) => void;
+  closeExpandedCardView: () => void;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -62,6 +67,8 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activePreviewTabIndex, setActivePreviewTabIndex] = React.useState(0);
   const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
   const [highlightCitation, setHighlightCitation] = React.useState<CitationHighlight | null>(null);
+  // NEW: Standalone ExpandedCardView state
+  const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
   // NEW: Cache PDF documents in memory to avoid reloading when switching between documents
   const [pdfDocumentCache, setPdfDocumentCache] = React.useState<Map<string, PDFDocumentProxy>>(new Map());
   // NEW: Cache rendered PDF pages (fileId -> pageNumber -> ImageData) for instant page switching
@@ -71,6 +78,16 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const clearHighlightCitation = React.useCallback(() => {
     setHighlightCitation(null);
+  }, []);
+
+  // NEW: Open standalone ExpandedCardView
+  const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight) => {
+    setExpandedCardViewDoc({ docId, filename, highlight });
+  }, []);
+
+  // NEW: Close standalone ExpandedCardView
+  const closeExpandedCardView = React.useCallback(() => {
+    setExpandedCardViewDoc(null);
   }, []);
 
   // NEW: Preload file without opening preview (for citation preloading)
@@ -347,6 +364,10 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setActivePreviewTabIndex,
     setIsPreviewOpen,
     addPreviewFile,
+    expandedCardViewDoc,
+    setExpandedCardViewDoc,
+    openExpandedCardView,
+    closeExpandedCardView,
     preloadFile,
     getCachedPdfDocument,
     setCachedPdfDocument,
@@ -357,7 +378,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setHighlightCitation,
     clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView]);
 
   return (
     <PreviewContext.Provider value={value}>

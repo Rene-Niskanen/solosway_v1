@@ -11,6 +11,7 @@ import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { ProfileDropdown } from './ProfileDropdown';
 import { backendApi } from '@/services/backendApi';
+import { FilingSidebarProvider } from '../contexts/FilingSidebarContext';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -304,15 +305,27 @@ const DashboardLayoutContent = ({
             bottom: 0,
             width: '100vw',
             height: '100vh',
+            // Use both 100vh and 100% to ensure full coverage across all browsers
+            minHeight: '100vh',
+            minWidth: '100vw',
             backgroundImage: `url(${getBackgroundImage()})`,
             backgroundSize: 'cover',
             backgroundPosition: 'center',
             backgroundRepeat: 'no-repeat',
-            backgroundAttachment: 'fixed',
+            // Removed backgroundAttachment: 'fixed' to prevent rendering issues and cut-off
             filter: 'blur(8px)', // Sharper, more pronounced blur effect
             WebkitFilter: 'blur(8px)', // Safari support
             zIndex: 0, // Base layer - everything else should be above
-            pointerEvents: 'none' // Don't block interactions
+            pointerEvents: 'none', // Don't block interactions
+            // Ensure background extends fully and renders properly
+            transform: 'translateZ(0)', // Force hardware acceleration
+            willChange: 'transform', // Optimize for performance
+            // Ensure background covers entire viewport including any potential overflow
+            margin: 0,
+            padding: 0,
+            boxSizing: 'border-box',
+            // Ensure background always fills the viewport, even on resize
+            overflow: 'hidden'
           }}
         />
       )}
@@ -422,7 +435,9 @@ const DashboardLayoutContent = ({
 export const DashboardLayout = (props: DashboardLayoutProps) => {
   return (
     <ChatHistoryProvider>
+      <FilingSidebarProvider>
       <DashboardLayoutContent {...props} />
+      </FilingSidebarProvider>
     </ChatHistoryProvider>
   );
 };

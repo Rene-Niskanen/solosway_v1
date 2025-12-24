@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown } from 'lucide-react';
+import { File, X, Upload, FileText, Image as ImageIcon, ArrowUp, CheckSquare, Square, Trash2, Search, SquareMousePointer, Maximize2, Minimize2, Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, ChevronDown, FolderOpen } from 'lucide-react';
 import { useBackendApi } from './BackendApi';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -12,6 +12,16 @@ import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+
+// PDF.js for canvas-based PDF rendering with precise highlight positioning
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+// Vite handles this import and returns the correct URL for the worker
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Set worker source immediately at module load time
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface PropertyDetailsPanelProps {
   property: any;
@@ -144,7 +154,8 @@ const ExpandedCardView: React.FC<{
   onDocumentClick: (doc: Document) => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
-}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen }) => {
+  highlightCitation?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number } } | null;
+}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen, highlightCitation }) => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,6 +167,19 @@ const ExpandedCardView: React.FC<{
   const isLoadingRef = useRef(false); // Prevent race conditions
   const currentDocIdRef = useRef<string | null>(null); // Track current document ID
   const previewUrlRef = useRef<string | null>(null); // Track preview URL to prevent unnecessary state updates
+  
+  // PDF.js state for canvas-based rendering with precise highlight positioning
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
+  const [renderedPages, setRenderedPages] = useState<Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>>(new Map());
+  const [baseScale, setBaseScale] = useState<number>(1.0);
+  const [totalPages, setTotalPages] = useState<number>(0);
+  const pdfPagesContainerRef = useRef<HTMLDivElement>(null);
+  const pdfWrapperRef = useRef<HTMLDivElement>(null);
+  const hasRenderedRef = useRef<boolean>(false); // Track if we've already rendered this document
+  const currentDocIdRefForPdf = useRef<string | null>(null); // Track current document ID for PDF rendering
+  
+  // Get PDF cache functions from PreviewContext
+  const { getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
   
   useEffect(() => {
     if (!selectedDoc) {
@@ -360,6 +384,237 @@ const ExpandedCardView: React.FC<{
     fileName.endsWith('.docx') ||
     fileName.endsWith('.doc');
   
+  // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
+  useEffect(() => {
+    if (!isPDF || !previewUrl || !selectedDoc) {
+      setPdfDocument(null);
+      setRenderedPages(new Map());
+      setTotalPages(0);
+      hasRenderedRef.current = false;
+      currentDocIdRefForPdf.current = null;
+      setBaseScale(1.0); // Reset base scale when document changes
+      return;
+    }
+
+    // Reset render flag when document changes
+    if (currentDocIdRefForPdf.current !== selectedDoc.id) {
+      hasRenderedRef.current = false;
+      currentDocIdRefForPdf.current = selectedDoc.id;
+      setBaseScale(1.0);
+    }
+
+    let cancelled = false;
+    
+    const loadPdf = async () => {
+      try {
+        // Check cache first
+        const cachedPdf = getCachedPdfDocument?.(selectedDoc.id);
+        if (cachedPdf) {
+          console.log('⚡ [PDF_CACHE] Using cached PDF document:', selectedDoc.id);
+          if (!cancelled) {
+            setPdfDocument(cachedPdf);
+            setTotalPages(cachedPdf.numPages);
+          }
+          return;
+        }
+        
+        console.log('📄 Loading PDF with PDF.js for canvas rendering...');
+        const response = await fetch(previewUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        
+        if (cancelled) {
+          pdf.destroy();
+          return;
+        }
+        
+        console.log('📄 PDF loaded successfully, pages:', pdf.numPages);
+        
+        // Cache the PDF document
+        setCachedPdfDocument?.(selectedDoc.id, pdf);
+        
+        if (!cancelled) {
+          setPdfDocument(pdf);
+          setTotalPages(pdf.numPages);
+        }
+      } catch (error) {
+        console.error('❌ Failed to load PDF with PDF.js:', error);
+        setError('Failed to load PDF');
+      }
+    };
+    
+    loadPdf();
+    
+    return () => {
+      cancelled = true;
+    };
+  }, [isPDF, previewUrl, selectedDoc?.id, getCachedPdfDocument, setCachedPdfDocument]);
+
+  // Render all PDF pages to canvas for accurate BBOX positioning
+  useEffect(() => {
+    if (!pdfDocument || !selectedDoc || totalPages === 0) return;
+    
+    // Skip if we've already rendered this document
+    if (hasRenderedRef.current && currentDocIdRefForPdf.current === selectedDoc.id) {
+      return;
+    }
+    
+    let cancelled = false;
+    
+    const renderAllPages = async () => {
+      try {
+        // Calculate base scale to fit container width
+        let scale = baseScale;
+        
+        if (baseScale === 1.0) {
+          try {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            if (cancelled) return;
+            
+            const firstPage = await pdfDocument.getPage(1);
+            if (cancelled) return;
+            
+            const naturalViewport = firstPage.getViewport({ scale: 1.0 });
+            const pageWidth = naturalViewport.width;
+            
+            // Get container width
+            let containerWidth = 0;
+            if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
+              containerWidth = pdfWrapperRef.current.clientWidth;
+            } else if (pdfPagesContainerRef.current && pdfPagesContainerRef.current.clientWidth > 100) {
+              containerWidth = pdfPagesContainerRef.current.clientWidth;
+            }
+            
+            if (containerWidth > 100) {
+              const availableWidth = containerWidth - 32; // Account for padding
+              const fitScale = (availableWidth / pageWidth) * 0.98;
+              
+              if (fitScale >= 0.8 && fitScale <= 2.5) {
+                scale = fitScale;
+                setBaseScale(fitScale);
+              } else {
+                const typicalPageWidth = 595;
+                const typicalContainerWidth = 900;
+                scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
+                scale = Math.max(1.2, Math.min(1.8, scale));
+                setBaseScale(scale);
+              }
+            } else {
+              const typicalPageWidth = 595;
+              const typicalContainerWidth = 900;
+              scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
+              scale = Math.max(1.2, Math.min(1.8, scale));
+              setBaseScale(scale);
+            }
+          } catch (error) {
+            console.warn('⚠️ Failed to calculate fit scale, using default:', error);
+            scale = 1.5;
+            setBaseScale(1.5);
+          }
+        } else {
+          scale = baseScale;
+        }
+        
+        console.log('📄 Rendering all PDF pages:', totalPages, 'pages at scale', scale.toFixed(3));
+        
+        const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number } }>();
+        
+        // Render all pages
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          if (cancelled) break;
+          
+          try {
+            const cachedImageData = getCachedRenderedPage?.(selectedDoc.id, pageNum);
+            
+            const page = await pdfDocument.getPage(pageNum);
+            if (cancelled) break;
+            
+            const viewport = page.getViewport({ scale });
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const context = canvas.getContext('2d');
+            
+            if (!context) continue;
+            
+            if (cachedImageData && scale === 1.0) {
+              context.putImageData(cachedImageData, 0, 0);
+              console.log('⚡ [PAGE_CACHE] Restored cached page:', selectedDoc.id, 'page', pageNum);
+            } else {
+              await page.render({
+                canvasContext: context,
+                viewport
+              } as any).promise;
+              
+              if (scale === 1.0) {
+                const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+                setCachedRenderedPage?.(selectedDoc.id, pageNum, imageData);
+              }
+            }
+            
+            newRenderedPages.set(pageNum, {
+              canvas,
+              dimensions: { width: viewport.width, height: viewport.height }
+            });
+          } catch (error) {
+            console.error(`❌ Failed to render PDF page ${pageNum}:`, error);
+          }
+        }
+        
+        if (!cancelled) {
+          setRenderedPages(newRenderedPages);
+          hasRenderedRef.current = true;
+          currentDocIdRefForPdf.current = selectedDoc.id;
+          console.log('✅ All PDF pages rendered');
+        }
+      } catch (error) {
+        console.error('❌ Failed to render PDF pages:', error);
+      }
+    };
+    
+    renderAllPages();
+    
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDocument, selectedDoc?.id, totalPages]); // Removed baseScale and cache functions from dependencies to prevent infinite loops
+  
+  // Auto-scroll to highlight when citation is clicked
+  useEffect(() => {
+    if (highlightCitation && highlightCitation.fileId === selectedDoc?.id && highlightCitation.bbox && renderedPages.size > 0 && pdfWrapperRef.current) {
+      const targetPage = highlightCitation.bbox.page;
+      const pageData = renderedPages.get(targetPage);
+      
+      if (pageData) {
+        // Calculate scroll position: sum of all previous pages' heights + highlight position
+        let scrollTop = 0;
+        for (let i = 1; i < targetPage; i++) {
+          const prevPage = renderedPages.get(i);
+          if (prevPage) {
+            scrollTop += prevPage.dimensions.height + 16; // 16px gap between pages
+          }
+        }
+        
+        // Add the highlight's top position on the target page
+        scrollTop += highlightCitation.bbox.top * pageData.dimensions.height;
+        
+        // Scroll to position
+        requestAnimationFrame(() => {
+          if (pdfWrapperRef.current) {
+            pdfWrapperRef.current.scrollTo({
+              top: scrollTop - 100, // Offset by 100px to show context above
+              behavior: 'smooth'
+            });
+          }
+        });
+      }
+    }
+  }, [highlightCitation, selectedDoc?.id, renderedPages]);
+  
   const previewContent = (
     <motion.div
       key={`expanded-${selectedDoc.id}`}
@@ -469,18 +724,85 @@ const ExpandedCardView: React.FC<{
               }}
             >
               {isPDF ? (
-                <iframe
-                  key={selectedDoc.id} // Stable key prevents iframe reload
-                  src={previewUrl!}
-                  className="w-full h-full border-0"
-                  title={selectedDoc.original_filename}
-                  style={{
-                    // Prevent iframe from reloading during layout changes
-                    pointerEvents: 'auto',
-                    isolation: 'isolate', // Isolate iframe rendering
-                    transform: 'translateZ(0)' // Force GPU layer
-                  }}
-                />
+                <div 
+                  ref={pdfWrapperRef}
+                  className="w-full h-full overflow-auto bg-gray-100"
+                  style={{ scrollBehavior: 'smooth' }}
+                >
+                  {renderedPages.size > 0 ? (
+                    <div
+                      ref={pdfPagesContainerRef}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        width: '100%',
+                        padding: '16px 0'
+                      }}
+                    >
+                      {Array.from(renderedPages.entries()).map(([pageNum, pageData]) => {
+                        const pageDimensions = pageData.dimensions;
+                        const isHighlightPage = highlightCitation && highlightCitation.fileId === selectedDoc.id && highlightCitation.bbox && highlightCitation.bbox.page === pageNum;
+                        
+                        return (
+                          <div
+                            key={`page-${pageNum}`}
+                            style={{
+                              position: 'relative',
+                              width: `${pageDimensions.width}px`,
+                              margin: '0 auto 16px auto',
+                              display: 'block'
+                            }}
+                          >
+                            <canvas
+                              ref={(el) => {
+                                if (el && pageData.canvas) {
+                                  const ctx = el.getContext('2d');
+                                  if (ctx) {
+                                    el.width = pageData.canvas.width;
+                                    el.height = pageData.canvas.height;
+                                    ctx.drawImage(pageData.canvas, 0, 0);
+                                  }
+                                }
+                              }}
+                              style={{
+                                display: 'block',
+                                backgroundColor: '#fff',
+                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                                width: `${pageDimensions.width}px`,
+                                height: `${pageDimensions.height}px`
+                              }}
+                            />
+                            
+                            {/* BBOX Highlight Overlay - positioned accurately using page dimensions */}
+                            {isHighlightPage && highlightCitation && highlightCitation.bbox && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  left: `${highlightCitation.bbox.left * pageDimensions.width}px`,
+                                  top: `${highlightCitation.bbox.top * pageDimensions.height}px`,
+                                  width: `${highlightCitation.bbox.width * pageDimensions.width}px`,
+                                  height: `${highlightCitation.bbox.height * pageDimensions.height}px`,
+                                  backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                                  border: '2px solid rgba(255, 193, 7, 0.9)',
+                                  borderRadius: '2px',
+                                  pointerEvents: 'none',
+                                  zIndex: 10,
+                                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                                  transformOrigin: 'top left'
+                                }}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+                    </div>
+                  )}
+                </div>
               ) : isImage ? (
                 <img
                   key={selectedDoc.id} // Stable key prevents image reload
@@ -571,6 +893,28 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 }) => {
   // Determine if chat panel is actually open based on width
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
+  
+  // FilingSidebar integration
+  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  
+  // Calculate the left position for property details panel
+  // When filing sidebar is closed: use chatPanelWidth directly (matches old commit logic)
+  // When filing sidebar is open: add filing sidebar width to account for the shift
+  const propertyDetailsLeft = React.useMemo(() => {
+    if (!isChatPanelOpen) return 'auto';
+    
+    // Base calculation: chatPanelWidth (this works when filing sidebar is closed)
+    let left = chatPanelWidth;
+    
+    // If filing sidebar is open, we need to add its width to account for the shift
+    // The chat panel shifts right by: toggleRailWidth (12px) + filingSidebarWidth
+    if (isFilingSidebarOpen) {
+      const toggleRailWidth = 12;
+      left = chatPanelWidth + toggleRailWidth + filingSidebarWidth;
+    }
+    
+    return Math.max(left, 320); // Minimum 320px like old commit
+  }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth]);
   
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
@@ -902,13 +1246,15 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   });
   
   // Use shared preview context
-  const { addPreviewFile } = usePreview();
+  const { addPreviewFile, highlightCitation, setHighlightCitation } = usePreview();
   
   // Sync ref with state
   React.useEffect(() => {
     isFilesModalOpenRef.current = isFilesModalOpen;
   }, [isFilesModalOpen]);
   const [hasFilesFetched, setHasFilesFetched] = useState(false);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [showEmptyState, setShowEmptyState] = useState(false);
   const isFilesModalOpenRef = useRef(false); // Track modal state in ref to avoid race conditions
 
   // Load property card summary from cache or fetch from backend
@@ -1222,10 +1568,17 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   useEffect(() => {
     if (property && property.id) {
       console.log('📄 PropertyDetailsPanel: Property changed, loading files for Documents view:', property.id);
+      // Reset states when property changes
+      setIsLoadingDocuments(true);
+      setShowEmptyState(false);
+      setHasFilesFetched(false);
       loadPropertyDocuments();
     } else {
       console.log('⚠️ PropertyDetailsPanel: No property or property.id');
       setDocuments([]);
+      setIsLoadingDocuments(false);
+      setShowEmptyState(false);
+      setHasFilesFetched(false);
     }
   }, [property]);
 
@@ -1247,18 +1600,21 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return 0;
     }
     
+    // Set loading state and hide empty state immediately
+    setIsLoadingDocuments(true);
+    setShowEmptyState(false);
+    setError(null);
+    
     // OPTIMIZATION: Use cached documents immediately if available
     const cachedDocs = (window as any).__preloadedPropertyFiles?.[property.id];
     if (cachedDocs && cachedDocs.length > 0) {
       console.log('⚡ Using cached documents:', cachedDocs.length, 'documents');
       setDocuments(cachedDocs);
       setHasFilesFetched(true);
+      setIsLoadingDocuments(false);
       preloadDocumentCovers(cachedDocs);
       // Still fetch fresh data in background
     }
-    
-    // Don't show loading state - load silently in background
-    setError(null);
     
     try {
       console.log('📄 Loading documents for property:', property.id);
@@ -1290,6 +1646,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         console.log('✅ Loaded documents:', documentsToUse.length, 'documents');
         setDocuments(documentsToUse);
         setHasFilesFetched(true);
+        setIsLoadingDocuments(false);
+        setShowEmptyState(false);
         // Preload document covers for instant rendering
         preloadDocumentCovers(documentsToUse);
         // Store in preloaded files for future use
@@ -1313,23 +1671,38 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
         if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
           setDocuments(property.propertyHub.documents);
           setHasFilesFetched(true);
+          setIsLoadingDocuments(false);
+          setShowEmptyState(false);
           // Preload covers for fallback documents
           preloadDocumentCovers(property.propertyHub.documents);
         } else {
           setDocuments([]);
-          setHasFilesFetched(false);
+          setHasFilesFetched(true);
+          setIsLoadingDocuments(false);
+          // Add minimum delay before showing empty state (give time for files to load)
+          setTimeout(() => {
+            setShowEmptyState(true);
+          }, 800); // 800ms delay to allow files to load
         }
       }
     } catch (err) {
       console.error('❌ Error loading documents:', err);
       setError('Failed to load documents');
+      setIsLoadingDocuments(false);
       // Fallback to propertyHub documents on error
       if (property.propertyHub?.documents && property.propertyHub.documents.length > 0) {
         setDocuments(property.propertyHub.documents);
+        setHasFilesFetched(true);
+        setShowEmptyState(false);
         // Preload covers even on error fallback
         preloadDocumentCovers(property.propertyHub.documents);
       } else {
         setDocuments([]);
+        setHasFilesFetched(true);
+        // Add minimum delay before showing empty state on error
+        setTimeout(() => {
+          setShowEmptyState(true);
+        }, 800); // 800ms delay to allow files to load
       }
     }
   };
@@ -1344,66 +1717,71 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     return name;
   };
 
-  const handleDocumentClick = useCallback(async (document: Document) => {
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      
-      // Try multiple download URL patterns
-      let downloadUrl: string | null = null;
-      
-      // First, try if document has a direct URL
-      if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
-        downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
-      } 
-      // Try S3 path if available
-      else if ((document as any).s3_path) {
-        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
-      }
-      // Fallback to document ID
-      else {
-        const docId = document.id;
-        if (docId) {
-          downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-        }
-      }
-      
-      if (!downloadUrl) {
-        throw new Error('No download URL available');
-      }
-      
-      console.log('📄 Opening document:', document.original_filename, 'from URL:', downloadUrl);
-      
-      // Fetch the file
-      const response = await fetch(downloadUrl, {
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const blob = await response.blob();
-      // Create a File object from the blob
-      // @ts-ignore - File constructor is available in modern browsers
-      const file = new File([blob], document.original_filename, { 
-        type: (document as any).file_type || blob.type || 'application/pdf'
-      });
-      
-      // Convert to FileAttachmentData format for DocumentPreviewModal
-      const fileData: FileAttachmentData = {
-        id: document.id,
-        file: file,
-        name: document.original_filename,
-        type: (document as any).file_type || blob.type || 'application/pdf',
-        size: (document as any).file_size || blob.size
-      };
-      
-      // Use shared preview context to add file
-      addPreviewFile(fileData);
-    } catch (err) {
-      console.error('❌ Error opening document:', err);
+  // Function to open a document by ID in ExpandedCardView (used by citations)
+  const openDocumentById = useCallback((documentId: string) => {
+    const docIndex = documents.findIndex(doc => doc.id === documentId);
+    if (docIndex !== -1) {
+      setSelectedCardIndex(docIndex);
+    } else {
+      console.warn('⚠️ Document not found in property documents:', documentId);
     }
-  }, [addPreviewFile]);
+  }, [documents]);
+
+  const handleDocumentClick = useCallback(async (document: Document) => {
+    // Find the document index in documents and open it in ExpandedCardView
+    const docIndex = documents.findIndex(doc => doc.id === document.id);
+    if (docIndex !== -1) {
+      setSelectedCardIndex(docIndex);
+    } else {
+      console.warn('⚠️ Document not found in documents, falling back to DocumentPreviewModal');
+      // Fallback to old behavior if document not found
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        let downloadUrl: string | null = null;
+        
+        if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
+          downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
+        } else if ((document as any).s3_path) {
+          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
+        } else {
+          const docId = document.id;
+          if (docId) {
+            downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+          }
+        }
+        
+        if (!downloadUrl) {
+          throw new Error('No download URL available');
+        }
+        
+        const response = await fetch(downloadUrl, {
+          credentials: 'include'
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+        }
+        
+        const blob = await response.blob();
+        // @ts-ignore - File constructor is available in modern browsers
+        const file = new File([blob], document.original_filename, { 
+          type: (document as any).file_type || blob.type || 'application/pdf'
+        });
+        
+        const fileData: FileAttachmentData = {
+          id: document.id,
+          file: file,
+          name: document.original_filename,
+          type: (document as any).file_type || blob.type || 'application/pdf',
+          size: (document as any).file_size || blob.size
+        };
+        
+        addPreviewFile(fileData);
+      } catch (err) {
+        console.error('❌ Error opening document:', err);
+      }
+    }
+  }, [documents, addPreviewFile]);
 
   const handleDeleteDocument = async (documentId: string) => {
     try {
@@ -1764,6 +2142,62 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     });
   }, [documents, filesSearchQuery, activeFilter]);
 
+  // When a citation is clicked, open the document in ExpandedCardView
+  // This works regardless of whether PropertyDetailsPanel is visible - it will open it if needed
+  React.useEffect(() => {
+    if (highlightCitation && highlightCitation.fileId) {
+      // Use filteredDocuments (which includes all documents when no filter is active)
+      const allDocuments = filteredDocuments.length > 0 ? filteredDocuments : documents;
+      
+      if (allDocuments.length > 0) {
+        console.log('📚 [PropertyDetailsPanel] Checking for citation document:', {
+          highlightFileId: highlightCitation.fileId,
+          documentsCount: allDocuments.length,
+          documentIds: allDocuments.map(d => d.id),
+          isVisible,
+          currentSelectedCardIndex: selectedCardIndex
+        });
+        
+        const docIndex = allDocuments.findIndex(doc => doc.id === highlightCitation.fileId);
+        console.log('📚 [PropertyDetailsPanel] Document index found:', docIndex, 'current selectedCardIndex:', selectedCardIndex);
+        
+        if (docIndex !== -1) {
+          // Document is in this property's documents - open it in ExpandedCardView
+          // Always set selectedCardIndex, even if already selected, to ensure it opens and highlights
+          console.log('✅ [PropertyDetailsPanel] Opening document from citation in ExpandedCardView:', highlightCitation.fileId, 'at index:', docIndex);
+          // Force update by setting to null first, then to the index (ensures re-render)
+          if (selectedCardIndex === docIndex) {
+            // Already selected, but force a re-render to show highlight
+            setSelectedCardIndex(null);
+            setTimeout(() => {
+              setSelectedCardIndex(docIndex);
+            }, 10);
+          } else {
+            setSelectedCardIndex(docIndex);
+          }
+        } else if (docIndex === -1) {
+          console.log('ℹ️ [PropertyDetailsPanel] Citation document not in this property - will try to find property and open it');
+        }
+      } else {
+        // Documents not loaded yet - wait a bit and retry
+        // This handles the case where PropertyDetailsPanel just opened and documents are still loading
+        console.log('ℹ️ [PropertyDetailsPanel] Documents not loaded yet - will retry in 500ms');
+        const retryTimeout = setTimeout(() => {
+          const retryDocuments = filteredDocuments.length > 0 ? filteredDocuments : documents;
+          if (retryDocuments.length > 0) {
+            const retryDocIndex = retryDocuments.findIndex(doc => doc.id === highlightCitation.fileId);
+            if (retryDocIndex !== -1) {
+              console.log('✅ [PropertyDetailsPanel] Found document on retry, opening in ExpandedCardView:', highlightCitation.fileId, 'at index:', retryDocIndex);
+              setSelectedCardIndex(retryDocIndex);
+            }
+          }
+        }, 500);
+        
+        return () => clearTimeout(retryTimeout);
+      }
+    }
+  }, [highlightCitation, documents, filteredDocuments, selectedCardIndex, isVisible]);
+
   // File upload handler
   const handleFileUpload = async (file: File) => {
     // CRITICAL: Capture property at the start to ensure we use the correct property_id
@@ -1956,16 +2390,22 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
             }}
-            className="bg-white shadow-2xl flex overflow-hidden ring-1 ring-black/5 pointer-events-auto"
+            className={`bg-white flex overflow-hidden pointer-events-auto ${
+              // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
+              isChatPanelOpen ? '' : 'shadow-2xl ring-1 ring-black/5'
+            }`}
             style={{ 
               // Switch to fixed positioning in chat mode to reliably fill screen
               position: isChatPanelOpen ? 'fixed' : 'relative',
               
               // Chat Mode: Anchored to screen edges (sidebar + margins)
-              left: isChatPanelOpen ? `${Math.max(chatPanelWidth, 320) + 22}px` : 'auto', // 320px width + 20px margin + 8px gap
-              right: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
-              top: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
-              bottom: isChatPanelOpen ? '12px' : 'auto', // Consistent 12px gap
+              // Split view: remove outer gaps so the panel sits flush against the chat panel and viewport edges
+              // The chatPanelWidth prop is just the width, so we need to calculate where the chat panel ends
+              // Chat panel left = base sidebar + filing sidebar (if open), so property details left = chat panel left + chat panel width
+              left: isChatPanelOpen ? `${propertyDetailsLeft}px` : 'auto',
+              right: isChatPanelOpen ? '0px' : 'auto',
+              top: isChatPanelOpen ? '0px' : 'auto',
+              bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
               transition: 'none', // No transition for width/position changes - instant like chat
@@ -2217,6 +2657,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                       >
                         <SquareMousePointer size={18} />
                     </button>
+                    <button
+                      onClick={() => {
+                        if (property?.id) {
+                          const propertyId = typeof property.id === 'string' ? property.id : String(property.id);
+                          setSelectedProperty(propertyId);
+                          setViewMode('property');
+                          openFilingSidebar();
+                        }
+                      }}
+                      className="p-2 rounded-lg border bg-white border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-all"
+                      title="Open in Filing Sidebar"
+                    >
+                      <FolderOpen size={18} />
+                    </button>
                   </div>
                   </>
                 )}
@@ -2300,7 +2754,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
                     {/* Document Grid - Always rendered but hidden when preview is open */}
                     <div className={selectedCardIndex !== null ? 'hidden' : ''}>
-                    {filteredDocuments.length === 0 ? (
+                    {filteredDocuments.length === 0 && showEmptyState && hasFilesFetched ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500">
                           <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 border border-gray-100">
                             <Search size={32} className="text-gray-300" />
@@ -3554,6 +4008,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   onDocumentClick={handleDocumentClick}
                   isFullscreen={isFullscreen}
                   onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+                  highlightCitation={highlightCitation}
                 />
                       </div>
             )}

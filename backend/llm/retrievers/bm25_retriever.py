@@ -67,7 +67,8 @@ class BM25DocumentRetriever:
         top_k: int = 50,
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
-        business_id: Optional[str] = None
+        business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None  # NEW: Filter by specific document IDs
     ) -> List[RetrievedDocument]:
         """
         Search documents using BM25/full-text search.
@@ -81,11 +82,18 @@ class BM25DocumentRetriever:
             property_id: Optional filter by property UUID
             classification_type: Optional filter (inspection, appraisal, etc)
             business_id: Optional filter by business ID
+            document_ids: Optional list of document IDs to filter results to (NEW)
             
         Returns:
             List of RetrievedDocument with BM25 rank scores
         """
         try:
+            # Prepare document_ids set for filtering (convert all to strings for comparison)
+            document_ids_set = None
+            if document_ids and len(document_ids) > 0:
+                document_ids_set = set(str(doc_id) for doc_id in document_ids)
+                logger.info(f"[BM25_SEARCH] Document filtering enabled: {len(document_ids)} document(s) selected")
+            
             # Preprocess query for better matching (handles plurals, numbers, etc.)
             processed_query = self._preprocess_query(query_text)
             logger.debug(f"BM25 query preprocessing: '{query_text}' -> '{processed_query}'")
@@ -101,8 +109,22 @@ class BM25DocumentRetriever:
             if business_id:
                 payload['filter_business_id'] = str(business_id)
             
+            # TODO: Add filter_document_ids to RPC payload if database function supports it
+            # For now, we filter results after the RPC call
+            
             try:
                 result = self.supabase.rpc('bm25_search_documents', payload).execute()
+                
+                # Filter by document_ids immediately after RPC call (before processing)
+                if document_ids_set and result.data:
+                    original_count = len(result.data)
+                    result.data = [
+                        row for row in result.data
+                        if row.get('document_id') and str(row.get('document_id')) in document_ids_set
+                    ]
+                    filtered_count = len(result.data)
+                    if original_count != filtered_count:
+                        logger.info(f"[BM25_SEARCH] Filtered results: {original_count} -> {filtered_count} (document_ids filter applied)")
             except Exception as rpc_error:
                 # Handle database function type mismatch gracefully
                 error_msg = str(rpc_error)
