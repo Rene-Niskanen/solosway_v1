@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize2, Minimize2, BotMessageSquare } from 'lucide-react';
+import { X, Maximize2, Minimize2, TextCursorInput } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
@@ -291,23 +291,22 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }
   }, [isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, pdfDocument, totalPages, calculateTargetScale]);
 
-  // Watch for container width changes using ResizeObserver - ultra-smooth real-time updates
+  // Watch for container width changes using ResizeObserver - ultra-fast real-time updates
   useEffect(() => {
     if (!pdfWrapperRef.current || !pdfDocument || totalPages === 0) return;
 
-    // Batch resize events to a single RAF to avoid jitter from rapid ResizeObserver spam.
+    // Minimal batching - update visual scale immediately, only batch the heavy re-render
     const rafIdRef = { current: 0 as number };
     const pendingWidthRef = { current: 0 as number };
 
-    const flushResize = () => {
+    const flushResize = (force = false) => {
       rafIdRef.current = 0;
       const newWidth = pendingWidthRef.current;
       if (newWidth <= 50) return;
 
-      // Ignore tiny width deltas that cause re-render churn and visible jitter
-      // Increased threshold to reduce jitter
+      // Minimal threshold - only skip truly identical widths
       const prev = prevContainerWidthRef.current;
-      if (Math.abs(newWidth - prev) < 5) return;
+      if (!force && Math.abs(newWidth - prev) < 0.000001) return;
 
       // If we haven't finished the initial citation jump-to-bbox, avoid triggering a rerender here.
       // (Rerender changes scrollHeight and can fight highlight centering.)
@@ -317,20 +316,26 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       if (suppressDuringInitialHighlightJump) {
         prevContainerWidthRef.current = newWidth;
         setContainerWidth(newWidth);
+        // Still update visual scale immediately even during highlight jump
+        const targetScale = calculateTargetScale(newWidth);
+        if (targetScale !== null) {
+          setVisualScale(targetScale);
+          targetScaleRef.current = targetScale;
+        }
         return;
       }
 
       prevContainerWidthRef.current = newWidth;
       setContainerWidth(newWidth);
 
-      // Update visual scale immediately
+      // Update visual scale immediately (synchronous - no delay)
       const targetScale = calculateTargetScale(newWidth);
-      if (targetScale !== null && !isRecalculatingRef.current) {
+      if (targetScale !== null) {
         setVisualScale(targetScale);
         targetScaleRef.current = targetScale;
       }
 
-      // Trigger a single re-render pass
+      // Trigger re-render (only batch this heavy operation)
       if (!isRecalculatingRef.current) {
         setBaseScale(1.0);
         hasRenderedRef.current = false;
@@ -339,18 +344,49 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        pendingWidthRef.current = entry.contentRect.width;
+        const newWidth = entry.contentRect.width;
+        pendingWidthRef.current = newWidth;
+        
+        // Update visual scale IMMEDIATELY (synchronous) for instant visual feedback
+        if (newWidth > 50) {
+          const targetScale = calculateTargetScale(newWidth);
+          if (targetScale !== null) {
+            setVisualScale(targetScale);
+            targetScaleRef.current = targetScale;
+          }
+        }
+        
+        // Only batch the heavy re-render operation
         if (!rafIdRef.current) {
-          rafIdRef.current = requestAnimationFrame(flushResize);
+          rafIdRef.current = requestAnimationFrame(() => flushResize(false));
         }
       }
     });
 
+    // Immediately flush pending resize when user releases drag (instant snap)
+    const handleResizeEnd = () => {
+      // Cancel pending RAF and flush immediately
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = 0;
+      }
+      // Force immediate flush of any pending width (bypass threshold for instant snap)
+      if (pendingWidthRef.current > 50) {
+        flushResize(true); // force=true bypasses threshold check
+      }
+    };
+
     resizeObserver.observe(pdfWrapperRef.current);
+
+    // Listen for mouseup/touchend to instantly snap on resize release
+    document.addEventListener('mouseup', handleResizeEnd, { passive: true });
+    document.addEventListener('touchend', handleResizeEnd, { passive: true });
 
     return () => {
       if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
       resizeObserver.disconnect();
+      document.removeEventListener('mouseup', handleResizeEnd);
+      document.removeEventListener('touchend', handleResizeEnd);
     };
   }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey]);
 
@@ -669,9 +705,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       {/* Header */}
       <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative">
         <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
-          <BotMessageSquare className="w-4 h-4 text-gray-600 flex-shrink-0" />
+          <TextCursorInput className="w-4 h-4 text-gray-600 flex-shrink-0" />
           <span className="text-sm font-medium text-gray-900">
-            Velora Reference Agent
+            Reference Agent
           </span>
         </div>
         <div className="flex items-center gap-2 ml-auto">

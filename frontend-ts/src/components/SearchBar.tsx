@@ -1356,10 +1356,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           fontSize: '11px',
                           fontWeight: 500,
                           cursor: 'pointer',
-                          transition: 'all 0.2s ease',
+                          transition: 'background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
                           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                           whiteSpace: 'nowrap',
-                          marginLeft: '4px'
+                          marginLeft: '4px',
+                          animation: 'none'
                         }}
                         title="Open analyse mode"
                         onMouseEnter={(e) => {
@@ -1373,8 +1374,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                         }}
                     >
-                        <Brain className="w-3.5 h-3.5" strokeWidth={2} />
-                        <span>Analyse</span>
+                        <Brain className="w-3.5 h-3.5" strokeWidth={2} style={{ animation: 'none' }} />
+                        <span style={{ animation: 'none' }}>Analyse</span>
                     </button>
                     ) : (
                       <button

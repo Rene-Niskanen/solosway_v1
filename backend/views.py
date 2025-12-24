@@ -432,6 +432,28 @@ def query_documents_stream():
                     "property_id": property_id,
                     "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
                 }
+                # #region agent log
+                try:
+                    import json as json_module
+                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                        f.write(json_module.dumps({
+                            'sessionId': 'debug-session',
+                            'runId': 'run1',
+                            'hypothesisId': 'A',
+                            'location': 'views.py:433',
+                            'message': 'Initial state document_ids check',
+                            'data': {
+                                'document_ids': document_ids,
+                                'document_ids_type': type(document_ids).__name__,
+                                'document_ids_len': len(document_ids) if document_ids else 0,
+                                'document_ids_is_none': document_ids is None,
+                                'document_ids_bool': bool(document_ids),
+                                'query': query[:50]
+                            },
+                            'timestamp': int(__import__('time').time() * 1000)
+                        }) + '\n')
+                except: pass
+                # #endregion
                 logger.info(
                     f"🟢 [STREAM] Initial state built: query='{query[:30]}...', "
                     f"business_id={business_id}, "

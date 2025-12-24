@@ -594,14 +594,15 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                     <div style={{ 
                       display: 'flex', 
                       alignItems: 'center', 
-                      justifyContent: 'center',
+                      justifyContent: 'flex-start',
                       padding: '3px 0',
                       position: 'relative',
                       width: '20px', // Scaled from 28px
                       height: '20px', // Scaled from 28px
                       perspective: '110px', // Scaled from 150px
                       perspectiveOrigin: 'center center',
-                      overflow: 'visible'
+                      overflow: 'visible',
+                      marginLeft: '12px' // Align with query bubbles and response text padding
                     }}>
                       {/* Atom container - rotates globe and ring together */}
                       <div style={{

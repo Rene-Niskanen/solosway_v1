@@ -306,10 +306,52 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         property_id = state.get("property_id")
         
         # FIX: Ensure document_ids is always a list (safety check)
+        # #region agent log
+        try:
+            import json as json_module
+            import os
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B',
+                    'location': 'main_graph.py:308',
+                    'message': 'should_route: document_ids BEFORE processing',
+                    'data': {
+                        'document_ids_raw': str(document_ids),
+                        'document_ids_type': type(document_ids).__name__,
+                        'document_ids_is_none': document_ids is None,
+                        'document_ids_bool': bool(document_ids),
+                        'query': user_query[:50]
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
         if document_ids and not isinstance(document_ids, list):
             document_ids = [str(document_ids)]
         elif not document_ids:
             document_ids = []
+        # #region agent log
+        try:
+            import json as json_module
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'B',
+                    'location': 'main_graph.py:312',
+                    'message': 'should_route: document_ids AFTER processing',
+                    'data': {
+                        'document_ids': document_ids,
+                        'document_ids_len': len(document_ids),
+                        'will_route_to_direct': bool(document_ids and len(document_ids) > 0),
+                        'query': user_query[:50]
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
         
         logger.info(
             f"[ROUTER] should_route called - Query: '{user_query[:50]}...', "
@@ -320,6 +362,24 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # PATH 1: DIRECT DOCUMENT (FASTEST ~2s)
         if document_ids and len(document_ids) > 0:
             logger.info("🟢 [ROUTER] should_route → direct_document (document_ids provided)")
+            # #region agent log
+            try:
+                import json as json_module
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'B',
+                        'location': 'main_graph.py:323',
+                        'message': 'should_route: Routing to direct_document',
+                        'data': {
+                            'document_ids': document_ids,
+                            'query': user_query[:50]
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except: pass
+            # #endregion
             return "direct_document"
         
         # PATH 2: PROPERTY CONTEXT (treat as simple_search for now)

@@ -3533,6 +3533,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setInputValue("");
       setAttachedFiles([]); // Clear attachments after submit
       
+      // Clear document selection after query is submitted
+      if (selectedDocumentIds.size > 0) {
+        clearSelectedDocuments();
+        setDocumentSelectionMode(false); // Exit selection mode
+      }
+      
       // Clear property attachments after they've been stored in the message
       // Use a small delay to ensure the message is fully rendered first
       if (propertiesToStore.length > 0) {
@@ -3923,11 +3929,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     }}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
-                    className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
                     title="New chat"
                   >
                     <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                    <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
+                    <span className="text-slate-600 text-xs">
                       New chat
                     </span>
                   </motion.button>

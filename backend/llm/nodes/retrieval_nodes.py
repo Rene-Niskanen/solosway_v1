@@ -481,6 +481,27 @@ def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, matc
         List of chunk dictionaries ordered by similarity (highest first)
         Each dict contains: chunk_text, chunk_index, page_number, similarity_score, etc.
     """
+    # #region agent log
+    try:
+        import json as json_module
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({
+                'sessionId': 'debug-session',
+                'runId': 'run1',
+                'hypothesisId': 'E',
+                'location': 'retrieval_nodes.py:468',
+                'message': 'retrieve_chunks_by_similarity: FUNCTION ENTRY',
+                'data': {
+                    'doc_id': doc_id[:8],
+                    'query': user_query[:50],
+                    'top_k': top_k,
+                    'match_threshold': match_threshold,
+                    'query_type': query_type
+                },
+                'timestamp': int(__import__('time').time() * 1000)
+            }) + '\n')
+    except: pass
+    # #endregion
     # CRITICAL FIX: Lower threshold for assessment queries to ensure we don't miss valuation chunks
     # Assessment queries (especially valuations) often have chunks with lower similarity scores
     # because they use formal terminology that may not match the user's simple query
@@ -510,6 +531,26 @@ def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, matc
         
         # 2. Search for similar chunks using pgvector cosine similarity
         # Use RPC function if available, otherwise use direct SQL query
+        # #region agent log
+        try:
+            import json as json_module
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'retrieval_nodes.py:513',
+                    'message': 'retrieve_chunks_by_similarity: Attempting RPC call',
+                    'data': {
+                        'doc_id': doc_id[:8],
+                        'query': user_query[:50],
+                        'top_k': top_k,
+                        'match_threshold': match_threshold
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
         try:
             # Try RPC function first (if it exists in Supabase)
             result = supabase.rpc(
@@ -522,12 +563,55 @@ def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, matc
                 }
             ).execute()
             
+            # #region agent log
+            try:
+                import json as json_module
+                sample_rpc = result.data[:3] if result.data else []
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'E',
+                        'location': 'retrieval_nodes.py:527',
+                        'message': 'retrieve_chunks_by_similarity: RPC call result',
+                        'data': {
+                            'doc_id': doc_id[:8],
+                            'rpc_succeeded': True,
+                            'num_chunks': len(result.data) if result.data else 0,
+                            'has_data': bool(result.data),
+                            'sample_chunks': [{'has_id': 'id' in c, 'id_preview': str(c.get('id', 'NO_ID'))[:8] if c.get('id') else 'NO_ID', 'has_similarity': 'similarity_score' in c} for c in sample_rpc],
+                            'will_return_early': bool(result.data)
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except: pass
+            # #endregion
+            
             if result.data:
                 logger.debug(f"[SIMILARITY_CHUNKS] Found {len(result.data)} chunks via RPC for doc {doc_id[:8]}")
                 return result.data
         except Exception as rpc_error:
             # RPC function doesn't exist, use direct SQL query
             logger.debug(f"[SIMILARITY_CHUNKS] RPC not available, using direct query: {rpc_error}")
+            # #region agent log
+            try:
+                import json as json_module
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'E',
+                        'location': 'retrieval_nodes.py:530',
+                        'message': 'retrieve_chunks_by_similarity: RPC call failed',
+                        'data': {
+                            'doc_id': doc_id[:8],
+                            'rpc_error': str(rpc_error)[:200],
+                            'will_continue_to_embedding_check': True
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except: pass
+            # #endregion
         
         # 3. Fallback: Direct SQL query using pgvector
         # Query document_vectors table with cosine similarity
@@ -562,15 +646,66 @@ def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, matc
             .limit(1)\
             .execute()
         
+        # #region agent log
+        try:
+            import json as json_module
+            total_chunks_check = supabase.table('document_vectors')\
+                .select('id, embedding_status')\
+                .eq('document_id', doc_id)\
+                .limit(100)\
+                .execute()
+            total_count = len(total_chunks_check.data) if total_chunks_check.data else 0
+            embedded_count = len([c for c in (total_chunks_check.data or []) if c.get('embedding_status') == 'embedded'])
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'retrieval_nodes.py:558',
+                    'message': 'retrieve_chunks_by_similarity: Embedding status check',
+                    'data': {
+                        'doc_id': doc_id[:8],
+                        'has_embedded_chunks': bool(chunks_check.data),
+                        'total_chunks_sampled': total_count,
+                        'embedded_chunks_count': embedded_count,
+                        'query': user_query[:50],
+                        'will_fallback_to_sequential': not bool(chunks_check.data)
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
+        
         if not chunks_check.data:
             # No embedded chunks, fallback to sequential retrieval
             logger.warning(f"[SIMILARITY_CHUNKS] No embedded chunks for doc {doc_id[:8]}, falling back to sequential")
             chunks_result = supabase.table('document_vectors')\
-                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .select('id, chunk_text, chunk_index, page_number, embedding_status')\
                 .eq('document_id', doc_id)\
                 .order('chunk_index')\
                 .limit(top_k)\
                 .execute()
+            # #region agent log
+            try:
+                import json as json_module
+                sample_sequential = chunks_result.data[:3] if chunks_result.data else []
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'E',
+                        'location': 'retrieval_nodes.py:574',
+                        'message': 'retrieve_chunks_by_similarity: Sequential fallback',
+                        'data': {
+                            'doc_id': doc_id[:8],
+                            'num_chunks_returned': len(chunks_result.data) if chunks_result.data else 0,
+                            'sample_chunks': [{'chunk_index': c.get('chunk_index'), 'page': c.get('page_number'), 'text_preview': c.get('chunk_text', '')[:100]} for c in sample_sequential],
+                            'has_epc_in_sequential': any('epc' in str(c.get('chunk_text', '')).lower() for c in (chunks_result.data or [])[:20])
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except: pass
+            # #endregion
             return chunks_result.data or []
         
         # Use vector similarity search via Supabase PostgREST
@@ -631,27 +766,164 @@ def retrieve_chunks_by_similarity(doc_id: str, user_query: str, top_k: int, matc
         chunks_with_similarity.sort(key=lambda x: x.get('similarity_score', 0.0), reverse=True)
         result = chunks_with_similarity[:top_k]
         
+        # #region agent log
+        try:
+            import json as json_module
+            sample_result = result[:3] if result else []
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'retrieval_nodes.py:632',
+                    'message': 'retrieve_chunks_by_similarity: Similarity search results',
+                    'data': {
+                        'doc_id': doc_id[:8],
+                        'num_results': len(result),
+                        'num_candidates': len(chunks_with_similarity),
+                        'match_threshold': match_threshold,
+                        'sample_results': [{'similarity': r.get('similarity_score', 0), 'page': r.get('page_number'), 'text_preview': r.get('chunk_text', '')[:100]} for r in sample_result],
+                        'has_epc_in_results': any('epc' in str(r.get('chunk_text', '')).lower() for r in result[:10])
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
+        
         logger.info(f"[SIMILARITY_CHUNKS] Retrieved {len(result)}/{len(all_chunks.data)} chunks by similarity for doc {doc_id[:8]}")
         return result
         
     except Exception as e:
         logger.error(f"[SIMILARITY_CHUNKS] Error retrieving chunks by similarity: {e}")
         import traceback
-        logger.debug(traceback.format_exc())
+        traceback_str = traceback.format_exc()
+        logger.debug(traceback_str)
         
-        # Fallback to sequential retrieval on error
-        logger.warning(f"[SIMILARITY_CHUNKS] Falling back to sequential retrieval")
+        # Fallback to BM25 keyword search on error (better than sequential)
+        logger.warning(f"[SIMILARITY_CHUNKS] Falling back to BM25 keyword search")
+        # #region agent log
         try:
+            import json as json_module
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({
+                    'sessionId': 'debug-session',
+                    'runId': 'run1',
+                    'hypothesisId': 'E',
+                    'location': 'retrieval_nodes.py:800',
+                    'message': 'retrieve_chunks_by_similarity: Exception handler fallback',
+                    'data': {
+                        'doc_id': doc_id[:8],
+                        'error_occurred': True,
+                        'error_type': type(e).__name__,
+                        'error_message': str(e)[:500],
+                        'traceback_preview': traceback_str.split('\n')[-5:] if traceback_str else [],
+                        'will_use_bm25': True
+                    },
+                    'timestamp': int(__import__('time').time() * 1000)
+                }) + '\n')
+        except: pass
+        # #endregion
+        try:
+            # Use BM25 keyword search as fallback (searches all chunks, not just first 20)
+            from backend.llm.retrievers.bm25_retriever import BM25DocumentRetriever
+            bm25_retriever = BM25DocumentRetriever()
+            bm25_results = bm25_retriever.query_documents(
+                query_text=user_query,
+                top_k=top_k * 2,  # Get more results to account for filtering
+                document_ids=[doc_id]  # Filter to this specific document
+            )
+            
+            # Convert RetrievedDocument to chunk format
+            # Each RetrievedDocument represents a single chunk
+            chunks_from_bm25 = []
+            seen_indices = set()
+            supabase = get_supabase_client()
+            
+            for result in bm25_results:
+                # Only process chunks from the target document
+                if str(result.get('doc_id', '')) != str(doc_id):
+                    continue
+                
+                chunk_idx = result.get('chunk_index')
+                if chunk_idx is None or chunk_idx in seen_indices:
+                    continue  # Skip duplicates or invalid
+                seen_indices.add(chunk_idx)
+                
+                # Fetch the chunk ID and full data from database
+                try:
+                    chunk_data = supabase.table('document_vectors')\
+                        .select('id, embedding_status')\
+                        .eq('document_id', doc_id)\
+                        .eq('chunk_index', chunk_idx)\
+                        .limit(1)\
+                        .execute()
+                    chunk_id = chunk_data.data[0].get('id') if chunk_data.data else None
+                    embedding_status = chunk_data.data[0].get('embedding_status', 'unknown') if chunk_data.data else 'unknown'
+                except:
+                    chunk_id = None
+                    embedding_status = 'unknown'
+                
+                chunks_from_bm25.append({
+                    'id': chunk_id,
+                    'chunk_text': result.get('content', ''),
+                    'chunk_index': chunk_idx,
+                    'page_number': result.get('page_number', 0),
+                    'embedding_status': embedding_status,
+                    'similarity_score': result.get('similarity_score', 0.0),  # Use BM25 score
+                })
+            
+            # Sort by score (already sorted by BM25, but ensure)
+            unique_chunks = sorted(chunks_from_bm25, key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+            
+            # #region agent log
+            try:
+                import json as json_module
+                sample_bm25 = unique_chunks[:3] if unique_chunks else []
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({
+                        'sessionId': 'debug-session',
+                        'runId': 'run1',
+                        'hypothesisId': 'E',
+                        'location': 'retrieval_nodes.py:850',
+                        'message': 'retrieve_chunks_by_similarity: BM25 fallback result',
+                        'data': {
+                            'doc_id': doc_id[:8],
+                            'num_chunks': len(unique_chunks),
+                            'sample_chunks': [{'chunk_index': c.get('chunk_index'), 'page': c.get('page_number'), 'score': c.get('similarity_score', 0), 'text_preview': c.get('chunk_text', '')[:100]} for c in sample_bm25],
+                            'has_epc': any('epc' in str(c.get('chunk_text', '')).lower() for c in unique_chunks[:20])
+                        },
+                        'timestamp': int(__import__('time').time() * 1000)
+                    }) + '\n')
+            except: pass
+            # #endregion
+            
+            if unique_chunks:
+                return unique_chunks[:top_k]
+            
+            # If BM25 also fails, fall back to sequential
+            logger.warning(f"[SIMILARITY_CHUNKS] BM25 fallback also failed, using sequential retrieval")
             supabase = get_supabase_client()
             chunks_result = supabase.table('document_vectors')\
-                .select('chunk_text, chunk_index, page_number, embedding_status')\
+                .select('id, chunk_text, chunk_index, page_number, embedding_status')\
                 .eq('document_id', doc_id)\
                 .order('chunk_index')\
                 .limit(top_k)\
                 .execute()
             return chunks_result.data or []
-        except Exception:
-            return []
+        except Exception as fallback_error:
+            logger.error(f"[SIMILARITY_CHUNKS] BM25 fallback also failed: {fallback_error}")
+            # Final fallback: sequential retrieval
+            try:
+                supabase = get_supabase_client()
+                chunks_result = supabase.table('document_vectors')\
+                    .select('id, chunk_text, chunk_index, page_number, embedding_status')\
+                    .eq('document_id', doc_id)\
+                    .order('chunk_index')\
+                    .limit(top_k)\
+                    .execute()
+                return chunks_result.data or []
+            except Exception:
+                return []
 
 
 def _rewrite_query_keywords(query: str, conversation_history: List[Dict[str, Any]] = None) -> str:
@@ -1370,7 +1642,11 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     
     node_start = time.time()
     user_query = state.get('user_query', '')
-    logger.info(f"[QUERY_VECTOR_DOCUMENTS] Starting retrieval for query: '{user_query[:50]}...'")
+    document_ids = state.get('document_ids')
+    logger.info(
+        f"[QUERY_VECTOR_DOCUMENTS] Starting retrieval for query: '{user_query[:50]}...'"
+        f"{' (filtered to ' + str(len(document_ids)) + ' selected documents)' if document_ids and len(document_ids) > 0 else ''}"
+    )
 
     try:
         # STEP 1: Check if query is property-specific (bedrooms, bathrooms, price, etc.)
@@ -1884,12 +2160,14 @@ This information has been verified and extracted from the property database, inc
                         logger.warning(f"[HEADER_RETRIEVAL] Header search failed: {e}, continuing with standard retrieval")
             
             # Standard Hybrid Search (Pass 2)
+            # Pass document_ids to hybrid retriever for early filtering
             results = retriever.query_documents(
                 user_query=query,
                 top_k=top_k,  # Adjusted based on detail_level
                 business_id=business_id,
                 property_id=state.get("property_id"),
                 classification_type=state.get("classification_type"),
+                document_ids=document_ids,  # NEW: Pass document_ids for filtering
                 trigger_lazy_embedding=False  # Disabled: all chunks embedded upfront
                 # TODO: Add section_headers parameter once hybrid retriever supports it
             )
@@ -2223,43 +2501,71 @@ This information has been verified and extracted from the property database, inc
                 import traceback
                 logger.debug(traceback.format_exc())
         
-        # STEP 4: Combine ALL search results (structured + LLM SQL + hybrid)
+        # STEP 4: Filter by document_ids EARLY if provided (for document-specific search)
+        # This ensures we only search within selected documents, not across all documents
+        # Note: document_ids was already retrieved from state at the start of the function
+        document_ids_set = None
+        if document_ids and len(document_ids) > 0:
+            # Convert to set for faster lookup
+            document_ids_set = set(str(doc_id) for doc_id in document_ids)  # Ensure all are strings
+            logger.info(f"[QUERY_FILTER] Document filtering enabled: {len(document_ids)} document(s) selected: {[str(d)[:8] + '...' for d in document_ids[:5]]}")
+        
+        # STEP 5: Combine ALL search results (structured + LLM SQL + hybrid)
         # Priority: Structured (exact) > LLM SQL (similar) > Hybrid (semantic)
+        # IMPORTANT: Filter each result set BEFORE adding to final_results
         seen_doc_ids = set()
         final_results = []
         
+        # Helper function to check if document is in selected set
+        def is_document_selected(doc: dict) -> bool:
+            """Check if document is in the selected document_ids set."""
+            if document_ids_set is None:
+                return True  # No filtering - all documents allowed
+            doc_id = doc.get('doc_id') or doc.get('document_id')
+            if not doc_id:
+                return False  # No doc_id - exclude
+            # Convert to string for comparison (handles UUID vs string mismatches)
+            return str(doc_id) in document_ids_set
+        
         # 1. Add structured results first (exact matches, highest priority)
+        # FILTER: Only add if in selected document_ids
         for doc in structured_results:
+            if not is_document_selected(doc):
+                continue  # Skip documents not in selection
             doc_id = doc.get('doc_id') or doc.get('document_id')
             if doc_id and doc_id not in seen_doc_ids:
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
         
         # 2. Add LLM SQL results (similar matches, medium priority)
+        # FILTER: Only add if in selected document_ids
         for doc in llm_sql_results:
+            if not is_document_selected(doc):
+                continue  # Skip documents not in selection
             doc_id = doc.get('doc_id') or doc.get('document_id')
             if doc_id and doc_id not in seen_doc_ids:
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
         
         # 3. Add hybrid results (semantic matches, lower priority, avoid duplicates)
+        # FILTER: Only add if in selected document_ids
         for doc in merged_results:
+            if not is_document_selected(doc):
+                continue  # Skip documents not in selection
             doc_id = doc.get('doc_id') or doc.get('document_id')
             if doc_id and doc_id not in seen_doc_ids:
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
         
-        # STEP 5: Filter by document_ids if provided (for document-specific search)
-        document_ids = state.get('document_ids')
-        if document_ids and len(document_ids) > 0:
-            # Convert to set for faster lookup
-            document_ids_set = set(document_ids)
-            filtered_results = [
-                doc for doc in final_results
-                if (doc.get('doc_id') or doc.get('document_id')) in document_ids_set
-            ]
-            logger.info(f"[QUERY_FILTERED] Filtered from {len(final_results)} to {len(filtered_results)} documents by document_ids")
-            final_results = filtered_results
+        # Log filtering results
+        if document_ids_set:
+            logger.info(
+                f"[QUERY_FILTERED] Document filtering applied: "
+                f"Structured: {len([d for d in structured_results if is_document_selected(d)])}/{len(structured_results)}, "
+                f"LLM SQL: {len([d for d in llm_sql_results if is_document_selected(d)])}/{len(llm_sql_results)}, "
+                f"Hybrid: {len([d for d in merged_results if is_document_selected(d)])}/{len(merged_results)}, "
+                f"Final: {len(final_results)}"
+            )
         
         node_time = time.time() - node_start
         logger.info(
@@ -2429,7 +2735,8 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
     merged_docs = []
     for doc_id, group in doc_groups.items():
         # Sort chunks by chunk_index for proper ordering
-        group['chunks'].sort(key=lambda x: x['chunk_index'])
+        # Handle None values by treating them as 0 (or a large number to put them at the end)
+        group['chunks'].sort(key=lambda x: x.get('chunk_index') if x.get('chunk_index') is not None else 0)
         
         # Merge chunk content using smart multi-factor selection algorithm
         # This replaces hardcoded valuation logic with adaptive algorithm for all query types

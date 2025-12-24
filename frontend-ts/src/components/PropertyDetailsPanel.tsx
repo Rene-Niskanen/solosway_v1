@@ -895,7 +895,26 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   const isChatPanelOpen = chatPanelWidth > 0 || isInChatMode;
   
   // FilingSidebar integration
-  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode } = useFilingSidebar();
+  const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  
+  // Calculate the left position for property details panel
+  // When filing sidebar is closed: use chatPanelWidth directly (matches old commit logic)
+  // When filing sidebar is open: add filing sidebar width to account for the shift
+  const propertyDetailsLeft = React.useMemo(() => {
+    if (!isChatPanelOpen) return 'auto';
+    
+    // Base calculation: chatPanelWidth (this works when filing sidebar is closed)
+    let left = chatPanelWidth;
+    
+    // If filing sidebar is open, we need to add its width to account for the shift
+    // The chat panel shifts right by: toggleRailWidth (12px) + filingSidebarWidth
+    if (isFilingSidebarOpen) {
+      const toggleRailWidth = 12;
+      left = chatPanelWidth + toggleRailWidth + filingSidebarWidth;
+    }
+    
+    return Math.max(left, 320); // Minimum 320px like old commit
+  }, [isChatPanelOpen, isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth]);
   
   // Track when chat panel is resizing to disable layout animations
   const [isChatPanelResizing, setIsChatPanelResizing] = React.useState<boolean>(false);
@@ -2381,7 +2400,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               
               // Chat Mode: Anchored to screen edges (sidebar + margins)
               // Split view: remove outer gaps so the panel sits flush against the chat panel and viewport edges
-              left: isChatPanelOpen ? `${Math.max(chatPanelWidth, 320)}px` : 'auto',
+              // The chatPanelWidth prop is just the width, so we need to calculate where the chat panel ends
+              // Chat panel left = base sidebar + filing sidebar (if open), so property details left = chat panel left + chat panel width
+              left: isChatPanelOpen ? `${propertyDetailsLeft}px` : 'auto',
               right: isChatPanelOpen ? '0px' : 'auto',
               top: isChatPanelOpen ? '0px' : 'auto',
               bottom: isChatPanelOpen ? '0px' : 'auto',
