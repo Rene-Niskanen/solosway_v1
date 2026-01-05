@@ -27,7 +27,8 @@ class ReductoImageService:
         business_id: str,
         property_id: Optional[str] = None,
         image_blocks_metadata: Optional[List[Dict[str, Any]]] = None,
-        document_text: Optional[str] = None
+        document_text: Optional[str] = None,
+        include_all_images: bool = True
     ) -> Dict[str, Any]:
         """
         Download the images from the presigned urls, filter for property-relevant images,
@@ -56,22 +57,34 @@ class ReductoImageService:
         )
         
         logger.info(f"✅ Downloaded {len(downloaded_images)}/{total_images} images (parallel)")
-        
-        # Step 2: Filter images to keep only property-relevant photos
-        filter_result = self.filter_service.filter_images(
-            image_data_list=downloaded_images,
-            block_metadata_list=image_blocks_metadata,
-            document_text=document_text
-        )
-        
-        filtered_images = filter_result['filtered_images']
-        logger.info(f"🎯 Filtered to {len(filtered_images)} property-relevant images")
-        
-        # Step 3: Upload filtered images
+
+        # Step 2: Choose images to upload
+        # By default we now upload every image we can successfully download.
+        # (This matches product expectation: "pull every image it can".)
+        if include_all_images:
+            images_to_upload = [img for img in downloaded_images if img.get('success')]
+            filter_result = {
+                'filtered_images': images_to_upload,
+                'filtered_count': len(images_to_upload),
+                'total_count': len(downloaded_images),
+                'filter_reasons': {f"image_{img.get('index')}": "include_all_images=True" for img in images_to_upload}
+            }
+            logger.info(f"🖼️ include_all_images=True → uploading {len(images_to_upload)} images (no filtering)")
+        else:
+            # Filter images to keep only property-relevant photos
+            filter_result = self.filter_service.filter_images(
+                image_data_list=downloaded_images,
+                block_metadata_list=image_blocks_metadata,
+                document_text=document_text
+            )
+            images_to_upload = filter_result['filtered_images']
+            logger.info(f"🎯 Filtered to {len(images_to_upload)} property-relevant images")
+
+        # Step 3: Upload selected images
         processed_images = []
         errors = []
 
-        for img_item in filtered_images:
+        for img_item in images_to_upload:
             image_data = img_item['image_data']
             image_url = img_item['image_url']
             original_index = img_item['index']
@@ -107,7 +120,7 @@ class ReductoImageService:
                         'storage_provider': upload_result.get('storage_provider', 'supabase'),
                         'filter_score': img_item.get('score', 0)
                     })
-                    logger.info(f"✅ Uploaded filtered image {original_index} (score: {img_item.get('score', 0):.1f})")
+                    logger.info(f"✅ Uploaded image {original_index} (score: {img_item.get('score', 0):.1f})")
                 else:
                     errors.append(f"Failed to upload image {original_index}: {upload_result.get('error', 'unknown error')}")
                 
@@ -121,7 +134,7 @@ class ReductoImageService:
             'images': processed_images,
             'errors': errors,
             'total': total_images,
-            'filtered': len(filtered_images),
+            'filtered': len(images_to_upload),
             'processed': len(processed_images),
             'filter_stats': {
                 'total_downloaded': len(downloaded_images),

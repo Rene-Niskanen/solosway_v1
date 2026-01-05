@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize2, Workflow, Home } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
@@ -311,6 +312,7 @@ interface CitationDataType {
     page?: number;  // Optional page in bbox (for compatibility)
   };
   method?: string;  // Citation method (e.g., 'block-id-lookup')
+  block_id?: string;  // Block ID from Phase 1 citation extraction (for debugging)
   // Legacy fields (optional for backward compatibility)
   original_filename?: string | null;
   property_address?: string;
@@ -416,7 +418,8 @@ const CitationLink: React.FC<{
 const renderTextWithCitations = (
   text: string, 
   citations: Record<string, CitationDataType> | undefined,
-  onCitationClick: (data: CitationDataType) => void
+  onCitationClick: (data: CitationDataType) => void,
+  seenCitationNums?: Set<string>
 ): React.ReactNode => {
   // Debug: Log when this function is called
   console.log('🔗 renderTextWithCitations called:', { 
@@ -450,6 +453,9 @@ const renderTextWithCitations = (
   }
   const citationPlaceholders: Record<string, CitationPlaceholder> = {};
   let placeholderIndex = 0;
+  // De-dupe citations across the whole response message render (not per text node).
+  // If no shared set is provided, fall back to per-call behavior.
+  const seen = seenCitationNums ?? new Set<string>();
   
   // Process superscript citations
   processedText = processedText.replace(superscriptPattern, (match) => {
@@ -460,9 +466,13 @@ const renderTextWithCitations = (
     }
     const citData = citations[numStr];
     if (citData) {
+      if (seen.has(numStr)) {
+        return ''; // Remove duplicate marker
+      }
       const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
       placeholderIndex++;
+      seen.add(numStr);
       console.log(`🔗 [CITATION] Matched superscript ${match} (${numStr}) with citation data:`, citData);
       return placeholder;
     } else {
@@ -475,10 +485,59 @@ const renderTextWithCitations = (
   processedText = processedText.replace(bracketPattern, (match, num) => {
     const citData = citations[num];
     if (citData) {
+      if (seen.has(num)) {
+        return ''; // Remove duplicate marker
+      }
       const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
       citationPlaceholders[placeholder] = { num, data: citData, original: match };
       placeholderIndex++;
+      seen.add(num);
+      const citationDetails = {
+        citationNumber: num,
+        block_id: citData.block_id || 'UNKNOWN',
+        page: citData.page || citData.bbox?.page || 'UNKNOWN',
+        bbox: citData.bbox ? `${citData.bbox.left?.toFixed(3)},${citData.bbox.top?.toFixed(3)} (${citData.bbox.width?.toFixed(3)}x${citData.bbox.height?.toFixed(3)})` : 'N/A',
+        doc_id: citData.doc_id?.substring(0, 8) || 'UNKNOWN',
+        method: citData.method || 'UNKNOWN'
+      };
+      console.log(`🔗 [CITATION] Matched bracket ${match} (${num}) with citation data:`, JSON.stringify(citationDetails, null, 2));
+      
+      // #region agent log
+      try {
+        const contextStart = Math.max(0, processedText.indexOf(match) - 50);
+        const contextEnd = Math.min(processedText.length, processedText.indexOf(match) + match.length + 50);
+        const context = text.substring(contextStart, contextEnd);
+        // DEBUG ONLY: Local ingest for dev tracing. Disabled unless explicitly enabled.
+        if (import.meta.env.VITE_LOCAL_DEBUG_INGEST === '1') fetch('http://127.0.0.1:7243/ingest/1d8b42de-af74-4269-8506-255a4dc9510b', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: 'debug-session',
+            runId: 'run1',
+            hypothesisId: 'D',
+            location: 'SideChatPanel.tsx:491',
+            message: 'Frontend matching citation to text',
+            data: {
+              citation_number: num,
+              citation_marker: match,
+              context_around_citation: context,
+              citation_data: {
+                block_id: citData.block_id || 'UNKNOWN',
+                cited_text: (citData as any).cited_text || '',
+                bbox: citData.bbox,
+                page: citData.page || citData.bbox?.page || 'UNKNOWN',
+                doc_id: citData.doc_id?.substring(0, 8) || 'UNKNOWN'
+              }
+            },
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      } catch {}
+      // #endregion
+      
       return placeholder;
+    } else {
+      console.log(`⚠️ [CITATION] Bracket ${match} (${num}) found in text but no citation data available. Available keys:`, Object.keys(citations));
     }
     return match; // Keep original if no citation found
   });
@@ -799,6 +858,7 @@ interface SideChatPanelProps {
   isVisible: boolean;
   query: string;
   sidebarWidth?: number; // Width of the sidebar to offset the panel
+  isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
   onMapToggle?: () => void; // Callback for toggling map view
   onMinimize?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for minimizing to bubble with chat messages
@@ -823,6 +883,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isVisible,
   query,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
+  isSidebarCollapsed = false,
   onQuerySubmit,
   onMapToggle,
   onMinimize,
@@ -838,6 +899,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onQuickStartToggle,
   isQuickStartBarVisible = false // Default to false
 }, ref) => {
+  // Main navigation state:
+  // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
+  // - open: full sidebar visible
+  const isMainSidebarOpen = !isSidebarCollapsed;
+
   // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
   // This prevents artifacts from showing during streaming
   const cleanResponseText = (text: string): string => {
@@ -865,6 +931,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Remove complete [CHUNK:X] markers (including with PAGE:Y)
     // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
     cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
+    
+    // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)" or "BLOCK_CITE_ID_136")
+    // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, or any variation
+    cleaned = cleaned.replace(/\s*\(?BLOCK_CITE_ID_\d+\)?\s*/g, ' ');
     
     // Remove partial CHUNK markers that might appear during streaming
     // These appear at the end of the string as tokens arrive incrementally
@@ -1052,6 +1122,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  // State for drag over feedback
+  const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
   // Track custom dragged width for resizing
@@ -1130,7 +1202,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setQuickStartBarBottom(`${bottomPosition}px`);
       
       // QuickStartBar is now centered, so we just need to set maxWidth to match chat bar
-      quickStartWrapper.style.width = 'fit-content';
+        quickStartWrapper.style.width = 'fit-content';
       quickStartWrapper.style.maxWidth = '768px'; // Match chat bar max width
       setQuickStartBarTransform('translateX(-50%)'); // Always center
     };
@@ -1204,6 +1276,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
     const state = resizeStateRef.current;
     const minWidth = 450;
+    // Account for sidebar, FilingSidebar (if open), and some padding
     const maxWidth = window.innerWidth - sidebarWidth - 100;
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -1267,7 +1340,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       document.body.style.userSelect = '';
     };
   }, [isResizing, sidebarWidth, onChatWidthChange]);
-
+  
   // Calculate and notify parent of chat panel width changes
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
@@ -1375,6 +1448,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     clearSelectedDocuments,
     setDocumentSelectionMode
   } = useDocumentSelection();
+  
+  // Filing sidebar integration
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
   
   // Store queries with their attachments
   interface SubmittedQuery {
@@ -1536,11 +1612,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Add query message to chat (similar to handleSubmit)
         // CRITICAL: Use performance.now() + random to ensure uniqueness
         const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Use attachments from state, but fallback to initialAttachedFiles if state is empty
+        // This handles the case where query arrives before attachments are synced to state
+        // Also check the ref for the most up-to-date attachments
+        const attachmentsFromRef = attachedFilesRef.current;
+        const attachmentsToUse = attachmentsFromRef.length > 0 
+          ? attachmentsFromRef 
+          : (attachedFiles.length > 0 
+            ? attachedFiles 
+            : (initialAttachedFiles || []));
+        
+        console.log('📎 SideChatPanel: Using attachments for query message:', {
+          fromRef: attachmentsFromRef.length,
+          fromState: attachedFiles.length,
+          fromInitial: initialAttachedFiles?.length || 0,
+          final: attachmentsToUse.length
+        });
+        
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
           text: queryText,
-          attachments: [...attachedFiles],
+          attachments: [...attachmentsToUse],
           propertyAttachments: [...propertyAttachments],
           selectedDocumentIds: selectedDocIds,
           selectedDocumentNames: selectedDocNames
@@ -1587,7 +1681,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ? Array.from(selectedDocumentIds) 
               : undefined;
             
-            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds));
+            // Also check if we need to convert file attachments to document IDs
+            // If attachments are from FilingSidebar (have document IDs), extract them
+            const attachmentDocumentIds: string[] = [];
+            attachmentsToUse.forEach(att => {
+              // Check if attachment has a document ID (from FilingSidebar drag)
+              // This would be stored in the file name or metadata
+              // For now, we'll rely on the backend to handle file attachments
+            });
+            
+            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds), 'attachments:', attachmentsToUse.length);
             
             const abortController = new AbortController();
             abortControllerRef.current = abortController;
@@ -1595,6 +1698,71 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             let accumulatedText = '';
             const accumulatedCitations: Record<string, CitationDataType> = {};
             const preloadingDocs = new Set<string>(); // Track documents currently being preloaded to avoid duplicates
+            
+            // Helper function to preload a document by doc_id - fires immediately, no delays
+            const preloadDocumentById = (docId: string, filename?: string) => {
+              // Skip if already cached or currently preloading
+              const isCached = previewFiles.some(f => f.id === docId);
+              const isPreloading = preloadingDocs.has(docId);
+              
+              if (isCached || isPreloading) {
+                return; // Already handled
+              }
+              
+              // Mark as preloading immediately
+              preloadingDocs.add(docId);
+              
+              // Start download immediately (fire and forget, no setTimeout delay)
+              (async () => {
+                try {
+                  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                  const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+                  
+                  console.log('📥 [PRELOAD] Starting IMMEDIATE background download for document:', docId);
+                  
+                  const response = await fetch(downloadUrl, {
+                    credentials: 'include'
+                  });
+                  
+                  if (!response.ok) {
+                    console.warn('⚠️ [PRELOAD] Failed to download document:', response.status);
+                    preloadingDocs.delete(docId);
+                    return;
+                  }
+                  
+                  const blob = await response.blob();
+                  const fileType = blob.type || 'application/pdf';
+                  const fileSize = blob.size;
+                  
+                  // Create File object from blob
+                  const file = new File(
+                    [blob], 
+                    filename || 'document.pdf', 
+                    { type: fileType }
+                  );
+                  
+                  // Convert to FileAttachmentData format
+                  const fileData: FileAttachmentData = {
+                    id: docId,
+                    file: file,
+                    name: filename || 'document.pdf',
+                    type: fileType,
+                    size: fileSize
+                  };
+                  
+                  // Preload into cache (silent, doesn't open preview)
+                  preloadFile(fileData);
+                  
+                  // Remove from preloading set after successful cache
+                  preloadingDocs.delete(docId);
+                  
+                  console.log('✅ [PRELOAD] Document cached successfully:', docId, fileData.name);
+                } catch (error) {
+                  console.warn('⚠️ [PRELOAD] Error preloading document:', error);
+                  preloadingDocs.delete(docId);
+                }
+              })(); // Execute immediately, no delay
+            };
             
             await backendApi.queryDocumentsStreamFetch(
               queryText,
@@ -1633,6 +1801,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return normalized;
                 };
                 
+                // Log what we're receiving before normalization
+                if (data.citations) {
+                  console.log('📚 [CITATIONS] Citations from complete message:', {
+                    count: Object.keys(data.citations).length,
+                    keys: Object.keys(data.citations),
+                    citations: Object.entries(data.citations).map(([key, cit]: [string, any]) => ({
+                      citationNumber: key,
+                      block_id: cit.block_id || 'UNKNOWN',
+                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                    }))
+                  });
+                }
+                if (Object.keys(accumulatedCitations).length > 0) {
+                  console.log('📚 [CITATIONS] Accumulated citations before complete:', {
+                    count: Object.keys(accumulatedCitations).length,
+                    keys: Object.keys(accumulatedCitations),
+                    citations: Object.entries(accumulatedCitations).map(([key, cit]: [string, any]) => ({
+                      citationNumber: key,
+                      block_id: cit.block_id || 'UNKNOWN',
+                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                    }))
+                  });
+                }
+                
                 const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
                 
                 console.log('📚 [CITATIONS] Final citations for message:', {
@@ -1640,7 +1836,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   fromAccumulated: Object.keys(accumulatedCitations).length,
                   finalCount: Object.keys(finalCitations).length,
                   finalKeys: Object.keys(finalCitations),
-                  sampleCitation: finalCitations[Object.keys(finalCitations)[0]]
+                  citations: Object.entries(finalCitations).map(([key, cit]) => ({
+                    citationNumber: key,
+                    block_id: cit.block_id || 'UNKNOWN',
+                    page: cit.page || cit.bbox?.page || 'UNKNOWN',
+                    bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
+                    doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
+                  }))
                 });
                 
                 setChatMessages(prev => {
@@ -1667,12 +1869,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error:', error);
                 
+                // Check if this is an attachment without query error
+                // Note: documentIdsArray is defined in the parent scope
+                const hasAttachments = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
+                const isQueryRequiredError = error.includes('Query is required') || 
+                                           error.includes('HTTP 400') || 
+                                           error.includes('BAD REQUEST');
+                const isEmptyQuery = !queryText || queryText.trim() === '';
+                
+                let errorText: string;
+                if (hasAttachments && (isQueryRequiredError || isEmptyQuery)) {
+                  // Show helpful prompt for attachments without query
+                  errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+                } else {
+                  // Show generic error for other cases
+                  errorText = error || 'Sorry, I encountered an error processing your query.';
+                }
+                
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: error || 'Sorry, I encountered an error processing your query.',
+                  text: errorText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
@@ -1692,6 +1911,42 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onReasoningStep: Handle reasoning step events
               (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
                 console.log('🟡 SideChatPanel: Received reasoning step:', step);
+                
+                // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
+                // This happens BEFORE citations arrive, making documents ready instantly
+                // Priority: doc_previews (earliest, from found_documents step) > doc_metadata > documents array
+                if (step.details) {
+                  // PRIORITY 1: doc_previews (from found_documents/exploring steps - earliest available)
+                  // This is sent as soon as documents are retrieved, before processing
+                  if (step.details.doc_previews && Array.isArray(step.details.doc_previews)) {
+                    console.log('🚀 [PRELOAD] Found doc_previews in reasoning step, preloading immediately:', step.details.doc_previews.length, 'documents');
+                    step.details.doc_previews.forEach((doc: any) => {
+                      if (doc.doc_id) {
+                        console.log('📥 [PRELOAD] Preloading from doc_previews:', doc.doc_id, doc.original_filename || doc.filename);
+                        // Preload immediately (fire and forget, no delays)
+                        preloadDocumentById(doc.doc_id, doc.original_filename || doc.filename);
+                      }
+                    });
+                  }
+                  
+                  // PRIORITY 2: doc_metadata (from reading steps - happens after found_documents)
+                  if (step.details.doc_metadata && step.details.doc_metadata.doc_id) {
+                    const docId = step.details.doc_metadata.doc_id;
+                    const filename = step.details.doc_metadata.original_filename || step.details.doc_metadata.filename;
+                    console.log('📥 [PRELOAD] Preloading from doc_metadata:', docId, filename);
+                    preloadDocumentById(docId, filename);
+                  }
+                  
+                  // PRIORITY 3: documents array (alternative format, fallback)
+                  if (step.details.documents && Array.isArray(step.details.documents)) {
+                    step.details.documents.forEach((doc: any) => {
+                      if (doc.doc_id || doc.id) {
+                        console.log('📥 [PRELOAD] Preloading from documents array:', doc.doc_id || doc.id, doc.original_filename || doc.filename);
+                        preloadDocumentById(doc.doc_id || doc.id, doc.original_filename || doc.filename);
+                      }
+                    });
+                  }
+                }
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
@@ -1764,29 +2019,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   bboxValue: citation.data.bbox
                 });
                 
-                // #region agent log
-                // Debug: Log citation reception for Hypothesis E and F
-                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    sessionId: 'debug-session',
-                    runId: 'run1',
-                    hypothesisId: 'E,F',
-                    location: 'SideChatPanel.tsx:1642',
-                    message: 'Citation event received',
-                    data: {
-                      citation_number: citation.citation_number,
-                      hasDocId: !!citation.data.doc_id,
-                      hasPage: !!citation.data.page,
-                      hasBbox: !!citation.data.bbox,
-                      bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : []
-                    },
-                    timestamp: Date.now()
-                  })
-                }).catch(() => {});
-                // #endregion
-                
                 // Convert citation_number to string (backend may send as int)
                 const citationNumStr = String(citation.citation_number);
                 
@@ -1826,6 +2058,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   page: citation.data.page || citation.data.page_number || 0,
                   bbox: finalBbox, // Use normalized bbox or default empty bbox
                   method: citation.data.method, // Include method field
+                  block_id: citation.data.block_id, // Include block_id for debugging and validation
                   original_filename: citation.data.original_filename // Include filename for preloading
                 };
                 
@@ -1839,142 +2072,57 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 // PRELOAD: Start downloading document in background when citation received
                 // This ensures documents are ready when user clicks citation (instant BBOX highlight)
+                // Note: Documents may already be preloaded from reasoning steps, but this is a fallback
                 const docId = citation.data.doc_id;
-                if (docId && preloadFile) {
-                  // Check if document is already cached or currently being preloaded
-                  const isCached = previewFiles.some(f => f.id === docId);
-                  const isPreloading = preloadingDocs.has(docId);
+                if (docId) {
+                  // Use the shared preload function (handles deduplication)
+                  preloadDocumentById(docId, citation.data.original_filename);
                   
-                  if (!isCached && !isPreloading) {
-                    // Mark as preloading to avoid duplicate downloads
-                    preloadingDocs.add(docId);
-                    
-                    // Start background download (non-blocking, fire-and-forget)
-                    // Use setTimeout to avoid blocking the citation accumulation
-                    setTimeout(() => {
-                      (async () => {
-                        try {
-                          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-                          const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+                  // OPTIMIZATION: Aggressively pre-render citation pages immediately
+                  // Since probability of clicking citations is extremely high, start pre-rendering ASAP
+                  if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
+                    // Start pre-rendering immediately - don't wait
+                    (async () => {
+                      try {
+                        // Try to get PDF immediately (might be cached from previous load)
+                        let pdf = getCachedPdfDocument(docId);
+                        
+                        if (!pdf) {
+                          // PDF not loaded yet - wait for it to load, but start checking immediately
+                          // Poll more aggressively for faster response
+                          const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
+                          let attempts = 0;
                           
-                          console.log('📥 [PRELOAD] Starting background download for citation:', docId);
-                          
-                          const response = await fetch(downloadUrl, {
-                            credentials: 'include'
-                          });
-                          
-                          if (!response.ok) {
-                            console.warn('⚠️ [PRELOAD] Failed to download document:', response.status);
-                            preloadingDocs.delete(docId); // Remove from set on error
-                            return;
+                          while (!pdf && attempts < maxAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            pdf = getCachedPdfDocument(docId);
+                            attempts++;
                           }
-                          
-                          const blob = await response.blob();
-                          const fileType = blob.type || 'application/pdf';
-                          const fileSize = blob.size;
-                          
-                          // Create File object from blob
-                          const file = new File(
-                            [blob], 
-                            citation.data.original_filename || 'document.pdf', 
-                            { type: fileType }
-                          );
-                          
-                          // Convert to FileAttachmentData format
-                          const fileData: FileAttachmentData = {
-                            id: docId,
-                            file: file,
-                            name: citation.data.original_filename || 'document.pdf',
-                            type: fileType,
-                            size: fileSize
-                          };
-                          
-                          // Preload into cache (silent, doesn't open preview)
-                          preloadFile(fileData);
-                          
-                          // OPTIMIZATION: Aggressively pre-render citation pages immediately
-                          // Since probability of clicking citations is extremely high, start pre-rendering ASAP
-                          if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
-                            // Start pre-rendering immediately - don't wait
-                            (async () => {
-                              try {
-                                // Try to get PDF immediately (might be cached from previous load)
-                                let pdf = getCachedPdfDocument(docId);
-                                
-                                if (!pdf) {
-                                  // PDF not loaded yet - wait for it to load, but start checking immediately
-                                  // Poll more aggressively for faster response
-                                  const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
-                                  let attempts = 0;
-                                  
-                                  while (!pdf && attempts < maxAttempts) {
-                                    await new Promise(resolve => setTimeout(resolve, 100));
-                                    pdf = getCachedPdfDocument(docId);
-                                    attempts++;
-                                  }
-                                }
-                                
-                                if (pdf) {
-                                  // PDF is ready - pre-render the page immediately
-                                  console.log('⚡ [PRELOAD] Pre-rendering citation page immediately:', docId, 'page', citation.data.page);
-                                  await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
-                                  console.log('✅ [PRELOAD] Citation page pre-rendered and cached:', docId, 'page', citation.data.page);
-                                } else {
-                                  console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
-                                }
-                              } catch (error) {
-                                console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
-                              }
-                            })(); // Fire and forget - don't block
-                          }
-                          
-                          // Remove from preloading set after successful cache
-                          preloadingDocs.delete(docId);
-                          
-                          console.log('✅ [PRELOAD] Document cached successfully:', docId, fileData.name);
-                        } catch (error) {
-                          console.warn('⚠️ [PRELOAD] Error preloading document:', error);
-                          preloadingDocs.delete(docId); // Remove from set on error
-                          // Silently fail - user can still click citation and download on-demand
                         }
-                      })();
-                    }, 0); // Defer to next tick to avoid blocking
-                  } else if (isCached) {
-                    console.log('✅ [PRELOAD] Document already cached:', docId);
-                  } else if (isPreloading) {
-                    console.log('⏳ [PRELOAD] Document already being preloaded:', docId);
+                        
+                        if (pdf) {
+                          // PDF is ready - pre-render the page immediately
+                          console.log('⚡ [PRELOAD] Pre-rendering citation page immediately:', docId, 'page', citation.data.page);
+                          await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
+                          console.log('✅ [PRELOAD] Citation page pre-rendered and cached:', docId, 'page', citation.data.page);
+                        } else {
+                          console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
+                        }
+                      } catch (error) {
+                        console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
+                      }
+                    })(); // Fire and forget - don't block
                   }
                 }
                 
-                // #region agent log
-                // Debug: Log citation accumulation for Hypothesis F
-                fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    sessionId: 'debug-session',
-                    runId: 'run1',
-                    hypothesisId: 'F',
-                    location: 'SideChatPanel.tsx:1700',
-                    message: 'Citation accumulated',
-                    data: {
-                      citation_number: citationNumStr,
-                      doc_id: citation.data.doc_id,
-                      has_bbox: !!normalizedBbox,
-                      bbox_valid: normalizedBbox && typeof normalizedBbox.left === 'number'
-                    },
-                    timestamp: Date.now()
-                  })
-                }).catch(() => {});
-                // #endregion
-                
                 // Update message with citations in real-time
+                // Merge with previous citations to avoid overwriting when multiple citations arrive quickly
                 setChatMessages(prev => {
                   return prev.map(msg => 
                     msg.id === loadingResponseId
                       ? {
                           ...msg,
-                          citations: { ...accumulatedCitations }
+                          citations: { ...(msg.citations || {}), ...accumulatedCitations }
                         }
                       : msg
                   );
@@ -2000,7 +2148,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [query, isVisible, chatMessages, attachedFiles, propertyAttachments, selectedDocumentIds]);
+  }, [query, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds]);
   
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -2015,7 +2163,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     preloadFile,
     previewFiles,
     getCachedPdfDocument, // NEW: Get cached PDF document
-    preloadPdfPage // NEW: Pre-render PDF pages
+    preloadPdfPage, // NEW: Pre-render PDF pages
+    setHighlightCitation, // NEW: Set highlight for PropertyDetailsPanel
+    openExpandedCardView // NEW: Open standalone ExpandedCardView
   } = usePreview();
 
   // Phase 1: Handle citation click - fetch document and open in viewer
@@ -2081,7 +2231,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
       }
 
-      // Convert to FileAttachmentData format for DocumentPreviewModal
+      // Convert to FileAttachmentData format for PreviewContext cache
       const fileData: FileAttachmentData = {
         id: docId, // Use doc_id as the file ID
         file: file,
@@ -2089,6 +2239,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         type: fileType,
         size: fileSize
       };
+
+      // Ensure the ExpandedCardView can open instantly without a second download.
+      // (StandaloneExpandedCardView now reuses PreviewContext cache when available.)
+      preloadFile(fileData);
 
       // NEW: Validate bbox before using it
       const validateBbox = (bbox: any): boolean => {
@@ -2227,33 +2381,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
       });
       
-      // #region agent log
-      // Debug: Log citation click for Hypothesis F
-      fetch('http://127.0.0.1:7242/ingest/2020db96-37e6-4173-8f4b-4c7f991c0013', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: 'debug-session',
-          runId: 'run1',
-          hypothesisId: 'F',
-          location: 'SideChatPanel.tsx:2005',
-          message: 'Citation clicked - highlight prepared',
-          data: {
-            hasHighlightData: !!highlightData,
-            fileDataId: fileData.id,
-            highlightFileId: highlightData?.fileId,
-            fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : false,
-            hasBbox: !!highlightData?.bbox,
-            bboxPage: highlightData?.bbox?.page
-          },
-          timestamp: Date.now()
-        })
-      }).catch(() => {});
-      // #endregion
 
-      // Open document in preview modal with highlight
-      // CRITICAL: fileData.id must match highlightData.fileId for highlighting to work
-      addPreviewFile(fileData, highlightData);
+      // Always open in standalone ExpandedCardView (preferred layout)
+      // Even without highlight data, use StandaloneExpandedCardView instead of DocumentPreviewModal
+      console.log('📚 [CITATION] Opening in standalone ExpandedCardView:', {
+        docId: docId,
+        filename: citationData.original_filename,
+        hasHighlight: !!highlightData,
+        highlight: highlightData
+      });
+      openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined);
       
       console.log('✅ Document opened in viewer:', {
         filename: citationData.original_filename,
@@ -2271,7 +2408,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         variant: "destructive",
       });
     }
-  }, [addPreviewFile, toast]);
+  }, [previewFiles, preloadFile, openExpandedCardView, toast]);
   
   // Handle document preview click from reasoning step cards
   // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
@@ -2363,11 +2500,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         background: transparent;
       }
       .sidechat-scroll::-webkit-scrollbar-thumb {
-        background: rgba(0, 0, 0, 0.1);
+        background: rgba(0, 0, 0, 0.001);
         border-radius: 3px;
       }
       .sidechat-scroll::-webkit-scrollbar-thumb:hover {
-        background: rgba(0, 0, 0, 0.15);
+        background: rgba(0, 0, 0, 0.004);
       }
       @keyframes pulse {
         0%, 100% {
@@ -2858,6 +2995,144 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
   }, [attachedFiles.length]);
 
+  // Handle drop from FilingSidebar
+  const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    
+    try {
+      // Check if this is a document from FilingSidebar
+      const jsonData = e.dataTransfer.getData('application/json');
+      if (jsonData) {
+        const data = JSON.parse(jsonData);
+        if (data.type === 'filing-sidebar-document') {
+          console.log('📥 SideChatPanel: Dropped document from FilingSidebar:', data.filename);
+          
+          // Create optimistic attachment immediately with placeholder file
+          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const placeholderFile = new File([], data.filename, {
+            type: data.fileType || 'application/pdf',
+          });
+          
+          const optimisticFileData: FileAttachmentData = {
+            id: attachmentId,
+            file: placeholderFile,
+            name: data.filename,
+            type: data.fileType || 'application/pdf',
+            size: 0, // Will be updated when file is fetched
+          };
+          
+          // Add attachment immediately for instant feedback
+          setAttachedFiles(prev => {
+            const updated = [...prev, optimisticFileData];
+            attachedFilesRef.current = updated;
+            return updated;
+          });
+          
+          // Fetch the actual file in the background
+          (async () => {
+            try {
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              let downloadUrl: string;
+              
+              if (data.s3Path) {
+                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
+              } else {
+                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+              }
+              
+              const response = await fetch(downloadUrl, { credentials: 'include' });
+              if (!response.ok) {
+                throw new Error('Failed to fetch document');
+              }
+              
+              const blob = await response.blob();
+              const actualFile = new File([blob], data.filename, {
+                type: data.fileType || blob.type || 'application/pdf',
+              });
+              
+              // Update the attachment with the actual file
+              setAttachedFiles(prev => {
+                const updated = prev.map(att => 
+                  att.id === attachmentId 
+                    ? { ...att, file: actualFile, size: actualFile.size }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+              
+              // Preload blob URL for preview
+              try {
+                const blobUrl = URL.createObjectURL(actualFile);
+                if (!(window as any).__preloadedAttachmentBlobs) {
+                  (window as any).__preloadedAttachmentBlobs = {};
+                }
+                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+              } catch (preloadError) {
+                console.error('Error preloading blob URL:', preloadError);
+              }
+              
+              console.log('✅ SideChatPanel: Document fetched and updated:', actualFile.name);
+            } catch (error) {
+              console.error('❌ SideChatPanel: Error fetching document:', error);
+              // Remove the optimistic attachment on error
+              setAttachedFiles(prev => {
+                const updated = prev.filter(att => att.id !== attachmentId);
+                attachedFilesRef.current = updated;
+                return updated;
+              });
+              toast({
+                description: 'Failed to load document. Please try again.',
+                duration: 3000,
+              });
+            }
+          })();
+          
+          return;
+        }
+      }
+      
+      // Fallback: check for regular file drops
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => handleFileUpload(file));
+      }
+    } catch (error) {
+      console.error('❌ SideChatPanel: Error handling drop:', error);
+      toast({
+        description: 'Failed to add document. Please try again.',
+        duration: 3000,
+      });
+    }
+  }, [handleFileUpload]);
+
+  const handleDragOver = React.useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if this is a document from FilingSidebar (has application/json type) or regular files
+    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    
+    if (hasFilingSidebarDocument || hasFiles) {
+      e.dataTransfer.dropEffect = 'move';
+      setIsDragOver(true);
+    } else {
+      e.dataTransfer.dropEffect = 'none';
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragLeave = React.useCallback((e: React.DragEvent) => {
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
   // Handle opening document selection mode
   const handleOpenDocumentSelection = React.useCallback(() => {
     toggleDocumentSelectionMode();
@@ -3013,8 +3288,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s):`, documentIdsArray);
           }
           
+          // Store these values for use in error handler
+          const hasAttachmentsForError = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
+          const submittedQuery = submitted || '';
+          
           await backendApi.queryDocumentsStreamFetch(
-            submitted || '',
+            submittedQuery,
             propertyId,
             messageHistory,
             `session_${Date.now()}`,
@@ -3075,12 +3354,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (error: string) => {
               console.error('❌ SideChatPanel: Streaming error:', error);
               
+              // Check if this is an attachment without query error
+              const isQueryRequiredError = error.includes('Query is required') || 
+                                         error.includes('HTTP 400') || 
+                                         error.includes('BAD REQUEST');
+              const isEmptyQuery = !submittedQuery || submittedQuery.trim() === '';
+              
+              let errorText: string;
+              if (hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery)) {
+                // Show helpful prompt for attachments without query
+                errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+              } else {
+                // Show generic error for other cases
+                errorText = `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`;
+              }
+              
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
               const errorMessage: ChatMessage = {
                 id: loadingResponseId,
                 type: 'response',
-                text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                text: errorText,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
               };
@@ -3094,11 +3388,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 return updated;
               });
               
-              toast({
-                description: 'Failed to get AI response. Please try again.',
-                duration: 5000,
-                variant: 'destructive',
-              });
+              if (!(hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery))) {
+                // Only show toast for non-attachment errors
+                toast({
+                  description: 'Failed to get AI response. Please try again.',
+                  duration: 5000,
+                  variant: 'destructive',
+                });
+              }
             },
             // onStatus: Show status messages
             (message: string) => {
@@ -3182,32 +3479,52 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             console.error('❌ SideChatPanel: Error calling LLM API:', error);
           }
           
+          // Check if this is an attachment without query error
+          // Note: documentIdsArray is defined in the try block above, but we need to check selectedDocumentIds here
+          const hasAttachments = attachedFiles.length > 0 || selectedDocumentIds.size > 0;
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const isQueryRequiredError = errorMessage.includes('Query is required') || 
+                                      errorMessage.includes('HTTP 400') || 
+                                      errorMessage.includes('BAD REQUEST');
+          const isEmptyQuery = !submitted || submitted.trim() === '';
+          
+          let errorText: string;
+          if (hasAttachments && (isQueryRequiredError || isEmptyQuery)) {
+            // Show helpful prompt for attachments without query
+            errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+          } else {
+            // Show generic error for other cases
+            errorText = `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${errorMessage}`;
+          }
+          
           // Show error message instead of mock response
           setChatMessages(prev => {
             const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-          const errorMessage: ChatMessage = {
+          const errorMessageObj: ChatMessage = {
             id: `response-${Date.now()}`,
             type: 'response',
-            text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            text: errorText,
               isLoading: false,
               reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
           };
           
             const updated = prev.map(msg => 
               msg.id === loadingResponseId 
-                ? errorMessage
+                ? errorMessageObj
                 : msg
             );
             persistedChatMessagesRef.current = updated;
             return updated;
           });
           
-          // Show error toast
-          toast({
-            description: 'Failed to get AI response. Please try again.',
-            duration: 5000,
-            variant: 'destructive',
-          });
+          if (!(hasAttachments && (isQueryRequiredError || isEmptyQuery))) {
+            // Only show toast for non-attachment errors
+            toast({
+              description: 'Failed to get AI response. Please try again.',
+              duration: 5000,
+              variant: 'destructive',
+            });
+          }
         }
       })();
       
@@ -3215,6 +3532,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       onQuerySubmit(submitted);
       setInputValue("");
       setAttachedFiles([]); // Clear attachments after submit
+      
+      // Clear document selection after query is submitted
+      if (selectedDocumentIds.size > 0) {
+        clearSelectedDocuments();
+        setDocumentSelectionMode(false); // Exit selection mode
+      }
       
       // Clear property attachments after they've been stored in the message
       // Use a small delay to ensure the message is fully rendered first
@@ -3327,11 +3650,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               <ReactMarkdown 
                 components={{
                 p: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process all text nodes to find citations
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                     if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
+                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                     }
                         if (React.isValidElement(child)) {
                           // Recursively process nested children
@@ -3342,24 +3666,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               children: processChildren(childChildren)
                             } as any);
                           }
-                        }
+                    }
                     return child;
                   });
                     };
                     const processedChildren = processChildren(children);
                   return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
                 },
-                h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{children}</h1>,
-                h2: () => null, h3: () => null,
-                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
-                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
-                li: ({ children }) => {
-                    // Recursively process all text nodes to find citations
+                h1: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
-                    if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick);
-                    }
+                        if (typeof child === 'string' && message.citations) {
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
+                        }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
                           if (childChildren !== undefined) {
@@ -3369,6 +3689,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             } as any);
                           }
                         }
+                        return child;
+                      });
+                    };
+                    return (
+                      <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>
+                        {processChildren(children)}
+                      </h1>
+                    );
+                  },
+                h2: () => null, h3: () => null,
+                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+                li: ({ children }) => {
+                    const citationSeen = new Set<string>();
+                    // Recursively process all text nodes to find citations
+                    const processChildren = (children: React.ReactNode): React.ReactNode => {
+                      return React.Children.map(children, child => {
+                    if (typeof child === 'string' && message.citations) {
+                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
+                    }
+                        if (React.isValidElement(child)) {
+                          const childChildren = (child.props as any)?.children;
+                          if (childChildren !== undefined) {
+                            return React.cloneElement(child, {
+                              ...child.props,
+                              children: processChildren(childChildren)
+                            } as any);
+                          }
+                    }
                     return child;
                   });
                     };
@@ -3376,11 +3725,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
                 },
                   strong: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process citations in strong elements
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                         if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                         }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -3397,11 +3747,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
                   },
                   em: ({ children }) => {
+                    const citationSeen = new Set<string>();
                     // Recursively process citations in em elements
                     const processChildren = (children: React.ReactNode): React.ReactNode => {
                       return React.Children.map(children, child => {
                         if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick);
+                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
                         }
                         if (React.isValidElement(child)) {
                           const childChildren = (child.props as any)?.children;
@@ -3449,16 +3800,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }}
           layout
           className="fixed top-0 bottom-0 z-30"
-            style={{
+          style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
             width: draggedWidth !== null 
               ? `${draggedWidth}px` // Use dragged width if set (works for both expanded and collapsed)
               : (isExpanded 
-                ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
+              ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
                 : '450px'), // Fixed width when collapsed (but can be resized via drag)
             backgroundColor: '#F9F9F9',
-            boxShadow: isExpanded ? '2px 0 16px rgba(0, 0, 0, 0.15)' : '2px 0 8px rgba(0, 0, 0, 0.1)',
-            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
+            boxShadow: 'none',
+            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
             willChange: 'width', // Optimize for smooth width changes
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
@@ -3495,16 +3846,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Panel content will go here */}
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="p-4 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
-                <button
-                  onClick={onSidebarToggle}
-                  className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-all duration-200"
-                  title="Toggle sidebar"
-                  type="button"
-                >
-                  <PanelLeft className="w-5 h-5 lg:w-5 lg:h-5" strokeWidth={1.5} />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onSidebarToggle}
+                    className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200"
+                    title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
+                    type="button"
+                  >
+                    {isMainSidebarOpen ? (
+                      <PanelRightClose
+                        className="w-4 h-4 lg:w-4 lg:h-4 scale-x-[-1]"
+                        strokeWidth={1.5}
+                      />
+                    ) : (
+                      <PanelLeft className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                    )}
+                  </button>
+
+                  {/* Hide the Files sidebar icon when the main sidebar is open (the control exists there). */}
+                  {!isMainSidebarOpen && (
+                    <AnimatePresence mode="wait">
+                      <motion.button
+                        key="folder-icon"
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                        onClick={toggleFilingSidebar}
+                        className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-colors duration-200"
+                        title="Toggle Files sidebar"
+                        type="button"
+                      >
+                        <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                      </motion.button>
+                    </AnimatePresence>
+                  )}
+                </div>
                 <div className="flex items-center space-x-2">
                   <motion.button
                     onClick={() => {
@@ -3550,11 +3929,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     }}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
-                    className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
                     title="New chat"
                   >
                     <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                    <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
+                    <span className="text-slate-600 text-xs">
                       New chat
                     </span>
                   </motion.button>
@@ -3666,9 +4045,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         currentWidth = 450;
                       }
                       return currentWidth >= 600 ? (
-                        <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
-                      ) : (
-                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                    ) : (
+                      <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
                       );
                     })()}
                   </button>
@@ -3676,6 +4055,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     onClick={onMapToggle}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
                     title="Close chat"
+                    style={isPropertyDetailsOpen ? { marginRight: '8px' } : undefined}
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -3690,8 +4070,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               style={{ 
                 backgroundColor: '#F9F9F9',
                 padding: '16px 0', // Simplified padding - content will be centered
+                // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
+                marginRight: '6px',
                 scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(0, 0, 0, 0.1) transparent',
+                scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
                 minWidth: '300px', // Prevent squishing of content area
                 flexShrink: 1, // Allow shrinking but with minWidth constraint
                 display: 'flex',
@@ -3702,15 +4084,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               {/* Centered content wrapper - ChatGPT-like centered layout */}
               <div style={{ 
                 width: '100%', 
-                maxWidth: '768px', // Match chat bar max width
-                paddingLeft: '16px',
-                paddingRight: '16px',
+                maxWidth: '680px', // Tighter column for more breathing room at panel edges
+                paddingLeft: '32px',
+                paddingRight: '32px',
                 margin: '0 auto' // Center the content wrapper
               }}>
-                <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
-                  <AnimatePresence>
-                    {renderedMessages}
-                  </AnimatePresence>
+              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
+                <AnimatePresence>
+                  {renderedMessages}
+                </AnimatePresence>
                 </div>
               </div>
             </div>
@@ -3745,7 +4127,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     transform: 'translateX(-50%)', // Center the QuickStartBar
                         zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
-                    maxWidth: '768px', // Match chat bar max width
+                    maxWidth: '680px', // Match tightened chat/message column
                     display: 'flex',
                     justifyContent: 'center'
                       }}
@@ -3775,28 +4157,36 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   justifyContent: 'center', 
                   alignItems: 'center',
                   position: 'relative',
-                  paddingLeft: '16px', // Add horizontal padding for edge spacing
-                  paddingRight: '16px'
+                  // Slightly larger left padding to match the right side after accounting for panel affordances
+                  paddingLeft: '36px',
+                  // Slightly larger right padding to visually balance the panel's right-edge drag/scroll affordances
+                  paddingRight: '44px'
                 }}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
               >
                 <div 
                   className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                   style={{
-                    background: '#ffffff',
-                    border: '1px solid #E5E7EB',
-                    boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                    background: isDragOver ? '#F5F5F5' : '#ffffff',
+                    border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
+                    boxShadow: isDragOver 
+                      ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
+                      : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                     position: 'relative',
                     paddingTop: '12px', // More padding top
                     paddingBottom: '12px', // More padding bottom
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    width: 'min(100%, 768px)', // ChatGPT-like: full width when narrow, max 768px when wide (centered by parent)
+                    width: 'min(100%, 680px)', // Match tightened chat/message column
                     minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
                     minHeight: 'fit-content',
                     boxSizing: 'border-box',
-                    borderRadius: '12px' // Always use rounded square corners
+                    borderRadius: '12px', // Always use rounded square corners
+                    transition: 'all 0.2s ease-in-out'
                     // Centered by parent form's justifyContent: 'center'
                   }}
                 >
@@ -4058,7 +4448,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-2"
                           title="Minimize chat to bubble"
                         >
-                          <Minimize2 className="w-5 h-5" strokeWidth={1.5} />
+                          <Minimize className="w-5 h-5" strokeWidth={1.5} />
                         </button>
                       </div>
 

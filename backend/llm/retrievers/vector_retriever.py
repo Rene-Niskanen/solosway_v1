@@ -78,7 +78,8 @@ class VectorDocumentRetriever:
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
         address_hash: Optional[str] = None,
-        business_id: Optional[str] = None
+        business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None  # NEW: Filter by specific document IDs
     ) -> List[RetrievedDocument]:
         """
         Search for documents using semantic similarity with adaptive thresholding.
@@ -90,12 +91,19 @@ class VectorDocumentRetriever:
             classification_type: Optional filter (inspection, appraisal, etc)
             address_hash: Optional filter by address hash 
             business_id: Optional filter by business ID
+            document_ids: Optional list of document IDs to filter results to (NEW)
 
         Returns:
             List of RetrievedDocument dicts sorted by similarity
         """
         if top_k is None:
             top_k = config.vector_top_k
+
+        # Prepare document_ids set for filtering (convert all to strings for comparison)
+        document_ids_set = None
+        if document_ids and len(document_ids) > 0:
+            document_ids_set = set(str(doc_id) for doc_id in document_ids)
+            logger.info(f"[VECTOR_SEARCH] Document filtering enabled: {len(document_ids)} document(s) selected")
 
         try:
             # step one: embed the query 
@@ -124,9 +132,25 @@ class VectorDocumentRetriever:
                 if business_id:
                     payload['filter_business_id'] = str(business_id)
                 
+                # TODO: Add filter_document_ids to RPC payload if database function supports it
+                # For now, we filter results after the RPC call
+                
                 try:
                     response = self.supabase.rpc('match_documents', payload).execute()
-                    return response.data or []
+                    data = response.data or []
+                    
+                    # Filter by document_ids immediately after RPC call (before processing)
+                    if document_ids_set and data:
+                        original_count = len(data)
+                        data = [
+                            row for row in data
+                            if row.get('document_id') and str(row.get('document_id')) in document_ids_set
+                        ]
+                        filtered_count = len(data)
+                        if original_count != filtered_count:
+                            logger.info(f"[VECTOR_SEARCH] Filtered results: {original_count} -> {filtered_count} (document_ids filter applied)")
+                    
+                    return data
                 except Exception as rpc_error:
                     # Handle function overloading ambiguity
                     error_msg = str(rpc_error)

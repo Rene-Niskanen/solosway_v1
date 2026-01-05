@@ -387,9 +387,24 @@ const PlanningIndicator: React.FC = () => (
       fontSize: '12px',
       padding: '2px 0',
       display: 'flex',
-      alignItems: 'center'
+      alignItems: 'center',
+      gap: '8px'
     }}
   >
+    {/* Loading spinner circle */}
+    <div 
+      className="reasoning-loading-spinner"
+      style={{
+        width: '14px',
+        height: '14px',
+        border: '2px solid #D1D5DB',
+        borderTop: '2px solid #4B5563',
+        borderRadius: '50%',
+        flexShrink: 0,
+        display: 'inline-block',
+        boxSizing: 'border-box'
+      }}
+    />
     <span className="planning-shimmer-full">Planning next moves</span>
   </div>
 );
@@ -908,6 +923,15 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           
           {/* CSS for shimmer animations */}
           <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+            
+            .reasoning-loading-spinner {
+              animation: spin 0.8s linear infinite;
+            }
+            
             .planning-shimmer-full {
               background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
               background-size: 300% 100%;
@@ -1249,6 +1273,15 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       
       {/* CSS for shimmer animations - sequential reveal and green flash for reading */}
       <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        
+        .reasoning-loading-spinner {
+          animation: spin 0.8s linear infinite;
+        }
+        
         .planning-shimmer-full {
           background: linear-gradient(90deg, #6B7280 0%, #9CA3AF 25%, #D1D5DB 50%, #9CA3AF 75%, #6B7280 100%);
           background-size: 300% 100%;

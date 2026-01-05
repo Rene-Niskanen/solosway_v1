@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { Database, BarChart3, Home, MessageSquareDot, LayoutDashboard, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore } from "lucide-react";
+import { BarChart3, Home, MessageSquareDot, LayoutDashboard, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
 import { ProfileDropdown } from "./ProfileDropdown";
 import { useChatHistory } from "./ChatHistoryContext";
+import { useFilingSidebar } from "../contexts/FilingSidebarContext";
 
 const sidebarItems = [{
   icon: List,
@@ -19,8 +20,8 @@ const sidebarItems = [{
   id: 'analytics',
   label: 'Analytics'
 }, {
-  icon: Database,
-  id: 'notifications',
+  icon: FolderOpen,
+  id: 'database',
   label: 'Files'
 }] as any[];
 
@@ -75,6 +76,9 @@ export const Sidebar = ({
   const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
   const [editingTitle, setEditingTitle] = React.useState<string>('');
   const [showArchived, setShowArchived] = React.useState<boolean>(false);
+  
+  // Filing sidebar integration
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
 
   // Close menu when clicking outside
   React.useEffect(() => {
@@ -210,7 +214,7 @@ export const Sidebar = ({
                     className="w-7 h-7 lg:w-8 lg:h-8 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
                   />
                 ) : (
-                  <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
+                  <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
                 )}
               </div>
               <span className={`text-xs font-medium ${isChatPanelOpen ? 'text-gray-900' : 'text-gray-700'}`}>
@@ -231,7 +235,7 @@ export const Sidebar = ({
               className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center rounded-lg group cursor-pointer transition-colors duration-150 hover:bg-gray-100"
               aria-label="Close List"
             >
-              <ListEnd className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
+              <ListEnd className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
             </button>
           </div>
         ) : (
@@ -251,7 +255,7 @@ export const Sidebar = ({
                   className="w-5 h-5 lg:w-6 lg:h-6 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
             />
           ) : (
-                <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
+                <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
               )}
             </div>
           </button>
@@ -402,7 +406,12 @@ export const Sidebar = ({
       <div className={`flex flex-col ${isExpanded ? 'space-y-1' : 'space-y-2'} ${showChatHistoryInSidebar ? 'mt-auto' : 'flex-1'} ${isExpanded ? 'items-stretch px-5' : 'items-center'}`}>
         {sidebarItems.filter(item => !(item.id === 'list' && isExpanded)).map((item, index) => {
         // Dashboard icon is active only when on search view (not map view)
-        const isActive = item.id === 'home' ? (activeItem === 'search' && !isMapVisible) : activeItem === item.id;
+        // Database icon is active when FilingSidebar is open
+        const isActive = item.id === 'home' 
+          ? (activeItem === 'search' && !isMapVisible)
+          : item.id === 'database'
+          ? isFilingSidebarOpen
+          : activeItem === item.id;
         // Always use LayoutDashboard for home icon
         // Use ListEnd icon when expanded and item is 'list', TextAlignJustify when not expanded, otherwise use the item's icon
         const Icon = item.id === 'home' 
@@ -414,10 +423,14 @@ export const Sidebar = ({
               : item.icon;
         
         // Special handling for List icon - it should only expand sidebar, not navigate
+        // Special handling for database icon - it should open FilingSidebar, not navigate
         const handleListClick = () => {
           if (item.id === 'list') {
             // Only toggle expansion, don't navigate
             onExpand?.();
+          } else if (item.id === 'database') {
+            // Toggle FilingSidebar instead of navigating
+            toggleFilingSidebar();
           } else if (item.id === 'home') {
             handleItemClick('home');
           } else {
@@ -428,8 +441,8 @@ export const Sidebar = ({
         // Label for list item changes when expanded
         const displayLabel = (item.id === 'list' && isExpanded) ? 'Close List' : item.label;
 
-        // Check if this is the analytics icon (Material Symbols)
-        const isAnalyticsIcon = item.id === 'analytics';
+        // Use DraftingCompass for analytics icon
+        const AnalyticsIcon = item.id === 'analytics' ? DraftingCompass : Icon;
 
         return <button 
           key={item.id} 
@@ -438,22 +451,11 @@ export const Sidebar = ({
           aria-label={displayLabel} 
         >
               {/* Icon */}
-          {isAnalyticsIcon ? (
-            <span 
-              className="material-symbols-outlined drop-shadow-sm flex-shrink-0 text-base lg:text-xl" 
-              style={{ 
-                color: isActive ? '#22c55e' : '#8B8B8B'
-              }}
-            >
-              area_chart
-            </span>
-          ) : (
-            <Icon 
-              className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0`} 
-              strokeWidth={1.8} 
-              style={{ color: isActive ? '#22c55e' : '#8B8B8B' }} 
-            />
-          )}
+          <AnalyticsIcon 
+            className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]`} 
+            strokeWidth={1.8} 
+            style={{ color: isActive ? '#22c55e' : '#8B8B8B' }} 
+          />
           {/* Label - only show when expanded */}
           {isExpanded && (
             <span className={`text-xs font-medium ${isActive ? 'text-gray-900' : 'text-gray-700'}`}>

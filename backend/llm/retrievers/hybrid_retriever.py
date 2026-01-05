@@ -47,6 +47,7 @@ class HybridDocumentRetriever:
         property_id: Optional[str] = None,
         classification_type: Optional[str] = None,
         business_id: Optional[str] = None,
+        document_ids: Optional[List[str]] = None,  # NEW: Filter by specific document IDs
         bm25_weight: float = 0.4,  # 40% BM25, 60% vector
         vector_weight: float = 0.6,
         trigger_lazy_embedding: bool = False  # Disabled by default (all chunks embedded upfront)
@@ -62,6 +63,7 @@ class HybridDocumentRetriever:
             property_id: Optional filter by property UUID
             classification_type: Optional filter
             business_id: Optional filter by business ID
+            document_ids: Optional list of document IDs to filter results to (NEW)
             bm25_weight: Weight for BM25 results in RRF (default 0.4)
             vector_weight: Weight for Vector results in RRF (default 0.6)
             trigger_lazy_embedding: If True, triggers embedding for unembedded chunks (disabled by default)
@@ -72,6 +74,15 @@ class HybridDocumentRetriever:
         # Set default top_k from env var or use 25 (reduced from 50 for performance)
         if top_k is None:
             top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K", "25"))
+        
+        # Prepare document_ids set for logging (filtering now happens in individual retrievers)
+        if document_ids and len(document_ids) > 0:
+            logger.info(f"[HYBRID_SEARCH] Document filtering enabled: {len(document_ids)} document(s) selected - filtering at retriever level")
+            # When searching within a single document, increase top_k to get more candidates
+            # because the search space is smaller
+            if len(document_ids) == 1:
+                top_k = max(top_k, 50)  # Minimum 50 chunks for single-document search
+                logger.info(f"[HYBRID_SEARCH] Single-document search detected - increased top_k to {top_k} for better coverage")
         
         # Check if parallel search is enabled (default: True)
         enable_parallel = os.getenv("ENABLE_PARALLEL_HYBRID_SEARCH", "true").lower() == "true"
@@ -93,7 +104,8 @@ class HybridDocumentRetriever:
                     top_k=top_k * 2,  # Get more candidates for better coverage
                     property_id=property_id,
                     classification_type=classification_type,
-                    business_id=business_id
+                    business_id=business_id,
+                    document_ids=document_ids  # NEW: Pass document_ids for filtering
                 )
                 
                 vector_start = time.time()
@@ -103,14 +115,16 @@ class HybridDocumentRetriever:
                     top_k=top_k,
                     property_id=property_id,
                     classification_type=classification_type,
-                    business_id=business_id
+                    business_id=business_id,
+                    document_ids=document_ids  # NEW: Pass document_ids for filtering
                 )
                 
                 # Wait for BM25 first to check for early exit (with timeout to prevent hanging)
                 try:
                     bm25_results = bm25_future.result(timeout=30)  # 30s timeout
+                    # Note: Filtering by document_ids now happens inside BM25 retriever
                     bm25_time = time.time() - bm25_start
-                    logger.info(f"[HYBRID_SEARCH] BM25 search completed in {bm25_time:.2f}s, found {len(bm25_results)} results")
+                    logger.info(f"[HYBRID_SEARCH] BM25 search completed in {bm25_time:.2f}s, found {len(bm25_results)} results" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
                 except concurrent.futures.TimeoutError:
                     logger.error(f"[HYBRID_SEARCH] BM25 search timed out after 30s")
                     bm25_results = []
@@ -137,8 +151,9 @@ class HybridDocumentRetriever:
                         # Wait for vector search to complete (with timeout)
                         try:
                             vector_results = vector_future.result(timeout=30)  # 30s timeout
+                            # Note: Filtering by document_ids now happens inside Vector retriever
                             vector_time = time.time() - vector_start
-                            logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results")
+                            logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
                         except concurrent.futures.TimeoutError:
                             logger.error(f"[HYBRID_SEARCH] Vector search timed out after 30s")
                             vector_results = []
@@ -147,8 +162,9 @@ class HybridDocumentRetriever:
                     # Wait for both to complete (with timeout)
                     try:
                         vector_results = vector_future.result(timeout=30)  # 30s timeout
+                        # Note: Filtering by document_ids now happens inside Vector retriever
                         vector_time = time.time() - vector_start
-                        logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results")
+                        logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
                     except concurrent.futures.TimeoutError:
                         logger.error(f"[HYBRID_SEARCH] Vector search timed out after 30s")
                         vector_results = []
@@ -162,10 +178,12 @@ class HybridDocumentRetriever:
                 top_k=top_k * 2,  # Get more candidates for better coverage
                 property_id=property_id,
                 classification_type=classification_type,
-                business_id=business_id
+                business_id=business_id,
+                document_ids=document_ids  # NEW: Pass document_ids for filtering
             )
+            # Note: Filtering by document_ids now happens inside BM25 retriever
             bm25_time = time.perf_counter() - bm25_start_time
-            logger.info(f"[HYBRID_SEARCH] BM25 search completed in {bm25_time:.2f}s, found {len(bm25_results)} results (sequential)")
+            logger.info(f"[HYBRID_SEARCH] BM25 search completed in {bm25_time:.2f}s, found {len(bm25_results)} results (sequential)" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
             
             # Step 2: Vector search (semantic matches, only on embedded chunks)
             # Early exit disabled by default - always run vector search for better results
@@ -175,10 +193,12 @@ class HybridDocumentRetriever:
                 top_k=top_k,
                 property_id=property_id,
                 classification_type=classification_type,
-                business_id=business_id
+                business_id=business_id,
+                document_ids=document_ids  # NEW: Pass document_ids for filtering
             )
+            # Note: Filtering by document_ids now happens inside Vector retriever
             vector_time = time.perf_counter() - vector_start_time
-            logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results (sequential)")
+            logger.info(f"[HYBRID_SEARCH] Vector search completed in {vector_time:.2f}s, found {len(vector_results)} results (sequential)" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
         
         # Step 3: Identify unembedded chunks and trigger lazy embedding (after both searches complete)
         unembedded_chunk_ids = []

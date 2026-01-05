@@ -106,9 +106,11 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
 
 async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflowState:
     """
-    Fast path: Fetch ALL chunks from specific document(s).
+    Fast path: Fetch chunks from specific document(s) by reusing the normal retrieval path.
     
-    This bypasses vector search entirely and gets all chunks directly.
+    When a user_query is provided, delegates to query_vector_documents (normal retrieval path)
+    which already handles document_ids filtering, header retrieval, hybrid search, etc.
+    When no query is provided, falls back to fetching all chunks sequentially.
     Used when user attaches file(s) to chat.
     
     Returns:
@@ -119,7 +121,6 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
     
     # FIX: Ensure document_ids is always a list (safety check)
     if document_ids and not isinstance(document_ids, list):
-        # Convert single value to list
         document_ids = [str(document_ids)]
         logger.info(f"[DIRECT_DOC] Converted document_ids to list: {document_ids}")
     elif not document_ids:
@@ -127,11 +128,12 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
     
     property_id = state.get("target_property_id") or state.get("property_id")
     business_id = state.get("business_id")
+    user_query = state.get("user_query", "").strip()
     
     logger.info(
-        f"[DIRECT_DOC] Fetching chunks - document_ids: {document_ids} (type: {type(document_ids).__name__}), "
+        f"[DIRECT_DOC] Fetching chunks - document_ids: {document_ids}, "
         f"property_id: {property_id[:8] if property_id else 'None'}, "
-        f"business_id: {business_id[:8] if business_id else 'None'}"
+        f"has_query: {bool(user_query)}"
     )
     
     # If no document_ids but property_id provided, try to find document
@@ -158,14 +160,30 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
         )
         return {"relevant_documents": []}
     
+    # If user_query is provided, delegate to normal retrieval path (query_vector_documents)
+    # This reuses all the proven logic: header retrieval, hybrid search, header detection, etc.
+    if user_query:
+        logger.info(f"[DIRECT_DOC] Delegating to normal retrieval path (query_vector_documents) with document_ids={document_ids}")
+        
+        # Ensure document_ids is set in state for query_vector_documents to use
+        state_with_doc_ids = {**state, "document_ids": document_ids}
+        
+        # Call the normal retrieval function - it already handles document_ids filtering
+        from backend.llm.nodes.retrieval_nodes import query_vector_documents
+        result_state = query_vector_documents(state_with_doc_ids)
+        
+        # Return the results (query_vector_documents returns {"relevant_documents": [...]})
+        logger.info(f"[DIRECT_DOC] Normal retrieval path returned {len(result_state.get('relevant_documents', []))} chunks")
+        return result_state
+    
+    # Fallback: No query provided - fetch ALL chunks sequentially
     try:
         supabase = get_supabase_client()
         retrieved_docs: List[RetrievedDocument] = []
         
-        # Fetch all chunks for each document
+        # Fetch chunks for each document
         for doc_id in document_ids:
             # Get document metadata
-            # Note: business_id from state is a UUID, so we query by business_uuid (not business_id which is varchar)
             doc_result = supabase.table('documents')\
                 .select('id, original_filename, classification_type, property_id')\
                 .eq('id', doc_id)\
@@ -182,9 +200,9 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
             doc_type = doc_metadata.get('classification_type', 'unknown')
             doc_property_id = doc_metadata.get('property_id')
             
-            logger.info(f"[DIRECT_DOC] Fetching all chunks from document: {filename}")
+            # Fetch ALL chunks sequentially (for cases where user just wants to see the document)
+            logger.info(f"[DIRECT_DOC] No query provided, fetching all chunks from document: {filename}")
             
-            # Fetch ALL chunks for this document (ordered by chunk_index)
             chunks_result = supabase.table('document_vectors')\
                 .select('id, chunk_text, chunk_index, page_number, bbox, blocks, embedding_status')\
                 .eq('document_id', doc_id)\
@@ -209,7 +227,7 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
                     "page_number": chunk.get('page_number', 0),
                     "bbox": chunk.get('bbox'),
                     "blocks": chunk.get('blocks'),
-                    "similarity_score": 1.0,  # Perfect match (direct document)
+                    "similarity_score": 1.0,  # Perfect match (direct document, no query)
                     "source": "direct_document",
                     "address_hash": None,
                     "business_id": business_id,
@@ -219,7 +237,6 @@ async def fetch_direct_document_chunks(state: MainWorkflowState) -> MainWorkflow
                 retrieved_docs.append(retrieved_doc)
         
         logger.info(f"[DIRECT_DOC] Total chunks fetched: {len(retrieved_docs)}")
-        
         return {
             "relevant_documents": retrieved_docs,
             "target_document_ids": document_ids

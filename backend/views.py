@@ -15,6 +15,7 @@ import logging
 import boto3
 import time
 import re
+import math
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
@@ -82,6 +83,33 @@ views = Blueprint('views', __name__)
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Performance timing helpers (lightweight, server-side only)
+# ---------------------------------------------------------------------------
+def _perf_ms(start: float, end: float) -> int:
+    """Return elapsed milliseconds as int (clamped >= 0)."""
+    return max(0, int(round((end - start) * 1000)))
+
+class _Timing:
+    """Tiny timing utility for per-request performance logs."""
+    def __init__(self) -> None:
+        self._t0 = time.perf_counter()
+        self.marks: dict[str, float] = {"t0": self._t0}
+
+    def mark(self, name: str) -> None:
+        self.marks[name] = time.perf_counter()
+
+    def to_ms(self) -> dict[str, int]:
+        # Convert sequential mark deltas to ms for quick reading.
+        ordered = sorted(self.marks.items(), key=lambda kv: kv[1])
+        out: dict[str, int] = {}
+        prev_name, prev_t = ordered[0]
+        for name, t in ordered[1:]:
+            out[f"{prev_name}->{name}_ms"] = _perf_ms(prev_t, t)
+            prev_name, prev_t = name, t
+        out["total_ms"] = _perf_ms(self._t0, time.perf_counter())
+        return out
 
 # ============================================================================
 # HEALTH & STATUS ENDPOINTS
@@ -214,6 +242,14 @@ def chat_completion():
             'error': str(e)
         }), 500
 
+# Add before_request handler to bypass authentication for OPTIONS requests
+@views.before_request
+def handle_options_request():
+    """Bypass authentication for OPTIONS requests (CORS preflight)"""
+    if request.method == 'OPTIONS':
+        # Flask-CORS will handle the response, just return early
+        return None
+
 # Add after_request handler for this blueprint to ensure CORS headers on all responses
 @views.after_request
 def add_cors_headers(response):
@@ -293,6 +329,7 @@ def query_documents_stream():
         if not config.openai_api_key:
             logger.error("❌ [STREAM] OpenAI API key is not configured!")
         
+        timing = _Timing()
         data = request.get_json()
         if data is None:
             response = jsonify({
@@ -305,6 +342,7 @@ def query_documents_stream():
             response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
             return response, 400
         
+        timing.mark("parsed_request")
         query = data.get('query', '')
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
@@ -349,6 +387,7 @@ def query_documents_stream():
                 logger.info("🟢 [STREAM] Getting business_id...")
                 # Get business_id
                 business_id = _ensure_business_uuid()
+                timing.mark("business_id")
                 logger.info(f"🟢 [STREAM] Business ID: {business_id}")
                 if not business_id:
                     logger.error("❌ [STREAM] No business_id found")
@@ -393,6 +432,28 @@ def query_documents_stream():
                     "property_id": property_id,
                     "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
                 }
+                # #region agent log
+                try:
+                    import json as json_module
+                    with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                        f.write(json_module.dumps({
+                            'sessionId': 'debug-session',
+                            'runId': 'run1',
+                            'hypothesisId': 'A',
+                            'location': 'views.py:433',
+                            'message': 'Initial state document_ids check',
+                            'data': {
+                                'document_ids': document_ids,
+                                'document_ids_type': type(document_ids).__name__,
+                                'document_ids_len': len(document_ids) if document_ids else 0,
+                                'document_ids_is_none': document_ids is None,
+                                'document_ids_bool': bool(document_ids),
+                                'query': query[:50]
+                            },
+                            'timestamp': int(__import__('time').time() * 1000)
+                        }) + '\n')
+                except: pass
+                # #endregion
                 logger.info(
                     f"🟢 [STREAM] Initial state built: query='{query[:30]}...', "
                     f"business_id={business_id}, "
@@ -477,6 +538,7 @@ def query_documents_stream():
                         return f"Searching for {target_str}"
                 
                 intent_message = extract_query_intent(query)
+                timing.mark("intent_extracted")
                 
                 # Emit initial reasoning step with extracted intent
                 initial_reasoning = {
@@ -495,33 +557,26 @@ def query_documents_stream():
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
                         
-                        # Create checkpointer for THIS event loop (the one in the thread)
-                        # This avoids "bound to different event loop" errors
-                        from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-                        
+                        # Use persistent GraphRunner graph (compiled once on startup).
+                        # Falls back to legacy behavior if runner isn't available.
+                        graph = None
                         checkpointer = None
                         try:
-                            logger.info("🟡 [STREAM] Creating checkpointer for current event loop...")
+                            from backend.llm.runtime.graph_runner import graph_runner
+                            graph = graph_runner.get_graph()
+                            checkpointer = graph_runner.get_checkpointer()
+                            timing.mark("checkpointer_created")
+                            timing.mark("graph_built")
+                        except Exception as runner_err:
+                            logger.warning(f"🟡 [STREAM] GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
+                            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                             checkpointer = await create_checkpointer_for_current_loop()
-                        except Exception as checkpointer_error:
-                            error_msg = str(checkpointer_error)
-                            # Handle connection timeout errors gracefully
-                            if "couldn't get a connection" in error_msg.lower() or "timeout" in error_msg.lower():
-                                logger.warning(f"🟡 [STREAM] Connection pool timeout creating checkpointer: {checkpointer_error}")
-                                logger.info("🟡 [STREAM] Falling back to stateless mode (no conversation memory)")
-                                checkpointer = None
+                            timing.mark("checkpointer_created")
+                            if checkpointer:
+                                graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
                             else:
-                                # Re-raise unexpected errors
-                                raise
-                        
-                        if checkpointer:
-                            # Build graph with checkpointer for this event loop
-                            # All checkpointers point to same database, so state is shared via thread_id
-                            logger.info("🟡 [STREAM] Building graph with checkpointer for this event loop")
-                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                        else:
-                            logger.warning("🟡 [STREAM] Using stateless mode (no checkpointer)")
-                            graph, _ = await build_main_graph(use_checkpointer=False)
+                                graph, _ = await build_main_graph(use_checkpointer=False)
+                            timing.mark("graph_built")
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
@@ -766,28 +821,6 @@ def query_documents_stream():
                                         # Extract citations from state (already have bbox coordinates from CitationTool)
                                         citations_from_state = state_data.get('citations', [])
                                         
-                                        # #region agent log
-                                        # Debug: Log citations extraction for Hypothesis E
-                                        try:
-                                            # json is already imported at module level
-                                            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                                                f.write(json.dumps({
-                                                    'sessionId': 'debug-session',
-                                                    'runId': 'run1',
-                                                    'hypothesisId': 'E',
-                                                    'location': 'views.py:767',
-                                                    'message': 'Citations extracted from state',
-                                                    'data': {
-                                                        'citations_count': len(citations_from_state) if citations_from_state else 0,
-                                                        'has_citations': bool(citations_from_state),
-                                                        'state_has_citations_key': 'citations' in state_data
-                                                    },
-                                                    'timestamp': int(__import__('time').time() * 1000)
-                                                }) + '\n')
-                                        except Exception:
-                                            pass  # Silently fail instrumentation
-                                        # #endregion
-                                        
                                         if citations_from_state:
                                             logger.info(
                                                 f"🟢 [CITATION_STREAM] Processing {len(citations_from_state)} citations "
@@ -807,80 +840,49 @@ def query_documents_stream():
                                                     citation_bbox = citation.get('bbox')
                                                     citation_page = citation.get('page_number') or (citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None) or 0
                                                     
-                                                    # #region agent log
-                                                    # Debug: Log citation data before streaming for Hypothesis E
-                                                    try:
-                                                        is_fallback_bbox = (
-                                                            citation_bbox and isinstance(citation_bbox, dict) and
-                                                            citation_bbox.get('left') == 0.0 and
-                                                            citation_bbox.get('top') == 0.0 and
-                                                            citation_bbox.get('width') == 1.0 and
-                                                            citation_bbox.get('height') == 1.0
-                                                        )
-                                                        # json is already imported at module level
-                                                        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                                                            f.write(json.dumps({
-                                                                'sessionId': 'debug-session',
-                                                                'runId': 'run1',
-                                                                'hypothesisId': 'E',
-                                                                'location': 'views.py:810',
-                                                                'message': 'Citation data prepared for streaming',
-                                                                'data': {
-                                                                    'citation_number': citation_num_str,
-                                                                    'doc_id': citation.get('doc_id', '')[:8] if citation.get('doc_id') else 'unknown',
-                                                                    'citation_bbox': citation_bbox,
-                                                                    'citation_page': citation_page,
-                                                                    'is_fallback_bbox': is_fallback_bbox,
-                                                                    'has_bbox': bool(citation_bbox),
-                                                                    'page_from_bbox': citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None,
-                                                                    'page_from_citation': citation.get('page_number')
-                                                                },
-                                                                'timestamp': int(__import__('time').time() * 1000)
-                                                            }) + '\n')
-                                                    except Exception:
-                                                        pass
-                                                    # #endregion
-                                                    
                                                     citation_data = {
                                                         'doc_id': citation.get('doc_id'),
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Should already have bbox from CitationTool
-                                                        'method': citation.get('method', 'block-id-lookup')
+                                                        'method': citation.get('method', 'block-id-lookup'),
+                                                        'block_id': citation.get('block_id'),  # Include block_id for debugging
+                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
                                                     }
                                                     
+                                                    block_id = citation.get('block_id', 'UNKNOWN')
                                                     logger.info(
                                                         f"🟢 [CITATION_STREAM] Citation {citation_num_str} data: "
+                                                        f"block_id={block_id}, "
                                                         f"doc_id={citation_data.get('doc_id', '')[:8]}, "
                                                         f"page={citation_data.get('page')}, "
                                                         f"has_bbox={bool(citation_bbox)}, "
                                                         f"bbox_keys={list(citation_bbox.keys()) if citation_bbox and isinstance(citation_bbox, dict) else 'none'}"
                                                     )
                                                     
+                                                    processed_citations[citation_num_str] = citation_data
+                                                    
                                                     # #region agent log
-                                                    # Debug: Log citation event for Hypothesis E
                                                     try:
-                                                        # json is already imported at module level
+                                                        import json as json_module
                                                         with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                                                            f.write(json.dumps({
+                                                            f.write(json_module.dumps({
                                                                 'sessionId': 'debug-session',
                                                                 'runId': 'run1',
-                                                                'hypothesisId': 'E',
-                                                                'location': 'views.py:801',
-                                                                'message': 'Citation event prepared for streaming',
+                                                                'hypothesisId': 'D',
+                                                                'location': 'views.py:815',
+                                                                'message': 'Backend sending citation to frontend',
                                                                 'data': {
                                                                     'citation_number': citation_num_str,
-                                                                    'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'none',
-                                                                    'page': citation_data.get('page'),
-                                                                    'has_bbox': bool(citation_bbox),
-                                                                    'bbox': citation_bbox if citation_bbox and isinstance(citation_bbox, dict) else None
+                                                                    'cited_text': citation.get('cited_text', ''),
+                                                                    'block_id': block_id,
+                                                                    'bbox': citation_bbox,
+                                                                    'page': citation_page,
+                                                                    'doc_id': citation_data.get('doc_id', '')[:8] if citation_data.get('doc_id') else 'UNKNOWN'
                                                                 },
                                                                 'timestamp': int(__import__('time').time() * 1000)
                                                             }) + '\n')
-                                                    except Exception:
-                                                        pass  # Silently fail instrumentation
+                                                    except: pass
                                                     # #endregion
-                                                    
-                                                    processed_citations[citation_num_str] = citation_data
                                                     
                                                     # Stream citation event
                                                     citation_event = {
@@ -891,7 +893,7 @@ def query_documents_stream():
                                                     yield f"data: {json.dumps(citation_event)}\n\n"
                                                     logger.info(
                                                         f"🟢 [CITATION_STREAM] Streamed citation {citation_num_str} "
-                                                        f"(doc: {citation_data.get('doc_id', '')[:8]}, page: {citation_data.get('page')})"
+                                                        f"(block_id: {block_id}, doc: {citation_data.get('doc_id', '')[:8]}, page: {citation_data.get('page')})"
                                                     )
                                                 
                                                 # Store processed citations in final_result for later use
@@ -1160,7 +1162,7 @@ def query_documents_stream():
                         
                         # Check if we have processed citations from block IDs (new approach)
                         processed_citations = final_result.get('processed_citations', {})
-                                    
+                        
                         # Build citations_map_for_frontend and structured_citations from block ID citations
                         citations_map_for_frontend = {}
                         structured_citations = []
@@ -1174,6 +1176,41 @@ def query_documents_stream():
                                 bbox = citation_data.get('bbox', {})
                                 page = citation_data.get('page', 0)
                                 doc_id = citation_data.get('doc_id', '')
+                                block_id = citation_data.get('block_id', 'UNKNOWN')
+                                cited_text = citation_data.get('cited_text', '')[:60] if citation_data.get('cited_text') else 'N/A'
+                                
+                                # Log citation details for debugging
+                                bbox_str = f"{bbox.get('left', 0):.3f},{bbox.get('top', 0):.3f},{bbox.get('width', 0):.3f}x{bbox.get('height', 0):.3f}" if bbox else "N/A"
+                                logger.info(
+                                    f"🟢 [CITATIONS] Citation {citation_num} (FINAL): block_id={block_id}, "
+                                    f"doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}, bbox={bbox_str}, "
+                                    f"cited_text='{cited_text}...'"
+                                )
+                                
+                                # Validate BBOX coordinates
+                                if bbox:
+                                    bbox_left = bbox.get('left', 0)
+                                    bbox_top = bbox.get('top', 0)
+                                    bbox_width = bbox.get('width', 0)
+                                    bbox_height = bbox.get('height', 0)
+                                    
+                                    # Check for fallback BBOX
+                                    is_fallback = (
+                                        bbox_left == 0.0 and bbox_top == 0.0 and
+                                        bbox_width == 1.0 and bbox_height == 1.0
+                                    )
+                                    if is_fallback:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (block_id: {block_id}) "
+                                            f"uses fallback BBOX (0,0,1,1) - coordinates may be inaccurate"
+                                        )
+                                    
+                                    # Check for invalid dimensions
+                                    if bbox_width <= 0 or bbox_height <= 0:
+                                        logger.warning(
+                                            f"⚠️ [CITATIONS] Citation {citation_num} (block_id: {block_id}) "
+                                            f"has invalid BBOX dimensions: {bbox_width}x{bbox_height}"
+                                        )
                                 
                                 # Build structured citation for array format
                                 structured_citations.append({
@@ -1182,19 +1219,21 @@ def query_documents_stream():
                                     'page': page,
                                     'bbox': bbox
                                 })
-                                
+                                                
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
                                     'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
-                                    'method': citation_data.get('method', 'block-id-lookup')
+                                    'method': citation_data.get('method', 'block-id-lookup'),
+                                    'block_id': block_id  # Include block_id for debugging
                                 }
                         else:
                             logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
-                        
+                                
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
+                        timing.mark("prepare_complete")
                         # Send complete message with metadata
                         complete_data = {
                             'type': 'complete',
@@ -1208,6 +1247,13 @@ def query_documents_stream():
                             }
                         }
                         yield f"data: {json.dumps(complete_data)}\n\n"
+                        timing.mark("complete_sent")
+                        logger.info("🟣 [PERF][STREAM] %s", json.dumps({
+                            "endpoint": "/api/llm/query/stream",
+                            "session_id": session_id,
+                            "doc_ids_count": len(document_ids) if document_ids else 0,
+                            "timing": timing.to_ms()
+                        }))
                     
                     except Exception as e:
                         logger.error(f"Error in run_and_stream: {e}")
@@ -1364,6 +1410,7 @@ def query_documents():
     import time
     from backend.llm.graphs.main_graph import main_graph, checkpointer
     
+    timing = _Timing()
     data = request.get_json()
     if data is None:
         response = jsonify({
@@ -1376,6 +1423,7 @@ def query_documents():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 400
     
+    timing.mark("parsed_request")
     query = data.get('query', '')
     property_id = data.get('propertyId')  # From property attachment
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
@@ -1403,6 +1451,7 @@ def query_documents():
     try:
         # Get business_id from session
         business_id = _ensure_business_uuid()
+        timing.mark("business_id")
         if not business_id:
             return jsonify({
                 'success': False,
@@ -1440,24 +1489,31 @@ def query_documents():
             "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
         }
         
-        # Use global graph instance (initialized on app startup)
         async def run_query():
-            # Create checkpointer for THIS event loop (created by asyncio.run())
-            # This avoids "bound to different event loop" errors
-            from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
-            
             try:
-                logger.info("Creating checkpointer for current event loop...")
-                checkpointer = await create_checkpointer_for_current_loop()
-                
-                if checkpointer:
-                    # Build graph with checkpointer for this event loop
-                    # All checkpointers point to same database, so state is shared via thread_id
-                    logger.info("Building graph with checkpointer for this event loop")
-                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                else:
-                    logger.warning("Failed to create checkpointer - using stateless mode")
-                    graph, _ = await build_main_graph(use_checkpointer=False)
+                # Prefer persistent GraphRunner graph (compiled once on startup).
+                # Falls back to legacy behavior if runner isn't available.
+                graph = None
+                checkpointer = None
+                try:
+                    from backend.llm.runtime.graph_runner import graph_runner
+                    graph = graph_runner.get_graph()
+                    checkpointer = graph_runner.get_checkpointer()
+                    timing.mark("checkpointer_created")
+                    timing.mark("graph_built")
+                except Exception as runner_err:
+                    logger.warning(f"GraphRunner unavailable, falling back to legacy per-request graph: {runner_err}")
+                    from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                    logger.info("Creating checkpointer for current event loop...")
+                    checkpointer = await create_checkpointer_for_current_loop()
+                    timing.mark("checkpointer_created")
+                    if checkpointer:
+                        logger.info("Building graph with checkpointer for this event loop")
+                        graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                    else:
+                        logger.warning("Failed to create checkpointer - using stateless mode")
+                        graph, _ = await build_main_graph(use_checkpointer=False)
+                    timing.mark("graph_built")
                 
                 config = {
                     "configurable": {
@@ -1465,6 +1521,7 @@ def query_documents():
                     }
                 }
                 result = await graph.ainvoke(initial_state, config)
+                timing.mark("graph_done")
                 return result
             except Exception as graph_error:
                 # Handle connection closed errors gracefully
@@ -1482,6 +1539,7 @@ def query_documents():
         # Run async graph
         logger.info(f"Running LangGraph query: '{query[:50]}...' (property_id: {property_id}, session: {session_id})")
         result = asyncio.run(run_query())
+        timing.mark("response_ready")
         
         # Format response for frontend
         final_summary = result.get("final_summary", "")
@@ -1504,6 +1562,13 @@ def query_documents():
         
         logger.info(f"LangGraph query completed: {len(result.get('relevant_documents', []))} documents found")
         
+        logger.info("🟣 [PERF][QUERY] %s", json.dumps({
+            "endpoint": "/api/llm/query",
+            "session_id": session_id,
+            "doc_ids_count": len(document_ids) if document_ids else 0,
+            "timing": timing.to_ms()
+        }))
+
         return jsonify({
             'success': True,
             'data': response_data
@@ -2116,6 +2181,32 @@ def proxy_upload():
         
         # Generate unique S3 key
         filename = secure_filename(file.filename)
+        
+        # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        supabase = doc_service.supabase
+        
+        existing_docs = supabase.table('documents')\
+            .select('id, original_filename, file_size')\
+            .eq('original_filename', filename)\
+            .eq('business_uuid', business_uuid_str)\
+            .execute()
+        
+        if existing_docs.data:
+            # Check for exact duplicate (same filename and size)
+            file_size = file.content_length or 0
+            exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
+            
+            if exact_duplicate:
+                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                return jsonify({
+                    'success': False,
+                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'is_duplicate': True,
+                    'existing_document_id': exact_duplicate['id']
+                }), 409  # 409 Conflict
+        
         s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
         
         # Upload to S3 FIRST (before creating database record)
@@ -2282,6 +2373,81 @@ def proxy_upload():
         logger.error(f"Proxy upload failed: {e}")
         return jsonify({'error': str(e)}), 500
 
+@views.route('/api/documents/check-duplicate', methods=['POST', 'OPTIONS'])
+@login_required
+def check_duplicate_document():
+    """
+    Check if a document with the same filename and size already exists.
+    Returns information about potential duplicates.
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        file_size = data.get('file_size')
+        
+        if not filename or file_size is None:
+            return jsonify({'error': 'Filename and file_size are required'}), 400
+        
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User is not associated with a business'}), 400
+        
+        # Check for duplicates in Supabase
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        supabase = doc_service.supabase
+        
+        # Query for documents with same filename and business
+        result = supabase.table('documents')\
+            .select('id, original_filename, file_size, created_at')\
+            .eq('original_filename', filename)\
+            .eq('business_uuid', business_uuid_str)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            # Check if any have the same size (exact duplicate)
+            exact_duplicate = next((doc for doc in result.data if doc.get('file_size') == file_size), None)
+            
+            if exact_duplicate:
+                # Exact duplicate - same filename and size
+                return jsonify({
+                    'is_duplicate': True,
+                    'is_exact_duplicate': True,
+                    'existing_document': {
+                        'id': exact_duplicate['id'],
+                        'filename': exact_duplicate['original_filename'],
+                        'file_size': exact_duplicate['file_size'],
+                        'created_at': exact_duplicate.get('created_at')
+                    }
+                }), 200
+            else:
+                # Same filename but different size - likely updated version
+                return jsonify({
+                    'is_duplicate': True,
+                    'is_exact_duplicate': False,
+                    'existing_documents': result.data,
+                    'message': f'A document with the name "{filename}" already exists with a different file size.'
+                }), 200
+        
+        # No duplicates found
+        return jsonify({
+            'is_duplicate': False
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error checking for duplicate document: {e}", exc_info=True)
+        return jsonify({'error': f'Failed to check for duplicates: {str(e)}'}), 500
+
 @views.route('/api/documents/upload', methods=['POST', 'OPTIONS'])
 @login_required
 def upload_document():
@@ -2331,6 +2497,32 @@ def upload_document():
         
         # Generate unique S3 key
         filename = secure_filename(file.filename)
+        
+        # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        from .services.supabase_document_service import SupabaseDocumentService
+        doc_service = SupabaseDocumentService()
+        supabase = doc_service.supabase
+        
+        existing_docs = supabase.table('documents')\
+            .select('id, original_filename, file_size')\
+            .eq('original_filename', filename)\
+            .eq('business_uuid', business_uuid_str)\
+            .execute()
+        
+        if existing_docs.data:
+            # Check for exact duplicate (same filename and size)
+            file_size = file.content_length or 0
+            exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
+            
+            if exact_duplicate:
+                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                return jsonify({
+                    'success': False,
+                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'is_duplicate': True,
+                    'existing_document_id': exact_duplicate['id']
+                }), 409  # 409 Conflict
+        
         s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
         
         # Upload to S3 FIRST (before creating database record)
@@ -2498,14 +2690,24 @@ def test_s3_upload():
     except Exception as e:
         return jsonify({'error': f'S3 upload failed: {str(e)}'}), 500
 
-@views.route('/api/documents', methods=['GET'])
-@login_required
+@views.route('/api/documents', methods=['GET', 'OPTIONS'])
 def get_documents():
     """
     Fetches all documents associated with the current user's business.
     """
+    # Handle OPTIONS preflight - return early to bypass authentication
+    if request.method == 'OPTIONS':
+        # Flask-CORS will add headers via after_request handler
+        return '', 200
+    
+    # Require login for actual GET request
+    if not current_user.is_authenticated:
+        # Flask-CORS will add headers automatically via after_request handler
+        return jsonify({'error': 'Authentication required'}), 401
+    
     business_uuid_str = _ensure_business_uuid()
     if not business_uuid_str:
+        # Flask-CORS will add headers automatically via after_request handler
         return jsonify({'error': 'User is not associated with a business'}), 400
 
     documents = (
@@ -2515,7 +2717,159 @@ def get_documents():
         .all()
     )
     
+    # Flask-CORS will add headers automatically via after_request handler
     return jsonify([doc.serialize() for doc in documents])
+
+@views.route('/api/documents/folders', methods=['POST', 'OPTIONS'])
+def create_folder():
+    """
+    Creates a new folder for organizing documents.
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Require login
+    if not current_user.is_authenticated:
+        error_response = jsonify({'error': 'Authentication required'})
+        error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        error_response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return error_response, 401
+    
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        error_response = jsonify({'error': 'User is not associated with a business'})
+        error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        error_response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return error_response, 400
+    
+    try:
+        data = request.get_json()
+        name = data.get('name', 'New Folder')
+        parent_id = data.get('parent_id')
+        property_id = data.get('property_id')
+        
+        # Validate name
+        if not name or not name.strip():
+            return jsonify({'error': 'Folder name is required'}), 400
+        
+        # Generate folder ID
+        folder_id = str(uuid.uuid4())
+        
+        # Get Supabase client
+        supabase = get_supabase_client()
+        
+        # Prepare folder data
+        folder_data = {
+            'id': folder_id,
+            'name': name.strip(),
+            'business_id': business_uuid_str,
+            'parent_id': parent_id if parent_id else None,
+            'property_id': property_id if property_id else None,
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        
+        # Insert into Supabase (assuming a 'folders' table exists)
+        # If table doesn't exist, we'll use a simple storage approach
+        try:
+            result = supabase.table('folders').insert(folder_data).execute()
+            logger.info(f"✅ Folder {folder_id} created in Supabase")
+        except Exception as supabase_error:
+            # If folders table doesn't exist, log and return the folder data anyway
+            # The frontend will handle persistence via localStorage
+            logger.warning(f"⚠️ Folders table may not exist in Supabase: {supabase_error}")
+            logger.info(f"📁 Folder {folder_id} created (local storage only)")
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'id': folder_id,
+                'name': name.strip(),
+                'parent_id': parent_id,
+                'property_id': property_id,
+                'document_count': 0,
+            }
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error creating folder: {e}", exc_info=True)
+        error_response = jsonify({'error': f'Failed to create folder: {str(e)}'})
+        error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        error_response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return error_response, 500
+
+@views.route('/api/documents/folders/<uuid:folder_id>', methods=['DELETE', 'OPTIONS'])
+@login_required
+def delete_folder(folder_id):
+    """
+    Delete a folder from Supabase.
+    Also deletes all child folders recursively.
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    business_uuid_str = _ensure_business_uuid()
+    if not business_uuid_str:
+        error_response = jsonify({'error': 'User is not associated with a business'})
+        error_response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        error_response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return error_response, 400
+    
+    try:
+        supabase = get_supabase_client()
+        
+        # Recursively delete folder and all its children
+        def delete_folder_recursive(folder_id_to_delete):
+            # First, get all child folders
+            children = supabase.table('folders')\
+                .select('id')\
+                .eq('parent_id', str(folder_id_to_delete))\
+                .eq('business_id', business_uuid_str)\
+                .execute()
+            
+            # Delete all children first
+            if children.data:
+                for child in children.data:
+                    delete_folder_recursive(child['id'])
+            
+            # Then delete this folder
+            supabase.table('folders')\
+                .delete()\
+                .eq('id', str(folder_id_to_delete))\
+                .eq('business_id', business_uuid_str)\
+                .execute()
+            
+            logger.info(f"✅ Deleted folder {folder_id_to_delete} from Supabase")
+        
+        # Delete the folder and its children
+        delete_folder_recursive(folder_id)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Folder deleted successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error deleting folder: {e}", exc_info=True)
+        # Don't fail if folder doesn't exist in Supabase (might be localStorage only)
+        return jsonify({
+            'success': True,
+            'message': 'Folder deletion attempted (may have been localStorage only)'
+        }), 200
 
 @views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
 def delete_document_standard(document_id):
@@ -2948,13 +3302,21 @@ def api_dashboard():
 def dashboard():
     return render_template("dashboard.html", user=current_user)
 
-@views.route('/api/files', methods=['GET'])
-@login_required
+@views.route('/api/files', methods=['GET', 'OPTIONS'])
 def get_files():
     """
     Alias for /api/documents - TypeScript frontend compatibility.
     Fetches all documents associated with the current user's business from Supabase.
     """
+    # Handle OPTIONS preflight - return early to bypass authentication
+    if request.method == 'OPTIONS':
+        # Flask-CORS will add headers via after_request handler
+        return '', 200
+    
+    # Require login for actual GET request
+    if not current_user.is_authenticated:
+        return jsonify({'error': 'Authentication required'}), 401
+    
     business_uuid_str = _ensure_business_uuid()
     if not business_uuid_str:
         return jsonify({'error': 'User is not associated with a business'}), 400
@@ -4798,6 +5160,174 @@ def test_property_matching():
         
     except Exception as e:
         logger.error(f"Error testing property matching: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@views.route('/api/documents/remove-duplicates', methods=['POST', 'OPTIONS'])
+@login_required
+def remove_duplicate_documents():
+    """
+    Remove duplicate documents from the database.
+    Duplicates are identified by: original_filename + file_size + business_uuid.
+    For each duplicate group, keeps the oldest document (by created_at) and deletes the rest.
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        return response, 200
+    
+    try:
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'error': 'User is not associated with a business'}), 400
+        
+        from .services.supabase_document_service import SupabaseDocumentService
+        from .services.unified_deletion_service import UnifiedDeletionService
+        
+        doc_service = SupabaseDocumentService()
+        supabase = doc_service.supabase
+        deletion_service = UnifiedDeletionService()
+        
+        # Get all documents for this business
+        logger.info(f"🔍 [REMOVE-DUPLICATES] Fetching all documents for business {business_uuid_str}")
+        all_docs = supabase.table('documents')\
+            .select('id, original_filename, file_size, created_at, s3_path, business_uuid')\
+            .eq('business_uuid', business_uuid_str)\
+            .order('created_at', desc=False)\
+            .execute()
+        
+        if not all_docs.data:
+            return jsonify({
+                'success': True,
+                'message': 'No documents found',
+                'duplicates_removed': 0,
+                'details': []
+            })
+        
+        logger.info(f"📄 [REMOVE-DUPLICATES] Found {len(all_docs.data)} total documents")
+        
+        # Group documents by (original_filename, file_size)
+        # This identifies duplicates
+        duplicate_groups = {}
+        for doc in all_docs.data:
+            key = (doc.get('original_filename'), doc.get('file_size'))
+            if key not in duplicate_groups:
+                duplicate_groups[key] = []
+            duplicate_groups[key].append(doc)
+        
+        # Find groups with duplicates (more than 1 document)
+        duplicates_to_remove = []
+        for key, docs in duplicate_groups.items():
+            if len(docs) > 1:
+                # Sort by created_at (oldest first)
+                docs_sorted = sorted(docs, key=lambda x: x.get('created_at', ''))
+                # Keep the oldest (first), mark the rest for deletion
+                keep_doc = docs_sorted[0]
+                remove_docs = docs_sorted[1:]
+                
+                duplicates_to_remove.append({
+                    'filename': key[0],
+                    'file_size': key[1],
+                    'keep': {
+                        'id': keep_doc.get('id'),
+                        'created_at': keep_doc.get('created_at')
+                    },
+                    'remove': [
+                        {
+                            'id': doc.get('id'),
+                            'created_at': doc.get('created_at'),
+                            's3_path': doc.get('s3_path')
+                        }
+                        for doc in remove_docs
+                    ]
+                })
+        
+        if not duplicates_to_remove:
+            return jsonify({
+                'success': True,
+                'message': 'No duplicate documents found',
+                'duplicates_removed': 0,
+                'details': []
+            })
+        
+        logger.info(f"🔄 [REMOVE-DUPLICATES] Found {len(duplicates_to_remove)} duplicate groups")
+        
+        # Delete duplicates
+        deletion_results = []
+        total_deleted = 0
+        total_failed = 0
+        
+        for group in duplicates_to_remove:
+            filename = group['filename']
+            keep_id = group['keep']['id']
+            
+            for doc_to_remove in group['remove']:
+                doc_id = doc_to_remove['id']
+                s3_path = doc_to_remove.get('s3_path')
+                
+                try:
+                    logger.info(f"🗑️ [REMOVE-DUPLICATES] Deleting duplicate: {filename} (ID: {doc_id})")
+                    
+                    # Use UnifiedDeletionService to properly delete the document
+                    result = deletion_service.delete_document_complete(
+                        document_id=doc_id,
+                        business_id=business_uuid_str,
+                        s3_path=s3_path,
+                        delete_s3=True,
+                        recompute_properties=True,
+                        cleanup_orphans=True
+                    )
+                    
+                    if result.success:
+                        total_deleted += 1
+                        deletion_results.append({
+                            'filename': filename,
+                            'deleted_id': doc_id,
+                            'kept_id': keep_id,
+                            'status': 'success'
+                        })
+                        logger.info(f"✅ [REMOVE-DUPLICATES] Successfully deleted duplicate {doc_id}")
+                    else:
+                        total_failed += 1
+                        deletion_results.append({
+                            'filename': filename,
+                            'deleted_id': doc_id,
+                            'kept_id': keep_id,
+                            'status': 'failed',
+                            'errors': result.errors
+                        })
+                        logger.error(f"❌ [REMOVE-DUPLICATES] Failed to delete duplicate {doc_id}: {result.errors}")
+                        
+                except Exception as e:
+                    total_failed += 1
+                    deletion_results.append({
+                        'filename': filename,
+                        'deleted_id': doc_id,
+                        'kept_id': keep_id,
+                        'status': 'error',
+                        'error': str(e)
+                    })
+                    logger.error(f"❌ [REMOVE-DUPLICATES] Error deleting duplicate {doc_id}: {e}", exc_info=True)
+        
+        logger.info(f"✅ [REMOVE-DUPLICATES] Completed: {total_deleted} deleted, {total_failed} failed")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Removed {total_deleted} duplicate document(s)',
+            'duplicates_removed': total_deleted,
+            'duplicates_failed': total_failed,
+            'duplicate_groups_found': len(duplicates_to_remove),
+            'details': deletion_results
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [REMOVE-DUPLICATES] Error: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -100,6 +100,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   // Initialize attachedFiles from initialAttachedFiles prop if provided
   const [attachedFiles, setAttachedFiles] = useState<FileAttachmentData[]>(() => {
     const initial = initialAttachedFiles || [];
@@ -217,7 +218,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               if (inputRef.current) {
                 inputRef.current.style.height = 'auto';
                 const scrollHeight = inputRef.current.scrollHeight;
-                const maxHeight = 350;
+                // Calculate viewport-aware maxHeight to prevent overflow
+                // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+                // Dashboard: cap earlier so the bar never rises into the Recent Projects area.
+                const maxHeight = isDashboardView
+                  ? 160
+                  : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
                 const newHeight = Math.min(scrollHeight, maxHeight);
                 inputRef.current.style.height = `${newHeight}px`;
                 inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
@@ -286,6 +292,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   
   // Determine if we should use rounded corners (when there's content or attachment)
   const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0 || propertyAttachments.length > 0;
+  const isDashboardView = !isMapVisible && !isInChatMode;
   
   // Adjust font size and padding on very small screens to ensure placeholder text fits
   // Use a more aggressive threshold to catch smaller screens
@@ -612,23 +619,27 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
     
     // Dashboard view: always multi-line (like MapChatBar)
-    // Map/Chat view: use character-count based logic
+    // Map view: always multi-line (like MapChatBar) and NEVER collapse back to single-line.
+    // Chat view: switch to multi-line ONLY when the content actually wraps (or contains a newline).
+    // This prevents the "jump" caused by a character-count threshold toggling multi-line too early.
     let shouldBeMultiLine = false;
-    if (!isMapVisible && !isInChatMode) {
-      // Dashboard view: always multi-line
+    if (isMapVisible) {
+      shouldBeMultiLine = true;
+    } else if (!isMapVisible && !isInChatMode) {
       shouldBeMultiLine = true;
     } else {
-      // Map/Chat view: character-count based logic
-      const charCount = value.trim().length;
-      const multiLineCharThreshold = 40; // Switch to multi-line at 40 characters
-      const singleLineCharThreshold = 35; // Switch back to single-line at 35 characters (hysteresis)
+      const el = e.target;
+      const baseHeight = initialScrollHeightRef.current ?? 28.1;
+      const hasExplicitNewline = value.includes('\n');
+      // scrollHeight increases as soon as content wraps, even if the visible height is still 1 line.
+      const hasWrapped = el.scrollHeight > baseHeight + 1; // +1px tolerance for rounding
       
       if (isMultiLine) {
-        // Already in multi-line: only exit if character count is below single-line threshold
-        shouldBeMultiLine = charCount >= singleLineCharThreshold;
+        // Stay multiline until content is back to a single line (no wrap + no newline).
+        shouldBeMultiLine = hasExplicitNewline || hasWrapped;
       } else {
-        // Not in multi-line: only enter if character count reaches multi-line threshold
-        shouldBeMultiLine = charCount >= multiLineCharThreshold;
+        // Enter multiline only when we actually need more than one line.
+        shouldBeMultiLine = hasExplicitNewline || hasWrapped;
       }
     }
     
@@ -643,7 +654,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Adjust height - let CSS transition handle the animation
           inputRef.current.style.height = 'auto';
           const scrollHeight = inputRef.current.scrollHeight;
-          const maxHeight = 350;
+          // Calculate viewport-aware maxHeight to prevent overflow
+          // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+          const maxHeight = isDashboardView
+            ? 160
+            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -714,7 +729,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         if (inputRef.current) {
           inputRef.current.style.height = 'auto';
           const scrollHeight = inputRef.current.scrollHeight;
-          const maxHeight = 350;
+          // Calculate viewport-aware maxHeight to prevent overflow
+          // Constrain to viewport height minus safe margins (container padding, icons, spacing)
+          const maxHeight = isDashboardView
+            ? 160
+            : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 260 : 350);
           const newHeight = Math.min(scrollHeight, maxHeight);
           inputRef.current.style.height = `${newHeight}px`;
           // Always allow scrolling when content exceeds maxHeight
@@ -889,6 +908,153 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     });
   };
 
+  // Handle drop from FilingSidebar
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    
+    try {
+      // Check if this is a document from FilingSidebar
+      const jsonData = e.dataTransfer.getData('application/json');
+      if (jsonData) {
+        const data = JSON.parse(jsonData);
+        if (data.type === 'filing-sidebar-document') {
+          console.log('📥 SearchBar: Dropped document from FilingSidebar:', data.filename);
+          
+          // Create optimistic attachment immediately with placeholder file
+          const attachmentId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const placeholderFile = new File([], data.filename, {
+            type: data.fileType || 'application/pdf',
+          });
+          
+          const optimisticFileData: FileAttachmentData = {
+            id: attachmentId,
+            file: placeholderFile,
+            name: data.filename,
+            type: data.fileType || 'application/pdf',
+            size: 0, // Will be updated when file is fetched
+          };
+          
+          // Add attachment immediately for instant feedback
+          setAttachedFiles(prev => {
+            const updated = [...prev, optimisticFileData];
+            attachedFilesRef.current = updated;
+            if (onAttachmentsChange) {
+              onAttachmentsChange(updated);
+            }
+            return updated;
+          });
+          
+          // Fetch the actual file in the background
+          (async () => {
+            try {
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              let downloadUrl: string;
+              
+              if (data.s3Path) {
+                downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(data.s3Path)}`;
+              } else {
+                downloadUrl = `${backendUrl}/api/files/download?document_id=${data.documentId}`;
+              }
+              
+              const response = await fetch(downloadUrl, { credentials: 'include' });
+              if (!response.ok) {
+                throw new Error('Failed to fetch document');
+              }
+              
+              const blob = await response.blob();
+              const actualFile = new File([blob], data.filename, {
+                type: data.fileType || blob.type || 'application/pdf',
+              });
+              
+              // Update the attachment with the actual file
+              setAttachedFiles(prev => {
+                const updated = prev.map(att => 
+                  att.id === attachmentId 
+                    ? { ...att, file: actualFile, size: actualFile.size }
+                    : att
+                );
+                attachedFilesRef.current = updated;
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(updated);
+                }
+                return updated;
+              });
+              
+              // Preload blob URL for preview
+              try {
+                const blobUrl = URL.createObjectURL(actualFile);
+                if (!(window as any).__preloadedAttachmentBlobs) {
+                  (window as any).__preloadedAttachmentBlobs = {};
+                }
+                (window as any).__preloadedAttachmentBlobs[attachmentId] = blobUrl;
+              } catch (preloadError) {
+                console.error('Error preloading blob URL:', preloadError);
+              }
+              
+              console.log('✅ SearchBar: Document fetched and updated:', actualFile.name);
+            } catch (error) {
+              console.error('❌ SearchBar: Error fetching document:', error);
+              // Remove the optimistic attachment on error
+              setAttachedFiles(prev => {
+                const updated = prev.filter(att => att.id !== attachmentId);
+                attachedFilesRef.current = updated;
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(updated);
+                }
+                return updated;
+              });
+              toast({
+                description: 'Failed to load document. Please try again.',
+                duration: 3000,
+              });
+            }
+          })();
+          
+          return;
+        }
+      }
+      
+      // Fallback: check for regular file drops
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length > 0) {
+        files.forEach(file => handleFileUpload(file));
+      }
+    } catch (error) {
+      console.error('❌ SearchBar: Error handling drop:', error);
+      toast({
+        description: 'Failed to add document. Please try again.',
+        duration: 3000,
+      });
+    }
+  }, [handleFileUpload, onAttachmentsChange]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if this is a document from FilingSidebar (has application/json type) or regular files
+    const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    
+    if (hasFilingSidebarDocument || hasFiles) {
+      e.dataTransfer.dropEffect = 'move';
+      setIsDragOver(true);
+    } else {
+      e.dataTransfer.dropEffect = 'none';
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const submitted = searchValue.trim();
@@ -933,6 +1099,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             : "w-full flex justify-center px-6"
       }`}
       style={{
+        ...(contextConfig.position === "bottom" && !isMapVisible && { 
+          // Constrain height to stay within viewport when fixed at bottom
+          maxHeight: 'calc(100vh - 40px)', // Viewport height minus bottom offset (20px) and padding
+          overflowY: 'auto', // Allow scrolling if content exceeds max height
+          overflowX: 'visible'
+        }),
         ...(contextConfig.position !== "bottom" && !isMapVisible && { 
           height: 'auto', 
           minHeight: 'fit-content',
@@ -948,7 +1120,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           display: 'block',
           padding: '0' // Remove any padding in map view
         }),
-        overflow: 'visible'
+        overflow: contextConfig.position === "bottom" && !isMapVisible ? 'auto' : 'visible'
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -963,24 +1135,50 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         width: '100%', // Always 100% width - let parent container handle constraints
         boxSizing: 'border-box' // Ensure padding is included in width calculation
       }}>
-        <form onSubmit={handleSubmit} className="relative" style={{ overflow: 'visible', height: 'auto', width: '100%' }}>
+        <form 
+          onSubmit={handleSubmit} 
+          className="relative" 
+          style={{ overflow: 'visible', height: 'auto', width: '100%' }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
             <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
               style={{
-                background: '#ffffff',
-                border: '1px solid #E5E7EB',
-                boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                // Glassmorphism by default; keep strong affordances during drag-over.
+                background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
+                backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                border: isDragOver
+                  ? '2px dashed rgb(36, 41, 50)'
+                  // Keep the outline consistently thin (no focus-thickening).
+                  : '1px solid rgba(82, 101, 128, 0.35)',
+                boxShadow: isDragOver 
+                  ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                  // Keep shadow consistent as well; focus should not add a thick halo.
+                  : 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
                 paddingTop: '12px',
                 paddingBottom: '12px',
                 paddingRight: '12px',
                 paddingLeft: '12px',
-                overflow: 'visible',
+                // Keep the bar bottom-anchored by capping overall card height; allow children to scroll within.
+                overflow: 'hidden',
                 width: '100%',
                 minWidth: '0',
                 height: 'auto',
-                minHeight: 'fit-content',
+                // Set a fixed minHeight to prevent container from growing when textarea expands slightly
+                // This prevents the "jump" when typing - container stays stable, only textarea scrolls internally
+                minHeight: '60px', // Minimum height to accommodate textarea + padding + icons
+                // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
+                // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
+                maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
                 boxSizing: 'border-box',
-                borderRadius: '12px' // Always 12px rounded corners
+                borderRadius: '12px', // Always 12px rounded corners
+                // IMPORTANT: don't animate layout (height) while typing; textarea auto-resizes on keystrokes.
+                // Restrict transitions to purely visual properties to avoid "step up" / reflow animations.
+                transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, opacity 0.2s ease-in-out',
+                position: 'relative'
               }}
             >
             {/* Property Attachments Display - Above textarea (like MapChatBar) */}
@@ -1042,7 +1240,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 height: 'auto', 
                 minHeight: '24px',
                 width: '100%',
-                minWidth: '0' // Prevent width constraints
+                minWidth: '0', // Prevent width constraints
+                gap: '12px' // Use gap instead of marginBottom for consistent spacing
               }}
             >
               {/* Textarea always above icons */}
@@ -1051,15 +1250,18 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 style={{ 
                   minHeight: '24px',
                   width: '100%',
-                  marginTop: '4px', // Additional padding above textarea
-                  marginBottom: '12px' // Space between text and icons
+                  marginTop: '0px', // Fixed at 0 - no conditional changes to prevent shifts
+                  marginBottom: '0px', // Use parent gap instead
+                  paddingTop: '0px',
+                  paddingBottom: '0px'
                 }}
               >
                   <div className="flex-1 relative flex items-start w-full" style={{ 
                     overflow: 'visible', 
                     minHeight: '24px',
                     width: '100%',
-                    minWidth: '0'
+                    minWidth: '0',
+                    alignSelf: 'flex-start' // Ensure consistent top alignment
                   }}>
                     {/* Textarea - always rendered */}
                     <textarea 
@@ -1094,7 +1296,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
                         minHeight: '24px',
-                        maxHeight: '350px',
+                        maxHeight: contextConfig.position === "bottom" && !isMapVisible 
+                          ? 'calc(100vh - 200px)' // Viewport-aware: account for container padding, icons, and spacing
+                          : (isMapVisible 
+                              ? 'min(350px, calc(100vh - 260px))' // Map: prevent growing off-screen
+                              : (isDashboardView ? '160px' : '350px')), // Dashboard: stop before Recent Projects; others: fixed cap
                         fontSize: '14px',
                         lineHeight: '20px',
                         paddingTop: '0px',
@@ -1109,7 +1315,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         transition: 'none',
                         resize: 'none',
                         width: '100%',
-                        minWidth: '0'
+                        minWidth: '0',
+                        verticalAlign: 'top', // Ensure text aligns to top consistently
+                        display: 'block' // Ensure block display for consistent positioning
                       }}
                       autoComplete="off"
                       disabled={isSubmitted}
@@ -1129,8 +1337,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               >
                 {/* Left group: Panel toggle and Map toggle */}
                 <div className="flex items-center flex-shrink-0">
-                  {/* Panel Toggle Button (show when property details is open OR when in map view with previous session) */}
-                  {((isPropertyDetailsOpen && onPanelToggle) || (isMapVisible && hasPreviousSession && onPanelToggle)) && (
+                  {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
+                  {onPanelToggle && (
                     isPropertyDetailsOpen ? (
                     <button
                       type="button"
@@ -1148,10 +1356,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           fontSize: '11px',
                           fontWeight: 500,
                           cursor: 'pointer',
-                          transition: 'all 0.2s ease',
+                          transition: 'background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
                           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                           whiteSpace: 'nowrap',
-                          marginLeft: '4px'
+                          marginLeft: '4px',
+                          animation: 'none'
                         }}
                         title="Open analyse mode"
                         onMouseEnter={(e) => {
@@ -1165,20 +1374,20 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                         }}
                     >
-                        <Brain className="w-3.5 h-3.5" strokeWidth={2} />
-                        <span>Analyse</span>
+                        <Brain className="w-3.5 h-3.5" strokeWidth={2} style={{ animation: 'none' }} />
+                        <span style={{ animation: 'none' }}>Analyse</span>
                     </button>
                     ) : (
                       <button
                         type="button"
                         onClick={onPanelToggle}
-                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
+                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 focus:outline-none outline-none"
                         style={{
                           marginLeft: '4px'
                         }}
                         title="Expand chat"
                       >
-                        <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                        <MessageSquareShare className="w-3.5 h-3.5 scale-x-[-1] text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.8} />
                       </button>
                     )
                   )}
@@ -1194,40 +1403,21 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         });
                         onMapToggle?.();
                       }}
-                      className="flex items-center justify-center focus:outline-none outline-none"
+                      className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group focus:outline-none outline-none ${
+                        !isMapVisible
+                          ? 'border-emerald-200/70 hover:border-emerald-300/80 bg-emerald-50/80 hover:bg-emerald-50 text-emerald-700'
+                          : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'
+                      }`}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        padding: '4px 8px',
-                        backgroundColor: '#ffffff',
-                        color: '#111827',
-                        border: '1px solid rgba(229, 231, 235, 0.8)',
-                        borderRadius: '6px',
-                        fontSize: '11px',
-                        fontWeight: 500,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s ease',
-                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                        whiteSpace: 'nowrap',
+                        // Match "Expand chat" button shape (square/rounded-rect)
                         marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
                       }}
                       title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f9fafb';
-                        e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
-                        e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#ffffff';
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
-                      }}
                     >
                         {isMapVisible ? (
-                          <LayoutDashboard className="w-3.5 h-3.5" strokeWidth={2} />
+                          <LayoutDashboard className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
                         ) : (
-                          <Map className="w-3.5 h-3.5" strokeWidth={2} />
+                          <MapPinHouse className="w-3.5 h-3.5 text-emerald-700 group-hover:text-emerald-800 transition-colors" strokeWidth={2} />
                         )}
                     </button>
                   )}

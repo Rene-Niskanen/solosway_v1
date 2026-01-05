@@ -148,12 +148,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         const paddedTop = Math.max(0, top - MIN_PADDING_Y);
         const paddedWidth = Math.min(width + MIN_PADDING_X * 2, 1 - paddedLeft);
         const paddedHeight = Math.min(height + MIN_PADDING_Y * 2, 1 - paddedTop);
-        
-        left = paddedLeft;
-        top = paddedTop;
-        width = paddedWidth;
-        height = paddedHeight;
-        
+      
+      left = paddedLeft;
+      top = paddedTop;
+      width = paddedWidth;
+      height = paddedHeight;
+      
         console.log('📐 [BBOX] Using small bbox with minimal padding:', { left, top, width, height });
       } else {
         // For larger precise bboxes, use them as-is to prevent overlap
@@ -206,6 +206,12 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [pdfCanvasDimensions, setPdfCanvasDimensions] = React.useState<{ width: number; height: number } | null>(null);
   const [pdfViewportTransform, setPdfViewportTransform] = React.useState<number[] | null>(null);
   const pdfCanvasRef = React.useRef<HTMLCanvasElement>(null);
+  
+  // Continuous scrolling: render all pages
+  const [renderedPages, setRenderedPages] = React.useState<Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number }; yOffset: number }>>(new Map());
+  const [pageOffsets, setPageOffsets] = React.useState<Map<number, number>>(new Map()); // page number -> y offset
+  const [baseScale, setBaseScale] = React.useState<number>(1.0); // Base scale for rendering (calculated once)
+  const pdfPagesContainerRef = React.useRef<HTMLDivElement>(null);
   
   // Reprocess document state
   const [isReprocessing, setIsReprocessing] = React.useState(false);
@@ -362,6 +368,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       // For DOCX, don't set zoomLevel here - let the useEffect calculate it
       setRotation(0);
+      // Reset base scale when file changes so it recalculates for new document
+      setBaseScale(1.0);
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
       const isDifferentFile = prevFileIdRef.current !== file.id;
@@ -410,6 +418,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setDocxPublicUrl(null); // Reset DOCX public URL
       setZoomLevel(100); // Reset zoom
       setRotation(0); // Reset rotation
+      setBaseScale(1.0); // Reset base scale
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
       if (file) {
@@ -455,35 +464,76 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, showAllChunkBboxes]);
 
-  const chunkOverlaysForPage = React.useMemo(() => {
+  const chunkOverlaysForAllPages = React.useMemo(() => {
     if (!showAllChunkBboxes || !fileHighlight?.chunks) return [];
     return fileHighlight.chunks.filter(chunk => {
-      const bboxPage = chunk?.bbox?.page ?? chunk?.page_number ?? fileHighlight?.bbox?.page;
-      return bboxPage === currentPage && chunk?.bbox;
+      return chunk?.bbox; // Show all chunks across all pages
     });
-  }, [showAllChunkBboxes, fileHighlight, currentPage]);
+  }, [showAllChunkBboxes, fileHighlight]);
 
-  // Navigate to correct page when highlight is set (for PDFs)
-  // OPTIMIZATION: Navigate immediately and pre-render page if not cached
+  // Auto-scroll to highlighted page when highlight is set (for continuous scrolling PDFs)
   React.useEffect(() => {
-    if (fileHighlight && isPDF && fileHighlight.bbox.page && file && pdfDocument) {
+    // Only scroll if modal is open, pages are rendered, and not currently rendering
+    if (!isOpen || pdfPageRendering) return;
+    
+    if (fileHighlight && isPDF && fileHighlight.bbox.page && pdfWrapperRef.current && pageOffsets.size > 0 && renderedPages.size > 0) {
       const targetPage = fileHighlight.bbox.page;
-      if (targetPage !== currentPage) {
-        console.log('📄 Navigating to page', targetPage, 'for highlight');
+      const pageOffset = pageOffsets.get(targetPage);
+      const pageData = renderedPages.get(targetPage);
+      
+      if (pageOffset !== undefined && pageData && expandedBbox) {
+        // Calculate scroll position: page offset + BBOX top position on page
+        const scrollTop = pageOffset + (expandedBbox.top * pageData.dimensions.height);
         
-        // Pre-render target page if not cached (for instant switching)
-        const cached = getCachedRenderedPage?.(file.id, targetPage);
-        if (!cached && preloadPdfPage) {
-          preloadPdfPage(file.id, targetPage, pdfDocument, zoomLevel / 100).catch(err => {
-            console.warn('⚠️ Failed to pre-render page:', err);
+        console.log('📄 Auto-scrolling to page', targetPage, 'at position', scrollTop, 'px', {
+          pageOffset,
+          bboxTop: expandedBbox.top,
+          pageHeight: pageData.dimensions.height,
+          calculatedScrollTop: scrollTop,
+          isOpen,
+          pagesRendered: renderedPages.size,
+          totalPages
+        });
+        
+        // Wait for DOM to update and use multiple requestAnimationFrame calls for smooth scrolling
+        // Also add a small timeout to ensure everything is ready
+        const scrollTimeout = setTimeout(() => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (pdfWrapperRef.current && isOpen) {
+                const scrollContainer = pdfWrapperRef.current;
+                const finalScrollTop = Math.max(0, scrollTop - 100); // Offset by 100px to show some context above
+                
+                // Ensure container has proper dimensions before scrolling
+                if (scrollContainer.scrollHeight > 0) {
+                  // Use smooth scroll
+                  scrollContainer.scrollTo({
+                    top: finalScrollTop,
+                    behavior: 'smooth'
+                  });
+                  
+                  console.log('✅ Scrolled to position:', finalScrollTop, 'container height:', scrollContainer.scrollHeight, 'scrollTop:', scrollContainer.scrollTop);
+                } else {
+                  console.warn('⚠️ Scroll container not ready, retrying...');
+                  // Retry after a short delay if container not ready
+                  setTimeout(() => {
+                    if (pdfWrapperRef.current && pdfWrapperRef.current.scrollHeight > 0) {
+                      pdfWrapperRef.current.scrollTo({
+                        top: finalScrollTop,
+                        behavior: 'smooth'
+                      });
+                    }
+                  }, 100);
+                }
+              }
+            });
           });
-        }
+        }, 100); // Small delay to ensure DOM is fully updated
         
-        // Set page immediately - if cached, rendering will be instant
-        setCurrentPage(targetPage);
+        return () => clearTimeout(scrollTimeout);
       }
     }
-  }, [fileHighlight, isPDF, currentPage, file?.id, pdfDocument, getCachedRenderedPage, preloadPdfPage, zoomLevel]);
+  }, [fileHighlight, isPDF, isOpen, pageOffsets, renderedPages, expandedBbox, pdfPageRendering, totalPages]);
 
   // Load PDF with PDF.js for canvas-based rendering (enables precise highlight positioning)
   // OPTIMIZATION: Use cached PDF document if available to avoid reloading when switching
@@ -550,140 +600,227 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     };
   }, [isPDF, file?.file, file?.id, isOpen, getCachedPdfDocument, setCachedPdfDocument]);
 
-  // Render current PDF page to canvas with zoom level
-  // OPTIMIZATION: Use cached rendered page if available for instant switching
+  // Render ALL PDF pages to canvas for continuous scrolling
+  // OPTIMIZATION: Use cached rendered pages if available for instant switching
   React.useEffect(() => {
-    if (!pdfDocument || !pdfCanvasRef.current || !isOpen || !file) return;
+    if (!pdfDocument || !isOpen || !file || totalPages === 0) return;
     
     let cancelled = false;
-    let animationFrameId: number | null = null;
-    let renderTask: any = null; // Track PDF.js render task to cancel if needed
+    const renderTasks = new Map<number, any>(); // Track render tasks per page
     
-    const renderPage = async () => {
+    const renderAllPages = async () => {
       try {
-        const scale = zoomLevel / 100;
+        // Always render at base scale - zoom will be applied via CSS transform for smooth experience
+        // Calculate base scale to fit container width (only calculate once or when container size changes)
+        let scale = baseScale;
         
-        // OPTIMIZATION: Check cache first - use cached rendered page if available
-        const cachedImageData = getCachedRenderedPage?.(file.id, currentPage);
-        if (cachedImageData && pdfCanvasRef.current) {
-          const canvas = pdfCanvasRef.current;
-          const context = canvas.getContext('2d');
-          
-          if (context && !cancelled) {
-            // Restore cached page instantly
-            // CRITICAL: Clear canvas before restoring cached image to prevent overlap
-            canvas.width = cachedImageData.width;
-            canvas.height = cachedImageData.height;
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            context.putImageData(cachedImageData, 0, 0);
+        // If base scale hasn't been calculated yet, calculate it now
+        if (baseScale === 1.0) {
+          try {
+            // Wait multiple frames to ensure container dimensions are fully available
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => setTimeout(resolve, 50)); // Small delay for layout
             
-            // Store dimensions for highlight positioning
-            setPdfCanvasDimensions({ width: canvas.width, height: canvas.height });
+            if (cancelled) return;
             
-            // Calculate viewport transform (approximate, since we cached at scale 1.0)
-            // For exact positioning, we still need to get the page viewport
-            const page = await pdfDocument.getPage(currentPage);
-            const viewport = page.getViewport({ scale, rotation });
-            const transform = viewport.transform;
-            setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
+            const firstPage = await pdfDocument.getPage(1);
+            if (cancelled) return;
             
-            console.log('⚡ [PAGE_CACHE] Restored cached page instantly:', file.id, 'page', currentPage);
-            setPdfPageRendering(false);
-            return;
+            const naturalViewport = firstPage.getViewport({ scale: 1.0, rotation });
+            const pageWidth = naturalViewport.width;
+            
+            // Get container width - prefer modal width setting, then actual container width
+            let containerWidth = 0;
+            
+            // First, try to use the modal width setting (more reliable)
+            if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 0) {
+              containerWidth = calculatedModalWidth;
+              console.log('📐 Using modal width setting:', containerWidth);
+            } else if (typeof calculatedModalWidth === 'string' && calculatedModalWidth.endsWith('px')) {
+              containerWidth = parseInt(calculatedModalWidth);
+              console.log('📐 Parsed modal width from string:', containerWidth);
+            }
+            
+            // If modal width not available, try actual container width
+            if (containerWidth <= 0) {
+              if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
+                containerWidth = previewAreaRef.current.clientWidth;
+                console.log('📐 Using preview area width:', containerWidth);
+              } else if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
+                containerWidth = pdfWrapperRef.current.clientWidth;
+                console.log('📐 Using wrapper width:', containerWidth);
+              }
+            }
+            
+            console.log('📐 Scale calculation - container width:', containerWidth, 'page width:', pageWidth.toFixed(0));
+            
+            // Only calculate fit scale if container has valid width
+            if (containerWidth > 100) { // Ensure container is actually rendered (not just 0 or very small)
+              // Account for padding (8px * 2 on each side = 16px total) and some margin
+              const availableWidth = containerWidth - 32;
+              
+              // Calculate scale to fit container width - use 98% to leave small margin
+              const fitScale = (availableWidth / pageWidth) * 0.98;
+              
+              console.log('📐 Fit scale calculation:', {
+                containerWidth,
+                availableWidth,
+                pageWidth: pageWidth.toFixed(0),
+                fitScale: fitScale.toFixed(3),
+                zoomLevel
+              });
+              
+              // Use the fit scale if it's reasonable (between 0.8 and 2.5 for better fit)
+              if (fitScale >= 0.8 && fitScale <= 2.5) {
+                scale = fitScale;
+                setBaseScale(fitScale); // Store base scale
+                console.log('✅ Calculated and stored base scale:', fitScale.toFixed(3));
+              } else {
+                // If fit scale is too small, use a minimum of 1.2 for better readability
+                // If too large, cap at 2.0
+                if (fitScale < 0.8) {
+                  // If calculated scale is too small, the container might be very wide
+                  // Use a reasonable scale based on typical PDF page width (595px for A4)
+                  // For a typical container of 800-1000px, we want around 1.3-1.5 scale
+                  const typicalPageWidth = 595; // A4 width in points
+                  const typicalContainerWidth = 900; // Typical modal width
+                  scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
+                  scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+                  setBaseScale(scale);
+                  console.log('⚠️ Fit scale too small, using typical scale:', scale.toFixed(3));
+                } else {
+                  scale = Math.min(2.0, fitScale);
+                  setBaseScale(scale);
+                  console.log('⚠️ Fit scale too large, clamped to:', scale.toFixed(3));
+                }
+              }
+            } else {
+              // Container not ready - use a reasonable default scale based on typical dimensions
+              const typicalPageWidth = 595; // A4 width in points
+              const typicalContainerWidth = 900; // Typical modal width
+              scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
+              scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+              setBaseScale(scale);
+              console.log('⚠️ Container width not available:', containerWidth, 'using typical scale:', scale.toFixed(3));
+            }
+          } catch (error) {
+            console.warn('⚠️ Failed to calculate fit scale, using default:', error);
+            scale = 1.0;
+            setBaseScale(1.0);
           }
+        } else {
+          // Use stored base scale
+          scale = baseScale;
         }
         
-        // If not cached, render normally
         setPdfPageRendering(true);
-        console.log('📄 Rendering PDF page', currentPage, 'at zoom', zoomLevel, '%');
+        console.log('📄 Rendering all PDF pages for continuous scrolling:', totalPages, 'pages at base scale', scale.toFixed(3));
         
-        // CRITICAL: Clear canvas immediately when starting new render to prevent overlap
-        const canvas = pdfCanvasRef.current;
-        if (canvas) {
-          const context = canvas.getContext('2d');
-          if (context) {
-            // Clear canvas immediately to prevent showing previous page content
-            context.clearRect(0, 0, canvas.width, canvas.height);
-          }
-        }
+        const newRenderedPages = new Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number }; yOffset: number }>();
+        const newPageOffsets = new Map<number, number>();
+        let currentYOffset = 0;
         
-        const page = await pdfDocument.getPage(currentPage);
-        
-        if (cancelled) return;
-        
-        const viewport = page.getViewport({ scale, rotation });
-        
-        if (!canvas) return;
-        
-        const context = canvas.getContext('2d');
-        if (!context) return;
-        
-        // OPTIMIZATION: Use requestAnimationFrame for smoother rendering
-        animationFrameId = requestAnimationFrame(() => {
-          if (cancelled) return;
-        
-        // Set canvas dimensions to match the viewport
-        // CRITICAL: Setting width/height automatically clears canvas, but we also explicitly clear
+        // Render all pages sequentially (can be optimized to parallel later)
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          if (cancelled) break;
+          
+          try {
+            // OPTIMIZATION: Check cache first
+            const cachedImageData = getCachedRenderedPage?.(file.id, pageNum);
+            
+            const page = await pdfDocument.getPage(pageNum);
+            if (cancelled) break;
+            
+            const viewport = page.getViewport({ scale, rotation });
+            
+            // Create canvas for this page
+            const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        
-        // Store dimensions for highlight positioning
-        setPdfCanvasDimensions({ width: viewport.width, height: viewport.height });
-        
-        // Store viewport transform for highlight positioning (PDF.js transform matrix)
-        const transform = viewport.transform;
-        setPdfViewportTransform([transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]]);
-        
+            const context = canvas.getContext('2d');
+            
+            if (!context) continue;
+            
+            if (cachedImageData && scale === 1.0 && rotation === 0) {
+              // Restore from cache
+              context.putImageData(cachedImageData, 0, 0);
+              console.log('⚡ [PAGE_CACHE] Restored cached page instantly:', file.id, 'page', pageNum);
+            } else {
         // Render the page
-        // CRITICAL: Store render task so we can cancel it if page changes
-        renderTask = page.render({
+              const renderTask = page.render({
           canvasContext: context,
           viewport,
           canvas
         } as any);
         
-        renderTask.promise.then(() => {
-        if (!cancelled) {
-          console.log('📄 PDF page rendered successfully:', viewport.width, 'x', viewport.height);
+              renderTasks.set(pageNum, renderTask);
               
-              // OPTIMIZATION: Cache the rendered page for instant future access
+              await renderTask.promise;
+              
+              // Cache the rendered page
               if (file && scale === 1.0 && rotation === 0) {
-                // Only cache at default scale/rotation to save memory
                 const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-                setCachedRenderedPage?.(file.id, currentPage, imageData);
+                setCachedRenderedPage?.(file.id, pageNum, imageData);
               }
-              
-          setPdfPageRendering(false);
+            }
+            
+            // Store page data
+            newRenderedPages.set(pageNum, {
+              canvas,
+              dimensions: { width: viewport.width, height: viewport.height },
+              yOffset: currentYOffset
+            });
+            
+            newPageOffsets.set(pageNum, currentYOffset);
+            
+            // Update Y offset for next page (add small gap between pages)
+            currentYOffset += viewport.height + 16; // 16px gap between pages
+            
+            console.log('📄 PDF page', pageNum, 'rendered successfully:', viewport.width, 'x', viewport.height, 'yOffset:', currentYOffset);
+          } catch (error) {
+            console.error(`❌ Failed to render PDF page ${pageNum}:`, error);
+          }
         }
-          }).catch((error) => {
-            console.error('❌ Failed to render PDF page:', error);
+        
+        if (!cancelled) {
+          setRenderedPages(newRenderedPages);
+          setPageOffsets(newPageOffsets);
+          
+          // Set dimensions for first page (for BBOX positioning reference)
+          if (newRenderedPages.size > 0) {
+            const firstPage = newRenderedPages.get(1);
+            if (firstPage) {
+              setPdfCanvasDimensions(firstPage.dimensions);
+            }
+          }
+          
             setPdfPageRendering(false);
-          });
-        });
+          console.log('✅ All PDF pages rendered for continuous scrolling');
+        }
       } catch (error) {
-        console.error('❌ Failed to render PDF page:', error);
+        console.error('❌ Failed to render PDF pages:', error);
         setPdfPageRendering(false);
       }
     };
     
-    renderPage();
+    renderAllPages();
     
     return () => {
       cancelled = true;
-      if (animationFrameId !== null) {
-        cancelAnimationFrame(animationFrameId);
-      }
-      // CRITICAL: Cancel any in-progress PDF.js render task to prevent overlapping pages
-      if (renderTask && renderTask.cancel) {
-        try {
-          renderTask.cancel();
-          console.log('🛑 [PDF_RENDER] Cancelled in-progress render task');
+      // Cancel all render tasks
+      renderTasks.forEach((task, pageNum) => {
+        if (task && task.cancel) {
+          try {
+            task.cancel();
+            console.log(`🛑 [PDF_RENDER] Cancelled render task for page ${pageNum}`);
         } catch (e) {
           // Ignore errors from cancellation
         }
       }
+      });
     };
-  }, [pdfDocument, currentPage, zoomLevel, rotation, isOpen, file?.id, getCachedRenderedPage, setCachedRenderedPage]);
+  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, baseScale, getCachedRenderedPage, setCachedRenderedPage]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -883,8 +1020,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         e.stopPropagation();
         e.stopImmediatePropagation();
         
-        // Determine zoom direction based on wheel delta
-        const zoomDelta = e.deltaY > 0 ? -5 : 5;
+        // Determine zoom direction based on wheel delta - use very small increments for fine control
+        const zoomDelta = e.deltaY > 0 ? -1 : 1; // Reduced to 1% for much less sensitive zooming
         const newZoom = Math.max(10, Math.min(200, zoomLevel + zoomDelta));
         
         setZoomLevel(newZoom);
@@ -901,42 +1038,15 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           }
         }
       } else if (isPDF && pdfWrapperRef.current) {
-        // For PDFs: ALWAYS prevent default to stop browser navigation and handle ALL scrolling manually
+        // Always use native smooth scrolling for continuous scrolling mode
+        // Only prevent pure horizontal scrolls to avoid browser navigation
+        if (e.deltaX !== 0 && e.deltaY === 0) {
+          // Pure horizontal scroll - prevent browser navigation
         e.preventDefault();
         e.stopPropagation();
-        e.stopImmediatePropagation();
-        
-        const wrapper = pdfWrapperRef.current;
-        const deltaX = e.deltaX || 0;
-        const deltaY = e.deltaY || 0;
-        
-        // Handle both horizontal and vertical scrolling manually
-        if (deltaX !== 0 || deltaY !== 0) {
-          const scrollMultiplier = 2.0;
-          
-          // Scroll horizontally - always handle this to prevent browser navigation
-          if (deltaX !== 0) {
-            wrapper.scrollLeft += deltaX * scrollMultiplier;
-          }
-          
-          // Scroll vertically when content is taller than container (regardless of zoom level)
-          if (deltaY !== 0 && wrapper.scrollHeight > wrapper.clientHeight) {
-            wrapper.scrollTop += deltaY * scrollMultiplier;
-          }
-          
-          // Debug log to see if scrolling is actually happening
-          console.log('🖐️ Two-finger pan:', {
-            deltaX,
-            deltaY,
-            scrollLeft: wrapper.scrollLeft,
-            scrollTop: wrapper.scrollTop,
-            scrollWidth: wrapper.scrollWidth,
-            clientWidth: wrapper.clientWidth,
-            scrollHeight: wrapper.scrollHeight,
-            clientHeight: wrapper.clientHeight,
-            canScroll: wrapper.scrollWidth > wrapper.clientWidth || wrapper.scrollHeight > wrapper.clientHeight
-          });
+          return;
         }
+        // Vertical or diagonal scroll - allow native scrolling for smooth experience
       }
     };
 
@@ -944,8 +1054,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const preventBrowserNavigation = (e: WheelEvent) => {
       // Only prevent if event is within modal
       if (modalElement.contains(e.target as Node)) {
-        // If it's a horizontal scroll (two-finger pan), prevent browser navigation
-        if (e.deltaX !== 0 && isPDF) {
+        // Only prevent pure horizontal scrolls (two-finger pan) to avoid browser navigation
+        // Allow vertical scrolling to work natively for smooth experience
+        if (e.deltaX !== 0 && e.deltaY === 0 && isPDF) {
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
@@ -977,10 +1088,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         setCurrentPage(prev => Math.min(totalPages, prev + 1));
       } else if (e.key === '+' || e.key === '=') {
         e.preventDefault();
-        setZoomLevel(prev => Math.min(200, prev + 10));
+        setZoomLevel(prev => Math.min(200, prev + 1)); // Reduced to 1% for much less sensitive zooming
       } else if (e.key === '-') {
         e.preventDefault();
-        setZoomLevel(prev => Math.max(25, prev - 10));
+        setZoomLevel(prev => Math.max(25, prev - 1)); // Reduced to 1% for much less sensitive zooming
       }
     };
 
@@ -1081,7 +1192,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
   const handleZoomIn = () => {
     setZoomLevel(prev => {
-      const newZoom = Math.min(200, prev + 10);
+      const newZoom = Math.min(200, prev + 1); // Reduced to 1% for much less sensitive zooming
       console.log('🔍 Zoom In:', {
         prev,
         newZoom,
@@ -1123,7 +1234,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 
   const handleZoomOut = () => {
     setZoomLevel(prev => {
-      const newZoom = Math.max(10, prev - 10);
+      const newZoom = Math.max(10, prev - 1); // Reduced to 1% for much less sensitive zooming
       console.log('🔍 Zoom Out:', {
         prev,
         newZoom,
@@ -1946,30 +2057,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               </div>
               
               <div className="flex items-center gap-1.5">
-                {/* Page Navigation (for PDFs) */}
-                {isPDF && (
-                  <div className="flex items-center gap-1 px-2 py-1 bg-gray-50 rounded hover:bg-gray-100 transition-colors">
-                    <button
-                      onClick={handlePreviousPage}
-                      disabled={currentPage === 1}
-                      className="p-1 hover:bg-gray-200 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      title="Previous page"
-                    >
-                      <ChevronLeft className="w-4 h-4 text-gray-600" />
-                    </button>
-                    <span className="text-xs text-gray-600 font-normal px-1.5">
-                      {currentPage} / {totalPages}
-                    </span>
-                    <button
-                      onClick={handleNextPage}
-                      disabled={currentPage === totalPages}
-                      className="p-1 hover:bg-gray-200 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      title="Next page"
-                    >
-                      <ChevronRight className="w-4 h-4 text-gray-600" />
-                    </button>
-                  </div>
-                )}
+                {/* Page Navigation removed - always using continuous scrolling */}
                 
                 {/* Zoom Controls */}
                 <div className="flex items-center gap-0.5 px-1.5 py-1 bg-gray-50 rounded hover:bg-gray-100 transition-colors">
@@ -2105,53 +2193,74 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                         overflow: 'auto', // Allow scrolling when zoomed in
                         WebkitOverflowScrolling: 'touch', // Smooth scrolling on iOS
                         touchAction: 'pan-x pan-y', // Explicitly allow panning gestures
+                        scrollBehavior: 'auto', // Changed to 'auto' to prevent smooth scrolling during zoom (causes page movement)
+                        overscrollBehavior: 'contain', // Prevent scroll chaining
                       }}
                     >
                       <div
+                        ref={pdfPagesContainerRef}
                         style={{
-                          width: pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : (typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : pdfObjectWidth),
-                          height: pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : (typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : pdfObjectHeight),
-                          minWidth: zoomLevel > 100 && pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : (zoomLevel > 100 && typeof pdfObjectWidth === 'number' ? `${pdfObjectWidth}px` : undefined),
-                          minHeight: zoomLevel > 100 && pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : (zoomLevel > 100 && typeof pdfObjectHeight === 'number' ? `${pdfObjectHeight}px` : undefined),
-                          display: 'block',
-                          position: 'relative'
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          width: '100%',
+                          position: 'relative',
+                          transform: `scale(${zoomLevel / 100})`, // Use CSS transform scale - doesn't affect scroll position
+                          transformOrigin: 'top center',
                         }}
                       >
-                        {/* PDF.js Canvas-based rendering for precise highlight positioning */}
+                        {/* PDF.js Canvas-based rendering for continuous scrolling - always render all pages */}
                         {pdfDocument ? (
                           <>
-                            {/* Wrap canvas and highlight in a container that matches canvas dimensions */}
-                            {/* This ensures highlight is positioned relative to canvas, not container */}
-                            <div
+                            {/* Render all pages in continuous scrollable view */}
+                            {renderedPages.size > 0 && Array.from(renderedPages.entries()).map(([pageNum, pageData]) => {
+                              const pageDimensions = pageData.dimensions;
+                              const isHighlightPage = expandedBbox && expandedBbox.page === pageNum;
+                              
+                              // Keep pages at original dimensions - zoom is handled by CSS transform on container
+                              // This way scroll position is independent of zoom (like PropertyDetailsPanel)
+                              
+                              return (
+                                <div
+                                  key={`page-${pageNum}`}
                               style={{
                                 position: 'relative',
-                                width: pdfCanvasDimensions ? `${pdfCanvasDimensions.width}px` : 'auto',
-                                height: pdfCanvasDimensions ? `${pdfCanvasDimensions.height}px` : 'auto',
-                                margin: '0 auto', // Center the container (same as canvas)
+                                    width: `${pageDimensions.width}px`,
+                                    margin: '0 auto 16px auto', // Center and add gap between pages
                                 display: 'block'
                               }}
                             >
                               <canvas
-                                ref={pdfCanvasRef}
+                                    key={`canvas-page-${pageNum}`}
+                                    ref={(el) => {
+                                      if (el && pageData.canvas) {
+                                        // Copy canvas content to the rendered canvas
+                                        const ctx = el.getContext('2d');
+                                        if (ctx) {
+                                          el.width = pageData.canvas.width;
+                                          el.height = pageData.canvas.height;
+                                          ctx.drawImage(pageData.canvas, 0, 0);
+                                        }
+                                      }
+                                    }}
                                 style={{
                                   display: 'block',
-                                  margin: '0 auto',
                                   backgroundColor: '#fff',
-                                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                                      width: `${pageDimensions.width}px`,
+                                      height: `${pageDimensions.height}px`,
                                 }}
                               />
                               
-                              {/* Highlight overlay for citations - positioned relative to canvas container */}
-                              {/* Uses expandedBbox (normalized 0-1) converted to pixels using PDF.js viewport dimensions */}
-                              {expandedBbox && expandedBbox.page === currentPage && pdfCanvasDimensions && (
+                                  {/* Highlight overlay for citations - positioned relative to page */}
+                                  {isHighlightPage && expandedBbox && (
                                 <div
                                   style={{
                                     position: 'absolute',
-                                    // Position directly using normalized coordinates converted to pixels
-                                    left: `${expandedBbox.left * pdfCanvasDimensions.width}px`,
-                                    top: `${expandedBbox.top * pdfCanvasDimensions.height}px`,
-                                    width: `${expandedBbox.width * pdfCanvasDimensions.width}px`,
-                                    height: `${expandedBbox.height * pdfCanvasDimensions.height}px`,
+                                        left: `${expandedBbox.left * pageDimensions.width}px`,
+                                        top: `${expandedBbox.top * pageDimensions.height}px`,
+                                        width: `${expandedBbox.width * pageDimensions.width}px`,
+                                        height: `${expandedBbox.height * pageDimensions.height}px`,
                                     backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
                                     border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
                                     borderRadius: '2px',
@@ -2160,37 +2269,40 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                     boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
                                     opacity: 0,
                                     animation: 'fadeInHighlight 0.3s ease-in forwards',
-                                    // REMOVED: Don't apply viewport transform - it's already applied to canvas rendering
                                     transformOrigin: 'top left',
                                   }}
                                 />
                               )}
                             </div>
+                              );
+                            })}
                             
-                            {/* Loading indicator while rendering - positioned relative to outer container */}
-                            {pdfPageRendering && (
-                              <div
+                            {/* Debug overlay showing all chunk bboxes when enabled - render on each page */}
+                            {showAllChunkBboxes && chunkOverlaysForAllPages.length > 0 && Array.from(renderedPages.entries()).map(([pageNum, pageData]) => {
+                              const chunksForPage = chunkOverlaysForAllPages.filter(chunk => {
+                                const bboxPage = chunk?.bbox?.page ?? chunk?.page_number ?? fileHighlight?.bbox?.page;
+                                return bboxPage === pageNum;
+                              });
+                              
+                              if (chunksForPage.length === 0) return null;
+                              
+                              return (
+                                <div
+                                  key={`debug-overlays-page-${pageNum}`}
                                 style={{
                                   position: 'absolute',
-                                  top: '50%',
+                                    top: `${pageData.yOffset}px`,
                                   left: '50%',
-                                  transform: 'translate(-50%, -50%)',
-                                  padding: '8px 16px',
-                                  backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                                  color: 'white',
-                                  borderRadius: '4px',
-                                  fontSize: '12px',
-                                  zIndex: 20
-                                }}
-                              >
-                                Loading page...
-                              </div>
-                            )}
-                            
-                            {/* Debug overlay showing all chunk bboxes when enabled */}
-                            {showAllChunkBboxes && chunkOverlaysForPage.length > 0 && chunkOverlaysForPage.map((chunk, idx) => (
-                              <div
-                                key={`debug-bbox-${chunk.chunk_index ?? idx}`}
+                                    transform: 'translateX(-50%)',
+                                    width: `${pageData.dimensions.width}px`,
+                                    height: `${pageData.dimensions.height}px`,
+                                    pointerEvents: 'none',
+                                    zIndex: 9
+                                  }}
+                                >
+                                  {chunksForPage.map((chunk, idx) => (
+                                    <div
+                                      key={`debug-bbox-${chunk.chunk_index ?? idx}-page-${pageNum}`}
                                 style={{
                                   position: 'absolute',
                                   left: `${(chunk.bbox!.left ?? 0) * 100}%`,
@@ -2201,7 +2313,6 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                   backgroundColor: 'rgba(33, 150, 243, 0.13)',
                                   borderRadius: '2px',
                                   pointerEvents: 'none',
-                                  zIndex: 9,
                                 }}
                               >
                                 <span
@@ -2221,11 +2332,14 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                 </span>
                               </div>
                             ))}
+                                </div>
+                              );
+                            })}
 
-                            {showAllChunkBboxes && chunkOverlaysForPage.length > 0 && (
+                            {showAllChunkBboxes && chunkOverlaysForAllPages.length > 0 && (
                               <div
                                 style={{
-                                  position: 'absolute',
+                                  position: 'fixed',
                                   top: '8px',
                                   right: '8px',
                                   padding: '4px 8px',
@@ -2233,44 +2347,42 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                   color: '#fff',
                                   fontSize: '11px',
                                   borderRadius: '4px',
-                                  zIndex: 20,
+                                  zIndex: 10000,
                                 }}
                               >
-                                Debug overlays: {chunkOverlaysForPage.length} chunk{chunkOverlaysForPage.length === 1 ? '' : 's'} (Shift + D)
+                                Debug overlays: {chunkOverlaysForAllPages.length} chunk{chunkOverlaysForAllPages.length === 1 ? '' : 's'} (Shift + D)
                               </div>
                             )}
                           </>
                         ) : (
-                          /* Fallback to object tag if PDF.js hasn't loaded yet */
-                          <object
-                            ref={iframeRef as React.RefObject<HTMLObjectElement>}
-                            key={`pdf-${file.id}-${blobUrl}-${zoomLevel}`}
-                            data={zoomLevel > 100 
-                              ? `${blobUrl}#page=${currentPage}&zoom=${zoomLevel}`
-                              : `${blobUrl}#page=${currentPage}&zoom=page-fit&view=Fit`}
-                            type="application/pdf"
-                            className="border-0 bg-white"
+                          /* Loading state while PDF.js loads */
+                          <div
                             style={{
-                              width: '100%',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
                               height: '100%',
-                              pointerEvents: zoomLevel > 100 ? 'none' : 'auto',
-                              imageRendering: 'auto',
-                              WebkitFontSmoothing: 'antialiased',
-                              transform: 'translateZ(0)',
-                              backfaceVisibility: 'hidden',
-                              display: 'block',
-                              margin: '0',
-                              padding: '0',
-                              boxSizing: 'border-box',
-                              touchAction: 'none',
+                              width: '100%',
+                              backgroundColor: '#fff'
                             }}
-                            title={file.name}
-                            tabIndex={-1}
-                            onLoad={() => console.log('📄 PDF object loaded (fallback)')}
-                            onError={(e) => console.error('❌ PDF object error:', e)}
                           >
-                            <p>PDF cannot be displayed. <a href={blobUrl || undefined} download={file.name}>Download PDF</a></p>
-                          </object>
+                            <div
+                              style={{
+                                padding: '24px 48px',
+                                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                                color: 'white',
+                                borderRadius: '8px',
+                                fontSize: '16px',
+                                textAlign: 'center'
+                              }}
+                            >
+                              <div style={{ marginBottom: '12px' }}>Loading document...</div>
+                              <div style={{ fontSize: '14px', opacity: 0.8 }}>
+                                Preparing PDF viewer
+                              </div>
+                            </div>
+                          </div>
                         )}
                       </div>
                     </div>
