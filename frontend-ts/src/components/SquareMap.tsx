@@ -3976,6 +3976,23 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       // CRITICAL: Initialize map with default location immediately to prevent any default Mapbox location from showing
       // This ensures the map always starts at the user's default location (or London fallback)
+      // Suppress harmless Mapbox style expression warnings about null layer values
+      // These warnings occur when Mapbox evaluates style expressions on features without layer properties
+      // They're harmless and come from Mapbox's default style, not our code
+      const originalConsoleWarn = console.warn;
+      const suppressMapboxLayerWarnings = (...args: any[]) => {
+        const message = args[0]?.toString() || '';
+        // Filter out Mapbox expression evaluation warnings about null layer values
+        // These are harmless warnings from Mapbox's default style expressions
+        if (message.includes('Failed to evaluate expression') && 
+            message.includes('["get","layer"]') &&
+            (message.includes('evaluated to null') || message.includes('was expected to be of type number'))) {
+          return; // Suppress this specific harmless warning
+        }
+        originalConsoleWarn.apply(console, args);
+      };
+      console.warn = suppressMapboxLayerWarnings;
+
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         // Default to a calmer colored style rather than the grey/light style.
@@ -3988,6 +4005,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Removed maxBounds to allow worldwide navigation
         attributionControl: false // Hide the attribution control
       });
+      
+      // Keep the warning filter active - these warnings will continue to appear as the map renders features
+      // We only suppress the specific harmless Mapbox layer warnings, all other warnings still show
       
       // OPTIMIZATION: Warm up backend connection immediately
       // This establishes TCP + TLS before user clicks any property

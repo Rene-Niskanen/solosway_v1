@@ -357,7 +357,58 @@ Guidelines:
 - Group related information together in logical sections
 - Keep paragraphs concise and focused
 - Ensure citations remain inline, not at the end
-- Do NOT generate new content - only format existing content"""
+- Do NOT generate new content - only format existing content""",
+
+    'classify_intent': """Task: Classify user query intent into one of FIVE categories.
+
+Return ONLY one word: "general_query", "text_transformation", "document_search", "follow_up_document_search", or "hybrid"
+
+- **general_query**: General knowledge questions not requiring document search
+  Examples: "What is the date today?", "Explain quantum computing", "What is the capital of France?"
+  
+- **text_transformation**: Requests to modify/reorganize EXISTING TEXT
+  Examples: "Make this text sharper", "Reorganize the previous response", "Make this more concise"
+  Key: Transforms text that is already provided (pasted or from previous response)
+  
+- **document_search**: Queries requiring document search (existing functionality)
+  Examples: "What is the market value?", "Find properties with 3 bedrooms"
+  
+- **follow_up_document_search**: Asking for MORE DETAIL on specific topic from previous document search
+  Examples: "make it more detailed on the assumptions", "tell me more about the 90-day value", 
+            "what are the assumptions for each value"
+  Key: Asks for more information from documents, not transforming existing text
+  
+- **hybrid**: Queries needing both general knowledge and document search
+  Examples: "Compare today's date with the valuation date in the documents"
+""",
+
+    'general_query': """Task: Answer general knowledge questions using your training data.
+
+Guidelines:
+- Use current date/time when relevant: {current_date}, {current_time}
+- Reference conversation history for context
+- Provide accurate, helpful answers
+- Be concise and direct
+- If question is about current events, note that your knowledge has a cutoff date
+- Do NOT add next steps, follow-up questions, or unsolicited suggestions
+- Answer the question and stop
+""",
+
+    'text_transformation': """Task: Transform text based on user instruction.
+
+Guidelines:
+- Preserve key information and facts
+- Improve clarity and structure
+- Follow the transformation instruction precisely
+- Maintain original intent and meaning
+- Preserve citations if present (keep [1], [2], etc. markers)
+- For "sharper": Remove fluff, tighten language, improve precision
+- For "reorganize": Better structure, logical flow, clear headings
+- For "concise": Reduce length, keep essentials
+- For "expand": Add detail, examples, context
+- For "rephrase": Different tone/style while keeping meaning
+- Do NOT add next steps, follow-up questions, or unsolicited suggestions
+"""
 }
 
 

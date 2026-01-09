@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt, get_combined_citation_answer_prompt
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
 from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
@@ -881,12 +881,12 @@ def _renumber_citations_by_appearance(
             # Only append if we haven't already appended a corrected citation above
             if not citation_appended:
                 cit = old_cit.copy()
-                cit['citation_number'] = new_num
-                renumbered_citations.append(cit)
-                logger.debug(
-                    f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
-                    f"→ new number {new_num}"
-                )
+            cit['citation_number'] = new_num
+            renumbered_citations.append(cit)
+            logger.debug(
+                f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
+                f"→ new number {new_num}"
+            )
         else:
             logger.error(
                 f"[RENUMBER_CITATIONS] ❌ Citation {old_num} appears in text but NOT in Phase 1 citations! "
@@ -1259,30 +1259,30 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Get system prompt for summarize task
     system_msg = get_system_prompt('summarize')
     
-    # Create citation tool instance (needed for Phase 1 and Phase 2)
+    # Create citation tool instance
     citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
     
     # ============================================================
-    # PHASE 1: CITATION EXTRACTION (MANDATORY TOOL CALLS)
+    # 2-PHASE APPROACH (Reliable - OpenAI tools don't return text)
     # ============================================================
-    # Extract citations first by having LLM identify all factual claims
-    # This ensures we have citations before generating the answer
+    # Phase 1: Extract citations using tool calls
+    # Phase 2: Generate answer text (no tools)
     # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations from document extracts")
+    logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable output")
     
-    # Create LLM with tool binding for Phase 1 (mandatory tool calls)
-    # Use "auto" instead of "required" to allow LLM to return text if needed
-    # "required" can cause issues if LLM fails to call tools
-    phase1_llm = ChatOpenAI(
+    import time
+    phase1_start = time.time()
+    
+    # PHASE 1: Citation Extraction (with tools)
+    citation_llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
         temperature=0,
     ).bind_tools(
         [citation_tool],
-        tool_choice="auto"  # Auto - LLM will call tools but can also return text
+        tool_choice="auto"
     )
     
-    # Get citation extraction prompt
     citation_prompt = get_citation_extraction_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
@@ -1291,32 +1291,31 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         metadata_lookup_tables=metadata_lookup_tables
     )
     
-    phase1_messages = [system_msg, HumanMessage(content=citation_prompt)]
-    
-    # Process tool calls from Phase 1
-    phase1_citations = []
-    phase1_response = None
+    citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
     
     try:
-        logger.info("[SUMMARIZE_RESULTS] Phase 1: Invoking LLM for citation extraction...")
-        phase1_response = await phase1_llm.ainvoke(phase1_messages)
-        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: LLM call completed successfully")
-    except Exception as phase1_error:
-        error_msg = str(phase1_error).lower()
+        logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations...")
+        citation_response = await citation_llm.ainvoke(citation_messages)
+        logger.info("[SUMMARIZE_RESULTS] Phase 1 complete")
+    except Exception as llm_error:
+        error_msg = str(llm_error).lower()
         if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
-            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Event loop error - {phase1_error}")
-            # Re-raise event loop errors - they indicate a serious problem
+            logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
             raise
         else:
-            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error during LLM call: {phase1_error}", exc_info=True)
-            # Fallback: continue without Phase 1 citations for other errors
-            logger.warning("[SUMMARIZE_RESULTS] Phase 1: Continuing to Phase 2 without citations due to error")
-            phase1_response = None
+            logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
+            return {
+                "final_summary": "I encountered an error while processing your query. Please try again.",
+                "citations": [],
+                "document_outputs": doc_outputs,
+                "relevant_documents": state.get('relevant_documents', [])
+            }
     
-    if phase1_response:
-        if hasattr(phase1_response, 'tool_calls') and phase1_response.tool_calls:
-            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Processing {len(phase1_response.tool_calls)} citation tool calls...")
-            for tool_call in phase1_response.tool_calls:
+    # Process tool calls (citations) from Phase 1
+    citations_from_state = []
+    if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
+        logger.info(f"[SUMMARIZE_RESULTS] Processing {len(citation_response.tool_calls)} citation tool calls...")
+        for tool_call in citation_response.tool_calls:
                 tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
                 if tool_name == 'cite_source':
                     tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
@@ -1327,113 +1326,60 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                                 block_id=tool_args.get('block_id', ''),
                                 citation_number=tool_args.get('citation_number', 0)
                             )
-                            logger.debug(
-                                f"[SUMMARIZE_RESULTS] Phase 1: ✅ Citation {tool_args.get('citation_number')} extracted: "
-                                f"block_id={tool_args.get('block_id')}"
-                            )
                         except Exception as tool_error:
-                            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error processing citation tool call: {tool_error}", exc_info=True)
-            
-            # Get citations from tool instance
-            phase1_citations = citation_tool_instance.citations
-            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Extracted {len(phase1_citations)} citations")
-        else:
-            logger.warning("[SUMMARIZE_RESULTS] Phase 1: No citation tool calls in response")
-            # With tool_choice="auto", the LLM might return text instead of tool calls
-            # Check if there's text content that might indicate the LLM didn't understand the task
-            if hasattr(phase1_response, 'content') and phase1_response.content:
-                logger.warning(f"[SUMMARIZE_RESULTS] Phase 1: LLM returned text instead of tool calls: {str(phase1_response.content)[:200]}...")
-            phase1_citations = []
-    else:
-        logger.warning("[SUMMARIZE_RESULTS] Phase 1: No response received, continuing without citations")
-        phase1_citations = []
+                            logger.error(f"[SUMMARIZE_RESULTS] Error processing citation: {tool_error}")
+        
+        citations_from_state = citation_tool_instance.citations
+        logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(citations_from_state)} citations")
     
-    # ============================================================
-    # PHASE 2: GENERATE ANSWER WITH CITATIONS
-    # ============================================================
-    # Generate final answer using citations extracted in Phase 1
-    # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating final answer with citations")
+    phase1_end = time.time()
+    logger.info(f"[SUMMARIZE_RESULTS] Phase 1 took {phase1_end - phase1_start:.2f}s")
     
-    import time
-    llm_call_start_time = time.time()
+    # PHASE 2: Generate Answer (no tools - ensures text output)
+    phase2_start = time.time()
     
-    # Generate answer WITHOUT tool binding (citations already extracted in Phase 1)
-    final_llm = ChatOpenAI(
+    answer_llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
         temperature=0,
     )
-    logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating answer (citations from Phase 1)")
     
-    # Log Phase 1 citations being passed to Phase 2
-    logger.info(
-        f"[SUMMARIZE_RESULTS] Phase 2: Passing {len(phase1_citations)} citations to LLM for answer generation"
-    )
-    for i, cit in enumerate(phase1_citations[:10], 1):  # Log first 10
-        block_id = cit.get('block_id', 'UNKNOWN')
-        doc_id = cit.get('doc_id', 'UNKNOWN')[:8] if cit.get('doc_id') else 'UNKNOWN'
-        page = cit.get('page_number', 0)
-        cited_text = cit.get('cited_text', '')[:50] if cit.get('cited_text') else 'N/A'
-        logger.debug(
-            f"[SUMMARIZE_RESULTS] Phase 1 citation {cit.get('citation_number', i)}: "
-            f"block_id={block_id}, doc={doc_id}, page={page}, text='{cited_text}...'"
-        )
+    # Check if this is a citation query (user clicked on a citation)
+    citation_context = state.get("citation_context")
+    is_citation_query = bool(citation_context and citation_context.get("cited_text"))
     
-    final_prompt = get_final_answer_prompt(
+    answer_prompt = get_final_answer_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
         formatted_outputs=formatted_outputs_str,
-        citations=phase1_citations  # Use citations extracted in Phase 1
+        citations=citations_from_state,
+        is_citation_query=is_citation_query  # Pass flag to adjust prompt
     )
     
-    final_messages = [system_msg, HumanMessage(content=final_prompt)]
+    answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
     
-    llm_invoke_start_time = time.time()
-    final_response = await final_llm.ainvoke(final_messages)
-    llm_call_end_time = time.time()
-    llm_call_duration = llm_call_end_time - llm_invoke_start_time
-    
-    # Extract summary from answer generation
-    summary = ''
-    if hasattr(final_response, 'content'):
-        summary = str(final_response.content).strip() if final_response.content else ''
-    elif isinstance(final_response, str):
-        summary = final_response.strip()
-    
-    # #region agent log
-    # Log what citation numbers appear next to what facts in Phase 2 response
-    import re
-    import json
     try:
-        citation_pattern = r'\[(\d+)\]'
-        citation_matches = list(re.finditer(citation_pattern, summary))
-        for match in citation_matches:
-            citation_num = match.group(1)
-            context_start = max(0, match.start() - 50)
-            context_end = min(len(summary), match.end() + 50)
-            context = summary[context_start:context_end].replace('\n', ' ')
-            with open(_DEBUG_LOG_PATH, 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'B',
-                    'location': 'summary_nodes.py:919',
-                    'message': 'Phase 2 citation in response text',
-                    'data': {
-                        'citation_number_in_text': citation_num,
-                        'context_around_citation': context,
-                        'fact_before_citation': summary[max(0, match.start() - 30):match.start()].strip()
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-    except: pass
-    # #endregion
+        logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating answer...")
+        answer_response = await answer_llm.ainvoke(answer_messages)
+        logger.info("[SUMMARIZE_RESULTS] Phase 2 complete")
+    except Exception as llm_error:
+        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {llm_error}", exc_info=True)
+        return {
+            "final_summary": "I encountered an error generating the response. Please try again.",
+            "citations": citations_from_state,
+            "document_outputs": doc_outputs,
+            "relevant_documents": state.get('relevant_documents', [])
+        }
     
+    # Extract answer text
+    summary = ''
+    if hasattr(answer_response, 'content'):
+        summary = str(answer_response.content).strip() if answer_response.content else ''
+    elif isinstance(answer_response, str):
+        summary = answer_response.strip()
     
-    # Use citations from Phase 1 (already extracted)
-    citations_from_state = phase1_citations
-    logger.info(f"[SUMMARIZE_RESULTS] Phase 2: Using {len(citations_from_state)} citations from Phase 1")
+    phase2_end = time.time()
+    logger.info(f"[SUMMARIZE_RESULTS] Phase 2 took {phase2_end - phase2_start:.2f}s")
     
     # Clean up any unwanted text
     import re
@@ -1444,6 +1390,10 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     )
     summary = summary.strip()
     
+    llm_call_end_time = time.time()
+    llm_call_duration = llm_call_end_time - phase1_start
+    logger.info(f"[SUMMARIZE_RESULTS] Total 2-phase time: {llm_call_duration:.2f}s")
+    
     # Renumber citations based on order of appearance in response
     # This ensures citations are sequential (1, 2, 3...) based on when they appear in text
     # Only renumber if we have citations from Phase 1
@@ -1451,12 +1401,56 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state, metadata_lookup_tables)
     
     summary_complete_time = time.time()
-    total_duration = summary_complete_time - llm_call_start_time
+    total_duration = summary_complete_time - phase1_start
     
     logger.info(
         f"[SUMMARIZE_RESULTS] Generated answer with {len(citations_from_state)} citations from blocks used "
         f"({len(summary)} chars) - Total time: {round(total_duration, 2)}s"
     )
+    
+    # Extract block IDs and create minimal metadata summary
+    block_ids = []
+    block_metadata_summary = {}
+    block_positions = []  # List of (doc_id, chunk_index, page) for each block
+    doc_ids_used = set()
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Extracting block IDs from {len(citations_from_state)} citations")
+    
+    # Extract from citations
+    for cit in citations_from_state:
+        block_id = cit.get('block_id')
+        if block_id:
+            block_ids.append(block_id)
+            doc_id = cit.get('doc_id')
+            page = cit.get('page_number', 0)
+            
+            # Get chunk_index from metadata_lookup_tables if available
+            chunk_index = 0
+            if metadata_lookup_tables and doc_id in metadata_lookup_tables:
+                block_meta = metadata_lookup_tables[doc_id].get(block_id, {})
+                chunk_index = block_meta.get('chunk_index', 0)
+            
+            # Store minimal metadata (not full lookup table - too large)
+            block_metadata_summary[block_id] = {
+                'doc_id': doc_id,
+                'page': page,
+                'chunk_index': chunk_index
+            }
+            
+            # Store block position for fast retrieval
+            block_positions.append({
+                'doc_id': doc_id,
+                'chunk_index': chunk_index,
+                'page': page,
+                'block_id': block_id  # Keep for reference
+            })
+            
+            if doc_id:
+                doc_ids_used.add(doc_id)
+        else:
+            logger.warning(f"[SUMMARIZE_RESULTS] Citation missing block_id: {cit.get('citation_number', 'unknown')}")
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(block_ids)} block IDs, {len(block_positions)} block positions, {len(doc_ids_used)} doc IDs")
     
     # Add current exchange to conversation history
     # Include timestamp for checkpoint persistence (as per LangGraph documentation)
@@ -1464,8 +1458,18 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         "query": state['user_query'],
         "summary": summary,
         "timestamp": datetime.now().isoformat(),  # Add timestamp like LangGraph docs
-        "document_ids": [output['doc_id'] for output in doc_outputs[:10]]  # Track which docs were used
+        "document_ids": list(doc_ids_used) if doc_ids_used else [output['doc_id'] for output in doc_outputs[:10]],  # Store doc IDs that were used
+        "block_ids": block_ids,  # NEW: Store all block IDs used in response
+        "block_positions": block_positions,  # NEW: Store positions for fast retrieval
+        "block_metadata_summary": block_metadata_summary,  # NEW: Minimal metadata for fast lookup
+        "query_category": "document_search",  # NEW: Store query type
+        "citations": citations_from_state  # Store citations for reference
     }
+    
+    logger.info(
+        f"[SUMMARIZE_RESULTS] Storing conversation entry with {len(block_ids)} block_ids, "
+        f"{len(block_positions)} block_positions, {len(doc_ids_used)} document_ids"
+    )
     
     # Preserve document_outputs and relevant_documents in state (LangGraph merges, but be explicit)
     state_update = {

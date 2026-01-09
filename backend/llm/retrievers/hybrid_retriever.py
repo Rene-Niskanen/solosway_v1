@@ -173,6 +173,13 @@ class HybridDocumentRetriever:
             # Sequential fallback (original behavior)
         # Step 1: BM25 search (fast, exact matches, works on unembedded chunks)
             bm25_start_time = time.perf_counter()
+            
+            # CRITICAL: Log business_id before BM25 search
+            if not business_id:
+                logger.error("[HYBRID_SEARCH] ❌ business_id is MISSING - BM25 search will return 0 results!")
+            else:
+                logger.info(f"[HYBRID_SEARCH] Starting BM25 search with business_id: {business_id[:8]}...")
+            
             bm25_results = self.bm25_retriever.query_documents(
                 query_text=user_query,
                 top_k=top_k * 2,  # Get more candidates for better coverage
@@ -184,6 +191,10 @@ class HybridDocumentRetriever:
             # Note: Filtering by document_ids now happens inside BM25 retriever
             bm25_time = time.perf_counter() - bm25_start_time
             logger.info(f"[HYBRID_SEARCH] BM25 search completed in {bm25_time:.2f}s, found {len(bm25_results)} results (sequential)" + (f" (filtered to {len(document_ids)} selected documents)" if document_ids else ""))
+            
+            # CRITICAL: Log if BM25 found 0 results
+            if len(bm25_results) == 0 and business_id:
+                logger.warning(f"[HYBRID_SEARCH] ⚠️ BM25 search returned 0 results despite business_id being present. Query: '{user_query[:50]}...'")
             
             # Step 2: Vector search (semantic matches, only on embedded chunks)
             # Early exit disabled by default - always run vector search for better results

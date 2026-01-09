@@ -13,6 +13,7 @@ import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { CitationActionMenu } from './CitationActionMenu';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -154,8 +155,10 @@ const ExpandedCardView: React.FC<{
   onDocumentClick: (doc: Document) => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
-  highlightCitation?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number } } | null;
-}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen, highlightCitation }) => {
+  highlightCitation?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number }; block_content?: string; doc_id?: string; original_filename?: string } | null;
+  onCitationAction?: (action: 'ask_more' | 'add_to_writing', citation: any) => void;
+  propertyId?: string; // Property ID for citation queries
+}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen, highlightCitation, onCitationAction, propertyId }) => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,6 +170,10 @@ const ExpandedCardView: React.FC<{
   const isLoadingRef = useRef(false); // Prevent race conditions
   const currentDocIdRef = useRef<string | null>(null); // Track current document ID
   const previewUrlRef = useRef<string | null>(null); // Track preview URL to prevent unnecessary state updates
+  
+  // Citation action menu state
+  const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<any>(null);
   
   // PDF.js state for canvas-based rendering with precise highlight positioning
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -732,7 +739,7 @@ const ExpandedCardView: React.FC<{
                   {renderedPages.size > 0 ? (
                     <div
                       ref={pdfPagesContainerRef}
-                      style={{
+                  style={{
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
@@ -777,6 +784,19 @@ const ExpandedCardView: React.FC<{
                             {/* BBOX Highlight Overlay - positioned accurately using page dimensions */}
                             {isHighlightPage && highlightCitation && highlightCitation.bbox && (
                               <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const pageRect = e.currentTarget.closest('.pdf-page-container')?.getBoundingClientRect();
+                                  if (pageRect) {
+                                    setSelectedCitation(highlightCitation);
+                                    // Position menu at click location (use click X, below citation Y)
+                                    setCitationMenuPosition({
+                                      x: e.clientX, // Use actual click X position
+                                      y: rect.bottom + 8 // Position below with 8px gap
+                                    });
+                                  }
+                                }}
                                 style={{
                                   position: 'absolute',
                                   left: `${highlightCitation.bbox.left * pageDimensions.width}px`,
@@ -786,11 +806,22 @@ const ExpandedCardView: React.FC<{
                                   backgroundColor: 'rgba(255, 235, 59, 0.4)',
                                   border: '2px solid rgba(255, 193, 7, 0.9)',
                                   borderRadius: '2px',
-                                  pointerEvents: 'none',
+                    pointerEvents: 'auto',
+                                  cursor: 'pointer',
                                   zIndex: 10,
                                   boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                  transformOrigin: 'top left'
+                                  transformOrigin: 'top left',
+                                  transition: 'all 0.2s ease'
                                 }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
+                                  e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                                  e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                                }}
+                                title="Click to interact with this citation"
                               />
                             )}
                           </div>
@@ -855,6 +886,29 @@ const ExpandedCardView: React.FC<{
             </div>
           )}
         </div>
+        
+        {/* Citation Action Menu */}
+        {citationMenuPosition && selectedCitation && (
+          <CitationActionMenu
+            citation={selectedCitation}
+            position={citationMenuPosition}
+            propertyId={propertyId}
+            onClose={() => {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+            }}
+            onAskMore={(citation) => {
+              if (onCitationAction) {
+                onCitationAction('ask_more', citation);
+              }
+            }}
+            onAddToWriting={(citation) => {
+              if (onCitationAction) {
+                onCitationAction('add_to_writing', citation);
+              }
+            }}
+          />
+        )}
       </motion.div>
   );
 
@@ -1735,51 +1789,51 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     } else {
       console.warn('⚠️ Document not found in documents, falling back to DocumentPreviewModal');
       // Fallback to old behavior if document not found
-      try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-        let downloadUrl: string | null = null;
-        
-        if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
-          downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      let downloadUrl: string | null = null;
+      
+      if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
+        downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
         } else if ((document as any).s3_path) {
-          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
+        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
         } else {
-          const docId = document.id;
-          if (docId) {
-            downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-          }
+        const docId = document.id;
+        if (docId) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
         }
-        
-        if (!downloadUrl) {
-          throw new Error('No download URL available');
-        }
-        
-        const response = await fetch(downloadUrl, {
-          credentials: 'include'
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-        }
-        
-        const blob = await response.blob();
-        // @ts-ignore - File constructor is available in modern browsers
-        const file = new File([blob], document.original_filename, { 
-          type: (document as any).file_type || blob.type || 'application/pdf'
-        });
-        
-        const fileData: FileAttachmentData = {
-          id: document.id,
-          file: file,
-          name: document.original_filename,
-          type: (document as any).file_type || blob.type || 'application/pdf',
-          size: (document as any).file_size || blob.size
-        };
-        
-        addPreviewFile(fileData);
-      } catch (err) {
-        console.error('❌ Error opening document:', err);
       }
+      
+      if (!downloadUrl) {
+        throw new Error('No download URL available');
+      }
+      
+      const response = await fetch(downloadUrl, {
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      // @ts-ignore - File constructor is available in modern browsers
+      const file = new File([blob], document.original_filename, { 
+        type: (document as any).file_type || blob.type || 'application/pdf'
+      });
+      
+      const fileData: FileAttachmentData = {
+        id: document.id,
+        file: file,
+        name: document.original_filename,
+        type: (document as any).file_type || blob.type || 'application/pdf',
+        size: (document as any).file_size || blob.size
+      };
+      
+      addPreviewFile(fileData);
+    } catch (err) {
+      console.error('❌ Error opening document:', err);
+    }
     }
   }, [documents, addPreviewFile]);
 
@@ -2197,6 +2251,50 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       }
     }
   }, [highlightCitation, documents, filteredDocuments, selectedCardIndex, isVisible]);
+
+  // Citation action handler
+  const handleCitationAction = React.useCallback((action: 'ask_more' | 'add_to_writing', citation: any) => {
+    if (action === 'ask_more') {
+      // Generate a query from the citation content
+      const citationText = citation.block_content || citation.cited_text || 'this information';
+      const query = `Tell me more about: ${citationText.substring(0, 200)}${citationText.length > 200 ? '...' : ''}`;
+      
+      // Open chat panel with pre-filled query
+      // We'll use a custom event or callback to communicate with MainContent
+      // For now, we'll use a custom event that MainContent can listen to
+      const event = new CustomEvent('citation-ask-more', {
+        detail: {
+          query,
+          citation,
+          documentId: citation.fileId || citation.doc_id
+        }
+      });
+      window.dispatchEvent(event);
+      
+      console.log('📝 [CITATION] Ask more action triggered:', { query, citation });
+    } else if (action === 'add_to_writing') {
+      // Store citation in curated writing collection (localStorage for now)
+      const curatedKey = 'curated_writing_citations';
+      const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+      const newEntry = {
+        id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        citation,
+        addedAt: new Date().toISOString(),
+        documentName: citation.original_filename || 'Unknown document',
+        content: citation.block_content || citation.cited_text || ''
+      };
+      existing.push(newEntry);
+      localStorage.setItem(curatedKey, JSON.stringify(existing));
+      
+      // Show notification (you can use a toast library here)
+      console.log('📚 [CITATION] Added to curated writing:', newEntry);
+      
+      // Dispatch event for UI updates
+      window.dispatchEvent(new CustomEvent('citation-added-to-writing', {
+        detail: newEntry
+      }));
+    }
+  }, []);
 
   // File upload handler
   const handleFileUpload = async (file: File) => {
@@ -4009,6 +4107,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   isFullscreen={isFullscreen}
                   onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
                   highlightCitation={highlightCitation}
+                  onCitationAction={handleCitationAction}
+                  propertyId={property?.id}
                 />
                       </div>
             )}

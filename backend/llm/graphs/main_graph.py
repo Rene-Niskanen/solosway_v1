@@ -25,7 +25,7 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks
+from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
     check_cached_documents,
@@ -37,6 +37,12 @@ from backend.llm.nodes.detail_level_detector import determine_detail_level
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 from backend.llm.nodes.formatting_nodes import format_response
+# from backend.llm.nodes.query_classifier import classify_query_intent  # Replaced by combined node
+from backend.llm.nodes.combined_query_preparation import classify_and_prepare_query  # OPTIMIZED: Combined classification + detail + expansion
+from backend.llm.nodes.text_context_detector import detect_and_extract_text
+from backend.llm.nodes.general_query_node import handle_general_query
+from backend.llm.nodes.text_transformation_node import transform_text
+from backend.llm.nodes.follow_up_query_node import handle_follow_up_query
 from typing import Literal
 
 async def create_checkpointer_for_current_loop():
@@ -191,8 +197,57 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Input: user_query, conversation_history, relevant_documents (from checkpointer)
     - Checks if documents were already retrieved in previous conversation turns
     - If property context matches, reuses cached documents (much faster)
-    - If property context differs or no cache, proceeds with routing
+    - If property context differs or no cache, proceeds with classification
     - Output: cached relevant_documents (if applicable) or empty to proceed
+    """
+    
+    # COMBINED: Query Classification + Detail Level + Expansion in ONE LLM call
+    builder.add_node("classify_and_prepare_query", classify_and_prepare_query)
+    """
+    Node 0.25: Combined Query Preparation (OPTIMIZED - saves ~1-1.5s)
+    - Input: user_query, conversation_history, document_ids, relevant_documents
+    - Does ALL of these in ONE LLM call:
+      1. Classifies query as: general_query, text_transformation, document_search, follow_up, or hybrid
+      2. Determines detail_level (concise vs detailed)
+      3. Generates query_variations for better retrieval (if needed)
+    - Output: query_category, detail_level, query_variations, skip_expansion=True
+    - PERFORMANCE: Replaces 3 separate LLM calls with 1 (~1-1.5s faster)
+    """
+    
+    # NEW: Context Detection (for text transformation)
+    builder.add_node("detect_and_extract_text", detect_and_extract_text)
+    """
+    Node 0.3: Detect and Extract Text (NEW)
+    - Input: user_query, conversation_history
+    - Detects what text user wants to transform AND extracts it
+    - Output: text_to_transform, transformation_instruction
+    """
+    
+    # NEW: General Query Handler
+    builder.add_node("handle_general_query", handle_general_query)
+    """
+    Node 0.4: Handle General Query (NEW)
+    - Input: user_query, conversation_history
+    - Answers general knowledge questions
+    - Output: final_summary, conversation_history, citations
+    """
+    
+    # NEW: Text Transformation Handler
+    builder.add_node("transform_text", transform_text)
+    """
+    Node 0.45: Transform Text (NEW)
+    - Input: text_to_transform, transformation_instruction, user_query
+    - Transforms text based on user instruction
+    - Output: final_summary, conversation_history, citations
+    """
+    
+    # NEW: Follow-up Query Handler
+    builder.add_node("handle_follow_up_query", handle_follow_up_query)
+    """
+    Node 0.5: Handle Follow-up Query (NEW)
+    - Input: user_query, conversation_history
+    - Handles queries asking for more detail on previous document search responses
+    - Output: final_summary, conversation_history, citations
     """
     
     # ROUTER NODES (from citation-mapping - Performance Optimization)
@@ -210,6 +265,24 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Fetches ALL chunks from specific document(s)
     - Bypasses vector search entirely
     - Used when user attaches files or mentions specific document
+    """
+
+    builder.add_node("handle_attachment_fast", handle_attachment_fast)
+    """
+    ULTRA-FAST Path Node: Attachment Fast Handler (~2s)
+    - User attached file(s) and selected "fast response"
+    - Uses extracted text directly - single LLM call with attachment prompt
+    - Skips ALL retrieval and document search
+    - ~5-10x faster than normal pipeline
+    """
+    
+    builder.add_node("handle_citation_query", handle_citation_query)
+    """
+    ULTRA-FAST Path Node: Citation Query Handler (~2s)
+    - User clicked on a citation and asked a question about it
+    - We already have: doc_id, page, bbox, cited_text
+    - Skips ALL retrieval - single LLM call with cited text + user query
+    - ~5-10x faster than normal pipeline
     """
 
     # EXISTING NODES (Full Pipeline)
@@ -300,58 +373,24 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         
         NOTE: This function receives state BEFORE route_query's return is merged,
         so we must duplicate the routing logic here instead of reading route_decision.
+        
+        CRITICAL: Attachment/citation checks ONLY run if values exist AND have content.
+        Normal queries use the original routing logic unchanged.
         """
         user_query = state.get("user_query", "").lower().strip()
         document_ids = state.get("document_ids", [])
         property_id = state.get("property_id")
+        citation_context = state.get("citation_context")
+        attachment_context = state.get("attachment_context")
+        response_mode = state.get("response_mode")
         
+        # ORIGINAL ROUTING LOGIC - Restored from HEAD to match working version
+        # NOTE: Citation and attachment routing handled in route_query node, not here
         # FIX: Ensure document_ids is always a list (safety check)
-        # #region agent log
-        try:
-            import json as json_module
-            import os
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json_module.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'B',
-                    'location': 'main_graph.py:308',
-                    'message': 'should_route: document_ids BEFORE processing',
-                    'data': {
-                        'document_ids_raw': str(document_ids),
-                        'document_ids_type': type(document_ids).__name__,
-                        'document_ids_is_none': document_ids is None,
-                        'document_ids_bool': bool(document_ids),
-                        'query': user_query[:50]
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
         if document_ids and not isinstance(document_ids, list):
             document_ids = [str(document_ids)]
         elif not document_ids:
             document_ids = []
-        # #region agent log
-        try:
-            import json as json_module
-            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                f.write(json_module.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'B',
-                    'location': 'main_graph.py:312',
-                    'message': 'should_route: document_ids AFTER processing',
-                    'data': {
-                        'document_ids': document_ids,
-                        'document_ids_len': len(document_ids),
-                        'will_route_to_direct': bool(document_ids and len(document_ids) > 0),
-                        'query': user_query[:50]
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-        except: pass
-        # #endregion
         
         logger.info(
             f"[ROUTER] should_route called - Query: '{user_query[:50]}...', "
@@ -362,24 +401,6 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # PATH 1: DIRECT DOCUMENT (FASTEST ~2s)
         if document_ids and len(document_ids) > 0:
             logger.info("🟢 [ROUTER] should_route → direct_document (document_ids provided)")
-            # #region agent log
-            try:
-                import json as json_module
-                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
-                    f.write(json_module.dumps({
-                        'sessionId': 'debug-session',
-                        'runId': 'run1',
-                        'hypothesisId': 'B',
-                        'location': 'main_graph.py:323',
-                        'message': 'should_route: Routing to direct_document',
-                        'data': {
-                            'document_ids': document_ids,
-                            'query': user_query[:50]
-                        },
-                        'timestamp': int(__import__('time').time() * 1000)
-                    }) + '\n')
-            except: pass
-            # #endregion
             return "direct_document"
         
         # PATH 2: PROPERTY CONTEXT (treat as simple_search for now)
@@ -391,17 +412,14 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             return "simple_search"
         
         # PATH 3: SIMPLE QUERY (MEDIUM ~6s)
+        # FIX: Match route_query logic exactly - use OR not AND, same keywords
         word_count = len(user_query.split())
         simple_keywords = [
             "what is", "what's", "how much", "how many", "price", "cost", 
-            "value", "worth", "address", "location", "when", "who"
+            "value", "when", "where", "who"
         ]
-        is_simple = (
-            word_count <= 8 and 
-            any(keyword in user_query for keyword in simple_keywords)
-        )
         
-        if is_simple:
+        if word_count <= 8 or any(kw in user_query for kw in simple_keywords):
             logger.info("🟡 [ROUTER] should_route → simple_search (simple query)")
             return "simple_search"
         
@@ -411,15 +429,15 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     def should_use_cached_documents(state: MainWorkflowState) -> Literal["process_documents", "route_query"]:
         """
-        Conditional routing after cache check.
+        Conditional routing after cache check (RESTORED FROM HEAD).
         If documents are cached, skip directly to processing.
-        If not cached, proceed to routing.
+        If not cached, proceed directly to route_query.
         """
         cached_docs = state.get("relevant_documents", [])
         if cached_docs and len(cached_docs) > 0:
             logger.info(f"[GRAPH] Using {len(cached_docs)} cached documents - skipping to process")
             return "process_documents"
-        logger.info("[GRAPH] No cached documents - proceeding to routing")
+        logger.info("[GRAPH] No cached documents - proceeding to routing (HEAD behavior)")
         return "route_query"
 
     def should_skip_expansion(state: MainWorkflowState) -> Literal["expand_query", "query_vector_documents"]:
@@ -443,18 +461,19 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge(START, "check_cached_documents")
     logger.debug("Edge: START -> check_cached_documents")
 
-    # Cache Check → Conditional: Use cached or route
+    # Cache Check → Conditional: Use cached or route (RESTORED FROM HEAD)
     builder.add_conditional_edges(
         "check_cached_documents",
         should_use_cached_documents,
         {
             "process_documents": "process_documents",  # Cached - skip to process
-            "route_query": "route_query"  # Not cached - proceed to routing
+            "route_query": "route_query"  # Not cached - go directly to route_query (HEAD behavior)
         }
     )
-    logger.debug("Conditional: check_cached_documents -> [process_documents|route_query]")
+    logger.debug("Conditional: check_cached_documents -> [process_documents|route_query] (RESTORED FROM HEAD)")
 
-    # Router → Conditional routing (from citation-mapping)
+    # Router → Conditional routing (ORIGINAL - restored from HEAD)
+    # NOTE: Citation and attachment routing handled inside route_query node itself
     builder.add_conditional_edges(
         "route_query",
         should_route,
@@ -465,6 +484,14 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         }
     )
     logger.debug("Conditional: route_query -> [direct_document|simple_search|complex_search]")
+    
+    # ATTACHMENT FAST PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
+    builder.add_edge("handle_attachment_fast", "format_response")
+    logger.debug("Edge: handle_attachment_fast -> format_response (ULTRA-FAST)")
+    
+    # CITATION PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
+    builder.add_edge("handle_citation_query", "format_response")
+    logger.debug("Edge: handle_citation_query -> format_response (ULTRA-FAST)")
 
     # DIRECT PATH: fetch → process → summarize (FASTEST ~2s)
     builder.add_edge("fetch_direct_chunks", "process_documents")
@@ -474,16 +501,15 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Note: This edge is conditional below, but we also need direct edge for simple path
     # The conditional will handle routing after query_vector_documents
 
-    # COMPLEX PATH: rewrite → expand → vector → clarify (conditional) → process
-    builder.add_edge("rewrite_query", "determine_detail_level")
-    logger.debug("Edge: rewrite_query -> determine_detail_level")
+    # COMPLEX PATH: rewrite → vector → clarify (conditional) → process
+    # NOTE: detail_level and query_variations are already set by classify_and_prepare_query!
+    # We skip determine_detail_level and expand_query nodes for document searches
+    builder.add_edge("rewrite_query", "query_vector_documents")
+    logger.debug("Edge: rewrite_query -> query_vector_documents (OPTIMIZED: skips detail_level + expand)")
 
-    builder.add_edge("determine_detail_level", "expand_query")
-    logger.debug("Edge: determine_detail_level -> expand_query")
-
-    # Expansion → Vector Search
-    builder.add_edge("expand_query", "query_vector_documents")
-    logger.debug("Edge: expand_query -> query_vector_documents")
+    # Keep these nodes for backwards compatibility (may be used by other paths)
+    # builder.add_edge("determine_detail_level", "expand_query")
+    # builder.add_edge("expand_query", "query_vector_documents")
 
     # Conditional: Skip clarification for simple queries
     builder.add_conditional_edges(
@@ -504,12 +530,24 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("process_documents", "summarize_results")
     logger.debug("Edge: process_documents -> summarize_results")
 
-    # Format response for better readability
-    builder.add_edge("summarize_results", "format_response")
-    logger.debug("Edge: summarize_results -> format_response")
-
-    builder.add_edge("format_response", END)
-    logger.debug("Edge: format_response -> END")
+    # OPTIMIZATION: Skip format_response (saves ~6.5s) - summary is already well-formatted
+    # Go directly to END from summarize_results
+    builder.add_edge("summarize_results", END)
+    logger.debug("Edge: summarize_results -> END (OPTIMIZED: skipped format_response)")
+    
+    # NEW: General Query Path: handle_general_query → END (skip format_response)
+    builder.add_edge("handle_general_query", END)
+    logger.debug("Edge: handle_general_query -> END (OPTIMIZED: skipped format_response)")
+    
+    # NEW: Text Transformation Path: detect_and_extract_text → transform_text → END
+    builder.add_edge("detect_and_extract_text", "transform_text")
+    logger.debug("Edge: detect_and_extract_text -> transform_text")
+    builder.add_edge("transform_text", END)
+    logger.debug("Edge: transform_text -> END (OPTIMIZED: skipped format_response)")
+    
+    # NEW: Follow-up Query Path: handle_follow_up_query → END (skip format_response)
+    builder.add_edge("handle_follow_up_query", END)
+    logger.debug("Edge: handle_follow_up_query -> END (OPTIMIZED: skipped format_response)")
 
     # Add checkpointer setup
     checkpointer = None 

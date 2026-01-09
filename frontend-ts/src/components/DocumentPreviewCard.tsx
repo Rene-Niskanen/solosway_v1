@@ -147,21 +147,18 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
     if (cached) {
       // PDF with pre-generated thumbnail - instant display!
       if (cached.thumbnailUrl) {
-        console.log('⚡ [DocumentPreviewCard] Using cached PDF thumbnail (instant):', original_filename);
         setPdfThumbnail(cached.thumbnailUrl);
         setLoading(false);
         return;
       }
       // Image with cached blob URL - instant display!
       if (cached.url && isImage) {
-        console.log('⚡ [DocumentPreviewCard] Using cached image (instant):', original_filename);
         setPreviewUrl(cached.url);
         setLoading(false);
         return;
       }
       // PDF without thumbnail but with blob URL - use it while generating thumbnail
       if (cached.url && isPDF) {
-        console.log('📄 [DocumentPreviewCard] Using cached PDF blob, generating thumbnail:', original_filename);
         // Use cached blob to generate thumbnail faster
         fetch(cached.url)
           .then(res => res.blob())
@@ -197,8 +194,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           fetchUrl = `${backendUrl}/api/files/download?document_id=${doc_id}`;
         }
         
-        console.log('📥 Fetching document preview:', original_filename, 'Type:', isPDF ? 'PDF' : isImage ? 'Image' : 'Other');
-        
         const response = await fetch(fetchUrl, {
           credentials: 'include'
         });
@@ -212,8 +207,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         
-        console.log('✅ Fetched document blob:', original_filename, 'Size:', blob.size, 'Type:', blob.type);
-        
         // Cache for future use
         if (!(window as any).__preloadedDocumentCovers) {
           (window as any).__preloadedDocumentCovers = {};
@@ -222,12 +215,10 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
         if (isPDF) {
           // Render PDF first page as thumbnail
           try {
-            console.log('🔄 Generating PDF thumbnail for:', original_filename);
             const arrayBuffer = await blob.arrayBuffer();
             const thumbnailUrl = await renderPdfThumbnail(arrayBuffer);
             
             if (thumbnailUrl) {
-              console.log('✅ PDF thumbnail generated successfully:', original_filename);
               setPdfThumbnail(thumbnailUrl);
               
               // Cache the thumbnail
@@ -244,15 +235,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
             console.error('❌ Failed to generate PDF thumbnail:', pdfError);
           }
         } else if (isImage) {
-          console.log('🖼️ Setting image preview URL for:', original_filename);
           setPreviewUrl(url);
           (window as any).__preloadedDocumentCovers[doc_id] = {
             url: url,
             type: blob.type,
             timestamp: Date.now()
           };
-        } else {
-          console.log('📄 Non-image/PDF file, showing icon only:', original_filename);
         }
         
         setLoading(false);
@@ -268,23 +256,14 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
   // Determine what to show in the thumbnail
   const thumbnailSrc = pdfThumbnail || (isImage && previewUrl ? previewUrl : null);
   
-  // Debug logging
-  useEffect(() => {
-    if (thumbnailSrc) {
-      console.log('🖼️ Thumbnail source available for:', original_filename, 'Type:', pdfThumbnail ? 'PDF thumbnail' : 'Image URL');
-    } else if (!loading) {
-      console.log('📄 No thumbnail, showing icon for:', original_filename, 'isPDF:', isPDF, 'isImage:', isImage);
-    }
-  }, [thumbnailSrc, loading, original_filename, isPDF, isImage, pdfThumbnail]);
-  
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, y: 2 }}
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ 
-          duration: 0.2, 
-          ease: [0.16, 1, 0.3, 1]
+          duration: 0.3, 
+          ease: [0.25, 0.1, 0.25, 1] // Smooth ease-out
         }}
         onClick={onClick}
         style={{
@@ -299,13 +278,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           width: '100%',
           maxWidth: '340px',
           boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04)',
-          transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+          transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
           overflow: 'hidden'
         }}
         whileHover={onClick ? {
           borderColor: 'rgba(0, 0, 0, 0.12)',
-          boxShadow: '0 4px 12px 0 rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04)',
-          transform: 'translateY(-1px)'
+          boxShadow: '0 4px 12px 0 rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04)'
         } : undefined}
       >
         {/* Header with filename and loading indicator */}
@@ -385,7 +363,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
                 transform: 'scale(1.02)',
                 transformOrigin: 'top center'
               }}
-              onLoad={() => console.log('✅ Thumbnail image loaded successfully:', original_filename)}
               onError={(e) => {
                 console.error('❌ Failed to load thumbnail image:', original_filename, e);
                 setPdfThumbnail(null);

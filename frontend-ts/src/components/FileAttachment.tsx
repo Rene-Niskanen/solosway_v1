@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { FileText, X } from "lucide-react";
+import { FileText, X, Loader2, Check, AlertCircle } from "lucide-react";
 
 export interface FileAttachmentData {
   id: string;
@@ -10,6 +10,13 @@ export interface FileAttachmentData {
   name: string;
   type: string;
   size: number;
+  // Quick extraction fields (for chat attachments)
+  extractedText?: string;
+  pageTexts?: string[];
+  pageCount?: number;
+  tempFileId?: string;
+  extractionStatus?: 'pending' | 'extracting' | 'complete' | 'error';
+  extractionError?: string;
 }
 
 export interface FileAttachmentProps {
@@ -263,9 +270,24 @@ export const FileAttachment: React.FC<FileAttachmentProps> = ({
           <span className="text-xs font-medium text-black truncate" style={{ whiteSpace: 'nowrap' }}>
             {formatFileName(attachment.name)}
           </span>
-          <span className="text-[10px] text-gray-500 font-normal">
-            {getFileTypeLabel(attachment.type)}
-          </span>
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-gray-500 font-normal">
+              {getFileTypeLabel(attachment.type)}
+            </span>
+            {/* Extraction Status Indicator */}
+            {attachment.extractionStatus === 'extracting' && (
+              <Loader2 className="w-2.5 h-2.5 text-blue-500 animate-spin" />
+            )}
+            {attachment.extractionStatus === 'pending' && (
+              <div className="w-2 h-2 rounded-full bg-gray-300" />
+            )}
+            {attachment.extractionStatus === 'complete' && (
+              <Check className="w-2.5 h-2.5 text-green-500" strokeWidth={3} />
+            )}
+            {attachment.extractionStatus === 'error' && (
+              <AlertCircle className="w-2.5 h-2.5 text-red-500" />
+            )}
+          </div>
         </div>
         
         {/* Remove Button - Black circular X */}

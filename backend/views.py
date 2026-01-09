@@ -348,6 +348,17 @@ def query_documents_stream():
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
         session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
+        response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
+        attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
+        
+        # CRITICAL: Normalize undefined/null/empty values to None for Python
+        # Frontend sends undefined which becomes null in JSON, but we want None in Python
+        # Also handle empty strings and empty dicts
+        if not response_mode or response_mode == 'null' or response_mode == '':
+            response_mode = None
+        if not attachment_context or attachment_context == 'null' or attachment_context == {} or (isinstance(attachment_context, dict) and not attachment_context.get('texts')):
+            attachment_context = None
         
         # Handle documentIds as comma-separated string, array, or single value
         if isinstance(document_ids, str):
@@ -361,11 +372,22 @@ def query_documents_stream():
         else:
             document_ids = []
         
+        # CRITICAL: Log routing parameters for debugging
+        attachment_info = "None"
+        if attachment_context:
+            if isinstance(attachment_context, dict):
+                texts = attachment_context.get('texts', [])
+                attachment_info = f"Present (texts: {len(texts)}, has_content: {any(len(str(t).strip()) > 0 for t in texts)})"
+            else:
+                attachment_info = f"Present (type: {type(attachment_context).__name__})"
+        
         logger.info(
             f"🔵 [STREAM] Query: '{query[:50]}...', "
             f"Property ID: {property_id}, "
             f"Document IDs: {document_ids} (count: {len(document_ids)}), "
-            f"Session: {session_id}"
+            f"Session: {session_id}, "
+            f"Response Mode: {response_mode or 'None'}, "
+            f"Attachment Context: {attachment_info}"
         )
         
         if not query:
@@ -430,7 +452,11 @@ def query_documents_stream():
                     "business_id": business_id,
                     "session_id": session_id,
                     "property_id": property_id,
-                    "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
+                    "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+                    "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
+                    "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
+                    "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
+                    # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
                 try:
@@ -537,8 +563,38 @@ def query_documents_stream():
                     else:
                         return f"Searching for {target_str}"
                 
-                intent_message = extract_query_intent(query)
-                timing.mark("intent_extracted")
+                # ULTRA-FAST PATH: Citation queries and likely follow-ups skip reasoning steps
+                # Since we already have context, no need to show "Searching for X"
+                is_citation_query = citation_context and citation_context.get('cited_text')
+                
+                # Detect likely follow-up query (has message history + short question)
+                query_lower = query.lower()
+                is_likely_followup = (
+                    len(message_history) > 0 and  # Has conversation history
+                    len(query.split()) <= 15 and  # Short question
+                    any(kw in query_lower for kw in [
+                        'explain', 'clarify', 'what do you mean', 'expand', 'tell me more',
+                        'more detail', 'elaborate', 'rephrase', 'summarize', 'what about',
+                        'how about', 'and the', "what's the", 'whats the', 'why', 'how',
+                        # Additional follow-up patterns
+                        'what other', 'any other', 'what else', 'are there', 'does it',
+                        'does the', 'is there', 'other limitations', 'other risks',
+                        'other issues', 'other problems', 'other concerns', 'anything else',
+                        'tell me about', 'can you', 'could you'
+                    ])
+                )
+                
+                # Skip reasoning steps for ultra-fast paths
+                is_fast_path = is_citation_query or is_likely_followup
+                
+                if is_fast_path:
+                    # Skip initial reasoning step - go straight to LLM
+                    path_type = "CITATION_QUERY" if is_citation_query else "FAST_FOLLOW_UP"
+                    logger.info(f"⚡ [{path_type}] Skipping initial reasoning step - ultra-fast path")
+                    timing.mark("intent_extracted")
+                else:
+                    intent_message = extract_query_intent(query)
+                    timing.mark("intent_extracted")
                 
                 # Emit initial reasoning step with extracted intent
                 initial_reasoning = {
@@ -557,14 +613,30 @@ def query_documents_stream():
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
                         
-                        # Use persistent GraphRunner graph (compiled once on startup).
-                        # Falls back to legacy behavior if runner isn't available.
+                        # Create a new checkpointer and graph for current event loop.
+                        # This avoids "Lock bound to different event loop" errors.
+                        # All checkpointers use the same database, so conversation_history is still shared.
                         graph = None
                         checkpointer = None
                         try:
                             from backend.llm.runtime.graph_runner import graph_runner
-                            graph = graph_runner.get_graph()
-                            checkpointer = graph_runner.get_checkpointer()
+                            # Check if GraphRunner has a checkpointer (to know if checkpointing is available)
+                            has_checkpointer = graph_runner.get_checkpointer() is not None
+                            if has_checkpointer:
+                                # Create a new checkpointer for this event loop (shares same DB, different instance)
+                                from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                                checkpointer = await create_checkpointer_for_current_loop()
+                                if checkpointer:
+                                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                                    logger.info("🟡 [STREAM] Created new checkpointer for current loop (shares DB with GraphRunner)")
+                                else:
+                                    graph, _ = await build_main_graph(use_checkpointer=False)
+                                    logger.info("🟡 [STREAM] Failed to create checkpointer, using stateless graph")
+                            else:
+                                # No checkpointer available, create stateless graph
+                                from backend.llm.graphs.main_graph import build_main_graph
+                                graph, _ = await build_main_graph(use_checkpointer=False)
+                                logger.info("🟡 [STREAM] GraphRunner has no checkpointer, using stateless graph")
                             timing.mark("checkpointer_created")
                             timing.mark("graph_built")
                         except Exception as runner_err:
@@ -572,17 +644,19 @@ def query_documents_stream():
                             from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                             checkpointer = await create_checkpointer_for_current_loop()
                             timing.mark("checkpointer_created")
-                            if checkpointer:
-                                graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                            else:
-                                graph, _ = await build_main_graph(use_checkpointer=False)
+                        if checkpointer:
+                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                        else:
+                            graph, _ = await build_main_graph(use_checkpointer=False)
                             timing.mark("graph_built")
+                            logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
                         existing_doc_count = 0
+                        loaded_conversation_history = []
                         try:
                             if checkpointer:
                                 existing_state = await graph.aget_state(config_dict)
@@ -591,10 +665,20 @@ def query_documents_stream():
                                     prev_docs = existing_state.values.get('relevant_documents', [])
                                     if conv_history and len(conv_history) > 0:
                                         is_followup = True
+                                        loaded_conversation_history = conv_history
                                     if prev_docs:
                                         existing_doc_count = len(prev_docs)
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
+                        
+                        # WORKAROUND: If checkpointer unavailable, try to use messageHistory from request
+                        # This is a temporary solution until checkpointer is properly configured
+                        if not loaded_conversation_history and not checkpointer and message_history:
+                            logger.info(f"🟡 [STREAM] Checkpointer unavailable, but messageHistory provided ({len(message_history)} messages)")
+                            # Note: messageHistory format is different from conversation_history format
+                            # We can't fully reconstruct block_ids from messageHistory, but we can at least
+                            # pass it through so the query classifier can see there was a previous query
+                            # For now, we'll rely on the checkpointer being enabled for full functionality
                         
                         # Use astream_events to capture node execution and emit reasoning steps
                         logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
@@ -628,18 +712,33 @@ def query_documents_stream():
                         # Stream events from graph execution and track state
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
-                        logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
+                        # EXCEPTION: Citation queries skip reasoning steps for ultra-fast response
+                        if is_fast_path:
+                            path_name = "CITATION_QUERY" if is_citation_query else "FAST_FOLLOW_UP"
+                            logger.info(f"⚡ [{path_name}] Skipping reasoning step emissions - ultra-fast path")
+                        else:
+                            logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
+                        summary_already_streamed = False  # Track if we've already streamed the summary
                         
                         # Execute graph with error handling for connection timeouts during execution
+                        # Since we create a new graph for the current loop, we can use astream_events directly
+                        timing.mark("graph_execution_start")
+                        node_timings = {}  # Track timing per node
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
                                 event_type = event.get('event')
                                 node_name = event.get("name", "")
                                 
-                                # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                # Track node start times for performance analysis
                                 if event_type == "on_chain_start":
+                                    node_timings[node_name] = time.perf_counter()
+                                    timing.mark(f"node_{node_name}_start")
+                                
+                                # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                # SKIP for citation queries - ultra-fast path, no reasoning steps
+                                if event_type == "on_chain_start" and not is_fast_path:
                                     if node_name in node_messages and node_name not in processed_nodes:
                                         processed_nodes.add(node_name)
                                         reasoning_data = {
@@ -658,13 +757,23 @@ def query_documents_stream():
                                 elif event.get("event") == "on_chain_end":
                                     node_name = event.get("name", "")
                                     
+                                    # Track node end times and log duration
+                                    if node_name in node_timings:
+                                        node_duration = time.perf_counter() - node_timings[node_name]
+                                        timing.mark(f"node_{node_name}_end")
+                                        # Log slow nodes (>1s) for performance analysis
+                                        if node_duration > 1.0:
+                                            logger.info(f"⏱️ [PERF] Node '{node_name}' took {node_duration:.2f}s")
+                                    
                                     # Try to extract state from the event
                                     event_data = event.get("data", {})
                                     state_update = event_data.get("data", {})  # Full state update
                                     output = event_data.get("output", {})  # Node output only
                                     
                                     # Update details based on node output
-                                    if node_name == "query_vector_documents":
+                                    # SKIP reasoning step emissions for citation queries (ultra-fast path)
+                                    # but still capture state updates for final result
+                                    if node_name == "query_vector_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         relevant_docs = state_data.get("relevant_documents", [])
                                         doc_count = len(relevant_docs)
@@ -731,7 +840,7 @@ def query_documents_stream():
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
                                     
-                                    elif node_name == "process_documents":
+                                    elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         doc_outputs = state_data.get("document_outputs", [])
                                         doc_outputs_count = len(doc_outputs)
@@ -792,8 +901,28 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                     
+                                    # Handle citation query completion (ULTRA-FAST path)
+                                    if node_name == "handle_citation_query":
+                                        state_data = state_update if state_update else output
+                                        
+                                        # Initialize final_result if needed
+                                        if final_result is None:
+                                            final_result = {}
+                                        
+                                        # Capture final_summary from citation query handler
+                                        final_summary_from_citation = state_data.get('final_summary', '')
+                                        if final_summary_from_citation:
+                                            final_result['final_summary'] = final_summary_from_citation
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured final_summary ({len(final_summary_from_citation)} chars)")
+                                        
+                                        # Capture citations
+                                        citations_from_citation = state_data.get('citations', [])
+                                        if citations_from_citation:
+                                            final_result['citations'] = citations_from_citation
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                    
                                     # Handle summarize_results node completion - citations already have bbox coordinates
-                                    if node_name == "summarize_results":
+                                    elif node_name == "summarize_results":
                                         state_data = state_update if state_update else output
                                         
                                         # Initialize final_result if needed
@@ -914,6 +1043,29 @@ def query_documents_stream():
                                             f"relevant_docs={len(final_result.get('relevant_documents', []))}, "
                                             f"citations={len(citations_from_state)}"
                                         )
+                                        
+                                        # 🚀 IMMEDIATE STREAMING: Stream the summary NOW, don't wait for checkpointer!
+                                        # This eliminates the 20+ second delay caused by checkpointer saving
+                                        if final_summary_from_state and not summary_already_streamed:
+                                            logger.info("🚀 [STREAM] IMMEDIATE: Streaming summary directly from summarize_results (skipping checkpointer wait)")
+                                            
+                                            # Send document count
+                                            doc_count = len(doc_outputs_from_state) if doc_outputs_from_state else len(relevant_docs_from_state)
+                                            yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
+                                            
+                                            # Stream status
+                                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            
+                                            # Stream the summary token by token
+                                            words = final_summary_from_state.split()
+                                            for i, word in enumerate(words):
+                                                if i == 0:
+                                                    logger.info("🚀 [STREAM] First token streamed IMMEDIATELY from summarize_results")
+                                                token = word + (' ' if i < len(words) - 1 else '')
+                                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                                            
+                                            summary_already_streamed = True
+                                            logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
                                     if state_update:
@@ -1147,18 +1299,22 @@ def query_documents_stream():
                         
                         logger.info(f"🟡 [STREAM] Using existing summary from summarize_results node ({len(full_summary)} chars)")
                         
-                        # Stream the existing summary token by token (simulate streaming for UX)
-                        logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
-                        yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
-                        
-                        # Split summary into words and stream them (no delay needed - already fast)
-                        words = full_summary.split()
-                        for i, word in enumerate(words):
-                            if i == 0:
-                                logger.info("🟡 [STREAM] First token streamed from existing summary")
-                            # Add space after word (except last word)
-                            token = word + (' ' if i < len(words) - 1 else '')
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                        # Check if summary was already streamed immediately from summarize_results
+                        if summary_already_streamed:
+                            logger.info("🟡 [STREAM] Summary already streamed immediately - skipping duplicate streaming")
+                        else:
+                            # Stream the existing summary token by token (simulate streaming for UX)
+                            logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
+                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                            
+                            # Split summary into words and stream them (no delay needed - already fast)
+                            words = full_summary.split()
+                            for i, word in enumerate(words):
+                                if i == 0:
+                                    logger.info("🟡 [STREAM] First token streamed from existing summary")
+                                # Add space after word (except last word)
+                                token = word + (' ' if i < len(words) - 1 else '')
+                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
                         
                         # Check if we have processed citations from block IDs (new approach)
                         processed_citations = final_result.get('processed_citations', {})
@@ -1222,7 +1378,7 @@ def query_documents_stream():
                                                 
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
-                                    'doc_id': doc_id,
+                                                        'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
@@ -1429,6 +1585,9 @@ def query_documents():
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
     session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
+    response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
+    attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
     
     # Handle documentIds as comma-separated string, array, or single value
     if isinstance(document_ids, str):
@@ -1486,7 +1645,10 @@ def query_documents():
             "business_id": business_id,
             "session_id": session_id,
             "property_id": property_id,
-            "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
+            "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+            "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
+            "response_mode": response_mode if response_mode else None,  # NEW: Response mode for attachments (fast/detailed/full) - ensure None not empty string
+            "attachment_context": attachment_context if attachment_context else None  # NEW: Extracted text from attached files - ensure None not empty dict
         }
         
         async def run_query():
@@ -1568,7 +1730,7 @@ def query_documents():
             "doc_ids_count": len(document_ids) if document_ids else 0,
             "timing": timing.to_ms()
         }))
-
+        
         return jsonify({
             'success': True,
             'data': response_data
@@ -2448,6 +2610,230 @@ def check_duplicate_document():
         logger.error(f"Error checking for duplicate document: {e}", exc_info=True)
         return jsonify({'error': f'Failed to check for duplicates: {str(e)}'}), 500
 
+
+@views.route('/api/documents/quick-extract', methods=['POST', 'OPTIONS'])
+@login_required
+def quick_extract_document():
+    """
+    Quick text extraction endpoint for chat file attachments.
+    
+    Extracts text from PDF/DOCX files without full processing pipeline.
+    Used for immediate AI responses when users attach files to chat.
+    
+    Optionally stores file in S3 for later full processing if user chooses
+    to add the document to a project.
+    
+    Returns:
+        - success: bool
+        - text: Full extracted text
+        - page_texts: List of text per page
+        - page_count: Number of pages
+        - temp_file_id: UUID for later full processing (if store_temp=true)
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"🔍 [QUICK-EXTRACT] Request received from {current_user.email}")
+    
+    try:
+        if 'file' not in request.files:
+            logger.error("No 'file' key in request.files")
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            logger.error("Empty filename")
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        
+        # Read file bytes
+        file_bytes = file.read()
+        filename = secure_filename(file.filename)
+        
+        # Check if we should store temp file
+        store_temp = request.form.get('store_temp', 'true').lower() == 'true'
+        
+        logger.info(f"🔍 [QUICK-EXTRACT] Processing {filename} ({len(file_bytes)} bytes, store_temp={store_temp})")
+        
+        # Import and use quick extract service
+        from .services.quick_extract_service import quick_extract, store_temp_file
+        
+        # Extract text
+        result = quick_extract(file_bytes, filename, store_temp=store_temp)
+        
+        if not result['success']:
+            logger.error(f"❌ [QUICK-EXTRACT] Extraction failed: {result.get('error')}")
+            return jsonify(result), 400
+        
+        # Store temp file in S3 if requested and extraction succeeded
+        if store_temp and result.get('temp_file_id'):
+            temp_result = store_temp_file(file_bytes, filename, result['temp_file_id'])
+            if temp_result['success']:
+                logger.info(f"✅ [QUICK-EXTRACT] Stored temp file: {result['temp_file_id']}")
+            else:
+                # Non-fatal - extraction still succeeded, just temp storage failed
+                logger.warning(f"⚠️ [QUICK-EXTRACT] Temp storage failed: {temp_result.get('error')}")
+                result['temp_file_id'] = None
+        
+        logger.info(f"✅ [QUICK-EXTRACT] Success: {result.get('page_count')} pages, {result.get('char_count')} chars")
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"❌ [QUICK-EXTRACT] Error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': f'Quick extraction failed: {str(e)}'
+        }), 500
+
+
+@views.route('/api/documents/process-temp-files', methods=['POST', 'OPTIONS'])
+@login_required
+def process_temp_files():
+    """
+    Process temp files that were uploaded via quick-extract.
+    
+    Links them to a property and queues full document processing pipeline.
+    Used when user selects "Add to Project" after quick text extraction.
+    
+    Request body:
+        - tempFileIds: List of temp file IDs from quick-extract
+        - propertyId: Property ID to link documents to
+        
+    Returns:
+        - success: bool
+        - documentIds: List of created document IDs
+        - error: Error message if failed
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"🔄 [PROCESS-TEMP] Request received from {current_user.email}")
+    
+    try:
+        data = request.get_json()
+        temp_file_ids = data.get('tempFileIds', [])
+        property_id = data.get('propertyId')
+        
+        if not temp_file_ids:
+            return jsonify({'success': False, 'error': 'No temp file IDs provided'}), 400
+        
+        if not property_id:
+            return jsonify({'success': False, 'error': 'Property ID is required'}), 400
+        
+        logger.info(f"🔄 [PROCESS-TEMP] Processing {len(temp_file_ids)} files for property {property_id}")
+        
+        # Get business UUID
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'success': False, 'error': 'User is not associated with a business'}), 400
+        
+        # Import required services
+        from .services.quick_extract_service import get_temp_file, delete_temp_file
+        from .services.supabase_document_service import SupabaseDocumentService
+        from backend.tasks import process_document_fast_task
+        
+        doc_service = SupabaseDocumentService()
+        document_ids = []
+        
+        for temp_file_id in temp_file_ids:
+            try:
+                # Get file from S3 temp storage
+                file_bytes, filename = get_temp_file(temp_file_id)
+                
+                if not file_bytes:
+                    logger.warning(f"⚠️ [PROCESS-TEMP] Temp file not found: {temp_file_id}")
+                    continue
+                
+                # Generate S3 key for permanent storage
+                s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
+                
+                # Upload to permanent S3 location
+                import boto3
+                s3_client = boto3.client('s3')
+                bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
+                
+                s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=s3_key,
+                    Body=file_bytes,
+                    ContentType='application/octet-stream'
+                )
+                
+                # Create document record in Supabase
+                file_type = filename.lower().split('.')[-1] if '.' in filename else 'unknown'
+                
+                document_data = {
+                    'original_filename': filename,
+                    'file_type': file_type,
+                    'file_size': len(file_bytes),
+                    's3_path': s3_key,
+                    'business_id': current_user.company_name,
+                    'business_uuid': business_uuid_str,
+                    'created_by': current_user.email,
+                    'processing_status': 'UPLOADED',
+                    'property_id': property_id
+                }
+                
+                result = doc_service.create_document(document_data)
+                
+                if result.get('success') and result.get('data'):
+                    document_id = result['data'].get('id')
+                    document_ids.append(document_id)
+                    
+                    # Queue full processing
+                    process_document_fast_task.delay(
+                        document_id=document_id,
+                        s3_key=s3_key,
+                        original_filename=filename,
+                        business_uuid=business_uuid_str,
+                        property_id=property_id
+                    )
+                    
+                    logger.info(f"✅ [PROCESS-TEMP] Created document {document_id} and queued processing")
+                    
+                    # Clean up temp file
+                    delete_temp_file(temp_file_id)
+                else:
+                    logger.error(f"❌ [PROCESS-TEMP] Failed to create document: {result.get('error')}")
+                    
+            except Exception as file_error:
+                logger.error(f"❌ [PROCESS-TEMP] Error processing {temp_file_id}: {str(file_error)}")
+                continue
+        
+        if document_ids:
+            return jsonify({
+                'success': True,
+                'document_ids': document_ids,
+                'message': f'Successfully queued {len(document_ids)} documents for processing'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No documents could be processed'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ [PROCESS-TEMP] Error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': f'Failed to process temp files: {str(e)}'
+        }), 500
+
+
 @views.route('/api/documents/upload', methods=['POST', 'OPTIONS'])
 @login_required
 def upload_document():
@@ -2959,7 +3345,22 @@ def get_document_status(document_id):
         if not document:
             return jsonify({'error': 'Document not found'}), 404
         
-        if str(document.get('business_id')) != str(current_user.business_id):
+        # Check authorization - document can have business_id (varchar) or business_uuid (uuid)
+        # Compare against both current_user.business_id and company_name
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        
+        # Allow access if any of these match
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+            (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+            (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        
+        if not is_authorized:
+            logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
             return jsonify({'error': 'Unauthorized'}), 403
         
         # Get processing history (still from PostgreSQL for now)
@@ -3219,10 +3620,20 @@ def root():
     return redirect('http://localhost:8080')
 
 
-@views.route('/api/dashboard', methods=['GET'])
+@views.route('/api/dashboard', methods=['GET', 'OPTIONS'])
 @login_required
 def api_dashboard():
     """Get dashboard data with documents and properties from Supabase"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
     try:
         business_uuid_str = _ensure_business_uuid()
         if not business_uuid_str:
@@ -3665,10 +4076,20 @@ def get_property_hub(property_id):
             'error': str(e)
         }), 500
 
-@views.route('/api/property-hub', methods=['GET'])
+@views.route('/api/property-hub', methods=['GET', 'OPTIONS'])
 @login_required
 def get_all_property_hubs():
     """Get all property hubs for current business"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
     try:
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         from .services.response_formatter import APIResponseFormatter

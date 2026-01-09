@@ -7,6 +7,7 @@ import { X, Maximize2, Minimize2, TextCursorInput } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { CitationActionMenu } from './CitationActionMenu';
 
 // PDF.js for canvas-based PDF rendering
 import * as pdfjs from 'pdfjs-dist';
@@ -18,7 +19,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 interface StandaloneExpandedCardViewProps {
   docId: string;
   filename: string;
-  highlight?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number } };
+  highlight?: { 
+    fileId: string; 
+    bbox: { left: number; top: number; width: number; height: number; page: number };
+    // Full citation metadata for CitationActionMenu
+    doc_id?: string;
+    block_id?: string;
+    block_content?: string;
+    original_filename?: string;
+  };
   onClose: () => void;
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar
@@ -52,6 +61,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const prevScaleRef = useRef<number>(1.0); // Track previous scale for scroll position preservation
   const targetScaleRef = useRef<number>(1.0); // Track target scale for smooth transitions
   const firstPageCacheRef = useRef<{ page: any; viewport: any } | null>(null); // Cache first page for instant scale calculation
+  
+  // Citation action menu state
+  const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<any>(null);
 
   // Build a stable key for the current highlight target (doc + page + bbox coords).
   // Used to coordinate one-time "jump to bbox" with resize scroll-preservation logic.
@@ -791,17 +804,48 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                     })}
                     {highlight && highlight.fileId === docId && highlight.bbox.page === pageNum && (
                       <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          // Build full citation object for CitationActionMenu
+                          setSelectedCitation({
+                            fileId: highlight.fileId,
+                            doc_id: highlight.doc_id || docId,
+                            bbox: highlight.bbox,
+                            block_content: highlight.block_content || '',
+                            original_filename: highlight.original_filename || filename,
+                            block_id: highlight.block_id || ''
+                          });
+                          // Position menu at click location (use click X, below citation Y)
+                          setCitationMenuPosition({
+                            x: e.clientX, // Use actual click X position
+                            y: rect.bottom + 8 // Position below with 8px gap
+                          });
+                        }}
                         style={{
                           position: 'absolute',
                           left: `${Math.max(0, highlight.bbox.left * dimensions.width - 4)}px`,
                           top: `${Math.max(0, highlight.bbox.top * dimensions.height - 4)}px`,
                           width: `${Math.min(dimensions.width, highlight.bbox.width * dimensions.width + 8)}px`,
                           height: `${Math.min(dimensions.height, highlight.bbox.height * dimensions.height + 8)}px`,
-                          backgroundColor: 'rgba(255, 255, 0, 0.3)',
+                          backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                          border: '2px solid rgba(255, 193, 7, 0.9)',
                           borderRadius: '2px',
-                          pointerEvents: 'none',
-                          zIndex: 10
+                          pointerEvents: 'auto',
+                          cursor: 'pointer',
+                          zIndex: 10,
+                          boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                          transition: 'all 0.2s ease'
                         }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
+                          e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                          e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                        }}
+                        title="Click to interact with this citation"
                       />
                     )}
                   </div>
@@ -834,6 +878,40 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           </>
         )}
       </div>
+      
+      {/* Citation Action Menu */}
+      {citationMenuPosition && selectedCitation && (
+        <CitationActionMenu
+          citation={selectedCitation}
+          position={citationMenuPosition}
+          onClose={() => {
+            setCitationMenuPosition(null);
+            setSelectedCitation(null);
+          }}
+          onAskMore={(citation) => {
+            const citationText = citation.block_content || 'this information';
+            const query = `Tell me more about: ${citationText.substring(0, 200)}${citationText.length > 200 ? '...' : ''}`;
+            const event = new CustomEvent('citation-ask-more', {
+              detail: { query, citation, documentId: citation.fileId || citation.doc_id }
+            });
+            window.dispatchEvent(event);
+          }}
+          onAddToWriting={(citation) => {
+            const curatedKey = 'curated_writing_citations';
+            const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+            const newEntry = {
+              id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              citation,
+              addedAt: new Date().toISOString(),
+              documentName: citation.original_filename || 'Unknown document',
+              content: citation.block_content || ''
+            };
+            existing.push(newEntry);
+            localStorage.setItem(curatedKey, JSON.stringify(existing));
+            window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+          }}
+        />
+      )}
     </motion.div>
   );
 

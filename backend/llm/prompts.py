@@ -508,6 +508,58 @@ Variations:"""
 # QUERY ROUTING PROMPTS
 # ============================================================================
 
+def get_query_classification_prompt(user_query: str, conversation_history: str = "") -> str:
+    """
+    Prompt for classifying query intent.
+    Returns classification prompt with examples.
+    Pattern: Follow get_query_routing_human_content() structure
+    """
+    history_section = f"\n\nConversation History:\n{conversation_history}" if conversation_history else ""
+    return f"""Here is the context:  
+{history_section}
+
+**Current User Query:**  
+"{user_query}"
+
+**CLASSIFY** the intent as exactly one of the following — and return only that word:  
+- `general_query`  
+- `text_transformation`  
+- `document_search`
+- `follow_up_document_search`  # NEW
+- `hybrid`
+
+Use the definitions below:
+
+- **general_query**: General knowledge questions not requiring document search
+  Examples: "What is the date today?", "Explain quantum computing", "What is the capital of France?"
+  
+- **text_transformation**: Requests to modify/reorganize EXISTING TEXT
+  Examples: "Make this text sharper", "Reorganize the previous response", "Make this more concise"
+  Key: Transforms text that is already provided (pasted or from previous response)
+  
+- **document_search**: Queries requiring document search (existing functionality)
+  Examples: "What is the market value?", "Find properties with 3 bedrooms"
+  
+- **follow_up_document_search**: Asking for more detail on specific topic from previous document search
+  Examples: "make it more detailed on the assumptions", "tell me more about the 90-day value",
+            "what are the assumptions for each value"
+  Key: Previous response had citations/block_ids AND query asks for more detail on specific topic
+  
+- **hybrid**: Queries needing both general knowledge and document search
+  Examples: "Compare today's date with the valuation date in the documents"
+
+**Important:**  
+- Focus on the **core intent** of the user's question.  
+- If the query asks to transform text (make sharper, reorganize, etc.), it's text_transformation
+- If the query asks general knowledge questions with no document/property context, it's general_query
+- If the query asks about properties, documents, or requires searching, it's document_search
+- If the query asks for MORE DETAIL on a topic from a previous document search response, it's follow_up_document_search
+- If the query combines general knowledge with document search, it's hybrid
+- Do not produce any extra text: return *only* one of the four labels.
+
+**Answer:**"""
+
+
 def get_query_routing_human_content(user_query: str, conversation_history: str = "") -> str:
     """
     Human message content for classifying query intent.
@@ -598,7 +650,7 @@ def get_llm_sql_query_human_content(user_query: str) -> str:
 # DOCUMENT QA AGENT PROMPTS
 # ============================================================================
 
-def get_document_qa_human_content(user_query: str, doc_content: str, detail_level: str = 'concise') -> str:
+def get_document_qa_human_content(user_query: str, doc_content: str, detail_level: str = 'concise', citation_context: dict = None) -> str:
     """
     Human message content for per-document question answering.
     System prompt is handled separately via get_system_prompt('analyze').
@@ -611,8 +663,28 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
     query_characteristics = detect_query_characteristics(user_query)
     is_valuation_query = query_characteristics.get('query_type') == 'assessment'
     
+    # Build citation context section if available
+    citation_context_section = ""
+    if citation_context:
+        page_info = f" (page {citation_context.get('page_number', 'unknown')})" if citation_context.get('page_number') else ""
+        doc_name = citation_context.get('original_filename', 'the document')
+        cited_text = citation_context.get('cited_text', '')
+        citation_context_section = f"""
+**CITATION CONTEXT (for reference - user is asking about this specific location):**
+- Document: {doc_name}{page_info}
+- Cited text: "{cited_text[:200]}{'...' if len(cited_text) > 200 else ''}"
+- User's question relates to this specific citation location in the document.
+
+**IMPORTANT:** Use this citation context to:
+1. Focus your search on information related to or near this cited text
+2. Look for additional details, explanations, or related information around this citation
+3. Provide context that expands on or clarifies what the user is asking about regarding this specific citation
+"""
+    
     return f"""Here is the document excerpt:  
 ```\n{doc_content}\n```
+
+{citation_context_section}
 
 **USER QUESTION:**  
 {user_query}
@@ -630,12 +702,15 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
 {_get_names_search_instructions("excerpt")}
 
 2. **Use Only Provided Context**  
-   - Answer **only** using information in the excerpt above.  
+   - **CRITICAL**: Answer **ONLY** using information in the excerpt above
+   - **CRITICAL**: DO NOT use general knowledge, common sense, or assumptions about what "properties typically have" or "common risks"
+   - **CRITICAL**: If the excerpt doesn't mention something, DO NOT make it up or use generic examples
+   - **CRITICAL**: DO NOT generate generic lists (e.g., "common risks that properties might face") - ONLY list what the excerpt actually says
    - **Before saying "not found"**: Re-read the excerpt carefully, looking for:
      - Any mention of the requested information
      - Synonyms or related terms
      - Different phrasings or formats
-   - If the excerpt lacks enough evidence after thorough search, respond: **"I do not have complete information in this excerpt."**
+   - If the excerpt lacks enough evidence after thorough search, respond: **"This information is not mentioned in the document excerpt."**
 
 {_get_comprehensive_search_instructions("excerpt", query_characteristics)}
 
@@ -667,8 +742,11 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
 {_get_citation_instructions()}
 
 6. **Guard Against Hallucination**  
-   - Do **not** guess or invent details not present in the excerpt.  
-   - Avoid speculation or external recommendations (websites, agents, market data).
+   - **CRITICAL**: Do **NOT** guess, invent, or use general knowledge for details not present in the excerpt
+   - **CRITICAL**: Do **NOT** generate generic lists or examples (e.g., "common risks that properties might face") - ONLY use what's in the excerpt
+   - **CRITICAL**: If asked about risks, features, or issues, ONLY mention what the excerpt explicitly states - do NOT add generic examples
+   - Avoid speculation or external recommendations (websites, agents, market data)
+   - If information is not in the excerpt, explicitly state: "This is not mentioned in the document excerpt"
 
 7. **Professional and Clear Tone**  
    - Use a professional, comprehensive, and factual writing style.  
@@ -1058,6 +1136,7 @@ When presenting valuation information, organize it clearly and comprehensively:
 - Mention any risk factors, caveats, or limitations
 - Include professional information (valuer name, qualifications, firm name) naturally within the response
 - Present information in a flowing, natural narrative style
+- **PUNCTUATION**: Do NOT add periods at the end of standalone lines (headings, bullet points). Only use periods mid-sentence when text continues after
 
 **MUST**: If you find multiple valuation figures in the document, you MUST list ALL of them with their assumptions. Include every valuation perspective found (primary Market Value, reduced marketing period values, market rent, etc.) with their full written form and summarized assumptions. Present information naturally in a flowing narrative style, not as instructions or explanations of methodology.
 """
@@ -1361,7 +1440,8 @@ def get_final_answer_prompt(
     user_query: str,
     conversation_history: str,
     formatted_outputs: str,
-    citations: list = None
+    citations: list = None,
+    is_citation_query: bool = False
 ) -> str:
     """
     Prompt for answer generation with real-time citation tracking.
@@ -1460,6 +1540,66 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
     risks_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_risks'] else ""
     next_actions_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_next_actions'] else ""
     
+    # Build conditional sourcing rules based on query type
+    if is_citation_query:
+        sourcing_rules = """**⚠️ CRITICAL RULE FOR CITATION QUERIES: ONLY USE DOCUMENT CONTENT ⚠️**
+
+- **This is a citation query** - the user clicked on a specific citation and is asking about it
+- You MUST ONLY use information that appears in the DOCUMENT EXTRACTS above
+- Focus on information that relates to or expands on the cited text
+- DO NOT use general knowledge, common sense, or assumptions about what "properties typically have" or "common risks"
+- If the documents don't mention something related to the citation, DO NOT make it up or use generic examples
+- If information is missing from the documents, explicitly state: "This information is not mentioned in the documents"
+- DO NOT generate generic lists (e.g., "common risks that properties might face") - ONLY list what the documents actually say
+- Search for information that links to or expands on the citation context
+
+Create a comprehensive answer using ONLY the document extracts above, focusing on information related to the citation."""
+        answer_instructions = """   - **CRITICAL (CITATION QUERY)**: You MUST ONLY use information from the DOCUMENT EXTRACTS above
+   - **CRITICAL**: Focus on information that relates to or expands on the citation context
+   - **CRITICAL**: DO NOT use general knowledge or make assumptions about what "properties in similar areas might face"
+   - **CRITICAL**: If information is NOT in the document extracts, you MUST state that it's not mentioned in the documents
+   - **CRITICAL**: If the documents don't mention specific risks, do NOT list generic risks - only mention what the documents actually say
+   - Search for information that links to the citation - look for related details, explanations, or context around the cited text
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - you MUST use it
+   - NEVER say "information not provided" or "not available" if citations were extracted
+   - NEVER generate generic lists of "common risks" or "typical issues" - ONLY use what's in the documents
+   - Start directly with the answer - do NOT repeat the question"""
+        extraction_instructions = """   - **CRITICAL (CITATION QUERY)**: ONLY extract information that appears in the DOCUMENT EXTRACTS above
+   - **CRITICAL**: Focus on information that relates to or expands on the citation context
+   - **CRITICAL**: DO NOT use general knowledge or create generic lists (e.g., "common risks that properties might face")
+   - **CRITICAL**: If the documents don't mention specific information, DO NOT make it up - state that it's not in the documents
+   - Extract and include ALL relevant information FROM THE DOCUMENTS that links to the citation: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value being cited
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - include all relevant figures, dates, names, and details FROM THE DOCUMENTS ONLY"""
+    else:
+        sourcing_rules = """**INFORMATION SOURCING RULES:**
+
+- **PREFER document content**: Use information from the DOCUMENT EXTRACTS above whenever available
+- **General knowledge is acceptable**: If the documents don't contain the information, you may use general knowledge to provide a helpful answer
+- **Be clear about sources**: If using general knowledge, you can mention it's general information (but don't need citation markers for it)
+- **Citation markers**: Only add citation markers [1], [2], [3]... for facts that come from the document extracts
+- **Balance**: Provide helpful, comprehensive answers using document content when available, supplemented with general knowledge when needed
+
+Create a comprehensive answer to the user's question, prioritizing information from the document extracts above."""
+        answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain the information, you may use general knowledge to provide a helpful answer
+   - **Citation markers**: Only add [1], [2], [3]... for facts from document extracts (not general knowledge)
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
+   - If using general knowledge, provide helpful context but don't add citation markers for it
+   - Start directly with the answer - do NOT repeat the question"""
+        extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
+   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value FROM THE DOCUMENTS
+   - **Note**: Don't add citation markers to general knowledge - only to facts from document extracts
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - prioritize document content, supplement with general knowledge when helpful"""
+    
     return f"""**USER QUESTION:**  
 "{user_query}"
 
@@ -1505,7 +1645,7 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
 
 ### TASK: Create Final Answer with Citations
 
-Create a comprehensive answer to the user's question using the document extracts above.
+{sourcing_rules}
 
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 - If the user is asking about "value" or "valuation", you MUST include ALL valuation scenarios found in the documents
@@ -1557,39 +1697,28 @@ Create a comprehensive answer to the user's question using the document extracts
    - Use bullet points (-) with **bold** concept names
    - Format: "- **Concept Name**: One-line explanation"
    - Maximum 5 bullet points
-   - **CRITICAL - NO DUPLICATION**: Key Concepts should be a BRIEF summary. Do NOT repeat these exact same facts in Detailed Explanation
    - Example: "## Key Concepts\n- **Market Value**: £2,300,000[1] - The primary valuation figure"
 
-3. **Detailed Explanation (H2)**:
-   - Use markdown heading ## (double hash) for "Detailed Explanation"
-   - Use markdown heading ### (triple hash) for each subtopic within this section
-   - Each ### subtopic should have 1-3 paragraphs
-   - Maximum 3 sentences per paragraph
-   - Maximum ~50 words per paragraph (split if longer)
-   - One idea per paragraph
-   - **CRITICAL - NO DUPLICATION**: Detailed Explanation should EXPAND on Key Concepts with additional context, examples, and details. Do NOT repeat the exact same sentences from Key Concepts
-   - **CRITICAL - NO DUPLICATION**: If Key Concepts says "No obvious signs of contamination[1]", Detailed Explanation should say something like "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]" (expands with context, not repeats)
-
-4. **Process/Steps (H2 - Conditional)**{steps_note}:
+3. **Process/Steps (H2 - Conditional)**{steps_note}:
    - Only include if applicable (procedural queries)
    - Use markdown heading ## (double hash) for "Process / Steps"
    - Use numbered list (1., 2., 3.) for steps
    - Each step: "1. **Step 1:** Clear action"
    - Maximum 5 steps (split into sub-sections if more)
 
-5. **Practical Application (H2 - Conditional)**{practical_note}:
+4. **Practical Application (H2 - Conditional)**{practical_note}:
    - Include if query requires real-world application guidance
    - Use markdown heading ## (double hash) for "Practical Application"
    - 1-2 paragraphs explaining how to use this information
    - Maximum 3 sentences per paragraph
 
-6. **Risks/Edge Cases (H2 - Optional)**{risks_note}:
+5. **Risks/Edge Cases (H2 - Optional)**{risks_note}:
    - Include only if relevant limitations or risks exist
    - Use markdown heading ## (double hash) for "Risks / Edge Cases"
    - Use bullet points (-) for list of risks/limitations
    - Maximum 5 bullet points
 
-7. **Next Actions (H2 - Optional)**{next_actions_note}:
+6. **Next Actions (H2 - Optional)**{next_actions_note}:
    - Include if follow-up actions are suggested
    - Use markdown heading ## (double hash) for "Next Actions"
    - Use bullet points (-) for suggested follow-ups
@@ -1599,16 +1728,15 @@ Create a comprehensive answer to the user's question using the document extracts
 - NEVER skip heading levels (# → ## → ###, not # → ###)
 - If a section can be read independently → it deserves a ## (H2)
 - # (H1) = Final outcome/main answer (only one H1 per response)
-- ## (H2) = Major sections (Key Concepts, Detailed Explanation, etc.)
+- ## (H2) = Major sections (Key Concepts, Process/Steps, Practical Application, etc.)
 - ### (H3) = Sub-sections within H2 sections
 - Regular paragraphs = Explanation text
 - Bullet points (-) or numbered lists (1., 2., 3.) = Scannable information lists
 
 **INFORMATION ORDERING (MUST FOLLOW)**:
 1. Answer first (# H1 - primary answer)
-2. Explain later (## H2 - Key Concepts, Detailed Explanation)
-3. Justify last (if needed - within Detailed Explanation)
-4. Extend optionally (Process, Practical Application, Risks, Next Actions)
+2. Explain later (## H2 - Key Concepts)
+3. Extend optionally (Process, Practical Application, Risks, Next Actions)
 
 **MINIMAL COGNITIVE LOAD RULES**:
 - Maximum 3-5 bullet points per list
@@ -1622,15 +1750,12 @@ Create a comprehensive answer to the user's question using the document extracts
 - Include "Practical Application" only if query requires real-world usage guidance
 - Include "Risks / Edge Cases" only if limitations or risks are relevant
 - Include "Next Actions" only if follow-up actions are appropriate
-- For simple queries: # H1 + ## Key Concepts + ## Brief Detailed Explanation may be sufficient
+- For simple queries: # H1 + ## Key Concepts may be sufficient
 
 **CONTENT GENERATION INSTRUCTIONS**:
 
 1. **Answer Directly and Comprehensively** (MUST)
-   - The information IS available in the document extracts above
-   - If citations were extracted (see list above), the information EXISTS in the documents - you MUST use it
-   - NEVER say "information not provided" or "not available" if citations were extracted
-   - Start directly with the answer - do NOT repeat the question
+{answer_instructions}
 
 2. **Valuation Query Handling** (MUST for valuation queries)
    {VALUATION_PRIORITIZATION_RULES}
@@ -1650,11 +1775,7 @@ Create a comprehensive answer to the user's question using the document extracts
    - Do NOT include: Property features, floor areas, property composition details, any non-valuation information
 
 4. **General Information Extraction** (MUST)
-   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, etc.
-   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value being cited
-   - **DO NOT** place citations at the end of sentences - place them right after the cited information
-   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
-   - Be professional, factual, and detailed - include all relevant figures, dates, names, and details
+{extraction_instructions}
 
 5. **Search Strategy** (IMPORTANT)
    - Look carefully in the DOCUMENT CONTENT EXTRACTS section
@@ -1680,6 +1801,68 @@ Create a comprehensive answer to the user's question using the document extracts
 - **Note: Formatting and structure will be handled in a separate step - focus on content completeness**
 
 Generate the answer content:"""
+
+
+# ============================================================================
+# GENERAL QUERY PROMPTS
+# ============================================================================
+
+def get_general_query_prompt(
+    user_query: str,
+    conversation_history: str,
+    current_date: str,
+    current_time: str
+) -> str:
+    """
+    Prompt for general knowledge queries.
+    Includes current date/time context.
+    Pattern: Follow get_summary_human_content() structure
+    """
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**CURRENT DATE/TIME CONTEXT:**
+- Current Date: {current_date}
+- Current Time: {current_time}
+
+**INSTRUCTIONS:**
+Answer the user's question using your general knowledge. If the question is about the current date or time, use the information provided above.
+
+Be concise, accurate, and helpful. If your knowledge has a cutoff date, mention it when relevant.
+
+**Answer:**"""
+
+
+# ============================================================================
+# TEXT TRANSFORMATION PROMPTS
+# ============================================================================
+
+def get_text_transformation_prompt(
+    text_to_transform: str,
+    transformation_instruction: str,
+    user_query: str
+) -> str:
+    """
+    Prompt for text transformation.
+    Handles: sharpen, reorganize, concise, expand, rephrase
+    Pattern: Follow get_summary_human_content() structure
+    """
+    return f"""**USER REQUEST:**  
+"{user_query}"
+
+**TRANSFORMATION INSTRUCTION:**  
+{transformation_instruction}
+
+**TEXT TO TRANSFORM:**  
+{text_to_transform}
+
+**INSTRUCTIONS:**
+Transform the text above according to the user's instruction. Preserve all key information, facts, and citations (if present). Follow the transformation instruction precisely while maintaining the original intent and meaning.
+
+**Transformed Text:**"""
 
 
 # ============================================================================
@@ -1713,8 +1896,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - **MUST**: Do NOT add, remove, or modify any information
 - **MUST**: Do NOT generate new content - only reorganize and format what's already there
 - **CRITICAL**: When reorganizing, citations MUST move WITH their associated facts - never separate them
-- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context, not repeat the same sentence
-- **CRITICAL - AVOID DUPLICATION**: Key Concepts = brief summary (one line). Detailed Explanation = expanded context with more detail. They should complement each other, not duplicate
+- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. Key Concepts should be concise and comprehensive.
 
 **CRITICAL CITATION PRESERVATION RULES** (MUST FOLLOW):
 
@@ -1741,7 +1923,6 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 
 4. **When Reorganizing Content**:
    - If moving "Market Value: £2,300,000[1]" to Key Concepts section, keep it as "Market Value: £2,300,000[1]"
-   - If moving "12th February 2024[2]" to Detailed Explanation, keep it as "12th February 2024[2]"
    - Citations are part of the fact - they move together as a unit
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
@@ -1757,7 +1938,6 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 2. **Verify Information Ordering**:
    - H1 (#) primary answer must come first (with citations preserved)
    - H2 (##) Key Concepts should come early (if applicable) - extract key facts WITH their citations
-   - H2 (##) Detailed Explanation should follow - preserve all citations when moving content
    - Optional sections (Process, Practical Application, Risks, Next Actions) come last
    - Reorganize content if ordering is incorrect, but keep citations with their facts
 
@@ -1772,18 +1952,9 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 4. **Apply Canonical Template Structure**:
    - If response lacks H1, create one from the primary answer - preserve all citations
    - **CRITICAL - AVOID DUPLICATION**: If response lacks "Key Concepts" section, extract 3-5 key points WITH their citations and create H2 section
-   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Detailed Explanation" section, organize remaining content under H2 with H3 sub-sections - preserve all citations
-   - **CRITICAL - NO REPETITION**: Key Concepts should be a BRIEF summary (one-line per concept). Detailed Explanation should EXPAND on these concepts with more detail, NOT repeat the same information
-   - **CRITICAL - NO REPETITION**: If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context/explanation, not repeat the exact same fact
-   - **CRITICAL - NO REPETITION**: Do NOT copy the same sentences from Key Concepts into Detailed Explanation - use different wording and add more detail
    - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy
    - **CRITICAL**: When extracting key concepts, keep the citation with each concept (e.g., "- **Market Value**: £2,300,000[1] - The primary valuation figure")
-   - **EXAMPLE - CORRECT (No Duplication)**:
-     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
-     * Detailed Explanation: "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]. The assumption is made that the property has not been contaminated previously[2]."
-   - **EXAMPLE - INCORRECT (Duplication)**:
-     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
-     * Detailed Explanation: "No obvious signs of contamination[1]. The assumption is made that the property has not been contaminated[2]." (WRONG - repeats the same fact)
+   - **CRITICAL**: Key Concepts should be comprehensive and concise - include all important information in the bullet points
 
 **CITATION FORMAT** (MUST - Preserve Exactly):
 {CITATION_FORMAT_RULES}
@@ -1802,6 +1973,11 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - **CRITICAL**: Maintain inline citation markers ([1], [2], [3]) IMMEDIATELY after the specific fact/value being cited
 - **CRITICAL**: If citations appear at the end of sentences or phrases, move them to immediately after the cited information
 - **NOTE**: Citation markers in bracket format will be converted to clickable buttons by the frontend - do not add visible superscripts
+- **PUNCTUATION**: Do NOT add periods/full stops at the end of standalone lines (headings, bullet points, list items). Only use periods when text continues on the same line after the sentence. Example:
+  - ✅ "Market Value: £2,300,000[1]" (no period - standalone heading)
+  - ✅ "- **Valuation Date**: 12th February 2024[2]" (no period - bullet point)
+  - ✅ "The value is £2,300,000[1]. This represents the market value." (period needed - sentence continues)
+  - ❌ "Market Value: £2,300,000[1]." (unnecessary period on standalone line)
 
 **CORRECT CITATION EXAMPLES** (Follow These Patterns):
 
@@ -1821,14 +1997,6 @@ The property has a market value of £2,300,000[1] (Two Million, Three Hundred Th
 - **Valuers**: Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS - The qualified professionals
 - **90-Day Value**: £1,950,000[5] - Reduced marketing period scenario (15% discount)
 - **180-Day Value**: £2,050,000[6] - Extended marketing period scenario (10% discount)
-```
-
-✅ **CORRECT - Detailed Explanation with citations**:
-```
-## Detailed Explanation
-
-### Primary Valuation
-The market value of £2,300,000[1] represents the estimated amount the property would sell for in the open market. This valuation assumes standard marketing conditions and a willing buyer and seller. The valuation was conducted on 12th February 2024[2] by Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS.
 ```
 
 ❌ **INCORRECT - Citations separated from facts**:
@@ -1858,3 +2026,214 @@ The property has a market value of £2,300,000 (Two Million, Three Hundred Thous
 
 **FORMATTED RESPONSE**:"""
 
+
+# ============================================================================
+# COMBINED CITATION + ANSWER PROMPT (SINGLE LLM CALL OPTIMIZATION)
+# ============================================================================
+
+def get_combined_citation_answer_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    OPTIMIZED: Combined prompt for citation extraction AND answer generation in ONE LLM call.
+    This saves ~4-6 seconds compared to the 2-phase approach.
+    
+    The LLM will:
+    1. Call cite_source tool for each factual claim it wants to include
+    2. Return the final answer text with citation markers [1], [2], etc.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Block ID Reference Table ---\n"
+        metadata_section += "Use these block IDs when calling cite_source().\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 300  # Reduced for combined prompt
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                bbox_left, bbox_top, bbox_width, bbox_height, page = _format_bbox_for_prompt(bbox_data)
+                metadata_section += f"  {block_id}: page={page}\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### TASK: Answer the question WITH citations (SINGLE PASS)
+
+You must answer the user's question while citing your sources. Do this in ONE response:
+
+**STEP 1 - For EACH fact you include in your answer:**
+- Call the `cite_source` tool with:
+  - `block_id`: The BLOCK_CITE_ID from the document (e.g., "BLOCK_CITE_ID_42")
+  - `citation_number`: Sequential number (1, 2, 3...)
+  - `cited_text`: The fact you're citing
+
+**STEP 2 - Write your answer with citation markers:**
+- Place [1], [2], [3]... immediately after each fact
+- Example: "The Market Value is £2,300,000[1] as of February 2024[2]"
+
+**CRITICAL RULES:**
+- Call cite_source for EVERY factual claim
+- Use sequential citation numbers (1, 2, 3...)
+- Place citations IMMEDIATELY after the fact, NO space
+- For valuation queries: include ALL scenarios (90-day, 180-day, Market Rent)
+- Do NOT add periods at the end of standalone lines, headings, or bullet points - only use periods when text continues on the same line
+
+**EXAMPLE:**
+If you see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,300,000"</BLOCK>
+1. Call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
+2. Write: "The Market Value is £2,300,000[1]"
+
+**IMPORTANT: You MUST return BOTH:**
+1. Call cite_source() for each fact (tool calls)
+2. Write the complete answer text below (with [1], [2] markers)
+
+DO NOT return only tool calls - you MUST also write the answer text!
+
+**YOUR ANSWER (write the complete answer WITH citation markers below):**"""
+
+
+# ============================================================================
+# ATTACHMENT CONTEXT PROMPTS - For file attachments in chat
+# ============================================================================
+
+# Prompt for FAST response mode (no citations)
+ATTACHMENT_CONTEXT_FAST_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached the following document(s) to their query. Answer based on this content.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based ONLY on the attached document content
+- Be concise and direct
+- Do NOT include citation markers ([1], [2], etc.) - this is a fast response mode
+- Do NOT reference page numbers or document structure
+- Simply provide the answer as if having a conversation
+- If the answer is not in the documents, say so clearly
+
+**USER QUERY:** {query}
+"""
+
+# Prompt for DETAILED response mode (with page references)
+ATTACHMENT_CONTEXT_DETAILED_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached the following document(s) for detailed analysis.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based on the attached document content
+- Include page references like "(Page 3)" or "(Pages 5-7)" when citing specific information
+- Be thorough but organized
+- Use headers and bullet points for clarity
+- If information spans multiple pages, note the range
+- If the answer is not in the documents, say so clearly
+
+**REFERENCE FORMAT:**
+- "(Page X)" for single page references
+- "(Pages X-Y)" for ranges
+- Example: "The property was valued at £2.3M (Page 12) with a 90-day value of £2.1M (Page 14)"
+
+**USER QUERY:** {query}
+"""
+
+# Prompt for FULL/PROJECT response mode (with clickable citations after processing)
+ATTACHMENT_CONTEXT_FULL_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached document(s) that are being processed for full integration.
+For now, answer based on the extracted text below. Citations will become clickable once processing completes.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based on the attached document content
+- Include page references like "(Page X)" that will later become clickable citations
+- Be thorough and professional
+- Structure your answer with clear sections
+- If the answer is not in the documents, say so clearly
+
+**NOTE:** The documents are being processed in the background. Page references will become
+clickable citations that open the document at the referenced location once processing completes.
+
+**USER QUERY:** {query}
+"""
+
+def format_attachment_context(attachment_context: dict) -> str:
+    """Format attachment context for inclusion in prompts."""
+    if not attachment_context:
+        return ""
+    
+    texts = attachment_context.get('texts', [])
+    filenames = attachment_context.get('filenames', [])
+    page_texts = attachment_context.get('pageTexts', [])
+    
+    formatted_parts = []
+    
+    for i, (text, filename) in enumerate(zip(texts, filenames)):
+        formatted_parts.append(f"=== DOCUMENT {i+1}: {filename} ===")
+        
+        # If we have page-by-page text, use it for better structure
+        if page_texts and i < len(page_texts) and page_texts[i]:
+            for page_num, page_text in enumerate(page_texts[i], 1):
+                if page_text.strip():
+                    formatted_parts.append(f"\n--- Page {page_num} ---")
+                    formatted_parts.append(page_text.strip())
+        else:
+            # Fall back to full text
+            formatted_parts.append(text)
+        
+        formatted_parts.append("")  # Empty line between documents
+    
+    return "\n".join(formatted_parts)
+
+def get_attachment_prompt(response_mode: str, attachment_context: dict, query: str) -> str:
+    """Get the appropriate prompt based on response mode."""
+    formatted_context = format_attachment_context(attachment_context)
+    
+    if response_mode == 'fast':
+        return ATTACHMENT_CONTEXT_FAST_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )
+    elif response_mode == 'detailed':
+        return ATTACHMENT_CONTEXT_DETAILED_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )
+    else:  # 'full' or default
+        return ATTACHMENT_CONTEXT_FULL_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )

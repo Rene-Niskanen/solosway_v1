@@ -18,7 +18,7 @@ from backend.llm.types import MainWorkflowState
 logger = logging.getLogger(__name__)
 
 
-def determine_detail_level(state: MainWorkflowState) -> MainWorkflowState:
+async def determine_detail_level(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Determine Detail Level
     
@@ -102,7 +102,7 @@ Return ONLY: "detailed" or "concise"
             HumanMessage(content=human_prompt)
         ]
         
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         result = response.content.strip().lower()
         
         # Validate response

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -17,7 +17,250 @@ import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
-import { ReasoningSteps } from './ReasoningSteps';
+import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
+import { ResponseModeChoice } from './FileChoiceStep';
+
+// ChatGPT-style thinking dot animation
+const ThinkingDot: React.FC = () => {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', padding: '8px 0' }}>
+      <style>
+        {`
+          @keyframes thinking-bounce {
+            0%, 100% {
+              transform: scale(1);
+              opacity: 0.7;
+            }
+            50% {
+              transform: scale(1.3);
+              opacity: 1;
+            }
+          }
+          .thinking-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #111827;
+            border-radius: 50%;
+            animation: thinking-bounce 1.2s ease-in-out infinite;
+          }
+        `}
+      </style>
+      <div className="thinking-dot" />
+    </div>
+  );
+};
+
+// Streaming response text - shows rendered markdown with smooth line-by-line reveal
+// Tracks animated messages to prevent re-animation on re-renders
+const animatedMessagesSet = new Set<string>();
+
+// Helper function to complete incomplete markdown so ReactMarkdown can render formatted output
+// This makes streaming text render in its final formatted form word-by-word, like ChatGPT
+const completeIncompleteMarkdown = (text: string, isStreaming: boolean): string => {
+  if (!text) return text;
+  
+  let completed = text;
+  
+  // Always process markdown to ensure it's parseable, but be more aggressive during streaming
+  // Process line by line to handle incomplete markdown
+  const lines = completed.split('\n');
+  const processedLines: string[] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isLastLine = i === lines.length - 1;
+    
+    // Check if line starts with heading markers (##, ###, etc.)
+    // Match even if heading is incomplete (e.g., "## Head" without newline)
+    const headingMatch = line.match(/^(##+)\s+(.*?)$/);
+    if (headingMatch) {
+      const [, hashes, content] = headingMatch;
+      // If it's a heading (even with partial content), ensure it's formatted immediately
+      // Add newline to make ReactMarkdown recognize it as a heading block
+      const headingContent = content || '';
+      // Always ensure heading ends with newline for proper parsing
+      if (isLastLine && isStreaming) {
+        // Last line during streaming - ensure it has newline
+        processedLines.push(`${hashes} ${headingContent}\n`);
+      } else {
+        // Not last line or not streaming - ensure it has newline
+        processedLines.push(`${hashes} ${headingContent}\n`);
+      }
+      continue;
+    }
+    
+    // Check for bold text - if we see **text (incomplete), close it temporarily
+    // This allows ReactMarkdown to render bold immediately
+    let processedLine = line;
+    const boldMatches = processedLine.match(/\*\*/g);
+    if (boldMatches && boldMatches.length % 2 === 1) {
+      // Odd number of ** means incomplete bold - close it
+      // Only do this during streaming or if it's the last line
+      if (isStreaming || isLastLine) {
+        processedLine += '**';
+      }
+    }
+    
+    // Check for italic - similar approach
+    const withoutBold = processedLine.replace(/\*\*/g, '');
+    const singleAsterisks = withoutBold.match(/\*/g);
+    if (singleAsterisks && singleAsterisks.length % 2 === 1) {
+      // Only close during streaming or if it's the last line
+      if (isStreaming || isLastLine) {
+        processedLine += '*';
+      }
+    }
+    
+    processedLines.push(processedLine);
+  }
+  
+  completed = processedLines.join('\n');
+  
+  return completed;
+};
+
+const StreamingResponseText: React.FC<{
+  text: string;
+  isStreaming: boolean;
+  citations?: Record<string, any>;
+  handleCitationClick: (citationData: any) => void;
+  renderTextWithCitations: (text: string, citations: any, handleClick: any, seen: Set<string>) => React.ReactNode;
+  onTextUpdate?: () => void;
+  messageId?: string; // Unique ID for this message to track animation state
+}> = ({ text, isStreaming, citations, handleCitationClick, renderTextWithCitations, onTextUpdate, messageId }) => {
+  const [shouldAnimate, setShouldAnimate] = React.useState(false);
+  const hasAnimatedRef = React.useRef(false);
+  
+  // Complete incomplete markdown so ReactMarkdown can render formatted output as text streams
+  if (!text) {
+    return null;
+  }
+  
+  // Complete markdown syntax so ReactMarkdown can render formatted output word-by-word
+  const displayText = completeIncompleteMarkdown(text, isStreaming);
+  
+  // Force ReactMarkdown to re-render on every update by using a key that changes with content
+  // This ensures formatted output appears immediately as markdown syntax is detected
+  // Use a simple hash of the text to create a unique key that changes on every character
+  const simpleHash = displayText.split('').reduce((acc, char) => {
+    return ((acc << 5) - acc) + char.charCodeAt(0);
+  }, 0);
+  const markdownKey = `markdown-${messageId}-${displayText.length}-${simpleHash}`;
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.15 }}
+      style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'Inter, system-ui, sans-serif', fontWeight: 400 }}
+    >
+      <ReactMarkdown 
+        key={markdownKey}
+        skipHtml={true}
+        components={{
+          p: ({ children }) => {
+            const citationSeen = new Set<string>();
+            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+              return React.Children.map(nodes, child => {
+                if (typeof child === 'string' && citations) {
+                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
+                }
+                if (React.isValidElement(child)) {
+                  const childChildren = (child.props as any)?.children;
+                  if (childChildren !== undefined) {
+                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                  }
+                }
+                return child;
+              });
+            };
+            return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processChildren(children)}</p>;
+          },
+          h1: ({ children }) => {
+            const citationSeen = new Set<string>();
+            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+              return React.Children.map(nodes, child => {
+                if (typeof child === 'string' && citations) {
+                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
+                }
+                if (React.isValidElement(child)) {
+                  const childChildren = (child.props as any)?.children;
+                  if (childChildren !== undefined) {
+                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                  }
+                }
+                return child;
+              });
+            };
+            return <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{processChildren(children)}</h1>;
+          },
+          h2: () => null, h3: () => null,
+          ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
+          ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+          li: ({ children }) => {
+            const citationSeen = new Set<string>();
+            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+              return React.Children.map(nodes, child => {
+                if (typeof child === 'string' && citations) {
+                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
+                }
+                if (React.isValidElement(child)) {
+                  const childChildren = (child.props as any)?.children;
+                  if (childChildren !== undefined) {
+                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                  }
+                }
+                return child;
+              });
+            };
+            return <li style={{ marginBottom: '4px' }}>{processChildren(children)}</li>;
+          },
+          strong: ({ children }) => {
+            const citationSeen = new Set<string>();
+            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+              return React.Children.map(nodes, child => {
+                if (typeof child === 'string' && citations) {
+                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
+                }
+                if (React.isValidElement(child)) {
+                  const childChildren = (child.props as any)?.children;
+                  if (childChildren !== undefined) {
+                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                  }
+                }
+                return child;
+              });
+            };
+            return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
+          },
+          em: ({ children }) => {
+            const citationSeen = new Set<string>();
+            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+              return React.Children.map(nodes, child => {
+                if (typeof child === 'string' && citations) {
+                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
+                }
+                if (React.isValidElement(child)) {
+                  const childChildren = (child.props as any)?.children;
+                  if (childChildren !== undefined) {
+                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                  }
+                }
+                return child;
+              });
+            };
+            return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
+          },
+          code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
+          blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+          hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+        }}
+      >
+        {displayText}
+      </ReactMarkdown>
+    </motion.div>
+  );
+};
 
 // Component for displaying property thumbnail in search results
 const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
@@ -332,6 +575,7 @@ interface CitationData {
   original_filename?: string | null;
   page?: number;
   page_number?: number;
+  block_id?: string; // Block ID for focused citation retrieval
   bbox?: {
     left: number;
     top: number;
@@ -421,14 +665,6 @@ const renderTextWithCitations = (
   onCitationClick: (data: CitationDataType) => void,
   seenCitationNums?: Set<string>
 ): React.ReactNode => {
-  // Debug: Log when this function is called
-  console.log('🔗 renderTextWithCitations called:', { 
-    textLength: text?.length, 
-    hasCitations: !!citations,
-    citationKeys: citations ? Object.keys(citations) : [],
-    textPreview: text?.substring(0, 100)
-  });
-  
   if (!citations || Object.keys(citations).length === 0) {
     return text;
   }
@@ -481,6 +717,11 @@ const renderTextWithCitations = (
     return match; // Keep original if no citation found
   });
   
+  // First, clean up periods that follow citations (e.g., "[1]." becomes "[1]")
+  // This handles the case where LLM adds periods after standalone citation lines
+  processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
+  processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+  
   // Process bracket citations
   processedText = processedText.replace(bracketPattern, (match, num) => {
     const citData = citations[num];
@@ -492,15 +733,6 @@ const renderTextWithCitations = (
       citationPlaceholders[placeholder] = { num, data: citData, original: match };
       placeholderIndex++;
       seen.add(num);
-      const citationDetails = {
-        citationNumber: num,
-        block_id: citData.block_id || 'UNKNOWN',
-        page: citData.page || citData.bbox?.page || 'UNKNOWN',
-        bbox: citData.bbox ? `${citData.bbox.left?.toFixed(3)},${citData.bbox.top?.toFixed(3)} (${citData.bbox.width?.toFixed(3)}x${citData.bbox.height?.toFixed(3)})` : 'N/A',
-        doc_id: citData.doc_id?.substring(0, 8) || 'UNKNOWN',
-        method: citData.method || 'UNKNOWN'
-      };
-      console.log(`🔗 [CITATION] Matched bracket ${match} (${num}) with citation data:`, JSON.stringify(citationDetails, null, 2));
       
       // #region agent log
       try {
@@ -857,6 +1089,13 @@ const Globe3D: React.FC = () => {
 interface SideChatPanelProps {
   isVisible: boolean;
   query: string;
+  citationContext?: { // Structured citation metadata (hidden from user, passed to LLM)
+    document_id: string;
+    page_number: number;
+    bbox: { left: number; top: number; width: number; height: number };
+    cited_text: string;
+    original_filename: string;
+  } | null;
   sidebarWidth?: number; // Width of the sidebar to offset the panel
   isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
@@ -882,6 +1121,7 @@ export interface SideChatPanelRef {
 export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelProps>(({
   isVisible,
   query,
+  citationContext,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
   isSidebarCollapsed = false,
   onQuerySubmit,
@@ -1129,6 +1369,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track custom dragged width for resizing
   const [draggedWidth, setDraggedWidth] = React.useState<number | null>(null);
   const [isResizing, setIsResizing] = React.useState<boolean>(false);
+  // Track if this is the first citation clicked in the current chat session
+  const isFirstCitationRef = React.useRef<boolean>(true);
   
   // Use refs to store resize state for performance (avoid re-renders during drag)
   const resizeStateRef = React.useRef<{
@@ -1480,6 +1722,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       height: number;
       page?: number;  // Optional page in bbox (for compatibility)
     };
+    block_id?: string; // Block ID for focused citation retrieval
     // Legacy fields (optional for backward compatibility)
     original_filename?: string | null;
     property_address?: string;
@@ -1505,10 +1748,91 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     isLoading?: boolean;
     reasoningSteps?: ReasoningStep[]; // Reasoning steps for this message
     citations?: Record<string, CitationData>; // NEW: Citations with bbox metadata
+    fromCitation?: boolean; // NEW: Flag to indicate if query came from citation action
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  // Persistent sessionId for conversation continuity (reused across all messages in this chat session)
+  const [sessionId] = React.useState<string>(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  
+  // File choice flow state - tracks pending file choice when attachments have extracted text
+  const pendingFileChoiceRef = React.useRef<{
+    queryText: string;
+    loadingResponseId: string;
+    attachmentsToUse: FileAttachmentData[];
+    propertyAttachments: PropertyAttachmentData[];
+    selectedDocIds: string[];
+    selectedDocNames: string[];
+    citationContext: any;
+    resolve: (choice: ResponseModeChoice) => void;
+  } | null>(null);
+  
+  // Helper: Check if attachments have extracted text and need file choice
+  const hasExtractedAttachments = React.useCallback((files: FileAttachmentData[]) => {
+    return files.some(f => f.extractedText && f.extractedText.length > 0);
+  }, []);
+  
+  // Helper: Build attachment context for backend from extracted files
+  const buildAttachmentContext = React.useCallback((files: FileAttachmentData[]) => {
+    const filesWithText = files.filter(f => f.extractedText && f.extractedText.length > 0);
+    if (filesWithText.length === 0) return null;
+    
+    return {
+      texts: filesWithText.map(f => f.extractedText || ''),
+      pageTexts: filesWithText.map(f => f.pageTexts || []),
+      filenames: filesWithText.map(f => f.name),
+      tempFileIds: filesWithText.map(f => f.tempFileId || '')
+    };
+  }, []);
+  
+  // Helper: Handle file choice callback - resolves the pending promise
+  const handleFileChoiceSelection = React.useCallback((choice: ResponseModeChoice) => {
+    console.log('📁 File choice selected:', choice);
+    if (pendingFileChoiceRef.current?.resolve) {
+      pendingFileChoiceRef.current.resolve(choice);
+    }
+  }, []);
+  
+  // Helper: Show file choice step and wait for selection
+  const showFileChoiceAndWait = React.useCallback((
+    loadingResponseId: string,
+    attachmentsToUse: FileAttachmentData[]
+  ): Promise<ResponseModeChoice> => {
+    return new Promise((resolve) => {
+      // Store the resolve function for later
+      const existing = pendingFileChoiceRef.current;
+      pendingFileChoiceRef.current = {
+        queryText: existing?.queryText || '',
+        loadingResponseId,
+        attachmentsToUse,
+        propertyAttachments: existing?.propertyAttachments || [],
+        selectedDocIds: existing?.selectedDocIds || [],
+        selectedDocNames: existing?.selectedDocNames || [],
+        citationContext: existing?.citationContext || null,
+        resolve
+      };
+      
+      // Add file_choice reasoning step to the loading message
+      // Using double assertion due to TypeScript cache - 'file_choice' is valid in ReasoningStep interface
+      const fileChoiceStep = {
+        step: 'file_choice',
+        action_type: 'file_choice',
+        message: 'How would you like me to respond?',
+        details: {
+          attachedFiles: attachmentsToUse,
+          onFileChoice: handleFileChoiceSelection
+        },
+        timestamp: Date.now()
+      } as unknown as ReasoningStep;
+      
+      setChatMessages(prev => prev.map(msg => 
+        msg.id === loadingResponseId 
+          ? { ...msg, reasoningSteps: [fileChoiceStep] }
+          : msg
+      ));
+    });
+  }, [handleFileChoiceSelection]);
   
   // Document preview state for reasoning step card clicks
   const [previewDocument, setPreviewDocument] = React.useState<{
@@ -1524,6 +1848,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Persist chat messages across panel open/close
   const persistedChatMessagesRef = React.useRef<ChatMessage[]>([]);
+  
+  // Reset first citation flag when chat messages are cleared (new chat session)
+  React.useEffect(() => {
+    if (chatMessages.length === 0) {
+      isFirstCitationRef.current = true;
+      console.log('🔄 [CITATION] Chat messages cleared - resetting first citation flag');
+    }
+  }, [chatMessages.length]);
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
@@ -1570,6 +1902,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track the last processed query from props to avoid duplicates
   const lastProcessedQueryRef = React.useRef<string>('');
   
+  // CRITICAL: Track if a query is currently being processed to prevent duplicate API calls
+  // This prevents race conditions between the two useEffects that both watch query/isVisible
+  const isProcessingQueryRef = React.useRef<boolean>(false);
+  
   // Process query prop from SearchBar (when in map view)
   React.useEffect(() => {
     // Only process if:
@@ -1577,7 +1913,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // 2. Query is different from last processed query
     // 3. Panel is visible
     // 4. Query hasn't already been added to chat messages
-    if (query && query.trim() && query !== lastProcessedQueryRef.current && isVisible) {
+    // 5. We're not already processing a query
+    if (query && query.trim() && query !== lastProcessedQueryRef.current && isVisible && !isProcessingQueryRef.current) {
       const queryText = query.trim();
       
       // Check if this query is already in chat messages
@@ -1586,7 +1923,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       );
       
       if (!isAlreadyAdded) {
-        console.log('📥 SideChatPanel: Processing query from SearchBar:', queryText);
+        // Mark this query as being processed
+        lastProcessedQueryRef.current = queryText;
+        isProcessingQueryRef.current = true;
+        // Mark as processing to prevent duplicate API calls from other useEffects
+        isProcessingQueryRef.current = true;
         lastProcessedQueryRef.current = queryText;
         
         // Get selected document IDs if selection mode was used
@@ -1616,29 +1957,79 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Use attachments from state, but fallback to initialAttachedFiles if state is empty
         // This handles the case where query arrives before attachments are synced to state
         // Also check the ref for the most up-to-date attachments
+        // CRITICAL: Sync initialAttachedFiles to state if they exist and state is empty
+        if (initialAttachedFiles && initialAttachedFiles.length > 0 && attachedFiles.length === 0) {
+          console.log('📎 SideChatPanel: Syncing initialAttachedFiles to state before processing query');
+          setAttachedFiles(initialAttachedFiles);
+          attachedFilesRef.current = initialAttachedFiles;
+        }
+        
         const attachmentsFromRef = attachedFilesRef.current;
-        const attachmentsToUse = attachmentsFromRef.length > 0 
+        let attachmentsToUse = attachmentsFromRef.length > 0 
           ? attachmentsFromRef 
           : (attachedFiles.length > 0 
             ? attachedFiles 
             : (initialAttachedFiles || []));
         
-        console.log('📎 SideChatPanel: Using attachments for query message:', {
+        // If we have initialAttachedFiles but they're not in state yet, force sync immediately
+        if (initialAttachedFiles && initialAttachedFiles.length > 0 && attachmentsToUse.length === 0) {
+          console.warn('⚠️ SideChatPanel: initialAttachedFiles exist but not synced yet, force-syncing...');
+          // Force sync immediately
+          setAttachedFiles(initialAttachedFiles);
+          attachedFilesRef.current = initialAttachedFiles;
+          // Use the synced attachments
+          attachmentsToUse = initialAttachedFiles;
+          console.log('📎 SideChatPanel: Force-synced attachments:', attachmentsToUse.length);
+        }
+        
+        console.log('📎 SideChatPanel: Using attachments for query:', {
           fromRef: attachmentsFromRef.length,
           fromState: attachedFiles.length,
           fromInitial: initialAttachedFiles?.length || 0,
-          final: attachmentsToUse.length
+          final: attachmentsToUse.length,
+          attachmentNames: attachmentsToUse.map(a => a.name),
+          initialAttachedFilesDetails: initialAttachedFiles?.map(a => ({ 
+            name: a.name, 
+            hasExtracted: !!a.extractedText,
+            extractedLength: a.extractedText?.length || 0
+          })) || [],
+          attachmentsToUseDetails: attachmentsToUse.map(a => ({
+            name: a.name,
+            hasExtracted: !!a.extractedText,
+            extractedLength: a.extractedText?.length || 0
+          }))
         });
+        
+        // CRITICAL: Create a deep copy of attachments to ensure they persist in the message
+        // This is especially important when attachments come from initialAttachedFiles prop
+        const attachmentsForMessage = attachmentsToUse.map(att => ({
+          ...att,
+          file: att.file, // Preserve file reference
+          extractedText: att.extractedText, // Preserve extracted text
+          pageTexts: att.pageTexts, // Preserve page texts
+          tempFileId: att.tempFileId // Preserve temp file ID
+        }));
         
         const newQueryMessage: ChatMessage = {
           id: queryId,
           type: 'query',
           text: queryText,
-          attachments: [...attachmentsToUse],
+          attachments: attachmentsForMessage, // Use the deep copy
           propertyAttachments: [...propertyAttachments],
           selectedDocumentIds: selectedDocIds,
-          selectedDocumentNames: selectedDocNames
+          selectedDocumentNames: selectedDocNames,
+          fromCitation: !!citationContext // Mark if query came from citation
         };
+        
+        console.log('💬 SideChatPanel: Creating query message with attachments:', {
+          messageId: queryId,
+          attachmentCount: attachmentsForMessage.length,
+          attachments: attachmentsForMessage.map(a => ({
+            name: a.name,
+            hasExtracted: !!a.extractedText,
+            extractedLength: a.extractedText?.length || 0
+          }))
+        });
         
         setChatMessages(prev => {
           const updated = [...prev, newQueryMessage];
@@ -1681,23 +2072,217 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ? Array.from(selectedDocumentIds) 
               : undefined;
             
-            // Also check if we need to convert file attachments to document IDs
-            // If attachments are from FilingSidebar (have document IDs), extract them
-            const attachmentDocumentIds: string[] = [];
-            attachmentsToUse.forEach(att => {
-              // Check if attachment has a document ID (from FilingSidebar drag)
-              // This would be stored in the file name or metadata
-              // For now, we'll rely on the backend to handle file attachments
+            // Check if attachments have extracted text - show file choice step if so
+            let responseMode: 'fast' | 'detailed' | 'full' | undefined;
+            let attachmentContext: { texts: string[]; pageTexts: string[][]; filenames: string[]; tempFileIds: string[] } | null = null;
+            
+            // CRITICAL: Use attachmentsToUse which should have extractedText from initialAttachedFiles
+            console.log('🔍 Checking for extracted attachments:', {
+              attachmentCount: attachmentsToUse.length,
+              attachments: attachmentsToUse.map(a => ({
+                name: a.name,
+                hasExtractedText: !!a.extractedText,
+                extractedLength: a.extractedText?.length || 0,
+                hasPageTexts: !!(a.pageTexts && a.pageTexts.length > 0)
+              }))
             });
             
-            console.log('📤 SideChatPanel: Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds), 'attachments:', attachmentsToUse.length);
+            if (hasExtractedAttachments(attachmentsToUse)) {
+              console.log('📁 Attachments have extracted text - showing file choice step');
+              
+              // Wait for user to select response mode
+              const userChoice = await showFileChoiceAndWait(loadingResponseId, attachmentsToUse);
+              console.log('📁 User selected response mode:', userChoice);
+              
+              // Map 'project' choice to 'full' for backend (project = full + property linking)
+              responseMode = userChoice === 'project' ? 'full' : userChoice;
+              
+              // Build attachment context for backend
+              attachmentContext = buildAttachmentContext(attachmentsToUse);
+              console.log('📦 Built attachment context:', {
+                hasContext: !!attachmentContext,
+                textCount: attachmentContext?.texts.length || 0,
+                filenameCount: attachmentContext?.filenames.length || 0,
+                filenames: attachmentContext?.filenames || []
+              });
+              
+              // Clear the file choice step and add "Processing with..." step
+              const processingStep: ReasoningStep = {
+                step: 'processing_attachments',
+                action_type: 'analyzing',
+                message: userChoice === 'fast' 
+                  ? 'Generating fast response...' 
+                  : userChoice === 'detailed'
+                    ? 'Analyzing documents for detailed citations...'
+                    : 'Processing and adding to project...',
+                details: {},
+                timestamp: Date.now()
+              };
+              
+              setChatMessages(prev => prev.map(msg => 
+                msg.id === loadingResponseId 
+                  ? { ...msg, reasoningSteps: [processingStep] }
+                  : msg
+              ));
+            } else {
+              // Only warn if there ARE attachments but no extracted text
+              // If there are no attachments at all, this is normal (regular query)
+              if (attachmentsToUse.length > 0) {
+                console.warn('⚠️ No extracted text found in attachments:', {
+                  attachmentCount: attachmentsToUse.length,
+                  attachments: attachmentsToUse.map(a => ({
+                    name: a.name,
+                    hasExtractedText: !!a.extractedText,
+                    extractionStatus: a.extractionStatus
+                  }))
+                });
+              }
+              // If no attachments, silently continue (normal query flow)
+            }
             
             const abortController = new AbortController();
             abortControllerRef.current = abortController;
             
             let accumulatedText = '';
+            let tokenBuffer = ''; // Buffer for tokens before displaying
+            let displayedText = ''; // Text currently displayed to user (complete markdown blocks only)
+            let pendingBuffer = ''; // Buffer for incomplete markdown blocks
+            const blockQueue: string[] = []; // Queue of complete markdown blocks to display
+            let isProcessingQueue = false;
             const accumulatedCitations: Record<string, CitationDataType> = {};
             const preloadingDocs = new Set<string>(); // Track documents currently being preloaded to avoid duplicates
+            
+            // Extract complete markdown blocks from buffer
+            const extractCompleteBlocks = () => {
+              // Combine pending buffer with token buffer
+              const combined = pendingBuffer + tokenBuffer;
+              
+              if (!combined.trim()) return;
+              
+              // Split by newlines to find complete blocks
+              const lines = combined.split('\n');
+              
+              // Process lines to find complete blocks
+              let completeBlocks: string[] = [];
+              let remainingBuffer = '';
+              
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const isLastLine = i === lines.length - 1;
+                
+                // Check if this line is a complete heading (## Heading)
+                if (line.match(/^##+\s+.+$/)) {
+                  // Complete heading - add to queue
+                  completeBlocks.push(line + '\n');
+                  continue;
+                }
+                
+                // Check if this line completes a paragraph (has newline)
+                if (!isLastLine) {
+                  // Not the last line, so it's complete (ends with newline)
+                  completeBlocks.push(line + '\n');
+                } else {
+                  // Last line - check if it's complete
+                  // If it's a heading, it's complete
+                  if (line.match(/^##+\s+.+$/)) {
+                    completeBlocks.push(line + '\n');
+                  } 
+                  // If it ends with punctuation followed by optional whitespace, it's complete
+                  else if (line.match(/[.!?;:]\s*$/)) {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // If it's a blank line, it's complete (paragraph break)
+                  else if (line.trim() === '') {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // If line is long enough (likely complete sentence), consider it complete
+                  else if (line.trim().length > 50 && line.match(/\s/)) {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // Otherwise, keep in buffer (incomplete)
+                  else {
+                    remainingBuffer = line;
+                  }
+                }
+              }
+              
+              // Add complete blocks to queue
+              if (completeBlocks.length > 0) {
+                blockQueue.push(...completeBlocks);
+                // Start processing queue if not already processing
+                if (!isProcessingQueue) {
+                  processBlockQueue();
+                }
+              }
+              
+              // Update buffers
+              pendingBuffer = remainingBuffer;
+              tokenBuffer = '';
+            };
+            
+            // Process block queue with gradual display (streaming effect)
+            const processBlockQueue = () => {
+              if (isProcessingQueue || blockQueue.length === 0) return;
+              
+              isProcessingQueue = true;
+              
+              const processNext = () => {
+                if (blockQueue.length === 0) {
+                  isProcessingQueue = false;
+                  // Check if we have more blocks to extract
+                  if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                    extractCompleteBlocks();
+                    if (blockQueue.length > 0) {
+                      processBlockQueue();
+                    }
+                  }
+                  return;
+                }
+                
+                // Get next block from queue
+                const block = blockQueue.shift();
+                if (block) {
+                  // Add block to displayed text
+                  displayedText += block;
+                  
+                  // Clean the text (remove EVIDENCE_FEEDBACK tags, etc.) but don't complete markdown here
+                  // Let StreamingResponseText component handle markdown completion based on isStreaming state
+                  // This ensures consistent behavior across all queries
+                  const cleanedText = cleanResponseText(displayedText);
+                  
+                  // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
+                  setChatMessages(prev => prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? { ...msg, text: cleanedText }
+                      : msg
+                  ));
+                  
+                  // Determine delay based on block type and size
+                  // Headings: slightly longer delay
+                  // Regular blocks: shorter delay for smooth streaming
+                  const isHeading = block.match(/^##+\s+/);
+                  const blockSize = block.length;
+                  const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3)); // 20-40ms, longer for headings
+                  
+                  setTimeout(processNext, delay);
+                } else {
+                  isProcessingQueue = false;
+                }
+              };
+              
+              processNext();
+            };
+            
+            // Process tokens and extract complete blocks
+            const processTokensWithDelay = () => {
+              // Extract complete blocks from current buffer
+              extractCompleteBlocks();
+              
+              // If we have blocks in queue and not processing, start processing
+              if (blockQueue.length > 0 && !isProcessingQueue) {
+                processBlockQueue();
+              }
+            };
             
             // Helper function to preload a document by doc_id - fires immediately, no delays
             const preloadDocumentById = (docId: string, filename?: string) => {
@@ -1718,7 +2303,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
                   const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
                   
-                  console.log('📥 [PRELOAD] Starting IMMEDIATE background download for document:', docId);
                   
                   const response = await fetch(downloadUrl, {
                     credentials: 'include'
@@ -1756,7 +2340,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // Remove from preloading set after successful cache
                   preloadingDocs.delete(docId);
                   
-                  console.log('✅ [PRELOAD] Document cached successfully:', docId, fileData.name);
                 } catch (error) {
                   console.warn('⚠️ [PRELOAD] Error preloading document:', error);
                   preloadingDocs.delete(docId);
@@ -1764,31 +2347,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               })(); // Execute immediately, no delay
             };
             
+            // Log what we're sending to the backend
+            console.log('📤 SideChatPanel: Sending query to backend with:', {
+              query: queryText,
+              propertyId,
+              messageHistoryLength: messageHistory.length,
+              responseMode,
+              hasAttachmentContext: !!attachmentContext,
+              attachmentContextDetails: attachmentContext ? {
+                textCount: attachmentContext.texts.length,
+                filenameCount: attachmentContext.filenames.length,
+                filenames: attachmentContext.filenames,
+                totalTextLength: attachmentContext.texts.reduce((sum, t) => sum + t.length, 0)
+              } : null
+            });
+            
             await backendApi.queryDocumentsStreamFetch(
               queryText,
               propertyId,
               messageHistory,
-              `session_${Date.now()}`,
-              // onToken: Stream each token as it arrives
-              // Don't update state during streaming - just accumulate text locally
-              // This prevents laggy re-renders and ensures smooth final response
+              sessionId,
+              // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
               (token: string) => {
                 accumulatedText += token;
-                // No state update during streaming - text will appear only when complete
-              },
-              // onComplete: Final response received
-              (data: any) => {
-                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
+                tokenBuffer += token;
                 
-                // Debug: Log citations received
-                console.log('✅ SideChatPanel: onComplete received:', {
-                  hasDataCitations: !!data.citations,
-                  dataCitationsCount: data.citations ? Object.keys(data.citations).length : 0,
-                  accumulatedCitationsCount: Object.keys(accumulatedCitations).length,
-                  dataCitations: data.citations,
-                  accumulatedCitations: accumulatedCitations
-                });
+                // Process tokens to find complete markdown blocks
+                // This allows ReactMarkdown to render formatted output progressively
+                processTokensWithDelay();
+              },
+              // onComplete: Final response received - flush buffer and complete animation
+              (data: any) => {
+                // Extract any remaining complete blocks
+                extractCompleteBlocks();
+                
+                // Flush any remaining incomplete buffer - add to displayed text
+                if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                  displayedText += pendingBuffer + tokenBuffer;
+                  pendingBuffer = '';
+                  tokenBuffer = '';
+                  
+                  // Clean the text but don't complete markdown here
+                  // StreamingResponseText will handle completion based on isStreaming state
+                  const cleanedText = cleanResponseText(displayedText);
+                  
+                  // Update with final text
+                  setChatMessages(prev => prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? { ...msg, text: cleanedText }
+                      : msg
+                  ));
+                }
+                
+                // Wait for queue to finish processing, then set final text
+                const finalizeText = () => {
+                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
+                  const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
                 
                 // Use citations from complete event, fallback to accumulated citations
                 // Ensure all citation keys are strings (backend may send mixed types)
@@ -1801,50 +2415,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return normalized;
                 };
                 
-                // Log what we're receiving before normalization
-                if (data.citations) {
-                  console.log('📚 [CITATIONS] Citations from complete message:', {
-                    count: Object.keys(data.citations).length,
-                    keys: Object.keys(data.citations),
-                    citations: Object.entries(data.citations).map(([key, cit]: [string, any]) => ({
-                      citationNumber: key,
-                      block_id: cit.block_id || 'UNKNOWN',
-                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
-                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
-                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
-                    }))
-                  });
-                }
-                if (Object.keys(accumulatedCitations).length > 0) {
-                  console.log('📚 [CITATIONS] Accumulated citations before complete:', {
-                    count: Object.keys(accumulatedCitations).length,
-                    keys: Object.keys(accumulatedCitations),
-                    citations: Object.entries(accumulatedCitations).map(([key, cit]: [string, any]) => ({
-                      citationNumber: key,
-                      block_id: cit.block_id || 'UNKNOWN',
-                      page: cit.page || cit.bbox?.page || 'UNKNOWN',
-                      bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
-                      doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
-                    }))
-                  });
-                }
-                
                 const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
                 
-                console.log('📚 [CITATIONS] Final citations for message:', {
-                  fromComplete: !!data.citations,
-                  fromAccumulated: Object.keys(accumulatedCitations).length,
-                  finalCount: Object.keys(finalCitations).length,
-                  finalKeys: Object.keys(finalCitations),
-                  citations: Object.entries(finalCitations).map(([key, cit]) => ({
-                    citationNumber: key,
-                    block_id: cit.block_id || 'UNKNOWN',
-                    page: cit.page || cit.bbox?.page || 'UNKNOWN',
-                    bbox: cit.bbox ? `${cit.bbox.left?.toFixed(3)},${cit.bbox.top?.toFixed(3)} (${cit.bbox.width?.toFixed(3)}x${cit.bbox.height?.toFixed(3)})` : 'N/A',
-                    doc_id: cit.doc_id?.substring(0, 8) || 'UNKNOWN'
-                  }))
-                });
-                
+                  // Set the complete formatted text
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
@@ -1864,6 +2437,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   persistedChatMessagesRef.current = updated;
                   return updated;
                 });
+                };
+                
+                // Wait for queue to finish processing (max 3 seconds), then finalize
+                const maxWait = 2000;
+                const checkInterval = 100;
+                let waited = 0;
+                const checkQueue = setInterval(() => {
+                  waited += checkInterval;
+                  if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
+                    clearInterval(checkQueue);
+                    finalizeText();
+                  } else if (waited >= maxWait) {
+                    clearInterval(checkQueue);
+                    finalizeText();
+                  }
+                }, checkInterval);
               },
               // onError: Handle errors
               (error: string) => {
@@ -1910,7 +2499,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               documentIdsArray, // documentIds
               // onReasoningStep: Handle reasoning step events
               (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
-                console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
                 // This happens BEFORE citations arrive, making documents ready instantly
@@ -1919,10 +2507,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // PRIORITY 1: doc_previews (from found_documents/exploring steps - earliest available)
                   // This is sent as soon as documents are retrieved, before processing
                   if (step.details.doc_previews && Array.isArray(step.details.doc_previews)) {
-                    console.log('🚀 [PRELOAD] Found doc_previews in reasoning step, preloading immediately:', step.details.doc_previews.length, 'documents');
                     step.details.doc_previews.forEach((doc: any) => {
                       if (doc.doc_id) {
-                        console.log('📥 [PRELOAD] Preloading from doc_previews:', doc.doc_id, doc.original_filename || doc.filename);
                         // Preload immediately (fire and forget, no delays)
                         preloadDocumentById(doc.doc_id, doc.original_filename || doc.filename);
                       }
@@ -1933,7 +2519,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (step.details.doc_metadata && step.details.doc_metadata.doc_id) {
                     const docId = step.details.doc_metadata.doc_id;
                     const filename = step.details.doc_metadata.original_filename || step.details.doc_metadata.filename;
-                    console.log('📥 [PRELOAD] Preloading from doc_metadata:', docId, filename);
                     preloadDocumentById(docId, filename);
                   }
                   
@@ -1941,7 +2526,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (step.details.documents && Array.isArray(step.details.documents)) {
                     step.details.documents.forEach((doc: any) => {
                       if (doc.doc_id || doc.id) {
-                        console.log('📥 [PRELOAD] Preloading from documents array:', doc.doc_id || doc.id, doc.original_filename || doc.filename);
                         preloadDocumentById(doc.doc_id || doc.id, doc.original_filename || doc.filename);
                       }
                     });
@@ -2008,17 +2592,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onCitation: Handle citation events during streaming
               (citation: { citation_number: string | number; data: any }) => {
-                console.log('📚 SideChatPanel: Received citation:', citation);
-                console.log('📚 SideChatPanel: Citation data structure:', {
-                  hasDocId: !!citation.data.doc_id,
-                  hasPage: !!citation.data.page,
-                  hasPageNumber: !!citation.data.page_number,
-                  hasBbox: !!citation.data.bbox,
-                  bboxType: typeof citation.data.bbox,
-                  bboxKeys: citation.data.bbox ? Object.keys(citation.data.bbox) : [],
-                  bboxValue: citation.data.bbox
-                });
-                
                 // Convert citation_number to string (backend may send as int)
                 const citationNumStr = String(citation.citation_number);
                 
@@ -2062,14 +2635,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename // Include filename for preloading
                 };
                 
-                console.log('📚 SideChatPanel: Normalized citation stored:', {
-                  citationNumber: citationNumStr,
-                  docId: citation.data.doc_id,
-                  page: accumulatedCitations[citationNumStr].page,
-                  bbox: normalizedBbox,
-                  bboxValid: normalizedBbox && typeof normalizedBbox.left === 'number'
-                });
-                
                 // PRELOAD: Start downloading document in background when citation received
                 // This ensures documents are ready when user clicks citation (instant BBOX highlight)
                 // Note: Documents may already be preloaded from reasoning steps, but this is a fallback
@@ -2077,41 +2642,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (docId) {
                   // Use the shared preload function (handles deduplication)
                   preloadDocumentById(docId, citation.data.original_filename);
-                  
-                  // OPTIMIZATION: Aggressively pre-render citation pages immediately
-                  // Since probability of clicking citations is extremely high, start pre-rendering ASAP
-                  if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
-                    // Start pre-rendering immediately - don't wait
-                    (async () => {
-                      try {
-                        // Try to get PDF immediately (might be cached from previous load)
-                        let pdf = getCachedPdfDocument(docId);
-                        
-                        if (!pdf) {
-                          // PDF not loaded yet - wait for it to load, but start checking immediately
-                          // Poll more aggressively for faster response
-                          const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
-                          let attempts = 0;
                           
-                          while (!pdf && attempts < maxAttempts) {
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                            pdf = getCachedPdfDocument(docId);
-                            attempts++;
-                          }
-                        }
-                        
-                        if (pdf) {
-                          // PDF is ready - pre-render the page immediately
-                          console.log('⚡ [PRELOAD] Pre-rendering citation page immediately:', docId, 'page', citation.data.page);
-                          await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
-                          console.log('✅ [PRELOAD] Citation page pre-rendered and cached:', docId, 'page', citation.data.page);
-                        } else {
-                          console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
-                        }
-                      } catch (error) {
-                        console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
-                      }
-                    })(); // Fire and forget - don't block
+                          // OPTIMIZATION: Aggressively pre-render citation pages immediately
+                          // Since probability of clicking citations is extremely high, start pre-rendering ASAP
+                          if (citation.data.page && preloadPdfPage && getCachedPdfDocument) {
+                            // Start pre-rendering immediately - don't wait
+                            (async () => {
+                              try {
+                                // Try to get PDF immediately (might be cached from previous load)
+                                let pdf = getCachedPdfDocument(docId);
+                                
+                                if (!pdf) {
+                                  // PDF not loaded yet - wait for it to load, but start checking immediately
+                                  // Poll more aggressively for faster response
+                                  const maxAttempts = 20; // Check for up to 2 seconds (20 * 100ms)
+                                  let attempts = 0;
+                                  
+                                  while (!pdf && attempts < maxAttempts) {
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+                                    pdf = getCachedPdfDocument(docId);
+                                    attempts++;
+                                  }
+                                }
+                                
+                                if (pdf) {
+                                  // PDF is ready - pre-render the page immediately
+                                  await preloadPdfPage(docId, citation.data.page, pdf, 1.0);
+                                } else {
+                                  console.warn('⚠️ [PRELOAD] PDF not available after waiting, will retry when document opens');
+                                }
+                              } catch (error) {
+                                console.warn('⚠️ [PRELOAD] Failed to pre-render page:', error);
+                              }
+                            })(); // Fire and forget - don't block
                   }
                 }
                 
@@ -2127,9 +2690,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       : msg
                   );
                 });
-              }
+              },
+              citationContext || undefined, // citationContext (from citation click)
+              responseMode, // responseMode (from file choice)
+              attachmentContext // attachmentContext (extracted text from files)
             );
           } catch (error: any) {
+            isProcessingQueryRef.current = false;
             if (error.name === 'AbortError') {
               console.log('Query aborted');
               return;
@@ -2145,17 +2712,115 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               return updated;
             });
           }
+          // Reset processing flag when query completes
+          isProcessingQueryRef.current = false;
         })();
       }
     }
-  }, [query, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds]);
+  }, [query, isVisible, chatMessages, attachedFiles, initialAttachedFiles, propertyAttachments, selectedDocumentIds, hasExtractedAttachments, showFileChoiceAndWait, buildAttachmentContext]);
   
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const contentAreaRef = React.useRef<HTMLDivElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
+  const autoScrollEnabledRef = React.useRef(true);
+  const lastScrollHeightRef = React.useRef(0);
+  
+  // Track previous loading state to detect when response completes
+  const prevLoadingRef = React.useRef(false);
+  
+  // Auto-scroll to bottom - uses direct scrollTop for reliability
+  const scrollToBottom = React.useCallback(() => {
+    const contentArea = contentAreaRef.current;
+    if (!contentArea || !autoScrollEnabledRef.current) return;
+    
+    // Scroll to absolute bottom
+    contentArea.scrollTop = contentArea.scrollHeight;
+  }, []);
+  
+  // Detect manual scroll to disable auto-scroll temporarily
+  React.useEffect(() => {
+    const contentArea = contentAreaRef.current;
+    if (!contentArea) return;
+    
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = contentArea;
+      // User is "near bottom" if within 200px of the bottom
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 200;
+      autoScrollEnabledRef.current = isNearBottom;
+    };
+    
+    contentArea.addEventListener('scroll', handleScroll, { passive: true });
+    return () => contentArea.removeEventListener('scroll', handleScroll);
+  }, []);
+  
+  // Main scroll effect - handles all scroll scenarios
+  const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+  const latestMessageText = chatMessages[chatMessages.length - 1]?.text || '';
+  
+  // Track message count to detect new queries
+  const prevMessageCountRef = React.useRef(chatMessages.length);
+  
+  React.useEffect(() => {
+    const messageCountIncreased = chatMessages.length > prevMessageCountRef.current;
+    prevMessageCountRef.current = chatMessages.length;
+    
+    // Enable auto-scroll when a NEW query is sent (message count increases)
+    if (messageCountIncreased && hasLoadingMessage) {
+      const lastMsg = chatMessages[chatMessages.length - 1];
+      if (lastMsg?.isLoading && !lastMsg?.text) {
+        // New query just sent, enable auto-scroll
+        autoScrollEnabledRef.current = true;
+        // Scroll to show the new query
+        requestAnimationFrame(() => {
+          scrollToBottom();
+        });
+      }
+    }
+    
+    // When loading completes, do a final scroll (if auto-scroll is enabled)
+    if (prevLoadingRef.current && !hasLoadingMessage) {
+      // Response just finished - ensure it's visible only if user hasn't scrolled away
+      setTimeout(() => {
+        if (autoScrollEnabledRef.current) {
+          scrollToBottom();
+        }
+      }, 50);
+    }
+    
+    prevLoadingRef.current = hasLoadingMessage;
+  }, [chatMessages, hasLoadingMessage, scrollToBottom]);
+  
+  // Scroll when content height changes during loading (not on a timer)
+  // This respects manual scroll - only scrolls if user is already at bottom
+  React.useEffect(() => {
+    if (!hasLoadingMessage) return;
+    
+    const contentArea = contentAreaRef.current;
+    if (!contentArea) return;
+    
+    // Track content height changes
+    let lastHeight = contentArea.scrollHeight;
+    
+    const checkForGrowth = () => {
+      if (!autoScrollEnabledRef.current) return;
+      
+      const currentHeight = contentArea.scrollHeight;
+      // Only scroll if content actually grew
+      if (currentHeight > lastHeight) {
+        lastHeight = currentHeight;
+        contentArea.scrollTop = currentHeight;
+      }
+    };
+    
+    // Check less frequently and only when content grows
+    const intervalId = setInterval(checkForGrowth, 150);
+    
+    return () => clearInterval(intervalId);
+  }, [hasLoadingMessage]);
   
   // Use shared preview context (moved before handleQuerySubmit to ensure functions are available)
   const {
@@ -2308,14 +2973,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               width: citationData.bbox.width,
               height: citationData.bbox.height,
               page: highlightPage
-            }
+            },
+            // Include full citation metadata for CitationActionMenu
+            doc_id: docId,
+            block_id: citationData.block_id || '',
+            block_content: (citationData as any).cited_text || (citationData as any).block_content || '',
+            original_filename: citationData.original_filename || ''
           };
 
           console.log('🎯 [CITATION] Using new minimal citation structure', {
             fileId: docId,
             page: highlightPage,
             bbox: citationData.bbox,
-            fileDataId: fileData.id // Verify they match
+            fileDataId: fileData.id, // Verify they match
+            block_id: highlightData.block_id
           });
         }
       }
@@ -2381,6 +3052,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
       });
       
+      // If this is the first citation in the session, expand chat panel to 50% width
+      if (isFirstCitationRef.current) {
+        console.log('🎯 [CITATION] First citation clicked - expanding chat panel to 50% width');
+        setIsExpanded(true);
+        setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
+        lockedWidthRef.current = '50vw';
+        isFirstCitationRef.current = false; // Mark that we've seen a citation
+      }
 
       // Always open in standalone ExpandedCardView (preferred layout)
       // Even without highlight data, use StandaloneExpandedCardView instead of DocumentPreviewModal
@@ -2615,6 +3294,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Initialize with new query if provided
       if (query && query.trim()) {
         const queryText = query.trim();
+        
+        // CRITICAL: Don't process if:
+        // 1. Another useEffect is already processing this query
+        // 2. This query was already processed (check lastProcessedQueryRef)
+        // 3. Query is already in chat messages
+        if (isProcessingQueryRef.current) {
+          console.log('⏳ SideChatPanel: Query already being processed by another useEffect, skipping');
+          return;
+        }
+        
+        if (queryText === lastProcessedQueryRef.current) {
+          console.log('⏳ SideChatPanel: Query already processed in first useEffect, skipping');
+          return;
+        }
+        
+        const isAlreadyInMessages = chatMessages.some(msg => 
+          msg.type === 'query' && msg.text === queryText
+        );
+        
+        if (isAlreadyInMessages) {
+          console.log('⏳ SideChatPanel: Query already in messages, skipping');
+          return;
+        }
+        
+        // Mark as processing to prevent duplicate API calls
+        isProcessingQueryRef.current = true;
+        lastProcessedQueryRef.current = queryText;
         // CRITICAL: Use performance.now() + random to ensure uniqueness
         const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
@@ -2658,7 +3364,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           attachments: [],
           propertyAttachments: initialPropertyAttachments,
           selectedDocumentIds: initialSelectedDocIds,
-          selectedDocumentNames: initialSelectedDocNames
+          selectedDocumentNames: initialSelectedDocNames,
+          fromCitation: !!citationContext // Mark if query came from citation
         };
         
         setChatMessages([initialMessage]);
@@ -2708,8 +3415,145 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               messageHistoryLength: 0
             });
             
-            // Use streaming API for real-time token-by-token updates
+            // Use streaming API with block-based formatting like ChatGPT
             let accumulatedText = '';
+            let tokenBuffer = ''; // Buffer for tokens before displaying
+            let displayedText = ''; // Text currently displayed to user (complete markdown blocks only)
+            let pendingBuffer = ''; // Buffer for incomplete markdown blocks
+            const blockQueue: string[] = []; // Queue of complete markdown blocks to display
+            let isProcessingQueue = false;
+            
+            // Extract complete markdown blocks from buffer
+            const extractCompleteBlocks = () => {
+              // Combine pending buffer with token buffer
+              const combined = pendingBuffer + tokenBuffer;
+              
+              if (!combined.trim()) return;
+              
+              // Split by newlines to find complete blocks
+              const lines = combined.split('\n');
+              
+              // Process lines to find complete blocks
+              let completeBlocks: string[] = [];
+              let remainingBuffer = '';
+              
+              for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const isLastLine = i === lines.length - 1;
+                
+                // Check if this line is a complete heading (## Heading)
+                if (line.match(/^##+\s+.+$/)) {
+                  // Complete heading - add to queue
+                  completeBlocks.push(line + '\n');
+                  continue;
+                }
+                
+                // Check if this line completes a paragraph (has newline)
+                if (!isLastLine) {
+                  // Not the last line, so it's complete (ends with newline)
+                  completeBlocks.push(line + '\n');
+                } else {
+                  // Last line - check if it's complete
+                  // If it's a heading, it's complete
+                  if (line.match(/^##+\s+.+$/)) {
+                    completeBlocks.push(line + '\n');
+                  } 
+                  // If it ends with punctuation followed by optional whitespace, it's complete
+                  else if (line.match(/[.!?;:]\s*$/)) {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // If it's a blank line, it's complete (paragraph break)
+                  else if (line.trim() === '') {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // If line is long enough (likely complete sentence), consider it complete
+                  else if (line.trim().length > 50 && line.match(/\s/)) {
+                    completeBlocks.push(line + '\n');
+                  }
+                  // Otherwise, keep in buffer (incomplete)
+                  else {
+                    remainingBuffer = line;
+                  }
+                }
+              }
+              
+              // Add complete blocks to queue
+              if (completeBlocks.length > 0) {
+                blockQueue.push(...completeBlocks);
+                // Start processing queue if not already processing
+                if (!isProcessingQueue) {
+                  processBlockQueue();
+                }
+              }
+              
+              // Update buffers
+              pendingBuffer = remainingBuffer;
+              tokenBuffer = '';
+            };
+            
+            // Process block queue with gradual display (streaming effect)
+            const processBlockQueue = () => {
+              if (isProcessingQueue || blockQueue.length === 0) return;
+              
+              isProcessingQueue = true;
+              
+              const processNext = () => {
+                if (blockQueue.length === 0) {
+                  isProcessingQueue = false;
+                  // Check if we have more blocks to extract
+                  if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                    extractCompleteBlocks();
+                    if (blockQueue.length > 0) {
+                      processBlockQueue();
+                    }
+                  }
+                  return;
+                }
+                
+                // Get next block from queue
+                const block = blockQueue.shift();
+                if (block) {
+                  // Add block to displayed text
+                  displayedText += block;
+                  
+                  // Clean the text (remove EVIDENCE_FEEDBACK tags, etc.) but don't complete markdown here
+                  // Let StreamingResponseText component handle markdown completion based on isStreaming state
+                  // This ensures consistent behavior across all queries
+                  const cleanedText = cleanResponseText(displayedText);
+                  
+                  // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
+                  setChatMessages(prev => prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? { ...msg, text: cleanedText }
+                      : msg
+                  ));
+                  
+                  // Determine delay based on block type and size
+                  // Headings: slightly longer delay
+                  // Regular blocks: shorter delay for smooth streaming
+                  const isHeading = block.match(/^##+\s+/);
+                  const blockSize = block.length;
+                  const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3)); // 20-40ms, longer for headings
+                  
+                  setTimeout(processNext, delay);
+                } else {
+                  isProcessingQueue = false;
+                }
+              };
+              
+              processNext();
+            };
+            
+            // Process tokens and extract complete blocks
+            const processTokensWithDelay = () => {
+              // Extract complete blocks from current buffer
+              extractCompleteBlocks();
+              
+              // If we have blocks in queue and not processing, start processing
+              if (blockQueue.length > 0 && !isProcessingQueue) {
+                processBlockQueue();
+              }
+            };
             
             // Create AbortController for this query
             const abortController = new AbortController();
@@ -2724,29 +3568,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               console.log(`📄 SideChatPanel: Query with ${initialDocumentIds.length} document filter(s)`);
             }
             
+            // Track accumulated citations for real-time updates
+            const accumulatedCitations: Record<string, CitationDataType> = {};
+            
             await backendApi.queryDocumentsStreamFetch(
               queryText,
               propertyId,
               [], // No message history for initial query
-              `session_${Date.now()}`,
-              // onToken: Stream each token as it arrives
-              // Don't update state during streaming - just accumulate text locally
-              // This prevents laggy re-renders and ensures smooth final response
+              sessionId,
+              // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
               (token: string) => {
                 accumulatedText += token;
-                // No state update during streaming - text will appear only when complete
+                tokenBuffer += token;
+                
+                // Process tokens to find complete markdown blocks
+                // This allows ReactMarkdown to render formatted output progressively
+                processTokensWithDelay();
               },
-              // onComplete: Final response received
+              // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
+                // Extract any remaining complete blocks
+                extractCompleteBlocks();
+                
+                // Flush any remaining incomplete buffer - add to displayed text
+                if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                  displayedText += pendingBuffer + tokenBuffer;
+                  pendingBuffer = '';
+                  tokenBuffer = '';
+                  
+                  // Clean the text but don't complete markdown here
+                  // StreamingResponseText will handle completion based on isStreaming state
+                  const cleanedText = cleanResponseText(displayedText);
+                  
+                  // Update with final text
+                  setChatMessages(prev => prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? { ...msg, text: cleanedText }
+                      : msg
+                  ));
+                }
+                
+                // Wait for queue to finish processing, then set final text
+                const finalizeText = () => {
+                  // Citation context is cleared by parent (MainContent) after query
                 // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-                const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
+                  const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
+                  
+                  // Merge accumulated citations with any from backend complete message
+                  const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
                 
                 console.log('✅ SideChatPanel: LLM streaming complete for initial query:', {
                   summary: finalText.substring(0, 100),
                   documentsFound: data.relevant_documents?.length || 0,
-                  citations: data.citations ? Object.keys(data.citations).length : 0
+                    citations: Object.keys(mergedCitations).length
                 });
                 
+                  // Set the complete formatted text
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const responseMessage: ChatMessage = {
@@ -2755,7 +3632,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   text: finalText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: data.citations || {} // NEW: Store citations
+                      citations: mergedCitations // Merged citations applied once
                 };
                 
                   const updated = prev.map(msg => 
@@ -2766,6 +3643,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   persistedChatMessagesRef.current = updated;
                   return updated;
                 });
+                };
+                
+                // Wait for queue to finish processing (max 2 seconds), then finalize
+                const maxWait = 2000;
+                const checkInterval = 100;
+                let waited = 0;
+                const checkQueue = setInterval(() => {
+                  waited += checkInterval;
+                  if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
+                    clearInterval(checkQueue);
+                    finalizeText();
+                  } else if (waited >= maxWait) {
+                    clearInterval(checkQueue);
+                    finalizeText();
+                  }
+                }, checkInterval);
               },
               // onError: Handle errors
               (error: string) => {
@@ -2806,21 +3699,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               initialDocumentIds,
               // onReasoningStep: Handle reasoning step events
               (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
-                console.log('🟡 SideChatPanel: Received reasoning step:', step);
                 
                 setChatMessages(prev => {
                   const updated = prev.map(msg => {
                     if (msg.id === loadingResponseId) {
                       const existingSteps = msg.reasoningSteps || [];
-                      // Use step + message as unique key to allow different messages for same step type
-                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
                       const stepKey = `${step.step}:${step.message}`;
                       const now = Date.now();
                       const existingIndex = existingSteps.findIndex(s => 
                         `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
                       );
                       
-                      // Skip if this exact step was added very recently (deduplication)
                       if (existingIndex >= 0) {
                         return msg;
                       }
@@ -2834,7 +3723,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         timestamp: now
                       };
                       
-                      // Add new step
                       return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                     }
                     return msg;
@@ -2865,13 +3753,53 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   persistedChatMessagesRef.current = updated;
                   return updated;
                 });
-              }
+              },
+              // onCitation: Accumulate citations locally (NO state updates to avoid re-render storm)
+              // Preloading happens via reasoning steps, so we just accumulate here
+              (citation: { citation_number: string | number; data: any }) => {
+                const citationNumStr = String(citation.citation_number);
+                
+                // Normalize bbox
+                const citationBbox = citation.data.bbox;
+                let normalizedBbox: { left: number; top: number; width: number; height: number; page?: number } | null = null;
+                
+                if (citationBbox && typeof citationBbox === 'object') {
+                  if (typeof citationBbox.left === 'number' && 
+                      typeof citationBbox.top === 'number' && 
+                      typeof citationBbox.width === 'number' && 
+                      typeof citationBbox.height === 'number') {
+                    normalizedBbox = {
+                      left: citationBbox.left,
+                      top: citationBbox.top,
+                      width: citationBbox.width,
+                      height: citationBbox.height,
+                      page: citationBbox.page ?? citation.data.page ?? citation.data.page_number
+                    };
+                  }
+                }
+                
+                const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
+                
+                // Accumulate citation locally - will be applied in onComplete
+                accumulatedCitations[citationNumStr] = {
+                  doc_id: citation.data.doc_id,
+                  page: citation.data.page || citation.data.page_number || 0,
+                  bbox: finalBbox,
+                  method: citation.data.method,
+                  block_id: citation.data.block_id,
+                  original_filename: citation.data.original_filename
+                };
+              },
+              // citationContext: Pass structured citation metadata (hidden from user, for LLM)
+              citationContext || undefined
             );
             
-            // Clear abort controller on completion
+            // Clear abort controller and processing flag on completion
             abortControllerRef.current = null;
+            isProcessingQueryRef.current = false;
           } catch (error) {
             abortControllerRef.current = null;
+            isProcessingQueryRef.current = false;
             // Don't log error if it was aborted
             if (error instanceof Error && error.message !== 'Request aborted') {
               console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
@@ -2909,17 +3837,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isVisible, query, restoreChatId, getChatById]);
 
-  // Auto-scroll to bottom when new messages are added (ChatGPT-like behavior)
-  React.useEffect(() => {
-    if (contentAreaRef.current && chatMessages.length > 0) {
-      // Small delay to ensure DOM has updated
-      setTimeout(() => {
-        if (contentAreaRef.current) {
-          contentAreaRef.current.scrollTop = contentAreaRef.current.scrollHeight;
-        }
-      }, 100);
-    }
-  }, [chatMessages]);
 
 
   // Handle textarea change with auto-resize logic
@@ -2958,12 +3875,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
     
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Check if file type supports quick extraction
+    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+                   file.type === 'application/msword' ||
+                   file.name.toLowerCase().endsWith('.docx') || 
+                   file.name.toLowerCase().endsWith('.doc');
+    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+    const supportsExtraction = isPDF || isDOCX || isTXT;
+    
     const fileData: FileAttachmentData = {
-      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: fileId,
       file,
       name: file.name,
       type: file.type,
-      size: file.size
+      size: file.size,
+      // Set initial extraction status for supported file types
+      extractionStatus: supportsExtraction ? 'pending' : undefined
     };
     
     // Preload blob URL immediately (Instagram-style preloading)
@@ -2976,9 +3906,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         if (!(window as any).__preloadedAttachmentBlobs) {
           (window as any).__preloadedAttachmentBlobs = {};
         }
-        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        (window as any).__preloadedAttachmentBlobs[fileId] = blobUrl;
         
-        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+        console.log(`✅ Preloaded blob URL for attachment ${fileId}`);
       } catch (error) {
         console.error('❌ Error preloading blob URL:', error);
       }
@@ -2993,6 +3923,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return updated;
     });
     console.log('✅ SideChatPanel: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
+    
+    // Trigger quick text extraction for supported file types
+    if (supportsExtraction) {
+      console.log('🔍 Starting quick extraction for:', file.name);
+      
+      // Update status to extracting
+      setAttachedFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
+      ));
+      
+      // Call backend extraction API
+      backendApi.quickExtractText(file, true)
+        .then(result => {
+          if (result.success) {
+            console.log(`✅ Quick extraction complete for ${file.name}: ${result.pageCount} pages, ${result.charCount} chars`);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'complete' as const,
+                    extractedText: result.text,
+                    pageTexts: result.pageTexts,
+                    pageCount: result.pageCount,
+                    tempFileId: result.tempFileId
+                  } 
+                : f
+            ));
+          } else {
+            console.error(`❌ Quick extraction failed for ${file.name}:`, result.error);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'error' as const,
+                    extractionError: result.error
+                  } 
+                : f
+            ));
+          }
+        })
+        .catch(error => {
+          console.error(`❌ Quick extraction error for ${file.name}:`, error);
+          setAttachedFiles(prev => prev.map(f => 
+            f.id === fileId 
+              ? { 
+                  ...f, 
+                  extractionStatus: 'error' as const,
+                  extractionError: error instanceof Error ? error.message : 'Unknown error'
+                } 
+              : f
+          ));
+        });
+    }
   }, [attachedFiles.length]);
 
   // Handle drop from FilingSidebar
@@ -3167,19 +4150,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const submitted = inputValue.trim();
+    
+    // CRITICAL: Sync initialAttachedFiles to state if they exist and state is empty
+    // This ensures attachments from SearchBar are included when submitting via input field
+    if (initialAttachedFiles && initialAttachedFiles.length > 0 && attachedFiles.length === 0) {
+      console.log('📎 SideChatPanel: Syncing initialAttachedFiles to state in handleSubmit');
+      setAttachedFiles(initialAttachedFiles);
+      attachedFilesRef.current = initialAttachedFiles;
+    }
+    
     if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0) && !isSubmitted && onQuerySubmit) {
       setIsSubmitted(true);
       
       // Create a copy of attachments to store with the query
-      const attachmentsToStore = [...attachedFiles];
-      const propertiesToStore = [...propertyAttachments];
+      // Use ref for most up-to-date attachments, fallback to state, then initial
+      const attachmentsFromRef = attachedFilesRef.current;
+      const attachmentsToStore = attachmentsFromRef.length > 0 
+        ? [...attachmentsFromRef]
+        : (attachedFiles.length > 0 
+          ? [...attachedFiles]
+          : (initialAttachedFiles ? [...initialAttachedFiles] : []));
       
-      console.log('📤 SideChatPanel: Submitting query with:', {
-        text: submitted,
-        fileAttachments: attachmentsToStore.length,
-        propertyAttachments: propertiesToStore.length,
-        propertyAttachmentsData: propertiesToStore
+      console.log('📎 SideChatPanel: handleSubmit using attachments:', {
+        fromRef: attachmentsFromRef.length,
+        fromState: attachedFiles.length,
+        fromInitial: initialAttachedFiles?.length || 0,
+        final: attachmentsToStore.length,
+        attachmentNames: attachmentsToStore.map(a => a.name)
       });
+      const propertiesToStore = [...propertyAttachments];
       
       // Add query with attachments to the submitted queries list (for backward compatibility)
       setSubmittedQueries(prev => [...prev, { 
@@ -3216,11 +4215,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         attachments: attachmentsToStore,
         propertyAttachments: propertiesToStore, // Always include, even if empty array
         selectedDocumentIds: selectedDocIds,
-        selectedDocumentNames: selectedDocNames
+        selectedDocumentNames: selectedDocNames,
+        fromCitation: !!citationContext // Mark if query came from citation
       };
       
       console.log('💬 SideChatPanel: Adding query message:', newQueryMessage);
       console.log('🔍 SideChatPanel: Property attachments in message:', newQueryMessage.propertyAttachments);
+      
+      // Reset first citation flag if this is a new chat session (no previous messages)
+      const isNewChatSession = chatMessages.length === 0;
+      if (isNewChatSession) {
+        isFirstCitationRef.current = true;
+        console.log('🔄 [CITATION] New chat session detected - resetting first citation flag');
+      }
       
       setChatMessages(prev => {
         const updated = [...prev, newQueryMessage];
@@ -3270,8 +4277,148 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             messageHistoryLength: messageHistory.length
           });
           
-          // Use streaming API for real-time token-by-token updates
+          // Use streaming API with block-based formatting like ChatGPT
           let accumulatedText = '';
+          let tokenBuffer = ''; // Buffer for tokens before displaying
+          let displayedText = ''; // Text currently displayed to user (complete markdown blocks only)
+          let pendingBuffer = ''; // Buffer for incomplete markdown blocks
+          const blockQueue: string[] = []; // Queue of complete markdown blocks to display
+          let isProcessingQueue = false;
+          
+          // Extract complete markdown blocks from buffer
+          const extractCompleteBlocks = () => {
+            // Combine pending buffer with token buffer
+            const combined = pendingBuffer + tokenBuffer;
+            
+            if (!combined.trim()) return;
+            
+            // Split by newlines to find complete blocks
+            const lines = combined.split('\n');
+            
+            // Process lines to find complete blocks
+            let completeBlocks: string[] = [];
+            let remainingBuffer = '';
+            
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              const isLastLine = i === lines.length - 1;
+              
+              // Check if this line is a complete heading (## Heading)
+              if (line.match(/^##+\s+.+$/)) {
+                // Complete heading - add to queue
+                completeBlocks.push(line + '\n');
+                continue;
+              }
+              
+              // Check if this line completes a paragraph (has newline)
+              if (!isLastLine) {
+                // Not the last line, so it's complete (ends with newline)
+                completeBlocks.push(line + '\n');
+              } else {
+                // Last line - check if it's complete
+                // If it's a heading, it's complete
+                if (line.match(/^##+\s+.+$/)) {
+                  completeBlocks.push(line + '\n');
+                } 
+                // If it ends with punctuation followed by optional whitespace, it's complete
+                else if (line.match(/[.!?;:]\s*$/)) {
+                  completeBlocks.push(line + '\n');
+                }
+                // If it's a blank line, it's complete (paragraph break)
+                else if (line.trim() === '') {
+                  completeBlocks.push(line + '\n');
+                }
+                // If line is long enough (likely complete sentence), consider it complete
+                else if (line.trim().length > 50 && line.match(/\s/)) {
+                  completeBlocks.push(line + '\n');
+                }
+                // Otherwise, keep in buffer (incomplete)
+                else {
+                  remainingBuffer = line;
+                }
+              }
+            }
+            
+            // Add complete blocks to queue
+            if (completeBlocks.length > 0) {
+              blockQueue.push(...completeBlocks);
+              // Start processing queue if not already processing
+              if (!isProcessingQueue) {
+                processBlockQueue();
+              }
+            }
+            
+            // Update buffers
+            pendingBuffer = remainingBuffer;
+            tokenBuffer = '';
+          };
+          
+          // Process block queue with gradual display (streaming effect)
+          const processBlockQueue = () => {
+            if (isProcessingQueue || blockQueue.length === 0) return;
+            
+            isProcessingQueue = true;
+            
+            const processNext = () => {
+              if (blockQueue.length === 0) {
+                isProcessingQueue = false;
+                // Check if we have more blocks to extract
+                if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                  extractCompleteBlocks();
+                  if (blockQueue.length > 0) {
+                    processBlockQueue();
+                  }
+                }
+                return;
+              }
+              
+              // Get next block from queue
+              const block = blockQueue.shift();
+              if (block) {
+                // Add block to displayed text
+                displayedText += block;
+                
+                // Clean the text (remove EVIDENCE_FEEDBACK tags, etc.) but don't complete markdown here
+                // Let StreamingResponseText component handle markdown completion based on isStreaming state
+                // This ensures consistent behavior across all queries
+                const cleanedText = cleanResponseText(displayedText);
+                
+                // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
+                setChatMessages(prev => prev.map(msg => 
+                  msg.id === loadingResponseId 
+                    ? { ...msg, text: cleanedText }
+                    : msg
+                ));
+                
+                // Determine delay based on block type and size
+                // Headings: slightly longer delay
+                // Regular blocks: shorter delay for smooth streaming
+                const isHeading = block.match(/^##+\s+/);
+                const blockSize = block.length;
+                const delay = isHeading ? 60 : Math.min(40, Math.max(20, blockSize / 3)); // 20-40ms, longer for headings
+                
+                setTimeout(processNext, delay);
+              } else {
+                isProcessingQueue = false;
+              }
+            };
+            
+            processNext();
+          };
+          
+          // Process tokens and extract complete blocks
+          const processTokensWithDelay = () => {
+            // Extract complete blocks from current buffer
+            extractCompleteBlocks();
+            
+            // If we have blocks in queue and not processing, start processing
+            if (blockQueue.length > 0 && !isProcessingQueue) {
+              processBlockQueue();
+            }
+          };
+          
+          // Track accumulated citations for real-time updates
+          const accumulatedCitations: Record<string, CitationDataType> = {};
           
           // Create AbortController for this query
           const abortController = new AbortController();
@@ -3282,51 +4429,159 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             ? Array.from(selectedDocumentIds) 
             : undefined;
           
-          console.log('📤 SideChatPanel (handleSubmit): Submitting query with documentIds:', documentIdsArray, 'selectedDocumentIds size:', selectedDocumentIds.size, 'selectedDocumentIds:', Array.from(selectedDocumentIds));
+          // Check if attachments have extracted text - show file choice step if so
+          let responseMode: 'fast' | 'detailed' | 'full' | undefined;
+          let attachmentContext: { texts: string[]; pageTexts: string[][]; filenames: string[]; tempFileIds: string[] } | null = null;
           
-          if (documentIdsArray && documentIdsArray.length > 0) {
-            console.log(`📄 SideChatPanel: Query with ${documentIdsArray.length} document filter(s):`, documentIdsArray);
+          if (hasExtractedAttachments(attachmentsToStore)) {
+            console.log('📁 Attachments have extracted text - showing file choice step');
+            
+            // Wait for user to select response mode
+            const userChoice = await showFileChoiceAndWait(loadingResponseId, attachmentsToStore);
+            console.log('📁 User selected response mode:', userChoice);
+            
+            // Map 'project' choice to 'full' for backend (project = full + property linking)
+            responseMode = userChoice === 'project' ? 'full' : userChoice;
+            
+            // Build attachment context for backend
+            attachmentContext = buildAttachmentContext(attachmentsToStore);
+            
+            // Clear the file choice step and add "Processing with..." step
+            const processingStep: ReasoningStep = {
+              step: 'processing_attachments',
+              action_type: 'analyzing',
+              message: userChoice === 'fast' 
+                ? 'Generating fast response...' 
+                : userChoice === 'detailed'
+                  ? 'Analyzing documents for detailed citations...'
+                  : 'Processing and adding to project...',
+              details: {},
+              timestamp: Date.now()
+            };
+            
+            setChatMessages(prev => prev.map(msg => 
+              msg.id === loadingResponseId 
+                ? { ...msg, reasoningSteps: [processingStep] }
+                : msg
+            ));
           }
           
           // Store these values for use in error handler
           const hasAttachmentsForError = attachedFiles.length > 0 || (documentIdsArray && documentIdsArray.length > 0);
           const submittedQuery = submitted || '';
           
+          // Track documents currently being preloaded to avoid duplicates
+          const preloadingDocs = new Set<string>();
+          
+          // Helper function to preload a document by doc_id - fires immediately, no delays
+          const preloadDocumentById = (docId: string, filename?: string) => {
+            // Skip if already cached or currently preloading
+            const isCached = previewFiles.some(f => f.id === docId);
+            const isPreloading = preloadingDocs.has(docId);
+            
+            if (isCached || isPreloading) {
+              return; // Already handled
+            }
+            
+            // Mark as preloading immediately
+            preloadingDocs.add(docId);
+            
+            // Start download immediately (fire and forget, no setTimeout delay)
+            (async () => {
+              try {
+                const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+                
+                
+                const response = await fetch(downloadUrl, {
+                  credentials: 'include'
+                });
+                
+                if (!response.ok) {
+                  console.warn('⚠️ [PRELOAD] Failed to download document:', response.status);
+                  preloadingDocs.delete(docId);
+                  return;
+                }
+                
+                const blob = await response.blob();
+                const fileType = blob.type || 'application/pdf';
+                
+                // Create File object from blob
+                const file = new File(
+                  [blob], 
+                  filename || 'document.pdf', 
+                  { type: fileType }
+                );
+                
+                // Add to preview files cache
+                addPreviewFile({
+                  id: docId,
+                  file,
+                  name: filename || 'document.pdf',
+                  type: fileType,
+                  size: blob.size
+                });
+                
+              } catch (err) {
+                console.warn('⚠️ [PRELOAD] Error preloading document:', err);
+                preloadingDocs.delete(docId);
+              }
+            })();
+          };
+          
           await backendApi.queryDocumentsStreamFetch(
             submittedQuery,
             propertyId,
             messageHistory,
-            `session_${Date.now()}`,
-            // onToken: Stream each token as it arrives
-            // Don't update state during streaming - just accumulate text locally
-            // This prevents laggy re-renders and ensures smooth final response
+            sessionId,
+            // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
             (token: string) => {
               accumulatedText += token;
-              // No state update during streaming - text will appear only when complete
+              tokenBuffer += token;
+              
+              // Process tokens to find complete markdown blocks
+              // This allows ReactMarkdown to render formatted output progressively
+              processTokensWithDelay();
             },
-            // onComplete: Final response received
+            // onComplete: Final response received - flush buffer and complete animation
             (data: any) => {
+              // Extract any remaining complete blocks
+              extractCompleteBlocks();
+              
+              // Flush any remaining incomplete buffer - add to displayed text
+              if (tokenBuffer.trim() || pendingBuffer.trim()) {
+                displayedText += pendingBuffer + tokenBuffer;
+                pendingBuffer = '';
+                tokenBuffer = '';
+                
+                // Clean the text but don't complete markdown here
+                // StreamingResponseText will handle completion based on isStreaming state
+                const cleanedText = cleanResponseText(displayedText);
+                
+                // Update with final text
+                setChatMessages(prev => prev.map(msg => 
+                  msg.id === loadingResponseId 
+                    ? { ...msg, text: cleanedText }
+                    : msg
+                ));
+              }
+              
+              // Wait for queue to finish processing, then set final text
+              const finalizeText = () => {
               // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-              const finalText = cleanResponseText(data.summary || accumulatedText || "I found some information for you.");
+                const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
+              
+                // Merge accumulated citations with any from backend complete message
+                const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
               
               console.log('✅ SideChatPanel: LLM streaming complete:', {
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
-                citationCount: data.citations ? Object.keys(data.citations).length : 0,
-                citationKeys: data.citations ? Object.keys(data.citations) : []
-              });
-              // Log full citations with source_chunks_metadata for bbox debugging
-              if (data.citations) {
-                Object.entries(data.citations).forEach(([key, citData]) => {
-                  console.log(`📍 Citation [${key}]:`, {
-                    doc_id: (citData as any).doc_id,
-                    filename: (citData as any).original_filename,
-                    source_chunks_count: (citData as any).source_chunks_metadata?.length,
-                    source_chunks_metadata: (citData as any).source_chunks_metadata
-                  });
+                  citationCount: Object.keys(mergedCitations).length,
+                  citationKeys: Object.keys(mergedCitations)
                 });
-              }
-              
+                
+                // Set the complete formatted text
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
               const responseMessage: ChatMessage = {
@@ -3335,7 +4590,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 text: finalText,
                   isLoading: false,
                   reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                  citations: data.citations || {} // NEW: Store citations with bbox metadata
+                    citations: mergedCitations // Merged citations applied once
               };
               
                 const updated = prev.map(msg => 
@@ -3349,6 +4604,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               // Keep reasoning steps in the message - don't clear them
               currentQueryIdRef.current = null;
+              };
+              
+              // Wait for queue to finish processing (max 2 seconds), then finalize
+              const maxWait = 2000;
+              const checkInterval = 100;
+              let waited = 0;
+              const checkQueue = setInterval(() => {
+                waited += checkInterval;
+                if (!isProcessingQueue && blockQueue.length === 0 && !tokenBuffer.trim() && !pendingBuffer.trim()) {
+                  clearInterval(checkQueue);
+                  finalizeText();
+                } else if (waited >= maxWait) {
+                  clearInterval(checkQueue);
+                  finalizeText();
+                }
+              }, checkInterval);
             },
             // onError: Handle errors
             (error: string) => {
@@ -3410,20 +4681,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
               console.log('🟡 SideChatPanel: Received reasoning step:', step);
               
-              // Store reasoning steps in the message itself
+              // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
+              if (step.details) {
+                if (step.details.doc_previews && Array.isArray(step.details.doc_previews)) {
+                  step.details.doc_previews.forEach((doc: any) => {
+                    if (doc.doc_id) {
+                      preloadDocumentById(doc.doc_id, doc.original_filename || doc.filename);
+                    }
+                  });
+                }
+                if (step.details.doc_metadata && step.details.doc_metadata.doc_id) {
+                  const docId = step.details.doc_metadata.doc_id;
+                  const filename = step.details.doc_metadata.original_filename || step.details.doc_metadata.filename;
+                  preloadDocumentById(docId, filename);
+                }
+                if (step.details.documents && Array.isArray(step.details.documents)) {
+                  step.details.documents.forEach((doc: any) => {
+                    if (doc.doc_id || doc.id) {
+                      preloadDocumentById(doc.doc_id || doc.id, doc.original_filename || doc.filename);
+                    }
+                  });
+                }
+              }
+              
               setChatMessages(prev => {
                 const updated = prev.map(msg => {
                   if (msg.id === loadingResponseId) {
                     const existingSteps = msg.reasoningSteps || [];
-                    // Use step + message as unique key to allow different messages for same step type
-                    // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
                     const stepKey = `${step.step}:${step.message}`;
                     const now = Date.now();
                     const existingIndex = existingSteps.findIndex(s => 
                       `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
                     );
                     
-                    // Skip if this exact step was added very recently (deduplication)
                     if (existingIndex >= 0) {
                       return msg;
                     }
@@ -3437,12 +4727,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       timestamp: now
                     };
                     
-                    // Add new step
                     return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                   }
                   return msg;
                 });
-                
+                persistedChatMessagesRef.current = updated;
                 return updated;
               });
             },
@@ -3465,15 +4754,65 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                   return msg;
                 });
+                persistedChatMessagesRef.current = updated;
                 return updated;
               });
-            }
+            },
+            // onCitation: Accumulate citations locally (NO state updates to avoid re-render storm)
+            (citation: { citation_number: string | number; data: any }) => {
+              const citationNumStr = String(citation.citation_number);
+              
+              // Normalize bbox
+              const citationBbox = citation.data.bbox;
+              let normalizedBbox: { left: number; top: number; width: number; height: number; page?: number } | null = null;
+              
+              if (citationBbox && typeof citationBbox === 'object') {
+                if (typeof citationBbox.left === 'number' && 
+                    typeof citationBbox.top === 'number' && 
+                    typeof citationBbox.width === 'number' && 
+                    typeof citationBbox.height === 'number') {
+                  normalizedBbox = {
+                    left: citationBbox.left,
+                    top: citationBbox.top,
+                    width: citationBbox.width,
+                    height: citationBbox.height,
+                    page: citationBbox.page ?? citation.data.page ?? citation.data.page_number
+                  };
+                }
+              }
+              
+              const finalBbox = normalizedBbox || { left: 0, top: 0, width: 0, height: 0 };
+              
+              // Accumulate citation locally - will be applied in onComplete
+              accumulatedCitations[citationNumStr] = {
+                doc_id: citation.data.doc_id,
+                page: citation.data.page || citation.data.page_number || 0,
+                bbox: finalBbox,
+                method: citation.data.method,
+                block_id: citation.data.block_id,
+                original_filename: citation.data.original_filename
+              };
+              
+              // Preload document in background (no state update)
+              const docId = citation.data.doc_id;
+              if (docId) {
+                preloadDocumentById(docId, citation.data.original_filename);
+              }
+            },
+            // citationContext: Pass structured citation metadata (hidden from user, for LLM)
+            // ALWAYS pass citationContext when available - it contains document_id, page_number, block_id
+            // for fast-path retrieval when user clicks on a citation
+            citationContext || undefined,
+            responseMode, // responseMode (from file choice)
+            attachmentContext // attachmentContext (extracted text from files)
           );
           
-          // Clear abort controller on completion
+          // Clear abort controller and processing flag on completion
           abortControllerRef.current = null;
+          isProcessingQueryRef.current = false;
         } catch (error) {
           abortControllerRef.current = null;
+          isProcessingQueryRef.current = false;
           // Don't log error if it was aborted
           if (error instanceof Error && error.message !== 'Request aborted') {
             console.error('❌ SideChatPanel: Error calling LLM API:', error);
@@ -3579,7 +4918,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         return (
           <div key={finalKey} style={{
             alignSelf: 'flex-start', maxWidth: '85%', width: 'fit-content',
-            marginTop: '8px', marginLeft: isExpanded ? '0' : '12px',
+            marginTop: '8px', marginLeft: '0',
             display: 'flex', flexDirection: 'column', gap: '6px'
           }}>
             {message.selectedDocumentIds?.length > 0 && (
@@ -3612,7 +4951,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               )}
               {message.text && (
-                <div style={{ color: '#0D0D0D', fontSize: '13px', lineHeight: '19px', margin: 0, padding: 0, textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box' }}>
+                <div style={{ color: '#0D0D0D', fontSize: '13px', lineHeight: '19px', margin: 0, padding: 0, textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {message.fromCitation && (
+                    <TextCursorInput size={14} style={{ flexShrink: 0, color: '#6B7280' }} />
+                  )}
                   <ReactMarkdown components={{
                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
                     h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
@@ -3635,152 +4977,32 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // Response message
       return (
-        <div key={finalKey} style={{ width: '100%', padding: '0', margin: '0', marginTop: '8px', paddingLeft: isExpanded ? '0' : '12px', paddingRight: isExpanded ? '0' : '20px', wordWrap: 'break-word' }}>
+        <div key={finalKey} style={{ width: '100%', padding: '0', margin: '0', marginTop: '8px', paddingLeft: '0', paddingRight: '0', wordWrap: 'break-word' }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
             <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
           )}
-          {/* Only show text when streaming is complete - no spinner, no partial text during streaming */}
-          {message.text && !message.isLoading && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-              style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', fontWeight: 400 }}
-            >
-              <ReactMarkdown 
-                components={{
-                p: ({ children }) => {
-                    const citationSeen = new Set<string>();
-                    // Recursively process all text nodes to find citations
-                    const processChildren = (children: React.ReactNode): React.ReactNode => {
-                      return React.Children.map(children, child => {
-                    if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
-                    }
-                        if (React.isValidElement(child)) {
-                          // Recursively process nested children
-                          const childChildren = (child.props as any)?.children;
-                          if (childChildren !== undefined) {
-                            return React.cloneElement(child, {
-                              ...child.props,
-                              children: processChildren(childChildren)
-                            } as any);
-                          }
-                    }
-                    return child;
-                  });
-                    };
-                    const processedChildren = processChildren(children);
-                  return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processedChildren}</p>;
-                },
-                h1: ({ children }) => {
-                    const citationSeen = new Set<string>();
-                    const processChildren = (children: React.ReactNode): React.ReactNode => {
-                      return React.Children.map(children, child => {
-                        if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
-                        }
-                        if (React.isValidElement(child)) {
-                          const childChildren = (child.props as any)?.children;
-                          if (childChildren !== undefined) {
-                            return React.cloneElement(child, {
-                              ...child.props,
-                              children: processChildren(childChildren)
-                            } as any);
-                          }
-                        }
-                        return child;
-                      });
-                    };
-                    return (
-                      <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>
-                        {processChildren(children)}
-                      </h1>
-                    );
-                  },
-                h2: () => null, h3: () => null,
-                ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
-                ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
-                li: ({ children }) => {
-                    const citationSeen = new Set<string>();
-                    // Recursively process all text nodes to find citations
-                    const processChildren = (children: React.ReactNode): React.ReactNode => {
-                      return React.Children.map(children, child => {
-                    if (typeof child === 'string' && message.citations) {
-                      return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
-                    }
-                        if (React.isValidElement(child)) {
-                          const childChildren = (child.props as any)?.children;
-                          if (childChildren !== undefined) {
-                            return React.cloneElement(child, {
-                              ...child.props,
-                              children: processChildren(childChildren)
-                            } as any);
-                          }
-                    }
-                    return child;
-                  });
-                    };
-                    const processedChildren = processChildren(children);
-                  return <li style={{ marginBottom: '4px' }}>{processedChildren}</li>;
-                },
-                  strong: ({ children }) => {
-                    const citationSeen = new Set<string>();
-                    // Recursively process citations in strong elements
-                    const processChildren = (children: React.ReactNode): React.ReactNode => {
-                      return React.Children.map(children, child => {
-                        if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
-                        }
-                        if (React.isValidElement(child)) {
-                          const childChildren = (child.props as any)?.children;
-                          if (childChildren !== undefined) {
-                            return React.cloneElement(child, {
-                              ...child.props,
-                              children: processChildren(childChildren)
-                            } as any);
-                          }
-                        }
-                        return child;
-                      });
-                    };
-                    return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
-                  },
-                  em: ({ children }) => {
-                    const citationSeen = new Set<string>();
-                    // Recursively process citations in em elements
-                    const processChildren = (children: React.ReactNode): React.ReactNode => {
-                      return React.Children.map(children, child => {
-                        if (typeof child === 'string' && message.citations) {
-                          return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
-                        }
-                        if (React.isValidElement(child)) {
-                          const childChildren = (child.props as any)?.children;
-                          if (childChildren !== undefined) {
-                            return React.cloneElement(child, {
-                              ...child.props,
-                              children: processChildren(childChildren)
-                            } as any);
-                          }
-                        }
-                        return child;
-                      });
-                    };
-                    return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
-                  },
-                code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                }}
-              >
-                {message.text}
-              </ReactMarkdown>
-            </motion.div>
+          {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
+          {message.isLoading && !message.text && 
+           message.reasoningSteps?.some(step => step.action_type === 'reading') &&
+           message.reasoningSteps?.filter(step => step.action_type === 'reading').every(step => step.details?.status === 'read') && (
+            <ThinkingDot />
+          )}
+          {/* Show streaming text as it arrives - inline with typing effect */}
+          {message.text && (
+            <StreamingResponseText
+              text={message.text}
+              isStreaming={message.isLoading || false}
+              citations={message.citations}
+              handleCitationClick={handleCitationClick}
+              renderTextWithCitations={renderTextWithCitations}
+              onTextUpdate={scrollToBottom}
+              messageId={finalKey}
+            />
           )}
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, isExpanded, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty]);
+  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom]);
 
   return (
     <AnimatePresence>
@@ -3807,7 +5029,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               : (isExpanded 
               ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
                 : '450px'), // Fixed width when collapsed (but can be resized via drag)
-            backgroundColor: '#F9F9F9',
+            backgroundColor: '#FFFFFF',
             boxShadow: 'none',
             transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
             willChange: 'width', // Optimize for smooth width changes
@@ -3846,7 +5068,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           {/* Panel content will go here */}
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#F9F9F9', borderBottom: 'none' }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <button
@@ -3867,7 +5089,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
                   {/* Hide the Files sidebar icon when the main sidebar is open (the control exists there). */}
                   {!isMainSidebarOpen && (
-                    <AnimatePresence mode="wait">
+                  <AnimatePresence mode="wait">
                       <motion.button
                         key="folder-icon"
                         initial={{ opacity: 0, scale: 0.8 }}
@@ -3881,7 +5103,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       >
                         <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
                       </motion.button>
-                    </AnimatePresence>
+                  </AnimatePresence>
                   )}
                 </div>
                 <div className="flex items-center space-x-2">
@@ -3915,6 +5137,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       setSelectionModeActive(false);
                       setIsSubmitted(false);
                       setIsFocused(false);
+                      // Reset first citation flag for new chat session
+                      isFirstCitationRef.current = true;
                       
                       // Reset textarea if it exists
                       if (inputRef.current) {
@@ -4068,7 +5292,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ref={contentAreaRef}
               className="flex-1 overflow-y-auto sidechat-scroll" 
               style={{ 
-                backgroundColor: '#F9F9F9',
+                backgroundColor: '#FFFFFF',
                 padding: '16px 0', // Simplified padding - content will be centered
                 // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
                 marginRight: '6px',
@@ -4093,6 +5317,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <AnimatePresence>
                   {renderedMessages}
                 </AnimatePresence>
+                {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
+                <div ref={messagesEndRef} style={{ height: '40px', minHeight: '40px', flexShrink: 0 }} />
                 </div>
               </div>
             </div>
@@ -4102,7 +5328,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div 
               ref={chatInputContainerRef}
               style={{ 
-                backgroundColor: '#F9F9F9', 
+                backgroundColor: '#FFFFFF', 
                 paddingTop: '16px', 
                 paddingBottom: '34px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
@@ -4157,10 +5383,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   justifyContent: 'center', 
                   alignItems: 'center',
                   position: 'relative',
-                  // Slightly larger left padding to match the right side after accounting for panel affordances
-                  paddingLeft: '36px',
-                  // Slightly larger right padding to visually balance the panel's right-edge drag/scroll affordances
-                  paddingRight: '44px'
+                  // Match content wrapper padding to align chatbar with text display
+                  paddingLeft: '32px',
+                  paddingRight: '32px'
                 }}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -4180,7 +5405,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    width: 'min(100%, 680px)', // Match tightened chat/message column
+                    // Match text content width: content wrapper is 680px with 32px padding each side (64px total)
+                    // So content width is 616px. Chatbar has 12px padding each side (24px total), so inner div should be 616px + 24px = 640px
+                    width: 'min(100%, 640px)', // Match actual text content width
                     minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
                     minHeight: 'fit-content',
@@ -4750,4 +5977,5 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     </AnimatePresence>
   );
 });
+
 

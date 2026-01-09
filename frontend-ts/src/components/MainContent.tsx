@@ -33,6 +33,7 @@ import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { FilingSidebar } from './FilingSidebar';
+import { UploadProgressBar } from './UploadProgressBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1580,6 +1581,82 @@ export const MainContent = ({
     }
   }, [isMapVisible, isQuickStartBarVisible]);
   
+  // Store citation context for queries (hidden from user, passed to backend)
+  const [citationContext, setCitationContext] = React.useState<any>(null);
+
+  // PRE-BUILD: Listen for citation context preparation (when user clicks "Ask a question")
+  // This prepares the context BEFORE the user types their query
+  React.useEffect(() => {
+    const handleCitationContextPrepare = (event: CustomEvent) => {
+      const { citationContext: context } = event.detail;
+      console.log('⚡ [CITATION] Pre-storing citation context (user clicked Ask):', context);
+      setCitationContext(context);
+    };
+    
+    // CLEANUP: Listen for citation context clear (when user backs out or closes without submitting)
+    const handleCitationContextClear = () => {
+      console.log('🧹 [CITATION] Clearing pre-stored citation context (user backed out)');
+      setCitationContext(null);
+    };
+    
+    window.addEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+    window.addEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    return () => {
+      window.removeEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+      window.removeEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    };
+  }, []);
+
+  // Listen for citation query submissions
+  React.useEffect(() => {
+    const handleCitationQuerySubmit = (event: CustomEvent) => {
+      const { query, citationContext: context, propertyId, documentIds } = event.detail;
+      
+      console.log('📝 [CITATION] Received citation query submit:', { 
+        query, 
+        citationContext: context, 
+        propertyId, 
+        documentIds 
+      });
+      
+      // Use pre-stored context if available, otherwise use the one from the event
+      // (context should already be set from citation-context-prepare event)
+      if (!citationContext && context) {
+        setCitationContext(context);
+      }
+      
+      // Open chat panel if not already open
+      if (!isMapVisible) {
+        setIsMapVisible(true);
+      }
+      setHasPerformedSearch(true);
+      
+      // If property details is open, expand chat
+      if (isPropertyDetailsOpen) {
+        setShouldExpandChat(true);
+      }
+      
+      // Set the query - SideChatPanel will auto-submit it
+      setMapSearchQuery(query);
+      
+      // Clear citation context after a short delay (once the query has been submitted)
+      // This ensures subsequent manual queries don't reuse the citation context
+      setTimeout(() => {
+        setCitationContext(null);
+      }, 2000); // 2 second delay - enough time for query to be submitted
+    };
+    
+    window.addEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
+    return () => window.removeEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
+  }, [isMapVisible, isPropertyDetailsOpen, citationContext]);
+
+  // Clear citation context when chat is closed or new chat starts
+  React.useEffect(() => {
+    if (!hasPerformedSearch) {
+      setCitationContext(null);
+    }
+  }, [hasPerformedSearch]);
+  
   // Reset chat panel width when map view is closed or chat is hidden
   React.useEffect(() => {
     if (!isMapVisible || !hasPerformedSearch) {
@@ -1911,6 +1988,11 @@ export const MainContent = ({
                     cacheVersion: (response as any).cache_version || 1
                   }));
                   console.log('✅ Preloaded card summary on dashboard mount:', property.address);
+                } else if (response.error && response.error.includes('Property not found')) {
+                  // Property no longer exists - clean up localStorage
+                  localStorage.removeItem('lastInteractedProperty');
+                  localStorage.removeItem(cacheKey);
+                  // Silently handle - property was deleted or user lost access
                 }
               }
             }
@@ -2174,9 +2256,8 @@ export const MainContent = ({
     }
   };
 
-  const handleQueryStart = (query: string) => {
-    console.log('MainContent: Query started with:', query);
-    
+  // Memoize to prevent SearchBar re-renders on parent state changes
+  const handleQueryStart = React.useCallback((query: string) => {
     // Track search activity but DON'T create chat history yet
     addActivity({
       action: `User initiated search: "${query}"`,
@@ -2186,7 +2267,7 @@ export const MainContent = ({
     });
     
     // Don't create chat history until query is actually submitted
-  };
+  }, [addActivity]);
 
   const handleLocationUpdate = (location: { lat: number; lng: number; address: string }) => {
     console.log('Location updated:', location);
@@ -2246,10 +2327,20 @@ export const MainContent = ({
     }
     
     // Store attachments for SideChatPanel BEFORE clearing
+    // CRITICAL: Update both ref (for immediate access) and state (to trigger re-render)
     if (dashboardAttachments.length > 0) {
       pendingSideChatAttachmentsRef.current = dashboardAttachments;
+      // Use flushSync to ensure state update happens before query is processed
       setPendingSideChatAttachments(dashboardAttachments);
-      console.log('📎 MainContent: Stored attachments for SideChatPanel:', dashboardAttachments.length);
+      console.log('📎 MainContent: Stored attachments for SideChatPanel:', {
+        count: dashboardAttachments.length,
+        names: dashboardAttachments.map(a => a.name),
+        hasExtractedText: dashboardAttachments.some(a => a.extractedText)
+      });
+    } else {
+      // Clear attachments if none provided
+      pendingSideChatAttachmentsRef.current = [];
+      setPendingSideChatAttachments([]);
     }
     
     // Clear stored attachments when search is submitted (after capturing)
@@ -2267,8 +2358,9 @@ export const MainContent = ({
     // Always update map search query
     setMapSearchQuery(query);
     
-    // If map is visible, only search on the map, don't enter chat
-    if (isMapVisible) {
+    // If map is visible and there are no attachments, only search on the map, don't enter chat
+    // BUT if there are attachments, we need to show SideChatPanel to handle file choice
+    if (isMapVisible && dashboardAttachments.length === 0) {
       console.log('Map search only - not entering chat mode');
       
       // Collapse sidebar on first query in map view for cleaner UI
@@ -2283,9 +2375,22 @@ export const MainContent = ({
       return;
     }
     
+    // If map is visible but there are attachments, ensure SideChatPanel is shown
+    if (isMapVisible && dashboardAttachments.length > 0) {
+      console.log('Map visible with attachments - showing SideChatPanel for file choice', {
+        attachmentCount: dashboardAttachments.length,
+        storedInRef: pendingSideChatAttachmentsRef.current.length,
+        storedInState: pendingSideChatAttachments.length
+      });
+      setHasPerformedSearch(true);
+      // Attachments are already stored in pendingSideChatAttachmentsRef above
+      // Query is already set via setMapSearchQuery above
+      // SideChatPanel will receive both via props
+      return;
+    }
+    
     // Dashboard view: Route query to SideChatPanel
     // Open map view and show SideChatPanel
-    console.log('Dashboard search - opening SideChatPanel');
     setIsMapVisible(true);
     setHasPerformedSearch(true);
     
@@ -2651,14 +2756,14 @@ export const MainContent = ({
                               <p
                                 className="mb-0 text-center tracking-wide leading-relaxed"
                                 style={{
-                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
                                   color: '#111827', // Single, sleeker ink tone
                                   fontWeight: 400,
                                   opacity: 0.9
                                 } as React.CSSProperties}
                               >
                                 {`Welcome back${userName ? ` ${userName}` : ''}, your workspace is synced and ready for your next move`}
-                              </p>
+                      </p>
                             </div>
                     ) : (
                             <div style={{
@@ -2671,14 +2776,14 @@ export const MainContent = ({
                               <p
                                 className="mb-0 text-center tracking-wide leading-relaxed"
                                 style={{
-                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
+                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
                                   color: '#111827',
                                   fontWeight: 400,
                                   opacity: 0.9
                                 } as React.CSSProperties}
                               >
-                                Welcome back, your workspace is synced and ready for your next move
-                              </p>
+                        Welcome back, your workspace is synced and ready for your next move
+                      </p>
                             </div>
                     );
                   })()}
@@ -3383,6 +3488,9 @@ export const MainContent = ({
     onDragLeave={handleDragLeave}
     onDrop={handleDrop}
   >
+      {/* Global Upload Progress Bar */}
+      <UploadProgressBar />
+      
       {/* Background Map - Always rendered but only visible/interactive when map view is active */}
       {(currentView === 'search' || currentView === 'home') && (
         <div 
@@ -3588,6 +3696,7 @@ export const MainContent = ({
           ref={sideChatPanelRef}
           isVisible={isMapVisible && hasPerformedSearch}
           query={mapSearchQuery}
+          citationContext={citationContext}
           isSidebarCollapsed={isSidebarCollapsed}
           sidebarWidth={(() => {
             // Base sidebar width
@@ -3619,6 +3728,9 @@ export const MainContent = ({
             const attachments = pendingSideChatAttachmentsRef.current.length > 0 
               ? pendingSideChatAttachmentsRef.current 
               : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
+            if (attachments && attachments.length > 0) {
+              console.log('📎 MainContent: Passing attachments to SideChatPanel:', attachments.length, attachments.map(a => a.name));
+            }
             return attachments;
           })()}
           isPropertyDetailsOpen={isPropertyDetailsOpen}
@@ -3637,7 +3749,7 @@ export const MainContent = ({
             setMinimizedChatMessages(chatMessages);
             // Only show bubble in map flow (never on dashboard/other views)
             if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
-              setIsChatBubbleVisible(true);
+            setIsChatBubbleVisible(true);
             } else {
               setIsChatBubbleVisible(false);
             }

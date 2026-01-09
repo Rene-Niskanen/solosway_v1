@@ -703,7 +703,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
               setBaseScale(scale);
               console.log('⚠️ Container width not available:', containerWidth, 'using typical scale:', scale.toFixed(3));
-            }
+          }
           } catch (error) {
             console.warn('⚠️ Failed to calculate fit scale, using default:', error);
             scale = 1.0;
@@ -811,7 +811,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       // Cancel all render tasks
       renderTasks.forEach((task, pageNum) => {
         if (task && task.cancel) {
-          try {
+        try {
             task.cancel();
             console.log(`🛑 [PDF_RENDER] Cancelled render task for page ${pageNum}`);
         } catch (e) {
@@ -2287,7 +2287,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                               if (chunksForPage.length === 0) return null;
                               
                               return (
-                                <div
+                              <div
                                   key={`debug-overlays-page-${pageNum}`}
                                 style={{
                                   position: 'absolute',
@@ -2301,7 +2301,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                                   }}
                                 >
                                   {chunksForPage.map((chunk, idx) => (
-                                    <div
+                              <div
                                       key={`debug-bbox-${chunk.chunk_index ?? idx}-page-${pageNum}`}
                                 style={{
                                   position: 'absolute',

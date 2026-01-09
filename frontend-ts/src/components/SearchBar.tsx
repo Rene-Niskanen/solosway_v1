@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareReply } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { backendApi } from '../services/backendApi';
 
 export interface SearchBarProps {
   className?: string;
@@ -59,11 +60,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   onQuickStartToggle,
   isQuickStartBarVisible = false
 }, ref) => {
-  console.log('🎯 SearchBar component rendering/mounting', {
-    initialValue,
-    isMapVisible,
-    currentView
-  });
   // Track if we're restoring a value (to set cursor position)
   const isRestoringValueRef = useRef(false);
   // Track if we've initialized attachments from prop to avoid resetting on remounts
@@ -811,12 +807,25 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       return;
     }
     
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Check if file type supports quick extraction
+    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+                   file.type === 'application/msword' ||
+                   file.name.toLowerCase().endsWith('.docx') || 
+                   file.name.toLowerCase().endsWith('.doc');
+    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+    const supportsExtraction = isPDF || isDOCX || isTXT;
+    
     const fileData: FileAttachmentData = {
-      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: fileId,
       file,
       name: file.name,
       type: file.type,
-      size: file.size
+      size: file.size,
+      // Set initial extraction status for supported file types
+      extractionStatus: supportsExtraction ? 'pending' : undefined
     };
     
     // Preload blob URL immediately (Instagram-style preloading)
@@ -830,9 +839,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         if (!(window as any).__preloadedAttachmentBlobs) {
           (window as any).__preloadedAttachmentBlobs = {};
         }
-        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        (window as any).__preloadedAttachmentBlobs[fileId] = blobUrl;
         
-        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+        console.log(`✅ Preloaded blob URL for attachment ${fileId}`);
       } catch (error) {
         console.error('❌ Error preloading blob URL:', error);
         // Don't throw - preloading failure shouldn't block file attachment
@@ -845,13 +854,74 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     setAttachedFiles(prev => {
       const updated = [...prev, fileData];
       attachedFilesRef.current = updated; // Update ref immediately
-      // CRITICAL: Notify parent immediately when file is added (before state update completes)
-      if (onAttachmentsChange) {
-        onAttachmentsChange(updated);
-      }
       return updated;
     });
+    // Notify parent after state update (useEffect will also handle this, but this ensures immediate notification)
+    queueMicrotask(() => {
+      if (onAttachmentsChange) {
+        onAttachmentsChange(attachedFilesRef.current);
+      }
+    });
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
+    
+    // Trigger quick text extraction for supported file types
+    if (supportsExtraction) {
+      console.log('🔍 Starting quick extraction for:', file.name);
+      
+      // Update status to extracting
+      setAttachedFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
+      ));
+      
+      // Call backend extraction API
+      backendApi.quickExtractText(file, true)
+        .then(result => {
+          if (result.success) {
+            console.log(`✅ Quick extraction complete for ${file.name}: ${result.pageCount} pages, ${result.charCount} chars`);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'complete' as const,
+                    extractedText: result.text,
+                    pageTexts: result.pageTexts,
+                    pageCount: result.pageCount,
+                    tempFileId: result.tempFileId
+                  } 
+                : f
+            ));
+            // Update ref and notify parent
+            queueMicrotask(() => {
+              if (onAttachmentsChange) {
+                onAttachmentsChange(attachedFilesRef.current);
+              }
+            });
+          } else {
+            console.error(`❌ Quick extraction failed for ${file.name}:`, result.error);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'error' as const,
+                    extractionError: result.error
+                  } 
+                : f
+            ));
+          }
+        })
+        .catch(error => {
+          console.error(`❌ Quick extraction error for ${file.name}:`, error);
+          setAttachedFiles(prev => prev.map(f => 
+            f.id === fileId 
+              ? { 
+                  ...f, 
+                  extractionStatus: 'error' as const,
+                  extractionError: error instanceof Error ? error.message : 'Unknown error'
+                } 
+              : f
+          ));
+        });
+    }
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
     onFileDrop?.(file);
   }, [onFileDrop, attachedFiles.length]);
@@ -889,11 +959,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     setAttachedFiles(prev => {
       const updated = prev.filter(file => file.id !== id);
       attachedFilesRef.current = updated; // Update ref immediately
-      // CRITICAL: Notify parent immediately when file is removed (before state update completes)
-      if (onAttachmentsChange) {
-        onAttachmentsChange(updated);
-      }
       return updated;
+    });
+    // Notify parent after state update
+    queueMicrotask(() => {
+      if (onAttachmentsChange) {
+        onAttachmentsChange(attachedFilesRef.current);
+      }
     });
     // Remove from preview tabs if it was open
     setPreviewFiles(prev => {
@@ -940,10 +1012,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           setAttachedFiles(prev => {
             const updated = [...prev, optimisticFileData];
             attachedFilesRef.current = updated;
-            if (onAttachmentsChange) {
-              onAttachmentsChange(updated);
-            }
             return updated;
+          });
+          // Notify parent after state update
+          queueMicrotask(() => {
+            if (onAttachmentsChange) {
+              onAttachmentsChange(attachedFilesRef.current);
+            }
           });
           
           // Fetch the actual file in the background
@@ -976,10 +1051,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     : att
                 );
                 attachedFilesRef.current = updated;
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(updated);
-                }
                 return updated;
+              });
+              // Notify parent after state update
+              queueMicrotask(() => {
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(attachedFilesRef.current);
+                }
               });
               
               // Preload blob URL for preview
@@ -1000,10 +1078,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               setAttachedFiles(prev => {
                 const updated = prev.filter(att => att.id !== attachmentId);
                 attachedFilesRef.current = updated;
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(updated);
-                }
                 return updated;
+              });
+              // Notify parent after state update
+              queueMicrotask(() => {
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(attachedFilesRef.current);
+                }
               });
               toast({
                 description: 'Failed to load document. Please try again.',
@@ -1387,7 +1468,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         }}
                         title="Expand chat"
                       >
-                        <MessageSquareShare className="w-3.5 h-3.5 scale-x-[-1] text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.8} />
+                        <MessageSquareReply className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.8} />
                       </button>
                     )
                   )}

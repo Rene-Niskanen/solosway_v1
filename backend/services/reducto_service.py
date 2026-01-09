@@ -443,8 +443,8 @@ class ReductoService:
                 job_id = submission.job_id
                 logger.info(f"📋 Parse job submitted: {job_id}")
                 
-                # Faster polling: 1 second intervals, 60 second timeout (faster than main pipeline)
-                max_wait = 60  # 1 minute max (faster timeout)
+                # Faster polling: 1 second intervals, 180 second timeout for larger documents
+                max_wait = 180  # 3 minutes max (increased from 60s for larger documents)
                 wait_time = 0
                 poll_interval = 1  # Check every 1 second (faster than main pipeline's 2s)
                 
