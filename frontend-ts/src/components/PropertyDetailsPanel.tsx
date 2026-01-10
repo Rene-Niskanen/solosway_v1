@@ -14,6 +14,7 @@ import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { CitationActionMenu } from './CitationActionMenu';
+import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -782,48 +783,114 @@ const ExpandedCardView: React.FC<{
                             />
                             
                             {/* BBOX Highlight Overlay - positioned accurately using page dimensions */}
-                            {isHighlightPage && highlightCitation && highlightCitation.bbox && (
-                              <div
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  const pageRect = e.currentTarget.closest('.pdf-page-container')?.getBoundingClientRect();
-                                  if (pageRect) {
-                                    setSelectedCitation(highlightCitation);
-                                    // Position menu at click location (use click X, below citation Y)
-                                    setCitationMenuPosition({
-                                      x: e.clientX, // Use actual click X position
-                                      y: rect.bottom + 8 // Position below with 8px gap
-                                    });
-                                  }
-                                }}
-                                style={{
-                                  position: 'absolute',
-                                  left: `${highlightCitation.bbox.left * pageDimensions.width}px`,
-                                  top: `${highlightCitation.bbox.top * pageDimensions.height}px`,
-                                  width: `${highlightCitation.bbox.width * pageDimensions.width}px`,
-                                  height: `${highlightCitation.bbox.height * pageDimensions.height}px`,
-                                  backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                                  border: '2px solid rgba(255, 193, 7, 0.9)',
-                                  borderRadius: '2px',
-                    pointerEvents: 'auto',
-                                  cursor: 'pointer',
-                                  zIndex: 10,
-                                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                  transformOrigin: 'top left',
-                                  transition: 'all 0.2s ease'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
-                                  e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                                  e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
-                                }}
-                                title="Click to interact with this citation"
-                              />
-                            )}
+                            {isHighlightPage && highlightCitation && highlightCitation.bbox && (() => {
+                              // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
+                              const logoHeight = 0.02 * pageDimensions.height - 1;
+                              // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
+                              const logoWidth = logoHeight; // Square logo, adjust if needed
+                              // Calculate BBOX dimensions with centered padding
+                              const padding = 4; // Equal padding on all sides
+                              const originalBboxWidth = highlightCitation.bbox.width * pageDimensions.width;
+                              const originalBboxHeight = highlightCitation.bbox.height * pageDimensions.height;
+                              const originalBboxLeft = highlightCitation.bbox.left * pageDimensions.width;
+                              const originalBboxTop = highlightCitation.bbox.top * pageDimensions.height;
+                              
+                              // Calculate center of original BBOX
+                              const centerX = originalBboxLeft + originalBboxWidth / 2;
+                              const centerY = originalBboxTop + originalBboxHeight / 2;
+                              
+                              // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
+                              const minBboxHeightPx = logoHeight; // Minimum height = logo height
+                              const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+                              
+                              // Calculate final dimensions with equal padding
+                              // If at minimum height, don't add padding to keep it exactly at logo height
+                              const finalBboxWidth = originalBboxWidth + padding * 2;
+                              const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+                                ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
+                                : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
+                              
+                              // Center the BBOX around the original text
+                              const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+                              const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+                              
+                              // Ensure BBOX doesn't go outside page bounds
+                              const constrainedLeft = Math.min(bboxLeft, pageDimensions.width - finalBboxWidth);
+                              const constrainedTop = Math.min(bboxTop, pageDimensions.height - finalBboxHeight);
+                              const finalBboxLeft = Math.max(0, constrainedLeft);
+                              const finalBboxTop = Math.max(0, constrainedTop);
+                              
+                              // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
+                              // Logo's right border edge overlaps with BBOX's left border edge
+                              const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
+                              const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+                              
+                              return (
+                                <>
+                                  {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
+                                  <img
+                                    src={veloraLogo}
+                                    alt="Velora"
+                                    style={{
+                                      position: 'absolute',
+                                      left: `${logoLeft}px`,
+                                      top: `${logoTop}px`,
+                                      width: `${logoWidth}px`,
+                                      height: `${logoHeight}px`,
+                                      objectFit: 'contain',
+                                      pointerEvents: 'none',
+                                      zIndex: 11,
+                                      userSelect: 'none',
+                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      borderRadius: '2px',
+                                      backgroundColor: 'white', // Ensure logo has background for border visibility
+                                      boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
+                                    }}
+                                  />
+                                  {/* BBOX highlight */}
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const pageRect = e.currentTarget.closest('.pdf-page-container')?.getBoundingClientRect();
+                                      if (pageRect) {
+                                        setSelectedCitation(highlightCitation);
+                                        // Position menu at click location (use click X, below citation Y)
+                                        setCitationMenuPosition({
+                                          x: e.clientX, // Use actual click X position
+                                          y: rect.bottom + 8 // Position below with 8px gap
+                                        });
+                                      }
+                                    }}
+                                    style={{
+                                      position: 'absolute',
+                                      left: `${finalBboxLeft}px`,
+                                      top: `${finalBboxTop}px`,
+                                      width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
+                                      height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
+                                      backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      borderRadius: '2px',
+                      pointerEvents: 'auto',
+                                      cursor: 'pointer',
+                                      zIndex: 10,
+                                      boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                                      transformOrigin: 'top left',
+                                      transition: 'none' // No animation when changing between BBOXs
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
+                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                                    }}
+                                    title="Click to interact with this citation"
+                                  />
+                                </>
+                              );
+                            })()}
                           </div>
                         );
                       })}

@@ -4,7 +4,7 @@ Summarization code - create final unified answer from all document outputs.
 
 import logging
 import os
-import os
+import re
 from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
-from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt, get_combined_citation_answer_prompt
+from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
 from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
@@ -434,32 +434,32 @@ def _renumber_citations_by_appearance(
         )
     
     # Deduplicate citations before renumbering - merge citations that refer to the same fact
-    # This catches duplicates that might have slipped through Phase 1
-    from backend.llm.tools.citation_mapping import CitationTool
-    # Create a temporary CitationTool instance to use its normalization method
-    temp_tool = CitationTool({})
-    seen_normalized_facts = {}
+    # CRITICAL: Use (block_id, cited_text) as unique identifier to preserve distinct facts
+    # This ensures each distinct fact gets its own citation, even if they're from the same block
+    seen_citation_keys = {}  # Map (block_id, cited_text) -> old_num
     deduplicated_citations_by_old_num = {}
     duplicate_mappings = {}  # Map duplicate old_num -> original old_num
     
     for old_num, old_cit in citations_by_old_num.items():
+        block_id = old_cit.get('block_id', '')
         cited_text = old_cit.get('cited_text', '')
-        normalized = temp_tool._normalize_cited_text(cited_text)
+        # Use (block_id, cited_text) as unique key to preserve distinct facts
+        citation_key = (block_id, cited_text)
         
-        # Check if we've seen this normalized fact before
-        if normalized in seen_normalized_facts:
-            # This is a duplicate - use the first citation number we saw for this fact
-            existing_old_num = seen_normalized_facts[normalized]
+        # Check if we've seen this exact (block_id, cited_text) combination before
+        if citation_key in seen_citation_keys:
+            # This is a duplicate - use the first citation number we saw for this exact fact
+            existing_old_num = seen_citation_keys[citation_key]
             logger.info(
                 f"[RENUMBER_CITATIONS] 🔍 Deduplicating: citation {old_num} is duplicate of {existing_old_num} "
-                f"(normalized: '{normalized}')"
+                f"(block_id: {block_id[:20]}..., cited_text: '{cited_text[:50]}...')"
             )
             # Map this old_num to the existing one
             deduplicated_citations_by_old_num[old_num] = deduplicated_citations_by_old_num[existing_old_num]
             duplicate_mappings[old_num] = existing_old_num
         else:
-            # First time seeing this fact
-            seen_normalized_facts[normalized] = old_num
+            # First time seeing this exact fact
+            seen_citation_keys[citation_key] = old_num
             deduplicated_citations_by_old_num[old_num] = old_cit
     
     # Update citations_by_old_num to use deduplicated version
@@ -531,12 +531,43 @@ def _renumber_citations_by_appearance(
             citation_matches = list(re.finditer(rf'\[{old_num}\]', summary))
             if citation_matches:
                 first_match = citation_matches[0]
-                # Extract 100 chars before citation to get the fact
-                context_start = max(0, first_match.start() - 100)
+                # Extract more context (200 chars) to better capture the fact being cited
+                context_start = max(0, first_match.start() - 200)
                 context_before = summary[context_start:first_match.start()].strip()
-                # Extract the fact (last sentence or phrase before citation)
-                sentence_start = context_before.rfind('.') + 1
-                fact_from_phase2_text = context_before[sentence_start:].strip() if sentence_start > 0 else context_before[-50:].strip()
+                
+                # Try to extract the complete phrase/sentence containing the citation
+                # Look for the start of the sentence or a label (e.g., "**Label:**")
+                sentence_start = max(
+                    context_before.rfind('.') + 1,  # Last sentence
+                    context_before.rfind(':') + 1,  # Last label (e.g., "**Label:**")
+                    context_before.rfind('\n') + 1,  # Last line break
+                    len(context_before) - 100  # Fallback: last 100 chars
+                )
+                fact_from_phase2_text = context_before[sentence_start:].strip()
+                
+                # Clean up: remove markdown formatting and extra whitespace
+                fact_from_phase2_text = re.sub(r'\*\*([^*]+)\*\*:', r'\1:', fact_from_phase2_text)  # Remove bold from labels
+                fact_from_phase2_text = re.sub(r'\s+', ' ', fact_from_phase2_text).strip()  # Normalize whitespace
+                
+                # CRITICAL: If the fact contains a label (e.g., "Recent Planning History: No recent planning history"),
+                # extract just the fact part after the colon
+                if ':' in fact_from_phase2_text:
+                    # Split on colon and take the part after it (the actual fact)
+                    parts = fact_from_phase2_text.split(':', 1)
+                    if len(parts) == 2:
+                        fact_part = parts[1].strip()
+                        # Only use the fact part if it's meaningful (not too short)
+                        if len(fact_part) >= 10:
+                            fact_from_phase2_text = fact_part
+                
+                # If the fact is very short, try to get more context
+                if len(fact_from_phase2_text) < 20:
+                    fact_from_phase2_text = context_before[-100:].strip()
+                    # Try to extract fact part again if it has a colon
+                    if ':' in fact_from_phase2_text:
+                        parts = fact_from_phase2_text.split(':', 1)
+                        if len(parts) == 2 and len(parts[1].strip()) >= 10:
+                            fact_from_phase2_text = parts[1].strip()
                 
                 # Verify that the fact in Phase 2 text matches the ACTUAL BLOCK CONTENT from Phase 1
                 # CRITICAL: We must verify against the block content, not just the cited_text
@@ -703,6 +734,32 @@ def _renumber_citations_by_appearance(
                             is_valuation_query = any(term in fact_lower for term in valuation_terms)
                             is_market_activity_query = any(term in fact_lower for term in market_activity_terms)
                             
+                            # Extract key terms from fact for strict matching (for ALL descriptive citations)
+                            import re
+                            fact_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', fact_lower)]
+                            # Check if this is a descriptive fact (no numbers, has multiple terms)
+                            has_numbers = bool(re.search(r'\d', fact_from_phase2_text))
+                            is_descriptive = not has_numbers and len(fact_terms) >= 2
+                            is_short_descriptive = is_descriptive and len(fact_terms) <= 4
+                            
+                            # Filter out common/stop words for better matching
+                            common_words = {'the', 'and', 'or', 'but', 'with', 'for', 'from', 'that', 'this', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must', 'shall'}
+                            key_fact_terms = [term for term in fact_terms if term not in common_words]
+                            if len(key_fact_terms) == 0:
+                                key_fact_terms = fact_terms  # Fallback if all terms were common words
+                            
+                            # Check if this is a negative statement (e.g., "no recent planning history")
+                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
+                            is_negative_statement = any(indicator in fact_lower for indicator in negative_indicators)
+                            
+                            # For negative statements, extract the core concept (without the negative indicator)
+                            core_concept_terms = []
+                            if is_negative_statement:
+                                core_concept = fact_lower
+                                for indicator in negative_indicators:
+                                    core_concept = core_concept.replace(indicator, '').strip()
+                                core_concept_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', core_concept)]  # Only significant terms (4+ chars)
+                            
                             for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
                                 for search_block_id, search_block_meta in search_metadata_table.items():
                                     search_block_content = search_block_meta.get('content', '')
@@ -714,6 +771,64 @@ def _renumber_citations_by_appearance(
                                     # Verify match
                                     search_verification = verify_citation_match(fact_from_phase2_text, search_block_content)
                                     score = 0
+                                    
+                                    # CRITICAL: Check for exact phrase match FIRST (highest priority for all citations)
+                                    fact_lower = fact_from_phase2_text.lower().strip()
+                                    block_lower = search_block_content.lower()
+                                    
+                                    # Try exact phrase match
+                                    exact_phrase_match = fact_lower in block_lower
+                                    if not exact_phrase_match:
+                                        # Try with normalized whitespace
+                                        fact_normalized = re.sub(r'\s+', ' ', fact_lower)
+                                        block_normalized = re.sub(r'\s+', ' ', block_lower)
+                                        exact_phrase_match = fact_normalized in block_normalized
+                                    
+                                    # CRITICAL: For ALL descriptive citations, require strict term matching
+                                    # Short descriptive (2-4 terms): require ALL key terms
+                                    # Longer descriptive (5+ terms): require 80%+ of key terms
+                                    if is_descriptive and not exact_phrase_match:
+                                        block_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', search_block_content.lower())]
+                                        
+                                        if is_short_descriptive:
+                                            # Short descriptive: ALL key terms must be present
+                                            all_key_terms_present = all(term in block_terms for term in key_fact_terms)
+                                            if not all_key_terms_present:
+                                                # Skip this block - it doesn't contain all required terms
+                                                continue
+                                        else:
+                                            # Longer descriptive: require 80%+ of key terms
+                                            matched_key_terms = [term for term in key_fact_terms if term in block_terms]
+                                            match_ratio = len(matched_key_terms) / len(key_fact_terms) if len(key_fact_terms) > 0 else 0
+                                            if match_ratio < 0.8:
+                                                # Skip this block - it doesn't contain enough key terms
+                                                continue
+                                    
+                                    # CRITICAL: For negative statements, require core semantic concept match
+                                    # This prevents "no recent planning history" from matching blocks about something else
+                                    if is_negative_statement and not exact_phrase_match:
+                                        # Check if core concept terms are present in the block
+                                        if core_concept_terms:
+                                            block_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', block_lower)]
+                                            core_concept_present = all(term in block_terms for term in core_concept_terms)
+                                            
+                                            # Also check if block contains a negative indicator (for semantic accuracy)
+                                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
+                                            block_has_negative = any(indicator in block_lower for indicator in negative_indicators)
+                                            
+                                            # Require both: core concept AND negative indicator (for accurate semantic matching)
+                                            if core_concept_present and block_has_negative:
+                                                exact_phrase_match = True
+                                            elif not core_concept_present:
+                                                # Skip this block - it doesn't contain the core concept
+                                                continue
+                                        else:
+                                            # No core concept terms extracted - skip
+                                            continue
+                                    
+                                    # Boost score significantly for exact phrase matches (highest priority)
+                                    if exact_phrase_match:
+                                        score += 300  # Very high priority for exact phrase matches
                                     
                                     # Base score from verification
                                     if search_verification['confidence'] == 'high':
@@ -1263,12 +1378,16 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
     
     # ============================================================
-    # 2-PHASE APPROACH (Reliable - OpenAI tools don't return text)
+    # 2-PHASE APPROACH (Reliable - Ensures citations work correctly)
     # ============================================================
     # Phase 1: Extract citations using tool calls
-    # Phase 2: Generate answer text (no tools)
+    # Phase 2: Generate answer text with citation markers
     # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable output")
+    # NOTE: Combined approach doesn't work reliably because OpenAI's tool calling API
+    # often returns tool calls without text content, or text without citation markers.
+    # The 2-phase approach ensures we always get both citations and text with markers.
+    # ============================================================
+    logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable citations")
     
     import time
     phase1_start = time.time()
@@ -1335,7 +1454,7 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     phase1_end = time.time()
     logger.info(f"[SUMMARIZE_RESULTS] Phase 1 took {phase1_end - phase1_start:.2f}s")
     
-    # PHASE 2: Generate Answer (no tools - ensures text output)
+    # PHASE 2: Generate Answer (no tools - ensures text output with citation markers)
     phase2_start = time.time()
     
     answer_llm = ChatOpenAI(

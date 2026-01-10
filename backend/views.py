@@ -720,6 +720,7 @@ def query_documents_stream():
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
                         summary_already_streamed = False  # Track if we've already streamed the summary
+                        streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
                         
                         # Execute graph with error handling for connection timeouts during execution
                         # Since we create a new graph for the current loop, we can use astream_events directly
@@ -816,15 +817,21 @@ def query_documents_stream():
                                                     names_str = ', '.join(doc_names[:3])  # Show fewer names for cleaner display
                                                     message = f'Using documents: {names_str}'
                                                 else:
-                                                    message = f'Using {doc_count} existing documents'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Using {doc_count} existing {doc_word}'
                                                 followup_context['docs_already_shown'] = True
                                             else:
                                                 # First query - show full "Found X documents" message
                                                 if doc_names:
                                                     names_str = ', '.join(doc_names)
-                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Found {doc_count} {doc_word}: {names_str}'
                                                 else:
-                                                    message = f'Found {doc_count} documents'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Found {doc_count} {doc_word}'
                                             
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
@@ -1056,13 +1063,18 @@ def query_documents_stream():
                                             # Stream status
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                                             
-                                            # Stream the summary token by token
-                                            words = final_summary_from_state.split()
-                                            for i, word in enumerate(words):
+                                            # Stream the final response text directly - preserve all formatting
+                                            # Stream character-by-character to maintain exact formatting (markdown, newlines, spaces)
+                                            streamed_summary = final_summary_from_state
+                                            logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
+                                            
+                                            # Stream in chunks to maintain formatting while still providing smooth streaming
+                                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
+                                            for i in range(0, len(final_summary_from_state), chunk_size):
                                                 if i == 0:
-                                                    logger.info("🚀 [STREAM] First token streamed IMMEDIATELY from summarize_results")
-                                                token = word + (' ' if i < len(words) - 1 else '')
-                                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                                                    logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
+                                                chunk = final_summary_from_state[i:i + chunk_size]
+                                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                                             
                                             summary_already_streamed = True
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
@@ -1275,7 +1287,9 @@ def query_documents_stream():
                         logger.info(f"🟡 [STREAM] Final state: {len(doc_outputs)} doc outputs, {len(relevant_docs)} relevant docs")
                         
                         # Get the summary that was already generated by summarize_results node
-                        full_summary = final_result.get('final_summary', '')
+                        # CRITICAL: Use streamed_summary if available (the exact text we streamed) to ensure consistency
+                        # Otherwise use final_summary from result
+                        full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1307,14 +1321,17 @@ def query_documents_stream():
                             logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                             
-                            # Split summary into words and stream them (no delay needed - already fast)
-                            words = full_summary.split()
-                            for i, word in enumerate(words):
+                            # Stream the final response text directly - preserve all formatting
+                            # Stream character-by-character in chunks to maintain exact formatting (markdown, newlines, spaces)
+                            logger.info("🟡 [STREAM] Streaming final response directly (preserving formatting)")
+                            
+                            # Stream in chunks to maintain formatting while still providing smooth streaming
+                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
+                            for i in range(0, len(full_summary), chunk_size):
                                 if i == 0:
-                                    logger.info("🟡 [STREAM] First token streamed from existing summary")
-                                # Add space after word (except last word)
-                                token = word + (' ' if i < len(words) - 1 else '')
-                                yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                                    logger.info("🟡 [STREAM] First chunk streamed from existing summary")
+                                chunk = full_summary[i:i + chunk_size]
+                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                         
                         # Check if we have processed citations from block IDs (new approach)
                         processed_citations = final_result.get('processed_citations', {})

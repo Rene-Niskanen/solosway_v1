@@ -2,7 +2,7 @@ import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, FileText, BrainCircuit, ScanText, BookOpenCheck, FileQuestion } from 'lucide-react';
+import { Search, SearchCheck, FileText, BrainCircuit, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import * as pdfjs from 'pdfjs-dist';
@@ -318,18 +318,13 @@ const ReadingStepWithTransition: React.FC<{
           <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
         )}
         {phase === 'reading' ? (
-          <span>
-            {/* "Reading" with green flow animation (active while waiting for response) */}
+          <span className="reading-reveal-text">
+            {/* "Reading" with blur reveal animation - both text and filename animate together */}
+            <span style={actionStyle}>Reading{' '}</span>
             {keepAnimating ? (
-              <>
-                <span className="reading-shimmer-active">Reading{' '}</span>
                 <span className="reading-shimmer-active">{filename}</span>
-              </>
             ) : (
-              <>
-                <span style={actionStyle}>Reading{' '}</span>
                 <span style={{ color: DETAIL_COLOR }}>{filename}</span>
-              </>
             )}
           </span>
         ) : (
@@ -364,7 +359,9 @@ const ReadingStepWithTransition: React.FC<{
             marginTop: 8,
             position: 'relative',
             zIndex: 2, // Above the vertical line
-            isolation: 'isolate' // Create stacking context
+            isolation: 'isolate', // Create stacking context
+            contain: 'layout style', // Prevent layout shifts
+            minHeight: '1px' // Prevent collapse
           }}
         >
           <DocumentPreviewCard 
@@ -446,6 +443,27 @@ const StepRenderer: React.FC<{
   // REAL-TIME: No animation delays - show steps immediately when received
   const revealDelay = 0;
 
+  // Component for "Found X documents:" (no animation)
+  const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties }> = ({ prefix, actionStyle }) => {
+    // Split "Found X documents:" - "Found" is action (light), rest is detail (dark)
+    const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
+    
+    if (foundMatch) {
+      return (
+        <span>
+          {/* "Found" in light gray (action) */}
+          <span style={actionStyle}>{foundMatch[1]}</span>
+          {/* " X documents:" in dark gray (detail) */}
+          <span style={{ color: DETAIL_COLOR }}> {foundMatch[2]}:</span>
+        </span>
+      );
+    } else {
+      return (
+        <span style={actionStyle}>{prefix}:</span>
+      );
+    }
+  };
+
   switch (step.action_type) {
     case 'planning':
       // Skip "Preparing response" - planning steps are filtered out by filteredSteps
@@ -498,23 +516,11 @@ const StepRenderer: React.FC<{
         prefix = step.message.substring(0, colonIndex);
       }
       
-      // Split "Found X documents:" - "Found" is action (light), rest is detail (dark)
-      const foundMatch = prefix.match(/^(Found)\s+(.+)$/);
-      
       return (
         <div>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
+          <div className="found-reveal-text" style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', position: 'relative', zIndex: 1 }}>
             <SearchCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-            {foundMatch ? (
-              <span>
-                {/* "Found" in light gray (action) */}
-                <span style={actionStyle}>{foundMatch[1]}</span>
-                {/* " X documents:" in dark gray (detail) */}
-                <span style={{ color: DETAIL_COLOR }}> {foundMatch[2]}:</span>
-              </span>
-            ) : (
-              <span style={actionStyle}>{prefix}:</span>
-            )}
+            <FoundDocumentsText prefix={prefix} actionStyle={actionStyle} />
           </div>
           {/* Document names as styled module chips with vertical line */}
           {docNames.length > 0 ? (
@@ -553,11 +559,11 @@ const StepRenderer: React.FC<{
                 }}>
                   <FileText style={{ width: '14px', height: '14px', color: '#9CA3AF', flexShrink: 0 }} />
                   <span style={{ 
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
                     textOverflow: 'ellipsis'
-                  }}>
-                    {name}
+                }}>
+                  {name}
                   </span>
                 </div>
               ))}
@@ -596,11 +602,11 @@ const StepRenderer: React.FC<{
       
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <BrainCircuit style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-          {isSearchingActive ? (
-            <span className="searching-shimmer-active">{step.message}</span>
-          ) : (
-            <span style={actionStyle}>{step.message}</span>
+          <TextSelect style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+              {isSearchingActive ? (
+              <span className="searching-shimmer-active">{step.message}</span>
+            ) : (
+              <span style={actionStyle}>{step.message}</span>
           )}
         </span>
       );
@@ -672,19 +678,22 @@ const StepRenderer: React.FC<{
       );
     
     case 'analyzing':
-      // "Ranking results" - entire text with flowing gradient animation (only if this is the current active step)
+      // "Analyzing X documents" - entire text with flowing gradient animation (only if this is the current active step)
       // Animation stops when next step (reading) appears OR when loading completes
       const nextStepAfterAnalyzing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isRankingActive = isLoading && (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analyzing');
       
+      // Fix grammar: "1 documents" -> "1 document"
+      const fixedMessage = step.message?.replace(/\b1 documents\b/gi, '1 document') || 'Analyzing';
+      
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
           <BrainCircuit style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-          {/* Entire "Ranking results" text with flowing gradient animation (only if active) */}
+          {/* Entire "Analyzing X documents" text with flowing gradient animation (only if active) */}
           {isRankingActive ? (
-            <span className="ranking-shimmer-active">{step.message || 'Analyzing'}</span>
+            <span className="ranking-shimmer-active">{fixedMessage}</span>
           ) : (
-            <span style={actionStyle}>{step.message || 'Analyzing'}</span>
+            <span style={actionStyle}>{fixedMessage}</span>
           )}
         </span>
       );
@@ -757,6 +766,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   // Reset when a new query starts (isLoading changes from false to true)
   const shownDocumentsRef = useRef<Set<string>>(new Set());
   const previousLoadingRef = useRef<boolean>(isLoading);
+  
   
   // Reset shown documents when a new query starts
   useEffect(() => {
@@ -962,9 +972,9 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         <div style={{
           marginBottom: '6px',
           padding: '6px 10px',
-          backgroundColor: '#F9FAFB',
+          backgroundColor: 'transparent',
           borderRadius: '8px',
-          border: '1px solid #E5E7EB'
+          border: 'none'
         }}>
           <PlanningIndicator />
           
@@ -1001,25 +1011,25 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               animation-fill-mode: forwards;
             }
             
-            /* Active reading - professional teal-green flow animation */
+            /* Active reading - Cursor-style muted teal flow animation */
             .reading-shimmer-active {
               font-weight: 600;
               background: linear-gradient(
                 90deg, 
-                #115E59 0%,      /* teal-800 - sophisticated dark */
-                #0D9488 20%,     /* teal-600 */
-                #14B8A6 35%,     /* teal-500 */
-                #2DD4BF 50%,     /* teal-400 - refined peak */
-                #14B8A6 65%,     /* teal-500 */
-                #0D9488 80%,     /* teal-600 */
-                #115E59 100%     /* teal-800 - sophisticated dark */
+                #0F766E 0%,      /* teal-700 - Cursor dark */
+                #14B8A6 20%,     /* teal-500 - Cursor medium */
+                #2DD4BF 35%,     /* teal-400 - Cursor light */
+                #5EEAD4 50%,     /* teal-300 - Cursor peak */
+                #2DD4BF 65%,     /* teal-400 - Cursor light */
+                #14B8A6 80%,     /* teal-500 - Cursor medium */
+                #0F766E 100%     /* teal-700 - Cursor dark */
               );
-              background-size: 250% 100%;
+              background-size: 350% 100%;
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 1.2s ease-in-out infinite;
-              filter: drop-shadow(0 0 1px rgba(13, 148, 136, 0.25));
+              animation: reading-glow 3s ease infinite;
+              filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
             }
             
             /* Spinning indicator for reading state */
@@ -1083,14 +1093,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             
             @keyframes reading-glow {
               0% { 
-                background-position: 100% 0;
+                background-position: 150% 0;
                 filter: brightness(1);
               }
               50% {
-                filter: brightness(1.1);
+                filter: brightness(1.08);
               }
               100% { 
-                background-position: -100% 0;
+                background-position: -150% 0;
                 filter: brightness(1);
               }
             }
@@ -1113,7 +1123,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             
             @keyframes reading-shimmer {
               0% {
-                background: linear-gradient(90deg, #047857 0%, #059669 15%, #10B981 35%, #34D399 50%, #10B981 65%, #059669 85%, #047857 100%);
+                background: linear-gradient(90deg, #0F766E 0%, #14B8A6 15%, #2DD4BF 35%, #5EEAD4 50%, #2DD4BF 65%, #14B8A6 85%, #0F766E 100%);
                 background-size: 200% 100%;
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -1121,7 +1131,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 background-position: 100% 0;
               }
               50% {
-                background: linear-gradient(90deg, #047857 0%, #059669 15%, #10B981 35%, #34D399 50%, #10B981 65%, #059669 85%, #047857 100%);
+                background: linear-gradient(90deg, #0F766E 0%, #14B8A6 15%, #2DD4BF 35%, #5EEAD4 50%, #2DD4BF 65%, #14B8A6 85%, #0F766E 100%);
                 background-size: 200% 100%;
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -1157,9 +1167,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     <div style={{
       marginBottom: '6px',
       padding: '6px 10px',
-      backgroundColor: '#F9FAFB',
+      paddingLeft: '0',
+      marginLeft: '4px', // Align slightly right of query bubbles' left starting position
+      backgroundColor: 'transparent',
       borderRadius: '8px',
-      border: '1px solid #E5E7EB'
+      border: 'none',
+      position: 'relative',
+      contain: 'layout style',
+      minHeight: '1px' // Prevent collapse
     }}>
       {/* Steps stacked vertically - always visible */}
       {isLoading && animatedSteps.length > 0 ? (
@@ -1189,9 +1204,9 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   opacity: 0, 
                   y: -2,
                   scale: 0.98,
-                  // Collapse preview cards when exiting
+                  // Collapse preview cards when exiting - but don't animate height to prevent layout shift
+                  // Instead, just fade out
                   ...(isReadingStep && hasPreview ? {
-                    height: 0,
                     scale: 0.9,
                     marginBottom: 0
                   } : {})
@@ -1212,7 +1227,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   overflow: isTransitioning && hasPreview ? 'hidden' : 'visible',
                   position: 'relative',
                   marginLeft: '0',
-                  marginBottom: isLastStep ? '0' : '4px' // No margin on last step for equal spacing
+                  marginBottom: isLastStep ? '0' : '4px', // No margin on last step for equal spacing
+                  contain: 'layout style' // Prevent layout shifts
                 }}
               >
               {/* Vertical line going DOWN from this step to the next (only if not last step) */}
@@ -1334,7 +1350,9 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                       gap: '6px'
                     }}>
                       <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
-                      <span><span style={{ color: ACTION_COLOR }}>Read</span> {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}</span>
+                      <span>
+                      <span style={{ color: ACTION_COLOR }}>Read</span> {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}
+                      </span>
                     </div>
                     
                     {/* Stacked document previews */}
@@ -1430,25 +1448,25 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           animation-fill-mode: forwards;
         }
         
-            /* Active reading - professional teal-green flow animation */
+            /* Active reading - Cursor-style muted teal flow animation */
             .reading-shimmer-active {
               font-weight: 600;
               background: linear-gradient(
                 90deg, 
-                #115E59 0%,      /* teal-800 - sophisticated dark */
-                #0D9488 20%,     /* teal-600 */
-                #14B8A6 35%,     /* teal-500 */
-                #2DD4BF 50%,     /* teal-400 - refined peak */
-                #14B8A6 65%,     /* teal-500 */
-                #0D9488 80%,     /* teal-600 */
-                #115E59 100%     /* teal-800 - sophisticated dark */
+                #0F766E 0%,      /* teal-700 - Cursor dark */
+                #14B8A6 20%,     /* teal-500 - Cursor medium */
+                #2DD4BF 35%,     /* teal-400 - Cursor light */
+                #5EEAD4 50%,     /* teal-300 - Cursor peak */
+                #2DD4BF 65%,     /* teal-400 - Cursor light */
+                #14B8A6 80%,     /* teal-500 - Cursor medium */
+                #0F766E 100%     /* teal-700 - Cursor dark */
               );
-              background-size: 250% 100%;
+              background-size: 350% 100%;
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 1.2s ease-in-out infinite;
-              filter: drop-shadow(0 0 1px rgba(13, 148, 136, 0.25));
+              animation: reading-glow 3s ease infinite;
+              filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
             }
             
             /* Spinning indicator for reading state */
@@ -1494,14 +1512,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             
             @keyframes reading-glow {
               0% { 
-                background-position: 100% 0;
+                background-position: 150% 0;
                 filter: brightness(1);
               }
               50% {
-                filter: brightness(1.1);
+                filter: brightness(1.08);
               }
               100% { 
-                background-position: -100% 0;
+                background-position: -150% 0;
                 filter: brightness(1);
               }
             }
@@ -1524,7 +1542,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         
         @keyframes reading-shimmer {
           0% {
-            background: linear-gradient(90deg, #047857 0%, #059669 15%, #10B981 35%, #34D399 50%, #10B981 65%, #059669 85%, #047857 100%);
+            background: linear-gradient(90deg, #166534 0%, #16A34A 15%, #22C55E 35%, #4ADE80 50%, #22C55E 65%, #16A34A 85%, #166534 100%);
             background-size: 200% 100%;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -1532,7 +1550,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             background-position: 100% 0;
           }
           50% {
-            background: linear-gradient(90deg, #047857 0%, #059669 15%, #10B981 35%, #34D399 50%, #10B981 65%, #059669 85%, #047857 100%);
+            background: linear-gradient(90deg, #166534 0%, #16A34A 15%, #22C55E 35%, #4ADE80 50%, #22C55E 65%, #16A34A 85%, #166534 100%);
             background-size: 200% 100%;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -1547,6 +1565,93 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             color: #374151;
           }
         }
+        
+        /* Smooth reveal animation for reading section only - progressively reveals text from left to right with soft fade */
+        /* Isolated animation - no conflicts with other animations */
+        .reading-reveal-text {
+          position: relative;
+          display: inline-block;
+          overflow: hidden;
+        }
+        
+        .reading-reveal-text::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: white;
+          /* Gradient: mostly black (hides text) with very wide, gradual blur transition zone */
+          /* Very wide transition (60% to 100%) creates soft fade with no definitive boundary */
+          /* Much larger mask-size creates smoother, more gradual transition across text */
+          mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);
+          -webkit-mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);
+          mask-size: 500% 100%;
+          -webkit-mask-size: 500% 100%;
+          mask-repeat: no-repeat;
+          -webkit-mask-repeat: no-repeat;
+          mask-position: 0% 0;
+          -webkit-mask-position: 0% 0;
+          animation: reading-reveal-text 3s ease-in-out infinite;
+          pointer-events: none;
+          z-index: 1;
+        }
+        
+        @keyframes reading-reveal-text {
+          0% {
+            mask-position: 0% 0;
+            -webkit-mask-position: 0% 0;
+          }
+          100% {
+            /* Move mask to fully reveal text (accounting for 500% mask-size) */
+            mask-position: -400% 0;
+            -webkit-mask-position: -400% 0;
+          }
+        }
+        
+        /* Smooth blur reveal animation for "Found X documents:" - reveals icon and text together from left to right */
+        .found-reveal-text {
+          position: relative;
+          display: inline-flex;
+          align-items: flex-start;
+          overflow: hidden;
+        }
+        
+        .found-reveal-text::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: white;
+          /* Gradient: mostly black (hides content) with wide, gradual blur transition zone */
+          mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);
+          -webkit-mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);
+          mask-size: 500% 100%;
+          -webkit-mask-size: 500% 100%;
+          mask-repeat: no-repeat;
+          -webkit-mask-repeat: no-repeat;
+          mask-position: 0% 0;
+          -webkit-mask-position: 0% 0;
+          animation: found-reveal-text 1.5s ease-out forwards;
+          pointer-events: none;
+          z-index: 1;
+        }
+        
+        @keyframes found-reveal-text {
+          0% {
+            mask-position: 0% 0;
+            -webkit-mask-position: 0% 0;
+          }
+          100% {
+            /* Move mask to fully reveal content (accounting for 500% mask-size) */
+            mask-position: -400% 0;
+            -webkit-mask-position: -400% 0;
+          }
+        }
+        
       `}</style>
     </div>
   );

@@ -2,9 +2,10 @@
 
 import * as React from "react";
 import { useMemo } from "react";
+import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -13,6 +14,13 @@ import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import veloraLogo from '/Velora Logo.jpg';
+
+// Configure PDF.js worker globally (same as other components)
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 import { PropertyData } from './PropertyResultsDisplay';
 import { useChatHistory } from './ChatHistoryContext';
 import { backendApi } from '../services/backendApi';
@@ -59,62 +67,57 @@ const animatedMessagesSet = new Set<string>();
 const completeIncompleteMarkdown = (text: string, isStreaming: boolean): string => {
   if (!text) return text;
   
-  let completed = text;
-  
-  // Always process markdown to ensure it's parseable, but be more aggressive during streaming
-  // Process line by line to handle incomplete markdown
-  const lines = completed.split('\n');
-  const processedLines: string[] = [];
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const isLastLine = i === lines.length - 1;
-    
-    // Check if line starts with heading markers (##, ###, etc.)
-    // Match even if heading is incomplete (e.g., "## Head" without newline)
-    const headingMatch = line.match(/^(##+)\s+(.*?)$/);
-    if (headingMatch) {
-      const [, hashes, content] = headingMatch;
-      // If it's a heading (even with partial content), ensure it's formatted immediately
-      // Add newline to make ReactMarkdown recognize it as a heading block
-      const headingContent = content || '';
-      // Always ensure heading ends with newline for proper parsing
-      if (isLastLine && isStreaming) {
-        // Last line during streaming - ensure it has newline
-        processedLines.push(`${hashes} ${headingContent}\n`);
-      } else {
-        // Not last line or not streaming - ensure it has newline
-        processedLines.push(`${hashes} ${headingContent}\n`);
-      }
-      continue;
-    }
-    
-    // Check for bold text - if we see **text (incomplete), close it temporarily
-    // This allows ReactMarkdown to render bold immediately
-    let processedLine = line;
-    const boldMatches = processedLine.match(/\*\*/g);
-    if (boldMatches && boldMatches.length % 2 === 1) {
-      // Odd number of ** means incomplete bold - close it
-      // Only do this during streaming or if it's the last line
-      if (isStreaming || isLastLine) {
-        processedLine += '**';
-      }
-    }
-    
-    // Check for italic - similar approach
-    const withoutBold = processedLine.replace(/\*\*/g, '');
-    const singleAsterisks = withoutBold.match(/\*/g);
-    if (singleAsterisks && singleAsterisks.length % 2 === 1) {
-      // Only close during streaming or if it's the last line
-      if (isStreaming || isLastLine) {
-        processedLine += '*';
-      }
-    }
-    
-    processedLines.push(processedLine);
+  // When not streaming, use text as-is to match final response exactly
+  if (!isStreaming) {
+    return text;
   }
   
-  completed = processedLines.join('\n');
+  // During streaming, complete markdown syntax so ReactMarkdown can parse and render formatted output
+  // This ensures we see formatted text progressively, not raw markdown
+  let completed = text;
+  
+  // Check for incomplete bold markers - close them so ReactMarkdown can render formatted text immediately
+  const boldMatches = completed.match(/\*\*/g);
+  if (boldMatches && boldMatches.length % 2 === 1) {
+    // Odd number of ** means incomplete bold - close it temporarily so ReactMarkdown can render it
+    const lastBoldIndex = completed.lastIndexOf('**');
+    const textAfterLastBold = completed.substring(lastBoldIndex + 2);
+    // If there's text after the last ** but no closing **, it's incomplete
+    if (textAfterLastBold && !textAfterLastBold.includes('**')) {
+      completed += '**';
+    }
+  }
+  
+  // Check for incomplete italic markers (only if not part of bold)
+  const withoutBold = completed.replace(/\*\*/g, '');
+  const singleAsterisks = withoutBold.match(/\*/g);
+  if (singleAsterisks && singleAsterisks.length % 2 === 1) {
+    // Odd number of * means incomplete italic - close it temporarily so ReactMarkdown can render it
+    const lastItalicIndex = withoutBold.lastIndexOf('*');
+    const textAfterLastItalic = withoutBold.substring(lastItalicIndex + 1);
+    // If there's text after the last * but no closing *, it's incomplete
+    if (textAfterLastItalic && !textAfterLastItalic.includes('*')) {
+      completed += '*';
+    }
+  }
+  
+  // Ensure headings are parseable by ReactMarkdown - check all lines, not just the last one
+  const lines = completed.split('\n');
+  let needsNewline = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const headingMatch = line.match(/^(##+)\s+(.+)$/);
+    if (headingMatch) {
+      // If this heading is at the end or followed by incomplete content, ensure it has a newline
+      if (i === lines.length - 1 && !completed.endsWith('\n')) {
+        needsNewline = true;
+      }
+      break; // Only check the last heading
+    }
+  }
+  if (needsNewline) {
+    completed += '\n';
+  }
   
   return completed;
 };
@@ -136,23 +139,30 @@ const StreamingResponseText: React.FC<{
     return null;
   }
   
-  // Complete markdown syntax so ReactMarkdown can render formatted output word-by-word
-  const displayText = completeIncompleteMarkdown(text, isStreaming);
+  // Only complete markdown during streaming - when not streaming, use text as-is to match final response
+  // This ensures the streamed version matches the final version exactly
+  const displayText = isStreaming ? completeIncompleteMarkdown(text, isStreaming) : text;
   
-  // Force ReactMarkdown to re-render on every update by using a key that changes with content
-  // This ensures formatted output appears immediately as markdown syntax is detected
-  // Use a simple hash of the text to create a unique key that changes on every character
-  const simpleHash = displayText.split('').reduce((acc, char) => {
-    return ((acc << 5) - acc) + char.charCodeAt(0);
-  }, 0);
-  const markdownKey = `markdown-${messageId}-${displayText.length}-${simpleHash}`;
+  // Use a stable key - ReactMarkdown will automatically re-render when content changes
+  // Changing the key causes expensive remounts which create delays, especially at the end
+  // ReactMarkdown's internal diffing handles content updates efficiently
+  const markdownKey = `markdown-${messageId}`;
   
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.15 }}
-      style={{ color: '#374151', fontSize: '13px', lineHeight: '19px', margin: 0, padding: '4px 0', textAlign: 'left', fontFamily: 'Inter, system-ui, sans-serif', fontWeight: 400 }}
+    <div
+      style={{ 
+        color: '#374151', 
+        fontSize: '13px', 
+        lineHeight: '19px', 
+        margin: 0, 
+        padding: '4px 0', 
+        textAlign: 'left', 
+        fontFamily: 'Inter, system-ui, sans-serif', 
+        fontWeight: 400,
+        position: 'relative',
+        minHeight: '1px', // Prevent collapse
+        contain: 'layout style paint' // Prevent layout shifts
+      }}
     >
       <ReactMarkdown 
         key={markdownKey}
@@ -258,7 +268,7 @@ const StreamingResponseText: React.FC<{
       >
         {displayText}
       </ReactMarkdown>
-    </motion.div>
+    </div>
   );
 };
 
@@ -405,14 +415,14 @@ const DocumentPreviewOverlay: React.FC<{
   }, [isFullscreen, onClose, onToggleFullscreen]);
   
   const containerClass = isFullscreen 
-    ? "fixed inset-0 bg-white flex flex-col z-[10000]" 
+    ? "fixed inset-0 m-0 p-0 w-screen h-screen bg-white flex flex-col z-[10000]" 
     : "fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4";
   
   const contentClass = isFullscreen
-    ? "w-full h-full flex flex-col"
+    ? "w-full h-full flex flex-col m-0 p-0"
     : "bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-w-4xl w-full max-h-[90vh]";
   
-  return (
+  const overlayContent = (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -426,11 +436,12 @@ const DocumentPreviewOverlay: React.FC<{
       }}
     >
       <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
+        initial={isFullscreen ? { opacity: 0 } : { scale: 0.95, opacity: 0 }}
+        animate={isFullscreen ? { opacity: 1 } : { scale: 1, opacity: 1 }}
+        exit={isFullscreen ? { opacity: 0 } : { scale: 0.95, opacity: 0 }}
         transition={{ duration: 0.2 }}
         className={contentClass}
+        style={isFullscreen ? { transform: 'none' } : undefined}
       >
         {/* Header */}
         <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
@@ -524,6 +535,13 @@ const DocumentPreviewOverlay: React.FC<{
       </motion.div>
     </motion.div>
   );
+  
+  // Use portal for fullscreen mode to break out of parent constraints
+  if (isFullscreen && typeof window !== 'undefined') {
+    return createPortal(overlayContent, window.document.body);
+  }
+  
+  return overlayContent;
 };
 
 // Citation link component - renders clickable citation buttons [1], [2], etc.
@@ -609,45 +627,44 @@ const CitationLink: React.FC<{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginLeft: '2px',
-        marginRight: '2px',
-        width: '18px',
+        marginLeft: '3px',
+        marginRight: '1px',
+        minWidth: '18px',
         height: '18px',
-        fontSize: '10px',
-        fontWeight: 600,
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: 'rgba(0, 0, 0, 0.7)',
-        backgroundColor: 'rgba(0, 0, 0, 0.06)',
-        borderRadius: '50%',
+        padding: '0 4px',
+        fontSize: '11px',
+        fontWeight: 500,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        color: '#6B7280',
+        backgroundColor: '#F3F4F6',
+        borderRadius: '3px',
         border: 'none',
         cursor: 'pointer',
-        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-        verticalAlign: 'middle',
+        transition: 'all 0.15s ease',
+        verticalAlign: 'baseline',
         position: 'relative',
-        top: '-1px',
+        top: '0',
         lineHeight: 1,
-        letterSpacing: '-0.02em',
-        boxShadow: '0 0 0 0 rgba(0, 0, 0, 0)',
+        letterSpacing: '0',
+        boxShadow: 'none',
         transform: 'scale(1)',
         flexShrink: 0
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.12)';
-        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.9)';
-        e.currentTarget.style.transform = 'scale(1.1)';
-        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.15)';
+        e.currentTarget.style.backgroundColor = '#E5E7EB';
+        e.currentTarget.style.color = '#374151';
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = 'rgba(0, 0, 0, 0.06)';
-        e.currentTarget.style.color = 'rgba(0, 0, 0, 0.7)';
-        e.currentTarget.style.transform = 'scale(1)';
-        e.currentTarget.style.boxShadow = '0 0 0 0 rgba(0, 0, 0, 0)';
+        e.currentTarget.style.backgroundColor = '#F3F4F6';
+        e.currentTarget.style.color = '#6B7280';
       }}
       onMouseDown={(e) => {
-        e.currentTarget.style.transform = 'scale(0.95)';
+        e.currentTarget.style.backgroundColor = '#D1D5DB';
+        e.currentTarget.style.transform = 'scale(0.98)';
       }}
       onMouseUp={(e) => {
-        e.currentTarget.style.transform = 'scale(1.1)';
+        e.currentTarget.style.backgroundColor = '#E5E7EB';
+        e.currentTarget.style.transform = 'scale(1)';
       }}
       title={`Source: ${displayName}`}
       aria-label={`Citation ${citationNumber} - ${displayName}`}
@@ -655,6 +672,65 @@ const CitationLink: React.FC<{
       {citationNumber}
     </button>
   );
+};
+
+// Helper function to truncate query text to 2 lines with ellipsis
+const truncateQueryText = (
+  text: string,
+  maxLines: number = 2,
+  maxWidthPercent: number = 80,
+  containerWidth?: number
+): { truncatedText: string; isTruncated: boolean } => {
+  if (!text) return { truncatedText: '', isTruncated: false };
+  
+  // Use a temporary element to measure text
+  const measureElement = document.createElement('div');
+  measureElement.style.position = 'absolute';
+  measureElement.style.visibility = 'hidden';
+  measureElement.style.height = 'auto';
+  measureElement.style.width = containerWidth 
+    ? `${containerWidth * (maxWidthPercent / 100)}px`
+    : `${maxWidthPercent}%`;
+  measureElement.style.fontSize = '13px';
+  measureElement.style.lineHeight = '19px';
+  measureElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+  measureElement.style.whiteSpace = 'pre-wrap';
+  measureElement.style.wordWrap = 'break-word';
+  document.body.appendChild(measureElement);
+  
+  // Calculate max height for 2 lines
+  const lineHeight = 19;
+  const maxHeight = lineHeight * maxLines;
+  
+  // Try full text first
+  measureElement.textContent = text;
+  const fullHeight = measureElement.offsetHeight;
+  
+  if (fullHeight <= maxHeight) {
+    document.body.removeChild(measureElement);
+    return { truncatedText: text, isTruncated: false };
+  }
+  
+  // Binary search for the right truncation point
+  let left = 0;
+  let right = text.length;
+  let bestMatch = text;
+  
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    const testText = text.substring(0, mid) + '...';
+    measureElement.textContent = testText;
+    
+    if (measureElement.offsetHeight <= maxHeight) {
+      bestMatch = testText;
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+  }
+  
+  document.body.removeChild(measureElement);
+  return { truncatedText: bestMatch, isTruncated: true };
 };
 
 // Helper function to render text with clickable citation links
@@ -1086,6 +1162,347 @@ const Globe3D: React.FC = () => {
   );
 };
 
+// Global cache for preloaded BBOX preview images
+interface BboxPreviewCacheEntry {
+  pageImage: string;
+  thumbnailHeight: number;
+  timestamp: number;
+}
+const bboxPreviewCache = new globalThis.Map<string, BboxPreviewCacheEntry>();
+
+// Preload BBOX preview when citation context is prepared
+const preloadBboxPreview = async (citationContext: {
+  document_id: string;
+  page_number: number;
+  bbox: { left: number; top: number; width: number; height: number };
+}): Promise<void> => {
+  const cacheKey = `${citationContext.document_id}-${citationContext.page_number}`;
+  
+  // Skip if already cached
+  if (bboxPreviewCache.has(cacheKey)) {
+    return;
+  }
+  
+  try {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    const downloadUrl = `${backendUrl}/api/files/download?document_id=${citationContext.document_id}`;
+    
+    const response = await fetch(downloadUrl, { credentials: 'include' });
+    if (!response.ok) {
+      console.warn(`[BBOX Preview] Failed to preload: ${response.status}`);
+      return;
+    }
+    
+    const blob = await response.blob();
+    const arrayBuffer = await blob.arrayBuffer();
+    
+    // Load PDF
+    const loadingTask = pdfjs.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await loadingTask;
+    
+    // Render page to canvas
+    const page = await pdf.getPage(citationContext.page_number || 1);
+    const viewport = page.getViewport({ scale: 1.0 });
+    
+    const thumbnailWidth = 200;
+    const scale = thumbnailWidth / viewport.width;
+    const scaledViewport = page.getViewport({ scale });
+    
+    // Create temporary canvas for rendering
+    const canvas = document.createElement('canvas');
+    canvas.width = scaledViewport.width;
+    canvas.height = scaledViewport.height;
+    
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    
+    await page.render({
+      canvasContext: context,
+      viewport: scaledViewport,
+      canvas: canvas
+    }).promise;
+    
+    // Convert canvas to image
+    const imageUrl = canvas.toDataURL('image/png');
+    
+    // Cache the result
+    bboxPreviewCache.set(cacheKey, {
+      pageImage: imageUrl,
+      thumbnailHeight: scaledViewport.height,
+      timestamp: Date.now()
+    });
+    
+    console.log(`✅ [BBOX Preview] Preloaded and cached: ${cacheKey}`);
+  } catch (error) {
+    console.warn(`[BBOX Preview] Failed to preload:`, error);
+  }
+};
+
+// Clear BBOX preview cache (called when user cancels)
+const clearBboxPreviewCache = (citationContext?: {
+  document_id: string;
+  page_number: number;
+}) => {
+  if (citationContext) {
+    const cacheKey = `${citationContext.document_id}-${citationContext.page_number}`;
+    bboxPreviewCache.delete(cacheKey);
+    console.log(`🧹 [BBOX Preview] Cleared cache: ${cacheKey}`);
+  } else {
+    // Clear all if no specific context provided
+    bboxPreviewCache.clear();
+    console.log(`🧹 [BBOX Preview] Cleared all cache`);
+  }
+};
+
+// Citation BBOX Preview Component - shows thumbnail of document page with BBOX highlight
+interface CitationBboxPreviewProps {
+  citationBboxData: {
+    document_id: string;
+    page_number: number;
+    bbox: { left: number; top: number; width: number; height: number };
+    original_filename?: string;
+    block_id?: string;
+  };
+  onClick: () => void;
+}
+
+const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxData, onClick }) => {
+  const [pageImage, setPageImage] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const thumbnailWidth = 200; // Fixed width for thumbnail
+  const [thumbnailHeight, setThumbnailHeight] = React.useState<number>(thumbnailWidth * 1.414);
+
+  // Check cache first, then load if not cached
+  React.useEffect(() => {
+    const cacheKey = `${citationBboxData.document_id}-${citationBboxData.page_number}`;
+    const cached = bboxPreviewCache.get(cacheKey);
+    
+    if (cached) {
+      // Use cached image immediately
+      setPageImage(cached.pageImage);
+      setThumbnailHeight(cached.thumbnailHeight);
+      setLoading(false);
+      return;
+    }
+    
+    // Not in cache - load it now
+    const loadDocument = async () => {
+      try {
+        setLoading(true);
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+        const downloadUrl = `${backendUrl}/api/files/download?document_id=${citationBboxData.document_id}`;
+        
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        if (!response.ok) throw new Error(`Failed to download: ${response.status}`);
+        
+        const blob = await response.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        
+        // Load PDF
+        const loadingTask = pdfjs.getDocument({ data: arrayBuffer }).promise;
+        const pdf = await loadingTask;
+        
+        // Render page to canvas
+        const page = await pdf.getPage(citationBboxData.page_number || 1);
+        const viewport = page.getViewport({ scale: 1.0 });
+        
+        const scale = thumbnailWidth / viewport.width;
+        const scaledViewport = page.getViewport({ scale });
+        
+        // Create temporary canvas for rendering
+        const canvas = document.createElement('canvas');
+        canvas.width = scaledViewport.width;
+        canvas.height = scaledViewport.height;
+        
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        await page.render({
+          canvasContext: context,
+          viewport: scaledViewport,
+          canvas: canvas
+        }).promise;
+        
+        // Convert canvas to image
+        const imageUrl = canvas.toDataURL('image/png');
+        
+        // Cache the result
+        bboxPreviewCache.set(cacheKey, {
+          pageImage: imageUrl,
+          thumbnailHeight: scaledViewport.height,
+          timestamp: Date.now()
+        });
+        
+        setPageImage(imageUrl);
+        setThumbnailHeight(scaledViewport.height);
+        setLoading(false);
+      } catch (error) {
+        console.error('Failed to load document for BBOX preview:', error);
+        setError(error instanceof Error ? error.message : 'Failed to load document');
+        setLoading(false);
+      }
+    };
+
+    if (citationBboxData.document_id) {
+      loadDocument();
+    } else {
+      setError('No document ID provided');
+      setLoading(false);
+    }
+  }, [citationBboxData.document_id, citationBboxData.page_number, thumbnailWidth]);
+
+  if (error) {
+    return (
+      <div 
+        style={{
+          width: `${thumbnailWidth}px`,
+          height: `${thumbnailWidth * 1.414}px`, // A4 aspect ratio
+          backgroundColor: '#f3f4f6',
+          borderRadius: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          border: '1px solid #e5e7eb'
+        }}
+        onClick={onClick}
+      >
+        <div style={{ color: '#9ca3af', fontSize: '11px', textAlign: 'center', padding: '8px' }}>
+          Preview unavailable
+        </div>
+      </div>
+    );
+  }
+
+  if (loading || !pageImage) {
+    return (
+      <div 
+        style={{
+          width: `${thumbnailWidth}px`,
+          height: `${thumbnailWidth * 1.414}px`, // A4 aspect ratio
+          backgroundColor: '#f3f4f6',
+          borderRadius: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          border: '1px solid #e5e7eb'
+        }}
+        onClick={onClick}
+      >
+        <div style={{ color: '#9ca3af', fontSize: '12px' }}>Loading...</div>
+      </div>
+    );
+  }
+
+  // Calculate BBOX position and size in thumbnail
+  const bbox = citationBboxData.bbox;
+  
+  // Logo size (same as in full preview)
+  const logoHeight = 0.02 * thumbnailHeight - 1;
+  const logoWidth = logoHeight;
+  
+  // Calculate BBOX dimensions with centered padding
+  const padding = 4; // Equal padding on all sides
+  const originalBboxWidth = bbox.width * thumbnailWidth;
+  const originalBboxHeight = bbox.height * thumbnailHeight;
+  const originalBboxLeft = bbox.left * thumbnailWidth;
+  const originalBboxTop = bbox.top * thumbnailHeight;
+  
+  // Calculate center of original BBOX
+  const centerX = originalBboxLeft + originalBboxWidth / 2;
+  const centerY = originalBboxTop + originalBboxHeight / 2;
+  
+  // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
+  const minBboxHeightPx = logoHeight; // Minimum height = logo height (exact match)
+  const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+  
+  // Calculate final dimensions with equal padding
+  // If at minimum height, don't add padding to keep it exactly at logo height
+  const finalBboxWidth = originalBboxWidth + padding * 2;
+  const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+    ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
+    : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
+  
+  // Center the BBOX around the original text
+  const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+  const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+  
+  // Ensure BBOX doesn't go outside page bounds
+  const constrainedLeft = Math.min(bboxLeft, thumbnailWidth - finalBboxWidth);
+  const constrainedTop = Math.min(bboxTop, thumbnailHeight - finalBboxHeight);
+  const finalBboxLeft = Math.max(0, constrainedLeft);
+  const finalBboxTop = Math.max(0, constrainedTop);
+  
+  // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
+  // Logo's right border edge overlaps with BBOX's left border edge
+  const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
+  const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: `${thumbnailWidth}px`,
+        height: `${thumbnailHeight}px`,
+        borderRadius: '4px',
+        overflow: 'hidden',
+        cursor: 'pointer',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+        border: '1px solid #e5e7eb'
+      }}
+      onClick={onClick}
+    >
+      <img
+        src={pageImage}
+        alt="Document preview"
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+          display: 'block'
+        }}
+      />
+      {/* BBOX Highlight */}
+      <div
+        style={{
+          position: 'absolute',
+          left: `${finalBboxLeft}px`,
+          top: `${finalBboxTop}px`,
+          width: `${Math.min(thumbnailWidth, finalBboxWidth)}px`,
+          height: `${Math.min(thumbnailHeight, finalBboxHeight)}px`,
+          backgroundColor: 'rgba(255, 235, 59, 0.4)',
+          border: '2px solid rgba(255, 193, 7, 0.9)',
+          borderRadius: '2px',
+          pointerEvents: 'none',
+          zIndex: 10
+        }}
+      />
+      {/* Velora Logo */}
+      <img
+        src={veloraLogo}
+        alt="Velora"
+        style={{
+          position: 'absolute',
+          left: `${logoLeft}px`,
+          top: `${logoTop}px`,
+          width: `${logoWidth}px`,
+          height: `${logoHeight}px`,
+          objectFit: 'contain',
+          pointerEvents: 'none',
+          zIndex: 11,
+          userSelect: 'none',
+          border: '2px solid rgba(255, 193, 7, 0.9)',
+          borderRadius: '2px',
+          backgroundColor: 'white',
+          boxSizing: 'border-box'
+        }}
+      />
+    </div>
+  );
+};
+
 interface SideChatPanelProps {
   isVisible: boolean;
   query: string;
@@ -1356,12 +1773,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [showPropertySearchPopup]);
 
+  // Preload BBOX preview when citation context is prepared (user clicks "Ask a question")
+  React.useEffect(() => {
+    const handleCitationContextPrepare = (event: CustomEvent) => {
+      const { citationContext } = event.detail;
+      if (citationContext && citationContext.document_id) {
+        console.log('⚡ [BBOX Preview] Preloading citation preview:', citationContext);
+        preloadBboxPreview(citationContext).catch(err => {
+          console.warn('[BBOX Preview] Preload failed:', err);
+        });
+      }
+    };
+    
+    const handleCitationContextClear = () => {
+      // Clear cache when user cancels
+      console.log('🧹 [BBOX Preview] Clearing cache (user cancelled)');
+      clearBboxPreviewCache();
+    };
+    
+    window.addEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+    window.addEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    
+    return () => {
+      window.removeEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+      window.removeEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    };
+  }, []);
+
   // Handle property selection - will be defined after usePropertySelection hook
   
   // Always start in multi-line mode for the requested layout (textarea above icons)
   const [isMultiLine, setIsMultiLine] = React.useState<boolean>(true);
   // State for expanded chat view (half screen)
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
+  // Track if we're in fullscreen mode from dashboard (persists even after shouldExpand resets)
+  const isFullscreenFromDashboardRef = React.useRef<boolean>(false);
+  const [isFullscreenMode, setIsFullscreenMode] = React.useState<boolean>(false);
+  // Track actual rendered width of the panel for responsive design
+  const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(450);
+  // Track if we just entered fullscreen to disable transition
+  const [justEnteredFullscreen, setJustEnteredFullscreen] = React.useState<boolean>(false);
   // State for drag over feedback
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
@@ -1399,14 +1850,58 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
-    if (shouldExpand && !isExpanded) {
+    console.log('🔄 SideChatPanel: shouldExpand changed', { shouldExpand, isExpanded, isFullscreenMode, isPropertyDetailsOpen });
+    if (shouldExpand) {
+      // shouldExpand is true - expand the chat
+      if (!isExpanded) {
       setIsExpanded(true);
-      // When entering analyse mode (shouldExpand), lock the width to 35vw
-      if (isPropertyDetailsOpen) {
+      }
+      
+      // Only set fullscreen mode when shouldExpand is true AND property details is NOT open
+      // When property details is open, use normal 35vw width (not fullscreen)
+      if (!isPropertyDetailsOpen) {
+        // Set fullscreen mode (from dashboard query)
+        if (!isFullscreenMode) {
+          console.log('✅ Setting fullscreen mode from dashboard');
+          isFullscreenFromDashboardRef.current = true;
+          setIsFullscreenMode(true);
+          // Clear dragged width so fullscreen width calculation takes effect
+          setDraggedWidth(null);
+          // Mark that we just entered fullscreen to disable transition
+          setJustEnteredFullscreen(true);
+          // Reset the flag after transition would complete
+          setTimeout(() => {
+            setJustEnteredFullscreen(false);
+          }, 100);
+        }
+      } else {
+        // Property details is open - use normal 35vw width (not fullscreen)
+        // Clear fullscreen mode if it was set
+        if (isFullscreenMode) {
+          console.log('📐 Property details open - clearing fullscreen mode, using 35vw');
+          setIsFullscreenMode(false);
+          isFullscreenFromDashboardRef.current = false;
+        }
+        // Lock the width to 35vw for analyse mode
         lockedWidthRef.current = '35vw';
+        // Clear dragged width so locked width takes effect
+        setDraggedWidth(null);
       }
     }
-  }, [shouldExpand, isExpanded, isPropertyDetailsOpen]);
+    // DON'T reset fullscreen mode when shouldExpand becomes false
+    // The fullscreen mode should persist until user manually collapses or new query from map
+    // We only reset it in the collapse handler below
+  }, [shouldExpand, isExpanded, isPropertyDetailsOpen, isFullscreenMode]);
+  
+  // Reset fullscreen flag when user manually collapses
+  React.useEffect(() => {
+    if (!isExpanded && isFullscreenFromDashboardRef.current) {
+      // User manually collapsed, reset the flags
+      isFullscreenFromDashboardRef.current = false;
+      setIsFullscreenMode(false);
+      wasFullscreenBeforeCitationRef.current = false; // Also reset citation flag when manually collapsing
+    }
+  }, [isExpanded]);
   
   // Calculate QuickStartBar position dynamically based on chat bar position
   React.useLayoutEffect(() => {
@@ -1445,7 +1940,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // QuickStartBar is now centered, so we just need to set maxWidth to match chat bar
         quickStartWrapper.style.width = 'fit-content';
-      quickStartWrapper.style.maxWidth = '768px'; // Match chat bar max width
+      // In fullscreen mode, allow wider QuickStartBar, otherwise use 768px
+      // QuickStartBar should match chat bar width (640px) for alignment
+      quickStartWrapper.style.maxWidth = '680px'; // Match content wrapper maxWidth
       setQuickStartBarTransform('translateX(-50%)'); // Always center
     };
 
@@ -1493,8 +1990,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     panelElementRef.current = panelElement;
     const rect = panelElement.getBoundingClientRect();
+    
+    // Get the actual current width from the DOM element (handles fullscreen mode correctly)
+    const actualCurrentWidth = rect.width;
+    
+    // If we're in fullscreen mode, exit it when user starts resizing
+    // This allows the user to resize freely from the fullscreen width
+    if (isFullscreenMode && !isPropertyDetailsOpen) {
+      setIsFullscreenMode(false);
+      isFullscreenFromDashboardRef.current = false;
+    }
+    
+    // Use actual width from DOM, or fallback to draggedWidth, or calculated width
     const currentWidth = draggedWidth !== null 
       ? draggedWidth 
+      : actualCurrentWidth > 0
+      ? actualCurrentWidth
       : (isExpanded 
         ? (isPropertyDetailsOpen 
           ? window.innerWidth * 0.35 
@@ -1518,8 +2029,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
     const state = resizeStateRef.current;
     const minWidth = 450;
-    // Account for sidebar, FilingSidebar (if open), and some padding
-    const maxWidth = window.innerWidth - sidebarWidth - 100;
+    // Allow dragging to the edge of the screen (only account for sidebar width)
+    const maxWidth = window.innerWidth - sidebarWidth;
 
     const handleMouseMove = (e: MouseEvent) => {
       // Cancel any pending RAF
@@ -1591,7 +2102,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (draggedWidth !== null) {
         chatWidth = draggedWidth;
       } else if (isExpanded) {
-        if (lockedWidthRef.current) {
+        if (isFullscreenMode) {
+          // Fullscreen from dashboard: span full width minus sidebar
+          chatWidth = window.innerWidth - sidebarWidth;
+        } else if (lockedWidthRef.current) {
           // Use locked width (convert vw to pixels)
           const vwValue = parseFloat(lockedWidthRef.current);
           chatWidth = window.innerWidth * (vwValue / 100);
@@ -1607,7 +2121,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth]);
   
   // Don't reset dragged width when collapsing - allow custom width to persist
   // User can resize in both expanded and collapsed states
@@ -1749,6 +2263,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     reasoningSteps?: ReasoningStep[]; // Reasoning steps for this message
     citations?: Record<string, CitationData>; // NEW: Citations with bbox metadata
     fromCitation?: boolean; // NEW: Flag to indicate if query came from citation action
+    citationBboxData?: {
+      document_id: string;
+      page_number: number;
+      bbox: { left: number; top: number; width: number; height: number };
+      original_filename?: string;
+      block_id?: string;
+    };
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -2018,7 +2539,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           propertyAttachments: [...propertyAttachments],
           selectedDocumentIds: selectedDocIds,
           selectedDocumentNames: selectedDocNames,
-          fromCitation: !!citationContext // Mark if query came from citation
+          fromCitation: !!citationContext, // Mark if query came from citation
+          citationBboxData: citationContext ? {
+            document_id: citationContext.document_id,
+            page_number: citationContext.page_number,
+            bbox: citationContext.bbox,
+            original_filename: citationContext.original_filename,
+            block_id: (citationContext as any).block_id || undefined || undefined
+          } : undefined
         };
         
         console.log('💬 SideChatPanel: Creating query message with attachments:', {
@@ -2382,27 +2910,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 extractCompleteBlocks();
                 
                 // Flush any remaining incomplete buffer - add to displayed text
+                // NOTE: Don't update message text here - let finalizeText() use data.summary as source of truth
+                // This prevents displayedText from overriding the properly formatted final response
                 if (tokenBuffer.trim() || pendingBuffer.trim()) {
                   displayedText += pendingBuffer + tokenBuffer;
                   pendingBuffer = '';
                   tokenBuffer = '';
-                  
-                  // Clean the text but don't complete markdown here
-                  // StreamingResponseText will handle completion based on isStreaming state
-                  const cleanedText = cleanResponseText(displayedText);
-                  
-                  // Update with final text
-                  setChatMessages(prev => prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? { ...msg, text: cleanedText }
-                      : msg
-                  ));
+                  // Don't update message text here - finalizeText() will handle it with data.summary
                 }
                 
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
-                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-                  const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
+                // Use data.summary from backend as source of truth - it has the complete, properly formatted text
+                // NOTE: Streamed tokens (displayedText) are reconstructed word-by-word and may have different whitespace
+                // data.summary is the original formatted text with correct markdown, whitespace, and structure
+                // Fallback to displayedText only if data.summary is not available
+                // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
+                  const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
                 
                 // Use citations from complete event, fallback to accumulated citations
                 // Ensure all citation keys are strings (backend may send mixed types)
@@ -2723,6 +3247,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const contentAreaRef = React.useRef<HTMLDivElement>(null);
   const panelRef = React.useRef<HTMLDivElement>(null);
+  
+  // Track actual rendered width of panel for responsive design
+  React.useEffect(() => {
+    if (!panelRef.current) return;
+    
+    const updateWidth = () => {
+      if (panelRef.current) {
+        const width = panelRef.current.getBoundingClientRect().width;
+        setActualPanelWidth(width);
+      }
+    };
+    
+    // Initial measurement
+    updateWidth();
+    
+    // Observe width changes
+    const resizeObserver = new ResizeObserver(updateWidth);
+    resizeObserver.observe(panelRef.current);
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isVisible]);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
@@ -2830,8 +3377,51 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     getCachedPdfDocument, // NEW: Get cached PDF document
     preloadPdfPage, // NEW: Pre-render PDF pages
     setHighlightCitation, // NEW: Set highlight for PropertyDetailsPanel
-    openExpandedCardView // NEW: Open standalone ExpandedCardView
+    openExpandedCardView, // NEW: Open standalone ExpandedCardView
+    expandedCardViewDoc // Track when document preview is open/closed
   } = usePreview();
+  
+  // Track if we were in fullscreen mode before opening a citation
+  // This allows us to restore fullscreen when the document preview closes
+  const wasFullscreenBeforeCitationRef = React.useRef<boolean>(false);
+
+  // Track if we're restoring fullscreen from citation (to enable smooth transition)
+  const [isRestoringFullscreen, setIsRestoringFullscreen] = React.useState<boolean>(false);
+  
+  // Restore fullscreen mode when document preview closes (if we were in fullscreen before)
+  React.useEffect(() => {
+    // When expandedCardViewDoc becomes null (document preview closed)
+    // Check if we were in fullscreen before - this flag is set when clicking a citation in fullscreen mode
+    if (!expandedCardViewDoc && wasFullscreenBeforeCitationRef.current) {
+      console.log('🔄 [CITATION] Document preview closed - restoring fullscreen mode instantly (snap, no animation)');
+      // Use flushSync to ensure state updates happen synchronously before render (like dashboard opening)
+      flushSync(() => {
+        // Use justEnteredFullscreen to disable transition (same as initial fullscreen entry)
+        setJustEnteredFullscreen(true);
+        setIsRestoringFullscreen(true);
+        
+        // Restore fullscreen mode immediately (no delay to prevent seeing map)
+        setIsFullscreenMode(true);
+        isFullscreenFromDashboardRef.current = true;
+        setDraggedWidth(null); // Clear any dragged width so fullscreen width takes effect
+        lockedWidthRef.current = null; // Clear locked width
+        // DON'T reset wasFullscreenBeforeCitationRef - keep it true so subsequent citations also restore fullscreen
+        // It will be reset when user manually exits fullscreen or when switching away from dashboard mode
+      });
+      
+      // Notify parent of width change immediately
+      if (onChatWidthChange) {
+        const fullWidth = window.innerWidth - sidebarWidth;
+        onChatWidthChange(fullWidth);
+      }
+      
+      // Reset flags after a very brief moment (same timing as dashboard opening)
+      setTimeout(() => {
+        setJustEnteredFullscreen(false);
+        setIsRestoringFullscreen(false);
+      }, 100); // Same timing as dashboard opening (100ms)
+    }
+  }, [expandedCardViewDoc, onChatWidthChange, sidebarWidth]);
 
   // Phase 1: Handle citation click - fetch document and open in viewer
   const handleCitationClick = React.useCallback(async (citationData: CitationData) => {
@@ -3052,13 +3642,44 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
       });
       
-      // If this is the first citation in the session, expand chat panel to 50% width
-      if (isFirstCitationRef.current) {
-        console.log('🎯 [CITATION] First citation clicked - expanding chat panel to 50% width');
+      // Always switch from fullscreen to 50% width when clicking a citation
+      // This creates a 50/50 split with the document preview
+      // Check if we're in fullscreen mode OR if we were in fullscreen before (for subsequent citations)
+      if (isFullscreenMode || wasFullscreenBeforeCitationRef.current) {
+        console.log('🎯 [CITATION] Citation clicked in fullscreen mode - switching to 50% width for 50/50 split');
+        // Track that we were in fullscreen mode so we can restore it when document preview closes
+        // Keep this true for all subsequent citations
+        wasFullscreenBeforeCitationRef.current = true;
+        setIsExpanded(true);
+        // Clear fullscreen mode to allow 50/50 split with document preview
+        setIsFullscreenMode(false);
+        // Don't reset isFullscreenFromDashboardRef here - we'll restore it when closing
+        setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
+        lockedWidthRef.current = '50vw';
+        
+        // Notify parent of width change
+        if (onChatWidthChange) {
+          const newWidth = window.innerWidth * 0.5;
+          onChatWidthChange(newWidth);
+        }
+      } else if (isFirstCitationRef.current) {
+        // If not in fullscreen, we weren't in fullscreen before
+        wasFullscreenBeforeCitationRef.current = false;
+        // If not in fullscreen but first citation, still expand to 50% if collapsed
+        console.log('🎯 [CITATION] First citation clicked - expanding chat panel to 50% width for 50/50 split');
         setIsExpanded(true);
         setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
         lockedWidthRef.current = '50vw';
         isFirstCitationRef.current = false; // Mark that we've seen a citation
+        
+        // Notify parent of width change
+        if (onChatWidthChange) {
+          const newWidth = window.innerWidth * 0.5;
+          onChatWidthChange(newWidth);
+        }
+      } else {
+        // If not in fullscreen and not first citation, we weren't in fullscreen before
+        wasFullscreenBeforeCitationRef.current = false;
       }
 
       // Always open in standalone ExpandedCardView (preferred layout)
@@ -3087,7 +3708,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         variant: "destructive",
       });
     }
-  }, [previewFiles, preloadFile, openExpandedCardView, toast]);
+  }, [previewFiles, preloadFile, openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
   
   // Handle document preview click from reasoning step cards
   // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
@@ -3365,7 +3986,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           propertyAttachments: initialPropertyAttachments,
           selectedDocumentIds: initialSelectedDocIds,
           selectedDocumentNames: initialSelectedDocNames,
-          fromCitation: !!citationContext // Mark if query came from citation
+          fromCitation: !!citationContext, // Mark if query came from citation
+          citationBboxData: citationContext ? {
+            document_id: citationContext.document_id,
+            page_number: citationContext.page_number,
+            bbox: citationContext.bbox,
+            original_filename: citationContext.original_filename,
+            block_id: (citationContext as any).block_id || undefined || undefined
+          } : undefined
         };
         
         setChatMessages([initialMessage]);
@@ -3611,8 +4239,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
                   // Citation context is cleared by parent (MainContent) after query
-                // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-                  const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
+                // Use data.summary from backend as source of truth - it has the complete, properly formatted text
+                // Fallback to displayedText only if data.summary is not available
+                // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
+                  const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
                   
                   // Merge accumulated citations with any from backend complete message
                   const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -4208,7 +4838,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // Add query message to chat
       const queryId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      const newQueryMessage = {
+      const newQueryMessage: ChatMessage = {
         id: queryId,
         type: 'query' as const,
         text: submitted || '',
@@ -4216,7 +4846,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         propertyAttachments: propertiesToStore, // Always include, even if empty array
         selectedDocumentIds: selectedDocIds,
         selectedDocumentNames: selectedDocNames,
-        fromCitation: !!citationContext // Mark if query came from citation
+        fromCitation: !!citationContext, // Mark if query came from citation
+        citationBboxData: citationContext ? {
+          document_id: citationContext.document_id,
+          page_number: citationContext.page_number,
+          bbox: citationContext.bbox,
+          original_filename: citationContext.original_filename,
+          block_id: (citationContext as any).block_id || undefined
+        } : undefined
       };
       
       console.log('💬 SideChatPanel: Adding query message:', newQueryMessage);
@@ -4568,8 +5205,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               // Wait for queue to finish processing, then set final text
               const finalizeText = () => {
-              // Clean the summary of any CHUNK markers and EVIDENCE_FEEDBACK tags
-                const finalText = cleanResponseText(data.summary || accumulatedText || displayedText || "I found some information for you.");
+              // Use data.summary from backend as source of truth - it has the complete, properly formatted text
+              // Fallback to displayedText only if data.summary is not available
+              // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
+                const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
               
                 // Merge accumulated citations with any from backend complete message
                 const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -4915,11 +5554,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
       
       if (message.type === 'query') {
+        // Truncate query text if from citation
+        const containerWidth = contentAreaRef.current?.clientWidth || 600;
+        const { truncatedText, isTruncated } = message.fromCitation && message.text
+          ? truncateQueryText(message.text, 2, 80, containerWidth)
+          : { truncatedText: message.text || '', isTruncated: false };
+        
+        // Handler to open citation when clicking preview or truncated text
+        const handleCitationPreviewClick = () => {
+          if (message.citationBboxData) {
+            const citationData: CitationData = {
+              doc_id: message.citationBboxData.document_id,
+              original_filename: message.citationBboxData.original_filename || undefined,
+              page: message.citationBboxData.page_number,
+              page_number: message.citationBboxData.page_number,
+              block_id: message.citationBboxData.block_id || undefined,
+              bbox: {
+                left: message.citationBboxData.bbox.left,
+                top: message.citationBboxData.bbox.top,
+                width: message.citationBboxData.bbox.width,
+                height: message.citationBboxData.bbox.height,
+                page: message.citationBboxData.page_number
+              }
+            };
+            handleCitationClick(citationData);
+          }
+        };
+        
         return (
           <div key={finalKey} style={{
-            alignSelf: 'flex-start', maxWidth: '85%', width: 'fit-content',
-            marginTop: '8px', marginLeft: '0',
-            display: 'flex', flexDirection: 'column', gap: '6px'
+            alignSelf: 'flex-end', maxWidth: '85%', width: 'fit-content',
+            marginTop: '8px', marginLeft: 'auto', marginRight: '0',
+            display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end'
           }}>
             {message.selectedDocumentIds?.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
@@ -4929,6 +5595,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     ? message.selectedDocumentNames[0]
                     : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
                 </span>
+              </div>
+            )}
+            {/* BBOX Preview for citation queries */}
+            {message.fromCitation && message.citationBboxData && (
+              <div style={{ marginBottom: '8px' }}>
+                <CitationBboxPreview 
+                  citationBboxData={message.citationBboxData}
+                  onClick={handleCitationPreviewClick}
+                />
               </div>
             )}
             <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: '1px solid rgba(0, 0, 0, 0.08)', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', wordWrap: 'break-word', display: 'inline-block', maxWidth: '100%' }}>
@@ -4951,10 +5626,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               )}
               {message.text && (
-                <div style={{ color: '#0D0D0D', fontSize: '13px', lineHeight: '19px', margin: 0, padding: 0, textAlign: 'left', fontFamily: 'system-ui, -apple-system, sans-serif', width: 'fit-content', maxWidth: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div 
+                  style={{ 
+                    color: '#0D0D0D', 
+                    fontSize: '13px', 
+                    lineHeight: '19px', 
+                    margin: 0, 
+                    padding: 0, 
+                    textAlign: 'left', 
+                    fontFamily: 'system-ui, -apple-system, sans-serif', 
+                    width: 'fit-content', 
+                    maxWidth: '100%', 
+                    boxSizing: 'border-box', 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '6px',
+                    cursor: isTruncated ? 'pointer' : 'default'
+                  }}
+                  onClick={isTruncated ? handleCitationPreviewClick : undefined}
+                  title={isTruncated ? 'Click to view citation' : undefined}
+                >
                   {message.fromCitation && (
                     <TextCursorInput size={14} style={{ flexShrink: 0, color: '#6B7280' }} />
                   )}
+                  <div style={{ 
+                    textDecoration: isTruncated ? 'underline' : 'none',
+                    textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
+                    textUnderlineOffset: '2px'
+                  }}>
                   <ReactMarkdown components={{
                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
                     h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
@@ -4967,7 +5666,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
                     blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
                     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                  }}>{message.text}</ReactMarkdown>
+                    }}>{truncatedText}</ReactMarkdown>
+                  </div>
                 </div>
               )}
             </div>
@@ -4977,32 +5677,53 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       
       // Response message
       return (
-        <div key={finalKey} style={{ width: '100%', padding: '0', margin: '0', marginTop: '8px', paddingLeft: '0', paddingRight: '0', wordWrap: 'break-word' }}>
+        <div key={finalKey} style={{ 
+          width: '100%', 
+          padding: '0', 
+          margin: '0', 
+          marginTop: '8px', 
+          wordWrap: 'break-word',
+          position: 'relative',
+          contain: 'layout style'
+          // Padding is handled by parent content wrapper (32px left/right)
+        }}>
+          <div style={{ 
+            position: 'relative',
+            minHeight: '1px' // Prevent collapse
+          }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
             <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
           )}
-          {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
-          {message.isLoading && !message.text && 
-           message.reasoningSteps?.some(step => step.action_type === 'reading') &&
-           message.reasoningSteps?.filter(step => step.action_type === 'reading').every(step => step.details?.status === 'read') && (
-            <ThinkingDot />
-          )}
+            {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
+            {message.isLoading && !message.text && 
+             message.reasoningSteps?.some(step => step.action_type === 'reading') &&
+             message.reasoningSteps?.filter(step => step.action_type === 'reading').every(step => step.details?.status === 'read') && (
+              <ThinkingDot />
+            )}
+          </div>
           {/* Show streaming text as it arrives - inline with typing effect */}
+          {/* Show text as soon as it exists - allow streaming to display immediately */}
           {message.text && (
-            <StreamingResponseText
-              text={message.text}
-              isStreaming={message.isLoading || false}
-              citations={message.citations}
-              handleCitationClick={handleCitationClick}
-              renderTextWithCitations={renderTextWithCitations}
-              onTextUpdate={scrollToBottom}
-              messageId={finalKey}
-            />
+            <div style={{
+              position: 'relative',
+              minHeight: '1px', // Prevent collapse
+              contain: 'layout style paint' // Prevent layout shifts
+            }}>
+              <StreamingResponseText
+                text={message.text}
+                isStreaming={message.isLoading || false} // Allow streaming to continue
+                citations={message.citations}
+                handleCitationClick={handleCitationClick}
+                renderTextWithCitations={renderTextWithCitations}
+                onTextUpdate={scrollToBottom}
+                messageId={finalKey}
+              />
+            </div>
           )}
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom]);
+  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom, previewDocument, expandedCardViewDoc]);
 
   return (
     <AnimatePresence>
@@ -5010,28 +5731,43 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         <motion.div
           key="side-chat-panel"
           ref={panelRef}
-          initial={{ x: -400, opacity: 0 }}
+          initial={shouldExpand ? { opacity: 0 } : { x: -400, opacity: 0 }} // No slide animation if opening in fullscreen
           animate={{ 
             x: 0, 
             opacity: 1
           }}
           exit={{ x: -400, opacity: 0 }}
-          transition={{ 
+          transition={shouldExpand ? { duration: 0 } : { 
             duration: 0.2,
             ease: [0.4, 0, 0.2, 1]
-          }}
-          layout
+          }} // Instant if opening in fullscreen
+          layout={!shouldExpand} // Disable layout animation when opening in fullscreen
           className="fixed top-0 bottom-0 z-30"
           style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
-            width: draggedWidth !== null 
-              ? `${draggedWidth}px` // Use dragged width if set (works for both expanded and collapsed)
-              : (isExpanded 
-              ? (lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw')) // Use locked width if available, otherwise calculate
-                : '450px'), // Fixed width when collapsed (but can be resized via drag)
+            width: (() => {
+              // If opening in fullscreen mode (shouldExpand from dashboard, not Analyse button), start at fullscreen width immediately
+              if (shouldExpand && isFullscreenMode && !isPropertyDetailsOpen) {
+                return `calc(100vw - ${sidebarWidth}px)`;
+              }
+              if (draggedWidth !== null) {
+                return `${draggedWidth}px`;
+              }
+              if (isExpanded) {
+                if (isFullscreenMode && !isPropertyDetailsOpen) {
+                  const fullWidth = `calc(100vw - ${sidebarWidth}px)`;
+                  console.log('📐 SideChatPanel: Using fullscreen width', { isFullscreenMode, fullWidth, sidebarWidth, isExpanded });
+                  return fullWidth;
+                }
+                const normalWidth = lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw');
+                console.log('📐 SideChatPanel: Using normal expanded width', { normalWidth, isFullscreenMode, isExpanded, isPropertyDetailsOpen });
+                return normalWidth;
+              }
+              return '450px';
+            })(),
             backgroundColor: '#FFFFFF',
             boxShadow: 'none',
-            transition: isResizing ? 'none' : 'width 0.35s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing
+            transition: (isResizing || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen)) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing, entering fullscreen initially, restoring from citation, or when in fullscreen mode
             willChange: 'width', // Optimize for smooth width changes
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
@@ -5167,7 +5903,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 bg-white/70 rounded-md"
                     title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
                   >
-                    <span className="text-slate-600 text-xs">Trace</span>
+                    <Footprints className="w-4 h-4 text-slate-600" strokeWidth={1.5} />
                     <button
                       type="button"
                       onClick={() => setShowReasoningTrace(!showReasoningTrace)}
@@ -5188,6 +5924,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       let currentWidth: number;
                       if (draggedWidth !== null) {
                         currentWidth = draggedWidth;
+                      } else if (isExpanded && isFullscreenMode) {
+                        // Fullscreen mode from dashboard
+                        currentWidth = window.innerWidth - sidebarWidth;
                       } else if (lockedWidthRef.current) {
                         // Convert vw to pixels if locked width is set
                         const vwValue = parseFloat(lockedWidthRef.current);
@@ -5201,11 +5940,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       }
                       
                       // Define threshold: if width is >= 600px, consider it "large" and make it smaller
-                      // Otherwise, make it larger
+                      // Otherwise, make it larger (fullscreen)
                       const SMALL_SIZE = 450; // Minimum/collapsed size
-                      const LARGE_SIZE = isPropertyDetailsOpen 
-                        ? window.innerWidth * 0.35 
-                        : window.innerWidth * 0.5;
                       const THRESHOLD = 600; // Threshold between small and large
                       
                       let newWidth: number;
@@ -5215,16 +5951,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         // Currently large - make it smaller
                         newWidth = SMALL_SIZE;
                         newExpandedState = false;
+                        // Reset fullscreen mode when collapsing
+                        if (isFullscreenMode) {
+                          setIsFullscreenMode(false);
+                          isFullscreenFromDashboardRef.current = false;
+                        }
+                        setDraggedWidth(newWidth);
                       } else {
-                        // Currently small - make it larger
-                        newWidth = LARGE_SIZE;
+                        // Currently small - make it fullscreen
                         newExpandedState = true;
+                        // Set fullscreen mode
+                        setIsFullscreenMode(true);
+                        isFullscreenFromDashboardRef.current = true;
+                        setJustEnteredFullscreen(true);
+                        // Clear dragged width so fullscreen width calculation takes effect
+                        setDraggedWidth(null);
+                        // Calculate fullscreen width for notification
+                        newWidth = window.innerWidth - sidebarWidth;
+                        // Reset the flag after a short delay
+                        setTimeout(() => {
+                          setJustEnteredFullscreen(false);
+                        }, 100);
                       }
                       
-                      // Use the same pixel-based sizing as drag resizing
-                      setDraggedWidth(newWidth);
                       setIsExpanded(newExpandedState);
-                      lockedWidthRef.current = null; // Clear locked width to use dragged width
+                      lockedWidthRef.current = null; // Clear locked width
                       
                       // Notify parent of width change
                       if (onChatWidthChange) {
@@ -5240,6 +5991,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       let currentWidth: number;
                       if (draggedWidth !== null) {
                         currentWidth = draggedWidth;
+                      } else if (isExpanded && isFullscreenMode) {
+                        // Fullscreen mode from dashboard
+                        currentWidth = window.innerWidth - sidebarWidth;
                       } else if (lockedWidthRef.current) {
                         const vwValue = parseFloat(lockedWidthRef.current);
                         currentWidth = window.innerWidth * (vwValue / 100);
@@ -5258,6 +6012,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       let currentWidth: number;
                       if (draggedWidth !== null) {
                         currentWidth = draggedWidth;
+                      } else if (isExpanded && isFullscreenMode) {
+                        // Fullscreen mode from dashboard
+                        currentWidth = window.innerWidth - sidebarWidth;
                       } else if (lockedWidthRef.current) {
                         const vwValue = parseFloat(lockedWidthRef.current);
                         currentWidth = window.innerWidth * (vwValue / 100);
@@ -5302,18 +6059,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flexShrink: 1, // Allow shrinking but with minWidth constraint
                 display: 'flex',
                 flexDirection: 'column',
-                alignItems: 'center' // Center content like ChatGPT
+                alignItems: 'center' // Center content wrapper horizontally
               }}
             >
               {/* Centered content wrapper - ChatGPT-like centered layout */}
               <div style={{ 
                 width: '100%', 
-                maxWidth: '680px', // Tighter column for more breathing room at panel edges
+                maxWidth: '680px', // Match chat bar max width (640px inner + 40px padding = 680px)
                 paddingLeft: '32px',
                 paddingRight: '32px',
                 margin: '0 auto' // Center the content wrapper
               }}>
-              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px' }}>
+              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
                 <AnimatePresence>
                   {renderedMessages}
                 </AnimatePresence>
@@ -5353,7 +6110,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     transform: 'translateX(-50%)', // Center the QuickStartBar
                         zIndex: 10000,
                     width: 'fit-content', // Let content determine width naturally
-                    maxWidth: '680px', // Match tightened chat/message column
+                    maxWidth: '680px', // Fixed maxWidth to match chat bar - QuickStartBar should align with chat bar
                     display: 'flex',
                     justifyContent: 'center'
                       }}
@@ -5405,9 +6162,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
-                    // Match text content width: content wrapper is 680px with 32px padding each side (64px total)
-                    // So content width is 616px. Chatbar has 12px padding each side (24px total), so inner div should be 616px + 24px = 640px
-                    width: 'min(100%, 640px)', // Match actual text content width
+                    // Chat bar should maintain fixed width and be centered, regardless of panel width
+                    // Content wrapper: 680px maxWidth with 32px padding each side = 616px content width
+                    // Chat bar: 12px padding each side (24px total), so inner div = 616px + 24px = 640px
+                    // This ensures chat bar aligns with content and stays at readable width
+                    width: 'min(100%, 640px)', // Fixed width - matches content wrapper's actual content width
                     minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
                     minHeight: 'fit-content',
@@ -5859,6 +6618,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
           </div>
         </motion.div>
+      )}
+      
+      {/* Vertical Divider - Between chat panel and property details panel */}
+      {isVisible && isPropertyDetailsOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            left: `${sidebarWidth + actualPanelWidth}px`,
+            top: '0',
+            bottom: '0',
+            width: '1px',
+            height: '100vh',
+            backgroundColor: '#E5E7EB',
+            zIndex: 40,
+            pointerEvents: 'none' // Don't interfere with interactions
+          }}
+        />
       )}
       
       {/* Delete Bin Icon - Bottom Right Corner */}

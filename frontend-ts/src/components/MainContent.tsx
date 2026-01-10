@@ -1684,12 +1684,14 @@ export const MainContent = ({
   }, [isMapVisible, currentView, isChatBubbleVisible]);
   
   // Reset shouldExpandChat flag after chat has been opened and expanded
+  // Increased delay to 500ms to ensure SideChatPanel has time to process shouldExpand=true
   React.useEffect(() => {
     if (shouldExpandChat && hasPerformedSearch && isMapVisible) {
-      // Chat is now open, reset the flag after a short delay to allow expansion
+      // Chat is now open, reset the flag after a delay to allow expansion
+      // SideChatPanel will persist fullscreen mode even after shouldExpand becomes false
       const timer = setTimeout(() => {
         setShouldExpandChat(false);
-      }, 100);
+      }, 500); // Increased from 100ms to 500ms to ensure fullscreen mode is set
       return () => clearTimeout(timer);
     }
   }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
@@ -2370,6 +2372,9 @@ export const MainContent = ({
         onCloseSidebar();
       }
       
+      // Query from map chat bar - don't expand
+      setShouldExpandChat(false);
+      
       // Mark that user has performed a search in map mode
       setHasPerformedSearch(true);
       return;
@@ -2382,6 +2387,10 @@ export const MainContent = ({
         storedInRef: pendingSideChatAttachmentsRef.current.length,
         storedInState: pendingSideChatAttachments.length
       });
+      
+      // Query from map chat bar - don't expand
+      setShouldExpandChat(false);
+      
       setHasPerformedSearch(true);
       // Attachments are already stored in pendingSideChatAttachmentsRef above
       // Query is already set via setMapSearchQuery above
@@ -2393,6 +2402,9 @@ export const MainContent = ({
     // Open map view and show SideChatPanel
     setIsMapVisible(true);
     setHasPerformedSearch(true);
+    
+    // Query from dashboard - expand to fullscreen view
+    setShouldExpandChat(true);
     
     // Collapse sidebar for cleaner UI when opening SideChatPanel
     if (onCloseSidebar) {
@@ -3743,6 +3755,8 @@ export const MainContent = ({
             // Handle new query from panel
             setMapSearchQuery(newQuery);
             // Keep hasPerformedSearch true
+            // Query from within SideChatPanel - don't expand (keep current state or collapse)
+            setShouldExpandChat(false);
           }}
           onMinimize={(chatMessages) => {
             // Show bubble and hide full panel

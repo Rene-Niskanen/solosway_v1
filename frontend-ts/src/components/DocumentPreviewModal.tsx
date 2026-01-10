@@ -7,6 +7,7 @@ import { X, Download, RotateCw, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, File
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview, CitationHighlight } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
+import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -1648,16 +1649,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     if (!document.getElementById(styleId)) {
       const style = document.createElement('style');
       style.id = styleId;
-      style.textContent = `
-        @keyframes fadeInHighlight {
-          from {
-            opacity: 0;
-          }
-          to {
-            opacity: 1;
-          }
-        }
-      `;
+      style.textContent = ``; // Animation removed - BBOXs appear instantly
       document.head.appendChild(style);
     }
     return () => {
@@ -2253,26 +2245,92 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                               />
                               
                                   {/* Highlight overlay for citations - positioned relative to page */}
-                                  {isHighlightPage && expandedBbox && (
+                                  {isHighlightPage && expandedBbox && (() => {
+                                    // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
+                                    const logoHeight = 0.02 * pageDimensions.height - 1;
+                                    // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
+                                    const logoWidth = logoHeight; // Square logo, adjust if needed
+                                    // Calculate BBOX dimensions with centered padding
+                                    const padding = 4; // Equal padding on all sides
+                                    const originalBboxWidth = expandedBbox.width * pageDimensions.width;
+                                    const originalBboxHeight = expandedBbox.height * pageDimensions.height;
+                                    const originalBboxLeft = expandedBbox.left * pageDimensions.width;
+                                    const originalBboxTop = expandedBbox.top * pageDimensions.height;
+                                    
+                                    // Calculate center of original BBOX
+                                    const centerX = originalBboxLeft + originalBboxWidth / 2;
+                                    const centerY = originalBboxTop + originalBboxHeight / 2;
+                                    
+                                    // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
+                                    const minBboxHeightPx = logoHeight; // Minimum height = logo height
+                                    const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+                                    
+                                    // Calculate final dimensions with equal padding
+                                    // If at minimum height, don't add padding to keep it exactly at logo height
+                                    const finalBboxWidth = originalBboxWidth + padding * 2;
+                                    const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+                                      ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
+                                      : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
+                                    
+                                    // Center the BBOX around the original text
+                                    const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+                                    const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+                                    
+                                    // Ensure BBOX doesn't go outside page bounds
+                                    const constrainedLeft = Math.min(bboxLeft, pageDimensions.width - finalBboxWidth);
+                                    const constrainedTop = Math.min(bboxTop, pageDimensions.height - finalBboxHeight);
+                                    const finalBboxLeft = Math.max(0, constrainedLeft);
+                                    const finalBboxTop = Math.max(0, constrainedTop);
+                                    
+                                    // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
+                                    // Logo's right border edge overlaps with BBOX's left border edge
+                                    const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
+                                    const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+                                    
+                                    return (
+                                      <>
+                                        {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
+                                        <img
+                                          src={veloraLogo}
+                                          alt="Velora"
+                                          style={{
+                                            position: 'absolute',
+                                            left: `${logoLeft}px`,
+                                            top: `${logoTop}px`,
+                                            width: `${logoWidth}px`,
+                                            height: `${logoHeight}px`,
+                                            objectFit: 'contain',
+                                            pointerEvents: 'none',
+                                            zIndex: 11,
+                                            userSelect: 'none',
+                                            border: '2px solid rgba(255, 193, 7, 0.9)',
+                                            borderRadius: '2px',
+                                            backgroundColor: 'white', // Ensure logo has background for border visibility
+                                            boxSizing: 'border-box', // Ensure border is included in width/height for proper overlap
+                                            opacity: 1 // No animation when changing between BBOXs
+                                          }}
+                                        />
+                                        {/* BBOX highlight */}
                                 <div
                                   style={{
                                     position: 'absolute',
-                                        left: `${expandedBbox.left * pageDimensions.width}px`,
-                                        top: `${expandedBbox.top * pageDimensions.height}px`,
-                                        width: `${expandedBbox.width * pageDimensions.width}px`,
-                                        height: `${expandedBbox.height * pageDimensions.height}px`,
+                                                left: `${finalBboxLeft}px`,
+                                                top: `${finalBboxTop}px`,
+                                                width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
+                                                height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
                                     backgroundColor: 'rgba(255, 235, 59, 0.4)', // Yellow highlight
                                     border: '2px solid rgba(255, 193, 7, 0.9)', // Darker yellow border
                                     borderRadius: '2px',
                                     pointerEvents: 'none',
                                     zIndex: 10,
                                     boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                    opacity: 0,
-                                    animation: 'fadeInHighlight 0.3s ease-in forwards',
+                                    opacity: 1, // No animation when changing between BBOXs
                                     transformOrigin: 'top left',
                                   }}
                                 />
-                              )}
+                                      </>
+                                    );
+                                  })()}
                             </div>
                               );
                             })}
