@@ -212,12 +212,98 @@ interface ReasoningStepsProps {
   steps: ReasoningStep[];
   isLoading?: boolean;
   onDocumentClick?: (metadata: DocumentMetadata) => void;
+  hasResponseText?: boolean; // Stop animations when response text has started
 }
+
+// True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
+const Globe3D: React.FC = () => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const rotationRef = React.useRef({ x: 0, y: 0 });
+  const animationFrameRef = React.useRef<number>();
+  const lastTimeRef = React.useRef<number>(performance.now());
+
+  React.useEffect(() => {
+    const animate = (currentTime: number) => {
+      const deltaTime = currentTime - lastTimeRef.current;
+      lastTimeRef.current = currentTime;
+      
+      // Smooth rotation based on time delta for consistent speed
+      rotationRef.current.y += (deltaTime / 16) * 0.5; // ~30 degrees per second
+      rotationRef.current.x += (deltaTime / 16) * 0.25; // ~15 degrees per second
+      
+      if (containerRef.current) {
+        containerRef.current.style.transform = 
+          `rotateX(${rotationRef.current.x}deg) rotateY(${rotationRef.current.y}deg)`;
+      }
+      
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    animationFrameRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, []);
+
+  const radius = 3.5; // Scaled down for reasoning steps
+  const rings = 12; // Reduced for better performance
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        marginTop: '-3.5px',
+        marginLeft: '-3.5px',
+        width: '7px',
+        height: '7px',
+        transformStyle: 'preserve-3d',
+        willChange: 'transform',
+        zIndex: 1
+      }}
+    >
+      {/* Create solid sphere using multiple filled rings in 3D space - Blue color */}
+      {Array.from({ length: rings }).map((_, ringIndex) => {
+        const phi = (Math.PI * ringIndex) / (rings - 1); // Latitude angle (0 to π)
+        const ringRadius = Math.abs(Math.sin(phi)) * radius;
+        const z = Math.cos(phi) * radius; // Z position in 3D space
+        
+        return (
+          <div
+            key={`ring-${ringIndex}`}
+            style={{
+              position: 'absolute',
+              width: `${ringRadius * 2}px`,
+              height: `${ringRadius * 2}px`,
+              top: '50%',
+              left: '50%',
+              marginTop: `${-ringRadius}px`,
+              marginLeft: `${-ringRadius}px`,
+              borderRadius: '50%',
+              backgroundColor: 'rgba(59, 130, 246, 0.75)', // Blue color instead of gray
+              border: 'none',
+              transform: `translateZ(${z}px)`,
+              transformStyle: 'preserve-3d',
+              backfaceVisibility: 'visible',
+              WebkitBackfaceVisibility: 'visible',
+              willChange: 'transform'
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+};
 
 // Reading step - always shows "Reading" animation briefly before "Read" for natural feel
 // Backend emits reading steps when documents are actually processed
-// We show a brief "Reading" animation (300ms) then transition to "Read" - this happens 100% of the time
-const READING_ANIMATION_DURATION = 300; // Brief animation to show "Reading" state (always happens)
+// We show a brief "Reading" animation (100ms) then transition to "Read" - this happens 100% of the time
+const READING_ANIMATION_DURATION = 100; // Brief animation to show "Reading" state (always happens) - reduced for faster appearance
 
 /**
  * Monochromatic color scheme - actions in lighter shade, details in darker shade
@@ -239,7 +325,8 @@ const ReadingStepWithTransition: React.FC<{
   isLastReadingStep?: boolean; // Is this the last reading step?
   hasNextStep?: boolean; // Is there a step after this reading step?
   keepAnimating?: boolean; // Keep the green animation going until planning indicator appears
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false }) => {
+  hasResponseText?: boolean; // Stop all animations when response text appears
+}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false }) => {
   const [phase, setPhase] = useState<'reading' | 'read'>('reading');
   const [showReadAnimation, setShowReadAnimation] = useState(false); // Track if "Read" should show animation
   
@@ -247,10 +334,11 @@ const ReadingStepWithTransition: React.FC<{
   // Check step details.status to see if backend has marked it as "read"
   // This happens 100% of the time for natural feel
   // If keepAnimating is true, stay in reading phase with animation
+  // BUT: Don't block response - if response text has started, immediately transition to "read" and stop ALL animations
   useEffect(() => {
-    // If we should keep animating, stay in "reading" phase
-    if (keepAnimating) {
-      setPhase('reading');
+    // If response text has appeared, immediately stop all animations and show "read"
+    if (hasResponseText) {
+      setPhase('read');
       setShowReadAnimation(false);
       return;
     }
@@ -258,40 +346,34 @@ const ReadingStepWithTransition: React.FC<{
     // Check if step details indicate it's already been read
     const stepStatus = docMetadata?.status || (onDocumentClick ? undefined : 'reading');
     
-    let readTimer: NodeJS.Timeout | null = null;
-    let animationTimer: NodeJS.Timeout | null = null;
-    
+    // If backend says it's read, immediately show "read" (don't wait for animation)
     if (stepStatus === 'read') {
-      // Backend has completed processing - show "Read" with animation
       setPhase('read');
-      setShowReadAnimation(true); // Show animation when "Read" first appears
-      
-      // Remove animation after it completes (500ms to match shimmer duration)
-      animationTimer = setTimeout(() => {
-        setShowReadAnimation(false);
-      }, 500);
-    } else {
-      // Start in "reading" phase and show animation
+      setShowReadAnimation(false); // Skip animation to not delay response
+      return;
+    }
+    
+    // If we should keep animating AND it's not marked as read, stay in "reading" phase
+    if (keepAnimating) {
       setPhase('reading');
       setShowReadAnimation(false);
-      
-      // After brief animation, transition to "read" (unless backend updates it first)
-      readTimer = setTimeout(() => {
-        setPhase('read');
-        setShowReadAnimation(true); // Show animation when transitioning to "Read"
-        
-        // Remove animation after it completes
-        animationTimer = setTimeout(() => {
-          setShowReadAnimation(false);
-        }, 500);
-      }, READING_ANIMATION_DURATION);
+      return;
     }
+    
+    // Start in "reading" phase briefly, then quickly transition to "read"
+    setPhase('reading');
+    setShowReadAnimation(false);
+    
+    // Transition to "read" very quickly (reduced delay to not block response)
+    const readTimer = setTimeout(() => {
+      setPhase('read');
+      setShowReadAnimation(false); // Skip animation to not delay response
+    }, Math.min(READING_ANIMATION_DURATION, 50)); // Use shorter delay, max 50ms
     
     return () => {
       if (readTimer) clearTimeout(readTimer);
-      if (animationTimer) clearTimeout(animationTimer);
     };
-  }, [docMetadata, onDocumentClick, keepAnimating]); // Re-run if docMetadata changes (backend updates status)
+  }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText]); // Re-run if docMetadata changes (backend updates status) or response text appears
   
   const actionStyle: React.CSSProperties = {
     color: ACTION_COLOR,
@@ -303,15 +385,28 @@ const ReadingStepWithTransition: React.FC<{
   return (
     <motion.div 
       key={generateUniqueKey('ReadingStepWithTransition', readingIndex, docMetadata?.doc_id || filename)}
-      initial={{ opacity: 0, y: 2, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0, y: 2, scale: 0.98 }}
+                animate={hasResponseText ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1, y: 0, scale: 1 }}
+                transition={hasResponseText ? { duration: 0 } : { duration: 0.15, ease: [0.16, 1, 0.3, 1] }} // Instant when response text appears, otherwise faster animation
       style={{ marginBottom: '4px' }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-        {/* Show spinning indicator when actively reading, FileText when reading, BookOpenCheck when read */}
-        {phase === 'reading' && keepAnimating ? (
-          <div className="reading-spinner" />
+        {/* Show spinning wheel when actively reading, FileText when reading (not animating), BookOpenCheck when read */}
+        {phase === 'reading' && keepAnimating && !hasResponseText ? (
+          <div 
+            className="reasoning-loading-spinner"
+            style={{
+              width: '12px',
+              height: '12px',
+              border: '2px solid #D1D5DB',
+              borderTop: '2px solid #4B5563',
+              borderRadius: '50%',
+              flexShrink: 0,
+              display: 'inline-block',
+              boxSizing: 'border-box',
+              marginTop: '2px'
+            }}
+          />
         ) : phase === 'reading' ? (
           <FileText style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
         ) : (
@@ -321,7 +416,7 @@ const ReadingStepWithTransition: React.FC<{
           <span className="reading-reveal-text">
             {/* "Reading" with blur reveal animation - both text and filename animate together */}
             <span style={actionStyle}>Reading{' '}</span>
-            {keepAnimating ? (
+            {keepAnimating && !hasResponseText ? (
                 <span className="reading-shimmer-active">{filename}</span>
             ) : (
                 <span style={{ color: DETAIL_COLOR }}>{filename}</span>
@@ -418,7 +513,8 @@ const StepRenderer: React.FC<{
   isTransitioning?: boolean; // Indicates transition from loading to stacked view
   shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
   allReadingComplete?: boolean; // All reading steps have completed
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false, shownDocumentsRef, allReadingComplete = false }) => {
+  hasResponseText?: boolean; // Stop animations when response text has started
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false, shownDocumentsRef, allReadingComplete = false, hasResponseText = false }) => {
   const actionStyle: React.CSSProperties = {
     color: ACTION_COLOR, // Light gray for main actions (the circled parts)
     fontWeight: 500
@@ -596,9 +692,9 @@ const StepRenderer: React.FC<{
     
     case 'searching':
       // Entire "Searching for value" (or whatever the message is) gets flowing gradient animation
-      // Animation stops when next step (exploring/analyzing/reading) appears OR when loading completes
+      // Animation stops when next step (exploring/analyzing/reading) appears OR when loading completes OR when response text starts
       const nextStep = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
-      const isSearchingActive = isLoading && (!nextStep || nextStep.action_type === 'searching');
+      const isSearchingActive = isLoading && !hasResponseText && (!nextStep || nextStep.action_type === 'searching');
       
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
@@ -660,7 +756,11 @@ const StepRenderer: React.FC<{
       
       // Keep the green animation going on ALL reading steps until response is complete
       // Not just the last one - all documents should animate while loading
-      const shouldKeepAnimating = isLoading && !allReadingComplete;
+      // Stop animating immediately when response text has started (don't block response)
+      const shouldKeepAnimating = isLoading && !hasResponseText && !allReadingComplete;
+      
+      // If response text has started, don't keep animating - show read immediately
+      const finalKeepAnimating = hasResponseText ? false : shouldKeepAnimating;
       
       return (
         <ReadingStepWithTransition 
@@ -673,15 +773,16 @@ const StepRenderer: React.FC<{
           showPreview={shouldShowPreview}
           isLastReadingStep={isLastReadingStep}
           hasNextStep={hasNextStepAfterReading}
-          keepAnimating={shouldKeepAnimating}
+          keepAnimating={finalKeepAnimating}
+          hasResponseText={hasResponseText}
         />
       );
     
     case 'analyzing':
       // "Analyzing X documents" - entire text with flowing gradient animation (only if this is the current active step)
-      // Animation stops when next step (reading) appears OR when loading completes
+      // Animation stops when next step (reading) appears OR when loading completes OR when response text starts
       const nextStepAfterAnalyzing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
-      const isRankingActive = isLoading && (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analyzing');
+      const isRankingActive = isLoading && !hasResponseText && (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analyzing');
       
       // Fix grammar: "1 documents" -> "1 document"
       const fixedMessage = step.message?.replace(/\b1 documents\b/gi, '1 document') || 'Analyzing';
@@ -758,7 +859,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false }) => {
   // Track which documents we've already started preloading
   const preloadedDocsRef = useRef<Set<string>>(new Set());
   
@@ -947,7 +1048,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         // More pronounced sequential reveal for better flow
         let stepDelay = idx * 0.15; // 150ms stagger - each step waits for previous to appear
         if (step.action_type === 'reading') {
-          stepDelay = idx * 0.12; // Slightly faster for reading steps (120ms)
+          stepDelay = idx * 0.05; // Much faster for reading steps (50ms) - appear quickly after document found
         } else if (hasSeenReading) {
           stepDelay = idx * 0.10; // Faster for steps after reading (100ms)
         }
@@ -1030,20 +1131,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               background-clip: text;
               animation: reading-glow 3s ease infinite;
               filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
-            }
-            
-            /* Spinning indicator for reading state */
-            .reading-spinner {
-              display: inline-block;
-              width: 11px;
-              height: 11px;
-              border: 1.5px solid #99F6E4;
-              border-top: 1.5px solid #0D9488;
-              border-radius: 50%;
-              animation: spin 0.6s linear infinite;
-              flex-shrink: 0;
-              margin-top: 3px;
-              box-sizing: border-box;
             }
             
             /* Searching - flowing gradient animation (cyan/blue) */
@@ -1211,7 +1298,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                     marginBottom: 0
                   } : {})
                 }}
-                transition={{ 
+                transition={hasResponseText ? { duration: 0 } : { 
                   duration: isTransitioning && hasPreview ? 0.4 : 0.3,
                   delay: isTransitioning ? 0 : stepDelay,
                   ease: isTransitioning && hasPreview 
@@ -1249,6 +1336,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 stepIndex={idx} 
                 isLoading={isLoading}
                 readingStepIndex={currentReadingIndex}
+                hasResponseText={hasResponseText}
                 isLastReadingStep={isLastReadingStep}
                 totalReadingSteps={totalReadingSteps}
                 onDocumentClick={onDocumentClick}
@@ -1325,6 +1413,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                         stepIndex={idx} 
                         isLoading={isLoading}
                         readingStepIndex={0}
+                        hasResponseText={hasResponseText}
                         isLastReadingStep={false}
                         totalReadingSteps={totalReadingSteps}
                         onDocumentClick={onDocumentClick}
@@ -1401,7 +1490,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         }
         
         .reasoning-loading-spinner {
-          animation: spin 0.8s linear infinite;
+          animation: spin 0.5s linear infinite;
         }
         
         .planning-shimmer-full {
@@ -1469,23 +1558,13 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
             }
             
-            /* Spinning indicator for reading state */
-            .reading-spinner {
-              display: inline-block;
-              width: 11px;
-              height: 11px;
-              border: 1.5px solid #99F6E4;
-              border-top: 1.5px solid #0D9488;
-              border-radius: 50%;
-              animation: spin 0.6s linear infinite;
-              flex-shrink: 0;
-              margin-top: 3px;
-              box-sizing: border-box;
-            }
-            
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
+            @keyframes rotateAtom {
+              from {
+                transform: rotateY(0deg);
+              }
+              to {
+                transform: rotateY(360deg);
+              }
             }
             
             /* Searching - flowing gradient animation (same as planning) */

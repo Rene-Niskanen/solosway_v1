@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -1573,6 +1573,7 @@ export const MainContent = ({
   const [minimizedChatMessages, setMinimizedChatMessages] = React.useState<any[]>([]); // Store chat messages when minimized
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
   const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
+  const [isRecentProjectsVisible, setIsRecentProjectsVisible] = React.useState<boolean>(false); // Track Recent Projects visibility
   
   // Hide QuickStartBar when switching away from map view
   React.useEffect(() => {
@@ -2652,7 +2653,8 @@ export const MainContent = ({
             height: '100%', 
             minHeight: '100%',
             backgroundColor: 'transparent', // Ensure transparent to show background
-            background: 'transparent' // Ensure transparent to show background
+            background: 'transparent', // Ensure transparent to show background
+            justifyContent: 'flex-start' // Start from top, don't center everything
           }}>
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
@@ -2719,19 +2721,19 @@ export const MainContent = ({
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
-                        {/* VELORA Logo - Always visible, fixed minimum size to prevent shrinking */}
+                        {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
                           src="/%28DASH%20VELORA%29%20Logo%20-%20NB.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
-                            width: '180px', // Fixed width - don't shrink on small screens
-                            minWidth: '180px', // Ensure it never gets smaller
-                            maxWidth: '280px', // Can grow on larger screens
+                            width: 'clamp(250px, 22vw, 380px)', // Slightly smaller than before
+                            minWidth: '250px', // Ensure it never gets smaller
+                            maxWidth: '380px', // Can grow on larger screens
                             height: 'auto',
-                            minHeight: '60px', // Fixed minimum height
-                            maxHeight: '120px', // Can grow on larger screens
-                            marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(1rem, 3vh, 1.5rem)' : '0', // Balanced spacing between logo and welcome message
+                            minHeight: '80px', // Slightly reduced minimum height
+                            maxHeight: '150px', // Slightly reduced maximum height
+                            marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 4vh, 3rem)' : '0', // Spacing between logo and search bar
                             objectFit: 'contain' // Maintain aspect ratio
                           }}
                     onLoad={() => {
@@ -2741,80 +2743,221 @@ export const MainContent = ({
                       console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
                     }}
                   />
-                  
-                        {/* Dynamic Welcome Message - Hide when very small OR when search bar needs space */}
-                        {!isVerySmall && !shouldHideProjectsForSearchBar && (() => {
-                    const getUserName = () => {
-                      if (userData?.first_name) {
-                        return userData.first_name;
-                      }
-                      if (userData?.email) {
-                        // Extract name from email (e.g., "user@example.com" → "user")
-                        const emailPrefix = userData.email.split('@')[0];
-                        // Capitalize first letter
-                        return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-                      }
-                      return '';
-                    };
-                    const userName = getUserName();
-                    return userName ? (
-                            <div style={{
-                              position: 'relative',
-                              display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
-                              transition: 'filter 0.2s ease'
-                            } as React.CSSProperties}>
-                              <p
-                                className="mb-0 text-center tracking-wide leading-relaxed"
-                                style={{
-                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                  color: '#111827', // Single, sleeker ink tone
-                                  fontWeight: 400,
-                                  opacity: 0.9
-                                } as React.CSSProperties}
-                              >
-                                {`Welcome back${userName ? ` ${userName}` : ''}, your workspace is synced and ready for your next move`}
-                      </p>
-                            </div>
-                    ) : (
-                            <div style={{
-                              position: 'relative',
-                              display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
-                              transition: 'filter 0.2s ease'
-                            } as React.CSSProperties}>
-                              <p
-                                className="mb-0 text-center tracking-wide leading-relaxed"
-                                style={{
-                                fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                  color: '#111827',
-                                  fontWeight: 400,
-                                  opacity: 0.9
-                                } as React.CSSProperties}
-                              >
-                        Welcome back, your workspace is synced and ready for your next move
-                      </p>
-                            </div>
-                    );
-                  })()}
                 </div>
                 
-                {/* Quick Start Bar - between welcome message and recent projects */}
-                {!isVerySmall && !shouldHideProjectsForSearchBar && !isQuickStartBarVisible && (
-                  <QuickStartBar
-                    onDocumentLinked={(propertyId, documentId) => {
-                      console.log('Document linked:', { propertyId, documentId });
-                      // Optionally refresh recent projects or show success
-                    }}
-                    onPopupVisibilityChange={setIsQuickStartPopupVisible}
-                  />
-                )}
-                
-                      {/* Recent Projects Section - Hide when very small OR when search bar needs space */}
-                      {!isVerySmall && !shouldHideProjectsForSearchBar && (
-                        <div className="w-full" style={{ marginTop: '0', marginBottom: 'clamp(2rem, 5vh, 3rem)' }}>
+                      
+                      {/* Unified Search Bar - adapts based on context, always visible */}
+                      {/* Ensure search bar is never cut off with overflow protection */}
+                      {/* When map is visible, position search bar above map */}
+                      {(() => {
+                        // ChatGPT-style: Position search bar at bottom when viewport is very small
+                        // This ensures the search bar and placeholder text are always visible
+                        const VERY_SMALL_WIDTH_THRESHOLD = 600; // When to switch to bottom positioning
+                        const VERY_SMALL_HEIGHT_THRESHOLD = 500; // When to switch to bottom positioning
+                        const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
+                                                   viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
+                        
+                        // Calculate padding dynamically to ensure equal spacing and prevent cutoff
+                        const MIN_PADDING = 16; // 1rem minimum padding
+                        const MAX_PADDING = 32; // 2rem maximum padding
+                        const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
+                        
+                        // Calculate available width (account for sidebar)
+                        const availableWidth = isMapVisible 
+                          ? viewportSize.width 
+                          : viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
+                        
+                        // Calculate padding: ensure search bar fits with at least minimum padding
+                        // If viewport is too small, use minimum padding
+                        // Otherwise, use 4% of available width, capped at MAX_PADDING
+                        let finalPadding;
+                        if (availableWidth < SEARCH_BAR_MIN + (MIN_PADDING * 2)) {
+                          // Very small viewport: use minimum padding, but ensure search bar can fit
+                          // On extremely small screens, reduce padding even more
+                          if (availableWidth < 350) {
+                            finalPadding = 8; // Very minimal padding on extremely small screens
+                          } else {
+                            finalPadding = MIN_PADDING;
+                          }
+                        } else {
+                          // Normal viewport: calculate padding as 4% of available width
+                          finalPadding = Math.max(
+                            MIN_PADDING,
+                            Math.min(MAX_PADDING, Math.floor(availableWidth * 0.04))
+                          );
+                        }
+                        
+                        // Calculate actual search bar width: available width minus padding on both sides
+                        const actualSearchBarWidth = availableWidth - (finalPadding * 2);
+                        
+                        // When very small, position at bottom like ChatGPT
+                        const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
+                        
+                        return (
+                          <div className="w-full flex justify-center items-center" style={{ 
+                            marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
+                            marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
+                            paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
+                            paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
+                            paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
+                            paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
+                            overflow: 'visible', // Ensure content is never clipped
+                            position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
+                            bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
+                            left: isMapVisible ? '50%' : (shouldPositionAtBottom ? '0' : 'auto'),
+                            right: shouldPositionAtBottom ? '0' : 'auto',
+                            transform: isMapVisible ? 'translateX(-50%)' : 'none',
+                            zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
+                            width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
+                            maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
+                            boxSizing: 'border-box', // Include padding in width calculation
+                            backgroundColor: 'transparent', // Fully transparent - background shows through
+                            background: 'transparent', // Fully transparent - background shows through
+                            backdropFilter: 'none' // No backdrop filter to ensure full transparency
+                          }}>
+                <SearchBar 
+                  onSearch={handleSearch} 
+                  onQueryStart={handleQueryStart} 
+                  onMapToggle={handleMapToggle}
+                  resetTrigger={resetTrigger}
+                  isMapVisible={isMapVisible}
+                  isInChatMode={isInChatMode}
+                  currentView={currentView}
+                  hasPerformedSearch={hasPerformedSearch}
+                  isSidebarCollapsed={isSidebarCollapsed}
+                  onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
+                    if (previousSessionQuery) {
+                      setMapSearchQuery(previousSessionQuery);
+                      setHasPerformedSearch(true);
+                      pendingMapQueryRef.current = ""; // Clear ref
+                      setPendingMapQuery(""); // Clear pending query when opening panel
+                      // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+                    }
+                  } : undefined}
+                  hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
+                  onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
+                  isQuickStartBarVisible={isQuickStartBarVisible}
+                  initialValue={(() => {
+                    const value = isMapVisible && !hasPerformedSearch 
+                      ? (pendingMapQueryRef.current || pendingMapQuery) 
+                      : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
+                    return value;
+                  })()}
+                  initialAttachedFiles={(() => {
+                    // When in dashboard view (!isMapVisible), use dashboard attachments
+                    // When in map view but not performed search, use map attachments
+                    const attachments = !isMapVisible 
+                      ? (pendingDashboardAttachmentsRef.current.length > 0 ? pendingDashboardAttachmentsRef.current : (pendingDashboardAttachments.length > 0 ? pendingDashboardAttachments : undefined))
+                      : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
+                    return attachments;
+                  })()}
+                />
+                          </div>
+                        );
+                      })()}
+                      
+                      {/* Upload and Recent Projects Buttons - positioned below search bar */}
+                      {!isMapVisible && !isInChatMode && (
+                        <div className="w-full flex items-center justify-center gap-3" style={{ 
+                          marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                          paddingTop: 'clamp(0.5rem, 1vh, 1rem)',
+                          paddingLeft: 'clamp(16px, 4vw, 32px)',
+                          paddingRight: 'clamp(16px, 4vw, 32px)',
+                          position: 'relative',
+                          zIndex: 100,
+                          width: '100%',
+                          maxWidth: 'clamp(400px, 85vw, 650px)',
+                          marginLeft: 'auto',
+                          marginRight: 'auto',
+                          visibility: 'visible',
+                          display: 'flex'
+                        }}>
+                          {/* Recent Projects Button */}
+                          <button
+                            onClick={() => setIsRecentProjectsVisible(!isRecentProjectsVisible)}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors focus:outline-none outline-none"
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              color: '#374151',
+                              border: '1px solid rgba(229, 231, 235, 0.6)',
+                              fontSize: '14px',
+                              fontWeight: 500,
+                              cursor: 'pointer',
+                              height: '40px',
+                              transition: 'all 0.15s ease',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#F9FAFB';
+                              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#FFFFFF';
+                              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                            }}
+                          >
+                            <Folder className="w-4 h-4" strokeWidth={1.5} />
+                            <span>Recent Projects</span>
+                          </button>
+                        </div>
+                      )}
+                      
+                      {/* QuickStartBar beside Search Bar - show when Link button is clicked */}
+                      {!isMapVisible && isQuickStartBarVisible && (() => {
+                        // Calculate padding to match search bar
+                        const MIN_PADDING = 16;
+                        const MAX_PADDING = 32;
+                        const availableWidth = viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
+                        const quickStartPadding = availableWidth < 350 
+                          ? 8 
+                          : Math.max(
+                              MIN_PADDING,
+                              Math.min(MAX_PADDING, Math.floor(availableWidth * 0.04))
+                            );
+                        
+                        return (
+                          <motion.div
+                            initial={{ opacity: 0, x: -20, scale: 0.95 }}
+                            animate={{ opacity: 1, x: 0, scale: 1 }}
+                            exit={{ opacity: 0, x: -20, scale: 0.95 }}
+                            transition={{ duration: 0.2, ease: 'easeOut' }}
+                            style={{
+                              position: 'relative',
+                              zIndex: 10,
+                              width: '100%',
+                              maxWidth: 'clamp(400px, 85vw, 650px)',
+                              marginLeft: 'auto',
+                              marginRight: 'auto',
+                              marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                              paddingLeft: `${quickStartPadding}px`,
+                              paddingRight: `${quickStartPadding}px`,
+                            }}
+                          >
+                            <QuickStartBar
+                              onDocumentLinked={(propertyId, documentId) => {
+                                console.log('Document linked:', { propertyId, documentId });
+                                setIsQuickStartBarVisible(false);
+                              }}
+                              onPopupVisibilityChange={setIsQuickStartPopupVisible}
+                            />
+                          </motion.div>
+                        );
+                      })()}
+                      
+                      {/* Recent Projects Section - appears below buttons when expanded, doesn't affect search bar position */}
+                      {!isMapVisible && !isInChatMode && isRecentProjectsVisible && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          transition={{ duration: 0.2, ease: 'easeOut' }}
+                          className="w-full"
+                          style={{ 
+                            marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                            marginBottom: 'clamp(2rem, 5vh, 3rem)',
+                            position: 'relative',
+                            zIndex: 99
+                          }}
+                        >
                           <RecentProjectsSection 
                             onNewProjectClick={() => {
                               setShowNewPropertyWorkflow(true);
@@ -2887,120 +3030,11 @@ export const MainContent = ({
                               }
                             }}
                           />
-                        </div>
+                        </motion.div>
                       )}
-                      
-                      {/* Unified Search Bar - adapts based on context, always visible */}
-                      {/* Ensure search bar is never cut off with overflow protection */}
-                      {/* When map is visible, position search bar above map */}
-                      {(() => {
-                        // ChatGPT-style: Position search bar at bottom when viewport is very small
-                        // This ensures the search bar and placeholder text are always visible
-                        const VERY_SMALL_WIDTH_THRESHOLD = 600; // When to switch to bottom positioning
-                        const VERY_SMALL_HEIGHT_THRESHOLD = 500; // When to switch to bottom positioning
-                        const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
-                                                   viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
-                        
-                        // Calculate padding dynamically to ensure equal spacing and prevent cutoff
-                        const MIN_PADDING = 16; // 1rem minimum padding
-                        const MAX_PADDING = 32; // 2rem maximum padding
-                        const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
-                        
-                        // Calculate available width (account for sidebar)
-                        const availableWidth = isMapVisible 
-                          ? viewportSize.width 
-                          : viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
-                        
-                        // Calculate padding: ensure search bar fits with at least minimum padding
-                        // If viewport is too small, use minimum padding
-                        // Otherwise, use 4% of available width, capped at MAX_PADDING
-                        let finalPadding;
-                        if (availableWidth < SEARCH_BAR_MIN + (MIN_PADDING * 2)) {
-                          // Very small viewport: use minimum padding, but ensure search bar can fit
-                          // On extremely small screens, reduce padding even more
-                          if (availableWidth < 350) {
-                            finalPadding = 8; // Very minimal padding on extremely small screens
-                          } else {
-                            finalPadding = MIN_PADDING;
-                          }
-                        } else {
-                          // Normal viewport: calculate padding as 4% of available width
-                          finalPadding = Math.max(
-                            MIN_PADDING,
-                            Math.min(MAX_PADDING, Math.floor(availableWidth * 0.04))
-                          );
-                        }
-                        
-                        // Calculate actual search bar width: available width minus padding on both sides
-                        const actualSearchBarWidth = availableWidth - (finalPadding * 2);
-                        
-                        // When very small, position at bottom like ChatGPT
-                        const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
-                        
-                        return (
-                          <div className="w-full flex justify-center items-center" style={{ 
-                            marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
-                            marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                            paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
-                            paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
-                            paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
-                            paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
-                            overflow: 'visible', // Ensure content is never clipped
-                            position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                            bottom: isMapVisible ? '20px' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            left: isMapVisible ? '50%' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            right: shouldPositionAtBottom ? '0' : 'auto',
-                            transform: isMapVisible ? 'translateX(-50%)' : 'none',
-                            zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
-                            width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                            maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
-                            boxSizing: 'border-box', // Include padding in width calculation
-                            backgroundColor: 'transparent', // Fully transparent - background shows through
-                            background: 'transparent', // Fully transparent - background shows through
-                            backdropFilter: 'none' // No backdrop filter to ensure full transparency
-                          }}>
-                <SearchBar 
-                  onSearch={handleSearch} 
-                  onQueryStart={handleQueryStart} 
-                  onMapToggle={handleMapToggle}
-                  resetTrigger={resetTrigger}
-                  isMapVisible={isMapVisible}
-                  isInChatMode={isInChatMode}
-                  currentView={currentView}
-                  hasPerformedSearch={hasPerformedSearch}
-                  isSidebarCollapsed={isSidebarCollapsed}
-                  onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
-                    if (previousSessionQuery) {
-                      setMapSearchQuery(previousSessionQuery);
-                      setHasPerformedSearch(true);
-                      pendingMapQueryRef.current = ""; // Clear ref
-                      setPendingMapQuery(""); // Clear pending query when opening panel
-                      // This will show SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-                    }
-                  } : undefined}
-                  hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
-                  initialValue={(() => {
-                    const value = isMapVisible && !hasPerformedSearch 
-                      ? (pendingMapQueryRef.current || pendingMapQuery) 
-                      : (!isMapVisible ? (pendingDashboardQueryRef.current || pendingDashboardQuery) : undefined);
-                    return value;
-                  })()}
-                  initialAttachedFiles={(() => {
-                    // When in dashboard view (!isMapVisible), use dashboard attachments
-                    // When in map view but not performed search, use map attachments
-                    const attachments = !isMapVisible 
-                      ? (pendingDashboardAttachmentsRef.current.length > 0 ? pendingDashboardAttachmentsRef.current : (pendingDashboardAttachments.length > 0 ? pendingDashboardAttachments : undefined))
-                      : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
-                    return attachments;
-                  })()}
-                />
-                          </div>
-                        );
-                      })()}
                     </div>
                   );
                 })() : null}
-                
                 
                 {/* MapChatBar and SideChatPanel are now rendered outside content container for proper visibility */}
                 
@@ -3057,6 +3091,8 @@ export const MainContent = ({
                 pendingDashboardAttachmentsRef.current = attachments;
                 setPendingDashboardAttachments(attachments);
               } : undefined}
+              onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
+              isQuickStartBarVisible={isQuickStartBarVisible}
               onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
                 if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
@@ -3747,6 +3783,7 @@ export const MainContent = ({
           })()}
           isPropertyDetailsOpen={isPropertyDetailsOpen}
           shouldExpand={shouldExpandChat}
+          isMapVisible={isMapVisible}
           onQuickStartToggle={() => {
             setIsQuickStartBarVisible(!isQuickStartBarVisible);
           }}
@@ -3855,17 +3892,21 @@ export const MainContent = ({
         />
       )}
 
-      {/* QuickStartBar as Island above Search Bar - only show when chat panel is NOT open */}
-      {isQuickStartBarVisible && !hasPerformedSearch && (
-        <div
+      {/* QuickStartBar beside Search Bar - only show when chat panel is NOT open */}
+      {isQuickStartBarVisible && !hasPerformedSearch && !isMapVisible && (
+        <motion.div
+          initial={{ opacity: 0, x: -20, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: -20, scale: 0.95 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
           style={{
             position: 'fixed',
-            bottom: '80px', // Position slightly lower, closer to search bar
+            bottom: '80px', // Match search bar bottom position
             left: '50%',
-            transform: 'translateX(-50%)',
+            transform: 'translateX(calc(-50% + clamp(350px, 42.5vw, 650px) / 2 + 20px))', // Position to the right of search bar with spacing
             zIndex: 10001,
             width: 'fit-content',
-            maxWidth: 'clamp(400px, 85vw, 650px)' // Match search bar width
+            maxWidth: 'clamp(300px, 30vw, 400px)'
           }}
         >
             <QuickStartBar
@@ -3876,7 +3917,7 @@ export const MainContent = ({
               }}
               onPopupVisibilityChange={setIsQuickStartPopupVisible}
             />
-        </div>
+        </motion.div>
       )}
 
       {/* Content container - transparent to show map background */}

@@ -504,8 +504,11 @@ export const Sidebar = ({
         ...(isChatPanelOpen && !isCollapsed && !isExpanded ? { left: '376px' } : {}),
         // Make toggle rail white (or transparent when chat panel is open in small sidebar mode to remove grey line)
         backgroundColor: (isChatPanelOpen && !isCollapsed && !isExpanded) ? 'transparent' : '#FFFFFF',
+        // Add faint borders on left and right sides for visibility against white background
+        borderLeft: '1px solid rgba(229, 231, 235, 0.6)',
+        borderRight: '1px solid rgba(229, 231, 235, 0.6)',
         pointerEvents: 'auto',
-        transition: 'left 0.2s ease-out, background-color 0.2s ease-out, box-shadow 0.2s ease-out'
+        transition: 'left 0.2s ease-out, background-color 0.2s ease-out, box-shadow 0.2s ease-out, border-color 0.2s ease-out'
       }}
     >
       {/* Glassmorphism arrow indicator - should point left when expanded, right when collapsed */}

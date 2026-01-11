@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeft, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -275,25 +275,31 @@ const StreamingResponseText: React.FC<{
 // Component for displaying property thumbnail in search results
 const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property }) => {
   const [imageError, setImageError] = React.useState(false);
-  const imageUrl = property.image || property.primary_image_url;
+  // Check multiple possible locations for the image URL
+  const imageUrl = property.image || 
+                   property.primary_image_url || 
+                   (property.property_images && property.property_images.length > 0 ? property.property_images[0].url : null) ||
+                   (property as any).property_details?.primary_image_url ||
+                   ((property as any).property_details?.property_images && (property as any).property_details.property_images.length > 0 
+                     ? (property as any).property_details.property_images[0].url : null);
 
   return (
     <div style={{
-      width: '40px',
-      height: '40px',
-      borderRadius: '4px',
+      width: '32px',
+      height: '32px',
+      borderRadius: '8px',
       overflow: 'hidden',
-      backgroundColor: '#f3f4f6',
+      backgroundColor: '#F3F4F6',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       flexShrink: 0,
-      border: '1px solid rgba(0, 0, 0, 0.08)'
+      border: '1px solid rgba(229, 231, 235, 0.5)'
     }}>
       {imageUrl && !imageError ? (
         <img
           src={imageUrl}
-          alt={property.address}
+          alt={(property as any).custom_name || property.address}
           style={{
             width: '100%',
             height: '100%',
@@ -306,12 +312,12 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
         <div style={{
           width: '100%',
           height: '100%',
-          backgroundColor: '#10b981',
+          background: 'linear-gradient(135deg, #E5E7EB 0%, #D1D5DB 100%)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center'
         }}>
-          <Home className="w-5 h-5 text-white" strokeWidth={2.5} />
+          <Home className="w-4 h-4" style={{ color: '#6B7280' }} strokeWidth={2} />
         </div>
       )}
     </div>
@@ -1529,6 +1535,7 @@ interface SideChatPanelProps {
   shouldExpand?: boolean; // Whether chat should be expanded (for Analyse mode)
   onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
+  isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
 }
 
 export interface SideChatPanelRef {
@@ -1554,7 +1561,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   isPropertyDetailsOpen = false, // Default to false
   shouldExpand = false, // Default to false
   onQuickStartToggle,
-  isQuickStartBarVisible = false // Default to false
+  isQuickStartBarVisible = false, // Default to false
+  isMapVisible = false // Default to false
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -1860,7 +1868,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Only set fullscreen mode when shouldExpand is true AND property details is NOT open
       // When property details is open, use normal 35vw width (not fullscreen)
       if (!isPropertyDetailsOpen) {
-        // Set fullscreen mode (from dashboard query)
+        // Set fullscreen mode (from dashboard query) - do this immediately
         if (!isFullscreenMode) {
           console.log('✅ Setting fullscreen mode from dashboard');
           isFullscreenFromDashboardRef.current = true;
@@ -1869,10 +1877,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           setDraggedWidth(null);
           // Mark that we just entered fullscreen to disable transition
           setJustEnteredFullscreen(true);
-          // Reset the flag after transition would complete
+          // Reset the flag after a brief delay to ensure smooth transition
           setTimeout(() => {
             setJustEnteredFullscreen(false);
-          }, 100);
+          }, 50); // Reduced from 100ms for faster transition
         }
       } else {
         // Property details is open - use normal 35vw width (not fullscreen)
@@ -3378,6 +3386,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     preloadPdfPage, // NEW: Pre-render PDF pages
     setHighlightCitation, // NEW: Set highlight for PropertyDetailsPanel
     openExpandedCardView, // NEW: Open standalone ExpandedCardView
+    closeExpandedCardView, // NEW: Close standalone ExpandedCardView
     expandedCardViewDoc // Track when document preview is open/closed
   } = usePreview();
   
@@ -4478,13 +4487,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     // Always stay in multi-line layout, just adjust height
     if (inputRef.current) {
+      // Store current height before measurement to maintain it during transition
+      const currentHeight = inputRef.current.offsetHeight;
+      
+      // Temporarily set height to auto to measure scrollHeight
+      // Use a single synchronous operation to minimize layout shift
+      const previousHeight = inputRef.current.style.height;
       inputRef.current.style.height = 'auto';
       const scrollHeight = inputRef.current.scrollHeight;
       const maxHeight = 120;
-      const newHeight = Math.min(scrollHeight, maxHeight);
+      const newHeight = Math.max(24, Math.min(scrollHeight, maxHeight)); // Ensure minimum 24px
+      
+      // Set new height immediately - this happens in the same frame
       inputRef.current.style.height = `${newHeight}px`;
       inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
       inputRef.current.style.minHeight = '24px';
+      
+      // If height didn't change, restore previous style to prevent any reflow
+      if (Math.abs(newHeight - currentHeight) < 1) {
+        inputRef.current.style.height = previousHeight || '24px';
+      }
       
       if (!isDeletingRef.current && cursorPos !== null) {
         inputRef.current.setSelectionRange(cursorPos, cursorPos);
@@ -5584,19 +5606,126 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         return (
           <div key={finalKey} style={{
             alignSelf: 'flex-end', maxWidth: '85%', width: 'fit-content',
+            minWidth: 0, // Allow shrinking to prevent overflow
             marginTop: '8px', marginLeft: 'auto', marginRight: '0',
-            display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end'
+            display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end',
+            boxSizing: 'border-box'
           }}>
-            {message.selectedDocumentIds?.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
-                <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
-                <span style={{ fontWeight: 400 }}>
-                  {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
-                    ? message.selectedDocumentNames[0]
-                    : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
-                </span>
-              </div>
-            )}
+            {message.selectedDocumentIds?.length > 0 && (() => {
+              // Get the first selected document from property attachments
+              // First try from message, then from current context
+              let selectedDoc: any = null;
+              let propertySource: any = null;
+              
+              // Try message property attachments first
+              if (message.propertyAttachments && message.propertyAttachments.length > 0) {
+                propertySource = message.propertyAttachments[0].property as any;
+                if (propertySource?.propertyHub?.documents && message.selectedDocumentIds.length > 0) {
+                  selectedDoc = propertySource.propertyHub.documents.find((d: any) => d.id === message.selectedDocumentIds[0]);
+                }
+              }
+              
+              // If not found in message, try current context property attachments
+              if (!selectedDoc && propertyAttachments && propertyAttachments.length > 0) {
+                propertySource = propertyAttachments[0].property as any;
+                if (propertySource?.propertyHub?.documents && message.selectedDocumentIds.length > 0) {
+                  selectedDoc = propertySource.propertyHub.documents.find((d: any) => d.id === message.selectedDocumentIds[0]);
+                }
+              }
+              
+              // If still not found, try to get from preloaded files cache
+              if (!selectedDoc && propertySource?.id) {
+                const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertySource.id];
+                if (preloadedFiles && Array.isArray(preloadedFiles) && message.selectedDocumentIds.length > 0) {
+                  selectedDoc = preloadedFiles.find((d: any) => d.id === message.selectedDocumentIds[0]);
+                }
+              }
+              
+              if (!selectedDoc) {
+                // Fallback to text display if document not found
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
+                    <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
+                    <span style={{ fontWeight: 400 }}>
+                      {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
+                        ? message.selectedDocumentNames[0]
+                        : `${message.selectedDocumentIds.length} document${message.selectedDocumentIds.length === 1 ? '' : 's'} selected`}
+                    </span>
+                  </div>
+                );
+              }
+              
+              // Get document cover URL
+              const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+              const getDownloadUrl = (doc: any) => {
+                if (doc.url || doc.download_url || doc.file_url || doc.s3_url) {
+                  return doc.url || doc.download_url || doc.file_url || doc.s3_url;
+                } else if (doc.s3_path) {
+                  return `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(doc.s3_path)}`;
+                } else {
+                  return `${backendUrl}/api/files/download?document_id=${doc.id}`;
+                }
+              };
+              
+              const coverUrl = getDownloadUrl(selectedDoc);
+              const cachedCover = (window as any).__preloadedDocumentCovers?.[selectedDoc.id];
+              const fileType = (selectedDoc as any).file_type || '';
+              const fileName = selectedDoc.original_filename.toLowerCase();
+              const isImage = fileType.includes('image') || fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+              const isPDF = fileType.includes('pdf') || fileName.endsWith('.pdf');
+              const isDOC = fileType.includes('word') || fileName.match(/\.(docx?|doc)$/i);
+              const hasDocxPreview = cachedCover?.isDocx && cachedCover?.url;
+              
+              return (
+                <div style={{ 
+                  width: '120px', 
+                  height: '160px', 
+                  borderRadius: '8px', 
+                  overflow: 'hidden',
+                  border: '1px solid rgba(229, 231, 235, 0.6)',
+                  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+                  marginBottom: '2px',
+                  position: 'relative',
+                  backgroundColor: '#f9fafb'
+                }}>
+                  {isImage ? (
+                    <img 
+                      src={coverUrl} 
+                      className="w-full h-full object-cover"
+                      alt={selectedDoc.original_filename}
+                      loading="lazy"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  ) : isPDF ? (
+                    <div className="w-full h-full relative bg-gray-50">
+                      <iframe
+                        src={`${coverUrl}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                        className="w-full h-[150%] -mt-[2%] border-none opacity-90 pointer-events-none scale-100 origin-top relative z-[1] bg-white"
+                        title="preview"
+                        loading="lazy"
+                        scrolling="no"
+                        style={{ contain: 'layout style paint' }}
+                      />
+                      <div className="absolute inset-0 bg-transparent z-10" />
+                    </div>
+                  ) : isDOC && hasDocxPreview ? (
+                    <div className="w-full h-full relative bg-white overflow-hidden" style={{ contain: 'layout style paint' }}>
+                      <iframe
+                        src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(cachedCover.url)}&action=embedview&wdStartOn=1`}
+                        className="w-full h-full border-none"
+                        title="preview"
+                        loading="lazy"
+                        style={{ contain: 'layout style paint' }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                      <FileText className="w-8 h-8 text-gray-300" />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             {/* BBOX Preview for citation queries */}
             {message.fromCitation && message.citationBboxData && (
               <div style={{ marginBottom: '8px' }}>
@@ -5606,7 +5735,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: '1px solid rgba(0, 0, 0, 0.08)', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: 'fit-content', wordWrap: 'break-word', display: 'inline-block', maxWidth: '100%' }}>
+            <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: 'none', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', maxWidth: '100%', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -5635,27 +5764,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     padding: 0, 
                     textAlign: 'left', 
                     fontFamily: 'system-ui, -apple-system, sans-serif', 
-                    width: 'fit-content', 
+                    width: '100%', 
                     maxWidth: '100%', 
                     boxSizing: 'border-box', 
                     display: 'flex', 
-                    alignItems: 'center', 
+                    alignItems: 'flex-start', 
                     gap: '6px',
-                    cursor: isTruncated ? 'pointer' : 'default'
+                    cursor: isTruncated ? 'pointer' : 'default',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    minWidth: 0 // Allow flex item to shrink
                   }}
                   onClick={isTruncated ? handleCitationPreviewClick : undefined}
                   title={isTruncated ? 'Click to view citation' : undefined}
                 >
                   {message.fromCitation && (
-                    <TextCursorInput size={14} style={{ flexShrink: 0, color: '#6B7280' }} />
+                    <TextCursorInput size={14} style={{ flexShrink: 0, color: '#6B7280', marginTop: '2px' }} />
                   )}
                   <div style={{ 
                     textDecoration: isTruncated ? 'underline' : 'none',
                     textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
-                    textUnderlineOffset: '2px'
+                    textUnderlineOffset: '2px',
+                    flex: 1,
+                    minWidth: 0, // Allow flex item to shrink and wrap
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word'
                   }}>
                   <ReactMarkdown components={{
-                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'inline' }}>{children}</p>,
+                    p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
                     h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
                     h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
                     ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
@@ -5692,7 +5828,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             minHeight: '1px' // Prevent collapse
           }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} />
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} hasResponseText={!!message.text} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -5723,7 +5859,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom, previewDocument, expandedCardViewDoc]);
+  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom, previewDocument, expandedCardViewDoc, propertyAttachments]);
 
   return (
     <AnimatePresence>
@@ -5746,7 +5882,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
             width: (() => {
-              // If opening in fullscreen mode (shouldExpand from dashboard, not Analyse button), start at fullscreen width immediately
+              // If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
+              // Check shouldExpand first to ensure correct width from the start
+              if (shouldExpand && !isPropertyDetailsOpen) {
+                return `calc(100vw - ${sidebarWidth}px)`;
+              }
               if (shouldExpand && isFullscreenMode && !isPropertyDetailsOpen) {
                 return `calc(100vw - ${sidebarWidth}px)`;
               }
@@ -5783,7 +5923,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               bottom: 0,
               width: '12px', // Wider handle for better visibility and easier grabbing
               cursor: 'ew-resize',
-              zIndex: 50, // High z-index to ensure it's on top
+              zIndex: 10000, // Higher than PropertyDetailsPanel (9999) to ensure line is always visible
               backgroundColor: 'transparent', // No background color
               display: 'flex',
               alignItems: 'center',
@@ -5791,18 +5931,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               pointerEvents: 'auto', // Ensure it captures mouse events
             }}
           >
-            {/* Very subtle visual indicator - no blue line */}
+            {/* Faint line to distinguish the boundary between chat and property details panel */}
             <div
               style={{
                 width: '1px',
                 height: '100%',
-                backgroundColor: 'rgba(156, 163, 175, 0.15)', // Very subtle gray line
+                backgroundColor: 'rgba(156, 163, 175, 0.3)', // Faint gray line - more visible than before
+                position: 'relative',
+                zIndex: 10000, // Ensure line is above property details panel
               }}
             />
           </div>
           
           {/* Panel content will go here */}
-          <div className="h-full flex flex-col">
+          <div 
+            className="h-full flex flex-col"
+            style={{
+              // Hide content briefly when opening in fullscreen to prevent flash
+              opacity: (shouldExpand && !isFullscreenMode) ? 0 : 1,
+              transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
+              visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible'
+            }}
+          >
             {/* Header */}
             <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none' }}>
               <div className="flex items-center justify-between">
@@ -5819,7 +5969,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         strokeWidth={1.5}
                       />
                     ) : (
-                      <PanelLeft className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                      <PanelLeftOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
                     )}
                   </button>
 
@@ -6033,7 +6183,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     })()}
                   </button>
                   <button
-                    onClick={onMapToggle}
+                    onClick={() => {
+                      onMapToggle();
+                      closeExpandedCardView(); // Close document preview (Reference agent) when closing chat
+                    }}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
                     title="Close chat"
                     style={isPropertyDetailsOpen ? { marginRight: '8px' } : undefined}
@@ -6087,7 +6240,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               style={{ 
                 backgroundColor: '#FFFFFF', 
                 paddingTop: '16px', 
-                paddingBottom: '34px', 
+                paddingBottom: '24px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
                 paddingRight: '0', // Remove right padding - centering handled by form
                 position: 'relative', 
@@ -6157,8 +6310,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
                       : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
                     position: 'relative',
-                    paddingTop: '12px', // More padding top
-                    paddingBottom: '12px', // More padding bottom
+                    paddingTop: '8px', // Default padding top
+                    paddingBottom: '8px', // Default padding bottom
                     paddingRight: '12px',
                     paddingLeft: '12px',
                     overflow: 'visible',
@@ -6269,17 +6422,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <div 
                       className="flex items-start w-full"
                       style={{ 
-                        minHeight: '24px',
+                        minHeight: '24px', // Minimum height matches textarea minHeight
+                        height: 'auto', // Allow growth but maintain minimum
                         width: '100%',
                         marginTop: '4px', // Additional padding above textarea
-                        marginBottom: '12px' // Space between text and icons
+                        marginBottom: '12px' // Default margin to match other chat bars
                       }}
                     >
                       <div className="flex-1 relative flex items-start w-full" style={{ 
                         overflow: 'visible', 
                         minHeight: '24px',
                         width: '100%',
-                        minWidth: '0'
+                        minWidth: '0',
+                        paddingRight: '0px' // Ensure no extra padding on right side
                       }}>
                         <textarea 
                           ref={inputRef}
@@ -6302,25 +6457,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           placeholder={selectedDocumentIds.size > 0 
                             ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
                             : "Ask anything..."}
-                          className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 transition-all duration-200 ease-out"
+                          className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
                           style={{
+                            height: '24px', // Fixed initial height to prevent layout shift when typing starts
                             minHeight: '24px',
                             maxHeight: '120px',
                             fontSize: '14px',
                             lineHeight: '20px',
                             paddingTop: '0px',
                             paddingBottom: '0px',
-                            paddingRight: '0px',
+                            paddingRight: '8px',
                             paddingLeft: '8px',
                             scrollbarWidth: 'thin',
                             scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                             overflow: 'hidden',
                             overflowY: 'auto',
                             wordWrap: 'break-word',
-                            transition: !inputValue.trim() ? 'none' : 'height 0.2s ease-out, overflow 0.2s ease-out',
+                            transition: 'height 0.15s ease-out, overflow 0.15s ease-out', // Smooth transition for height changes
                             resize: 'none',
                             width: '100%',
-                            minWidth: '0'
+                            minWidth: '0',
+                            color: inputValue ? '#0D0D0D' : undefined,
+                            boxSizing: 'border-box' // Ensure padding is included in height calculation
                           }}
                           autoComplete="off"
                           disabled={isSubmitted}
@@ -6336,9 +6494,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               bottom: 'calc(100% + 8px)',
                               left: 0,
                               right: 0,
-                              background: 'white',
-                              borderRadius: '8px',
-                              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08)',
+                              background: '#FFFFFF',
+                              borderRadius: '12px',
+                              border: '1px solid rgba(229, 231, 235, 0.6)',
+                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.02)',
                               maxHeight: '280px',
                               overflowY: 'auto',
                               zIndex: 10000,
@@ -6359,16 +6518,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 }
                                 onClick={() => handlePropertySelect(property)}
                                 style={{
-                                  padding: '10px 14px',
+                                  padding: '8px 12px',
                                   cursor: 'pointer',
-                                  borderBottom: index < propertySearchResults.length - 1 ? '1px solid rgba(0, 0, 0, 0.06)' : 'none',
+                                  borderBottom: index < propertySearchResults.length - 1 ? '1px solid rgba(229, 231, 235, 0.3)' : 'none',
                                   backgroundColor: 'transparent',
+                                  transition: 'background-color 0.15s ease',
                                   display: 'flex',
                                   alignItems: 'center',
-                                  gap: '12px'
+                                  gap: '10px'
                                 }}
                                 onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor = '#f9fafb';
+                                  e.currentTarget.style.backgroundColor = '#F9FAFB';
                                 }}
                                 onMouseLeave={(e) => {
                                   e.currentTarget.style.backgroundColor = 'transparent';
@@ -6381,10 +6541,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ 
                                     fontWeight: 500, 
-                                    fontSize: '14px', 
+                                    fontSize: '13px', 
                                     color: '#111827', 
-                                    marginBottom: '3px',
-                                    lineHeight: '1.4',
+                                    marginBottom: '2px',
+                                    lineHeight: '1.3',
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap'
@@ -6393,9 +6553,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   </div>
                                   {property.property_type && (
                                     <div style={{ 
-                                      fontSize: '12px', 
-                                      color: '#6b7280',
-                                      lineHeight: '1.4',
+                                      fontSize: '11px', 
+                                      color: '#9CA3AF',
+                                      lineHeight: '1.3',
                                       fontWeight: 400
                                     }}>
                                       {property.property_type}
@@ -6421,25 +6581,82 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     >
                       {/* Left Icons: Minimize Chat Button */}
                       <div className="flex items-center space-x-3">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            // If onMinimize is provided, use it; otherwise fall back to onMapToggle
-                            if (onMinimize && chatMessages.length > 0) {
-                              onMinimize(chatMessages);
-                            } else if (onMapToggle) {
-                              onMapToggle();
-                            }
-                          }}
-                          className="p-1 text-slate-600 hover:text-green-500 transition-colors ml-2"
-                          title="Minimize chat to bubble"
-                        >
-                          <Minimize className="w-5 h-5" strokeWidth={1.5} />
-                        </button>
+                        {(() => {
+                          // Determine button state:
+                          // - If map is visible (side-by-side): Show "Close chat" with MessageCircleDashed
+                          // - If fullscreen OR property details OR document preview: Show "Map" with MapPinHouse
+                          const showMapButton = isFullscreenMode || isPropertyDetailsOpen || !!expandedCardViewDoc;
+                          const showCloseChat = isMapVisible && !showMapButton;
+                          // For "Close chat", only show text when chat is big enough to avoid squishing (higher threshold)
+                          // For "Map" button, show text when chat is big OR when in fullscreen/property details/document preview
+                          const isChatBig = isExpanded || (draggedWidth !== null && draggedWidth > 450);
+                          const isChatBigEnoughForCloseChat = isExpanded || (draggedWidth !== null && draggedWidth > 550); // Higher threshold for "Close chat" to prevent squishing
+                          const showText = showCloseChat 
+                            ? isChatBigEnoughForCloseChat  // Only show "Close chat" text when chat is big enough
+                            : (isChatBig || showMapButton); // Show "Map" text when chat is big OR when showing map button
+                          
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (showCloseChat && onMinimize && chatMessages.length > 0) {
+                                  // Close chat when map is visible
+                                  onMinimize(chatMessages);
+                                } else if (showMapButton && onMapToggle) {
+                                  // Go to map when in fullscreen or property details is open
+                                  // Close document preview if it's open
+                                  if (expandedCardViewDoc) {
+                                    closeExpandedCardView();
+                                  }
+                                  onMapToggle();
+                                } else if (onMinimize && chatMessages.length > 0) {
+                                  onMinimize(chatMessages);
+                                } else if (onMapToggle) {
+                                  // Close document preview if it's open
+                                  if (expandedCardViewDoc) {
+                                    closeExpandedCardView();
+                                  }
+                                  onMapToggle();
+                                }
+                              }}
+                              className={`flex items-center ${showText ? 'gap-1.5 px-2 py-1.5 rounded-full' : 'justify-center p-1.5 border rounded-md'} transition-all duration-200 group focus:outline-none outline-none ${showText ? 'text-gray-900' : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'}`}
+                              style={{
+                                marginLeft: '4px',
+                                ...(showText ? {
+                                  backgroundColor: '#FFFFFF',
+                                  border: '1px solid rgba(229, 231, 235, 0.6)',
+                                  transition: 'background-color 0.2s ease'
+                                } : {})
+                              }}
+                              onMouseEnter={(e) => {
+                                if (showText) {
+                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (showText) {
+                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                }
+                              }}
+                              title={showCloseChat ? "Close chat" : "Go to map"}
+                            >
+                              {showCloseChat ? (
+                                <MessageCircleDashed className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
+                              ) : (
+                                <MapPinHouse className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
+                              )}
+                              {showText && (
+                                <span className="text-xs font-medium">
+                                  {showCloseChat ? 'Close chat' : 'Map'}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })()}
                       </div>
 
                       {/* Right Icons: Attachment, Mic, Send */}
-                      <div className="flex items-center space-x-3">
+                      <div className="flex items-center space-x-3" style={{ marginRight: '4px' }}>
                         <input
                           ref={fileInputRef}
                           type="file"
@@ -6448,168 +6665,211 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="hidden"
                           accept="image/*,.pdf,.doc,.docx"
                         />
-                        <div className="relative flex items-center">
-                          <button
-                            type="button"
-                            onClick={handleOpenDocumentSelection}
-                            className={`p-1 transition-colors relative ${
-                              selectedDocumentIds.size > 0
-                                ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                                : isDocumentSelectionMode
-                                  ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
-                                  : 'text-slate-600 hover:text-green-500'
-                            }`}
-                            title={
-                              selectedDocumentIds.size > 0
-                                ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
-                                : isDocumentSelectionMode
-                                  ? "Document selection mode active - Click document cards to select"
-                                  : "Select documents to search within"
-                            }
-                          >
-                            {selectedDocumentIds.size > 0 ? (
-                              <Scan className="w-5 h-5" strokeWidth={1.5} />
-                            ) : isDocumentSelectionMode ? (
-                              <Scan className="w-5 h-5" strokeWidth={1.5} />
-                            ) : (
-                              <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
-                            )}
+                        {/* Document Selection Button - Only show when property details panel is open */}
+                        {isPropertyDetailsOpen && (
+                          <div className="relative flex items-center">
+                            <button
+                              type="button"
+                              onClick={handleOpenDocumentSelection}
+                              className={`p-1 transition-colors relative ${
+                                selectedDocumentIds.size > 0
+                                  ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                                  : isDocumentSelectionMode
+                                    ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
+                                    : 'text-gray-900 hover:text-gray-700'
+                              }`}
+                              title={
+                                selectedDocumentIds.size > 0
+                                  ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
+                                  : isDocumentSelectionMode
+                                    ? "Document selection mode active - Click document cards to select"
+                                    : "Select documents to search within"
+                              }
+                            >
+                              {selectedDocumentIds.size > 0 ? (
+                                <Scan className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                              ) : isDocumentSelectionMode ? (
+                                <Scan className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                              ) : (
+                                <SquareDashedMousePointer className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                              )}
                             {selectedDocumentIds.size > 0 && (
                               <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
                                 {selectedDocumentIds.size}
                               </span>
                             )}
                           </button>
-                          {selectedDocumentIds.size > 0 && (
+                              {selectedDocumentIds.size > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    clearSelectedDocuments();
+                                    setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                                  }}
+                                  className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                                  title="Clear document selection"
+                                >
+                                  <X className="w-3.5 h-3.5" strokeWidth={2} />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        {/* Link and Attach buttons grouped together with smaller gap */}
+                        <div className="flex items-center gap-1.5">
+                          {onQuickStartToggle && (
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                clearSelectedDocuments();
-                                setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                              onClick={onQuickStartToggle}
+                              className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                              style={{
+                                backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
+                                border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
+                                transition: 'background-color 0.2s ease, border-color 0.2s ease'
                               }}
-                              className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
-                              title="Clear document selection"
+                              onMouseEnter={(e) => {
+                                if (!isQuickStartBarVisible) {
+                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isQuickStartBarVisible) {
+                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                }
+                              }}
+                              title="Link document to property"
                             >
-                              <X className="w-3.5 h-3.5" strokeWidth={2} />
+                              <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
+                              <span className="text-xs font-medium">Link</span>
                             </button>
                           )}
-                        </div>
-                        {onQuickStartToggle && (
                           <button
                             type="button"
-                            onClick={onQuickStartToggle}
-                            className={`p-1 transition-colors ${
-                              isQuickStartBarVisible 
-                                ? 'text-green-500 bg-green-50 rounded' 
-                                : 'text-slate-600 hover:text-green-500'
-                            }`}
-                            title="Link document to property"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              border: '1px solid rgba(229, 231, 235, 0.6)',
+                              transition: 'background-color 0.2s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#F5F5F5';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#FFFFFF';
+                            }}
+                            title="Attach file"
                           >
-                            <Workflow className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                            <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            <span className="text-xs font-medium">Attach</span>
                           </button>
-                        )}
+                        </div>
                         <button
                           type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="p-1 text-slate-600 hover:text-green-500 transition-colors"
-                          title="Attach file"
+                          className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                          style={{
+                            backgroundColor: '#ECECEC',
+                            transition: 'background-color 0.2s ease'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = '#E0E0E0';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = '#ECECEC';
+                          }}
                         >
-                          <Paperclip className="w-[18px] h-[18px]" strokeWidth={1.5} />
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 text-slate-600 hover:text-green-500 transition-colors"
-                        >
-                          <Mic className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                          <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          <span className="text-xs font-medium">Voice</span>
                         </button>
                         
                         {/* Send button or Stop button (when streaming) */}
-                        {(() => {
-                          const isStreaming = chatMessages.some(msg => msg.isLoading);
-                          
-                          if (isStreaming) {
-                            // Show stop button when streaming - same size as send button to prevent layout shifts
-                            return (
-                              <motion.button 
-                                type="button" 
-                                onClick={handleStopQuery} 
-                                className="flex items-center justify-center relative focus:outline-none outline-none"
-                                style={{
-                                  width: '28px',
-                                  height: '28px',
-                                  minWidth: '28px',
-                                  minHeight: '28px',
-                                  borderRadius: '50%',
-                                  border: '1px solid #D1D5DB',
-                                  backgroundColor: '#FFFFFF',
-                                  flexShrink: 0
-                                }}
-                                whileHover={{ 
-                                  scale: 1.05,
-                                  backgroundColor: '#F3F4F6',
-                                  borderColor: '#9CA3AF'
-                                }}
-                                whileTap={{ 
-                                  scale: 0.95
-                                }}
-                                transition={{
-                                  duration: 0.2,
-                                  ease: [0.16, 1, 0.3, 1]
-                                }}
-                                title="Stop generating"
-                              >
-                                <Square className="w-2.5 h-2.5" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
-                              </motion.button>
-                            );
-                          }
-                          
-                          // Show normal send button when not streaming
-                          return (
-                            <motion.button 
-                              type="submit" 
-                              onClick={handleSubmit} 
-                              className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                              style={{
-                                width: '32px',
-                                height: '32px',
-                                minWidth: '32px',
-                                minHeight: '32px',
-                                borderRadius: '50%',
-                                flexShrink: 0
-                              }}
-                              animate={{
-                                backgroundColor: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
-                              }}
-                              disabled={isSubmitted || (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
-                              whileHover={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                                scale: 1.05
-                              } : {}}
-                              whileTap={(!isSubmitted && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0)) ? { 
-                                scale: 0.95
-                              } : {}}
-                              transition={{
-                                duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                                ease: [0.16, 1, 0.3, 1]
-                              }}
-                            >
-                              <motion.div
-                                key="arrow-up"
-                                initial={{ opacity: 1 }}
-                                animate={{ opacity: 1 }}
-                                transition={{
-                                  duration: (!inputValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0) ? 0 : 0.2,
-                                  ease: [0.16, 1, 0.3, 1]
-                                }}
-                                className="absolute inset-0 flex items-center justify-center"
-                                style={{ pointerEvents: 'none' }}
-                              >
-                                <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
-                              </motion.div>
-                            </motion.button>
-                          );
-                        })()}
+                        <AnimatePresence>
+                          {(() => {
+                            const isStreaming = chatMessages.some(msg => msg.isLoading);
+                            const hasContent = inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0;
+                            
+                            if (isStreaming) {
+                              // Show stop button when streaming - same size as send button to prevent layout shifts
+                              return (
+                                <motion.button 
+                                  key="stop-button"
+                                  type="button" 
+                                  onClick={handleStopQuery} 
+                                  initial={{ opacity: 0, scale: 0.8 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  exit={{ opacity: 0, scale: 0.8 }}
+                                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                  className="flex items-center justify-center relative focus:outline-none outline-none"
+                                  style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    minWidth: '28px',
+                                    minHeight: '28px',
+                                    borderRadius: '50%',
+                                    border: '1px solid #D1D5DB',
+                                    backgroundColor: '#FFFFFF',
+                                    flexShrink: 0
+                                  }}
+                                  whileHover={{ 
+                                    scale: 1.05,
+                                    backgroundColor: '#F3F4F6',
+                                    borderColor: '#9CA3AF'
+                                  }}
+                                  whileTap={{ 
+                                    scale: 0.95
+                                  }}
+                                  title="Stop generating"
+                                >
+                                  <Square className="w-2.5 h-2.5" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
+                                </motion.button>
+                              );
+                            }
+                            
+                            // Show normal send button when not streaming and has content
+                            if (hasContent) {
+                              return (
+                                <motion.button 
+                                  key="send-button"
+                                  type="submit" 
+                                  onClick={handleSubmit} 
+                                  initial={{ opacity: 0, scale: 0.8 }}
+                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
+                                  exit={{ opacity: 0, scale: 0.8 }}
+                                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                                  style={{
+                                    width: '32px',
+                                    height: '32px',
+                                    minWidth: '32px',
+                                    minHeight: '32px',
+                                    borderRadius: '50%',
+                                    flexShrink: 0
+                                  }}
+                                  disabled={isSubmitted}
+                                  whileHover={!isSubmitted ? { 
+                                    scale: 1.05
+                                  } : {}}
+                                  whileTap={!isSubmitted ? { 
+                                    scale: 0.95
+                                  } : {}}
+                                >
+                                  <motion.div
+                                    key="arrow-up"
+                                    initial={{ opacity: 1 }}
+                                    animate={{ opacity: 1 }}
+                                    className="absolute inset-0 flex items-center justify-center"
+                                    style={{ pointerEvents: 'none' }}
+                                  >
+                                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                  </motion.div>
+                                </motion.button>
+                              );
+                            }
+                            
+                            return null;
+                          })()}
+                        </AnimatePresence>
                       </div>
                     </div>
                   </div>

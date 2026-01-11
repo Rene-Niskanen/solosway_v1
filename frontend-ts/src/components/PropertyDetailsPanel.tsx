@@ -623,6 +623,7 @@ const ExpandedCardView: React.FC<{
     }
   }, [highlightCitation, selectedDoc?.id, renderedPages]);
   
+
   const previewContent = (
     <motion.div
       key={`expanded-${selectedDoc.id}`}
@@ -2459,16 +2460,24 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             });
         } catch (error) {
           console.error('Error reloading documents:', error);
-          setUploadError('Upload successful but failed to reload file list');
-            setUploading(false);
+          // Don't show error for reload failure, just log it
+          setUploading(false);
         }
       } else {
-        setUploadError(response.error || 'Upload failed');
-          setUploading(false);
+        const errorMessage = response.error || 'Upload failed';
+        window.dispatchEvent(new CustomEvent('upload-error', { 
+          detail: { fileName: file.name, error: errorMessage } 
+        }));
+        setUploadError(null); // Clear local error, let UploadProgressBar handle it
+        setUploading(false);
       }
     } catch (error) {
       console.error('Error uploading file:', error);
-      setUploadError(error instanceof Error ? error.message : 'Upload failed');
+      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+      window.dispatchEvent(new CustomEvent('upload-error', { 
+        detail: { fileName: file.name, error: errorMessage } 
+      }));
+      setUploadError(null); // Clear local error, let UploadProgressBar handle it
       setUploading(false);
     }
   };
@@ -2585,6 +2594,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               display: 'flex',
               flexDirection: 'column',
               zIndex: 9999,
+              // Add left border in chat mode to create visible divider line
+              borderLeft: isChatPanelOpen ? '1px solid rgba(156, 163, 175, 0.3)' : 'none',
               // Optimize rendering during layout changes
               willChange: selectedCardIndex !== null ? 'auto' : 'transform'
             }}
@@ -3975,12 +3986,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               onChange={handleFileInputChange}
             />
             
-            {uploadError && (
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full shadow-xl flex items-center gap-3 z-50 animate-in fade-in slide-in-from-bottom-4">
-                <X size={18} />
-                <span className="font-medium text-sm">{uploadError}</span>
-              </div>
-            )}
+            {/* Upload errors are now handled by UploadProgressBar component */}
             
              {/* Selection Floating Bar - Updated Style */}
                 {/* Only show when in local selection mode (for deletion), not chat selection mode */}
