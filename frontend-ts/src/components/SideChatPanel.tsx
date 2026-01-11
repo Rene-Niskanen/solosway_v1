@@ -64,44 +64,150 @@ const animatedMessagesSet = new Set<string>();
 
 // Helper function to complete incomplete markdown so ReactMarkdown can render formatted output
 // This makes streaming text render in its final formatted form word-by-word, like ChatGPT
+// The goal is to ensure ReactMarkdown can always parse and render formatted output, never raw markdown
+// IMPORTANT: This function should produce consistent output - if text is already complete,
+// it should return the same result whether streaming or not, to prevent re-renders
 const completeIncompleteMarkdown = (text: string, isStreaming: boolean): string => {
   if (!text) return text;
   
-  // When not streaming, use text as-is to match final response exactly
-  if (!isStreaming) {
-    return text;
-  }
-  
-  // During streaming, complete markdown syntax so ReactMarkdown can parse and render formatted output
-  // This ensures we see formatted text progressively, not raw markdown
+  // Always process the text to ensure it's parseable by ReactMarkdown
+  // This ensures consistent rendering whether streaming or not
+  // When not streaming, the text should already be complete, but we still check for edge cases
+  // CRITICAL: For complete text (not streaming), return as-is to prevent adding temporary markers
+  // that would cause a re-render when streaming completes
   let completed = text;
   
-  // Check for incomplete bold markers - close them so ReactMarkdown can render formatted text immediately
-  const boldMatches = completed.match(/\*\*/g);
-  if (boldMatches && boldMatches.length % 2 === 1) {
-    // Odd number of ** means incomplete bold - close it temporarily so ReactMarkdown can render it
-    const lastBoldIndex = completed.lastIndexOf('**');
-    const textAfterLastBold = completed.substring(lastBoldIndex + 2);
-    // If there's text after the last ** but no closing **, it's incomplete
-    if (textAfterLastBold && !textAfterLastBold.includes('**')) {
-      completed += '**';
+  // During streaming, complete markdown syntax so ReactMarkdown can parse and render formatted output
+  // This ensures we see formatted text progressively, not raw markdown that "clicks into place"
+  // Only add temporary closing markers during streaming - when not streaming, assume text is complete
+  const shouldAddTemporaryMarkers = isStreaming;
+  
+  // Process from the end backwards to handle the most recent incomplete syntax first
+  
+  // 1. Check for incomplete code blocks (```)
+  // Only add temporary markers during streaming
+  if (shouldAddTemporaryMarkers) {
+    const codeBlockMatches = completed.match(/```/g);
+    if (codeBlockMatches && codeBlockMatches.length % 2 === 1) {
+      // Odd number of ``` means incomplete code block - close it
+      const lastCodeBlockIndex = completed.lastIndexOf('```');
+      const textAfterCodeBlock = completed.substring(lastCodeBlockIndex + 3);
+      // If there's text after the last ``` but no closing ```, it's incomplete
+      if (textAfterCodeBlock && !textAfterCodeBlock.includes('```')) {
+        // Check if we're in the middle of a code block (not just starting one)
+        const beforeCodeBlock = completed.substring(0, lastCodeBlockIndex);
+        const hasContentBefore = beforeCodeBlock.trim().length > 0;
+        if (hasContentBefore) {
+          completed += '\n```';
+        }
+      }
     }
   }
   
-  // Check for incomplete italic markers (only if not part of bold)
-  const withoutBold = completed.replace(/\*\*/g, '');
-  const singleAsterisks = withoutBold.match(/\*/g);
-  if (singleAsterisks && singleAsterisks.length % 2 === 1) {
-    // Odd number of * means incomplete italic - close it temporarily so ReactMarkdown can render it
-    const lastItalicIndex = withoutBold.lastIndexOf('*');
-    const textAfterLastItalic = withoutBold.substring(lastItalicIndex + 1);
-    // If there's text after the last * but no closing *, it's incomplete
-    if (textAfterLastItalic && !textAfterLastItalic.includes('*')) {
-      completed += '*';
+  // 2. Check for incomplete inline code (`)
+  // Only check if not part of a code block, and only during streaming
+  if (shouldAddTemporaryMarkers) {
+    const codeBlockPattern = /```[\s\S]*?```/g;
+    const withoutCodeBlocks = completed.replace(codeBlockPattern, '');
+    const inlineCodeMatches = withoutCodeBlocks.match(/`/g);
+    if (inlineCodeMatches && inlineCodeMatches.length % 2 === 1) {
+      // Odd number of ` means incomplete inline code - close it
+      // Find the last backtick that's not part of a code block
+      let lastBacktickIndex = -1;
+      for (let i = completed.length - 1; i >= 0; i--) {
+        if (completed[i] === '`') {
+          // Check if it's part of a code block
+          const before = completed.substring(0, i);
+          const after = completed.substring(i + 1);
+          const codeBlocksBefore = (before.match(/```/g) || []).length;
+          if (codeBlocksBefore % 2 === 0) {
+            // Not inside a code block
+            lastBacktickIndex = i;
+            break;
+          }
+        }
+      }
+      if (lastBacktickIndex !== -1) {
+        const textAfterBacktick = completed.substring(lastBacktickIndex + 1);
+        if (textAfterBacktick && !textAfterBacktick.includes('`')) {
+          completed = completed.substring(0, lastBacktickIndex + 1) + '`' + completed.substring(lastBacktickIndex + 1);
+        }
+      }
     }
   }
   
-  // Ensure headings are parseable by ReactMarkdown - check all lines, not just the last one
+  // 3. Check for incomplete bold markers (**)
+  // Only add temporary markers during streaming
+  if (shouldAddTemporaryMarkers) {
+    const boldMatches = completed.match(/\*\*/g);
+    if (boldMatches && boldMatches.length % 2 === 1) {
+      // Odd number of ** means incomplete bold - close it temporarily so ReactMarkdown can render it
+      const lastBoldIndex = completed.lastIndexOf('**');
+      const textAfterLastBold = completed.substring(lastBoldIndex + 2);
+      // If there's text after the last ** but no closing **, it's incomplete
+      if (textAfterLastBold && !textAfterLastBold.includes('**')) {
+        completed += '**';
+      }
+    }
+  }
+  
+  // 4. Check for incomplete italic markers (*) - only if not part of bold
+  // Only add temporary markers during streaming
+  if (shouldAddTemporaryMarkers) {
+    // Find single asterisks that aren't part of **
+    let lastItalicIndex = -1;
+    for (let i = completed.length - 1; i >= 0; i--) {
+      if (completed[i] === '*') {
+        // Check if it's part of ** (bold)
+        if (i > 0 && completed[i - 1] === '*') {
+          // This is part of **, skip it
+          i--; // Skip the other * too
+          continue;
+        }
+        if (i < completed.length - 1 && completed[i + 1] === '*') {
+          // This is part of **, skip it
+          continue;
+        }
+        // This is a single *, check if it's incomplete
+        lastItalicIndex = i;
+        break;
+      }
+    }
+    if (lastItalicIndex !== -1) {
+      // Count single asterisks before this one (excluding **)
+      let singleAsteriskCount = 0;
+      for (let i = 0; i < lastItalicIndex; i++) {
+        if (completed[i] === '*') {
+          // Check if it's part of **
+          if (i > 0 && completed[i - 1] === '*') continue;
+          if (i < completed.length - 1 && completed[i + 1] === '*') continue;
+          singleAsteriskCount++;
+        }
+      }
+      // If odd number, we need to close it
+      if (singleAsteriskCount % 2 === 0) {
+        // Even number before, so this opening one is incomplete
+        const textAfterItalic = completed.substring(lastItalicIndex + 1);
+        if (textAfterItalic && !textAfterItalic.includes('*')) {
+          completed += '*';
+        }
+      }
+    }
+  }
+  
+  // 5. Check for incomplete links [text](url
+  // Only add temporary markers during streaming
+  if (shouldAddTemporaryMarkers) {
+    const linkPattern = /\[([^\]]*)\]\(([^)]*)$/;
+    const incompleteLinkMatch = completed.match(linkPattern);
+    if (incompleteLinkMatch) {
+      // Close the link with empty URL or placeholder
+      completed = completed.replace(linkPattern, '[$1]()');
+    }
+  }
+  
+  // 6. Ensure headings are parseable by ReactMarkdown
+  // Always check this (not just during streaming) to ensure proper parsing
   const lines = completed.split('\n');
   let needsNewline = false;
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -119,7 +225,121 @@ const completeIncompleteMarkdown = (text: string, isStreaming: boolean): string 
     completed += '\n';
   }
   
+  // 7. Handle incomplete lists - if we're in the middle of a list item, ensure proper formatting
+  const lastLine = lines[lines.length - 1];
+  const isListItem = /^[\s]*[-*+]\s+/.test(lastLine) || /^[\s]*\d+\.\s+/.test(lastLine);
+  if (isListItem && !completed.endsWith('\n') && lines.length > 1) {
+    // If we're in a list item and it's not complete, ensure it's properly formatted
+    // This prevents raw markdown from showing
+  }
+  
   return completed;
+};
+
+// Helper to check if text has incomplete markdown that needs completion
+// Returns true if there are unclosed bold (**), italic (*), code blocks (```), or inline code (`)
+const hasIncompleteMarkdown = (text: string): boolean => {
+  if (!text) return false;
+  
+  // Check for incomplete code blocks (```)
+  const codeBlockMatches = text.match(/```/g);
+  if (codeBlockMatches && codeBlockMatches.length % 2 === 1) {
+    return true;
+  }
+  
+  // Check for incomplete inline code (`) - excluding those in code blocks
+  const codeBlockPattern = /```[\s\S]*?```/g;
+  const withoutCodeBlocks = text.replace(codeBlockPattern, '');
+  const inlineCodeMatches = withoutCodeBlocks.match(/`/g);
+  if (inlineCodeMatches && inlineCodeMatches.length % 2 === 1) {
+    return true;
+  }
+  
+  // Check for incomplete bold markers (**)
+  const boldMatches = text.match(/\*\*/g);
+  if (boldMatches && boldMatches.length % 2 === 1) {
+    return true;
+  }
+  
+  // Check for incomplete italic markers (*) - excluding those that are part of **
+  let singleAsteriskCount = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '*') {
+      // Check if it's part of ** (bold)
+      if (i > 0 && text[i - 1] === '*') continue;
+      if (i < text.length - 1 && text[i + 1] === '*') continue;
+      singleAsteriskCount++;
+    }
+  }
+  if (singleAsteriskCount % 2 === 1) {
+    return true;
+  }
+  
+  // Check for incomplete links [text](url
+  const incompleteLinkMatch = text.match(/\[([^\]]*)\]\(([^)]*)$/);
+  if (incompleteLinkMatch) {
+    return true;
+  }
+  
+  return false;
+};
+
+// Extract complete markdown blocks from combined buffer
+// Returns: { completeBlocks: string[], remainingBuffer: string }
+// Pre-completes markdown in each block before returning
+const extractMarkdownBlocks = (combined: string): { completeBlocks: string[], remainingBuffer: string } => {
+  if (!combined.trim()) {
+    return { completeBlocks: [], remainingBuffer: '' };
+  }
+  
+  const lines = combined.split('\n');
+  const completeBlocks: string[] = [];
+  let remainingBuffer = '';
+  let currentBlock = '';
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isLastLine = i === lines.length - 1;
+    
+    // Add line to current block
+    currentBlock += (currentBlock ? '\n' : '') + line;
+    
+    // CRITICAL: Check if line ends at a word boundary
+    // Streaming tokens can arrive mid-word (e.g., "## Key C" then "oncepts")
+    // Only emit if line ends with whitespace, punctuation, or is blank
+    const endsAtWordBoundary = /[\s.!?;:,)\]}>]$/.test(line) || line.trim() === '';
+    
+    // Check if this completes a block
+    const isHeading = line.match(/^##+\s+.+$/);
+    const endsWithPunctuation = line.match(/[.!?;:]\s*$/);
+    const isBlankLine = line.trim() === '';
+    const isLongEnough = line.trim().length > 50 && line.match(/\s/);
+    
+    // Determine if we should try to emit this block
+    // CRITICAL: Only emit if at word boundary to prevent mid-word splits
+    const shouldTryEmit = endsAtWordBoundary && (!isLastLine || isHeading || endsWithPunctuation || isBlankLine || isLongEnough);
+    
+    if (shouldTryEmit) {
+      // Check if current block has incomplete markdown
+      if (hasIncompleteMarkdown(currentBlock)) {
+        // Keep accumulating - don't emit yet
+        continue;
+      }
+      
+      // Block is markdown-complete - pre-complete it and emit
+      // Use completeIncompleteMarkdown to ensure it's properly formatted
+      const completedBlock = completeIncompleteMarkdown(currentBlock + '\n', true);
+      completeBlocks.push(completedBlock);
+      currentBlock = '';
+    }
+  }
+  
+  // Whatever remains goes back to buffer
+  if (currentBlock) {
+    remainingBuffer = currentBlock;
+  }
+  
+  return { completeBlocks, remainingBuffer };
 };
 
 const StreamingResponseText: React.FC<{
@@ -134,20 +354,127 @@ const StreamingResponseText: React.FC<{
   const [shouldAnimate, setShouldAnimate] = React.useState(false);
   const hasAnimatedRef = React.useRef(false);
   
-  // Complete incomplete markdown so ReactMarkdown can render formatted output as text streams
   if (!text) {
     return null;
   }
   
-  // Only complete markdown during streaming - when not streaming, use text as-is to match final response
-  // This ensures the streamed version matches the final version exactly
-  const displayText = isStreaming ? completeIncompleteMarkdown(text, isStreaming) : text;
+  // Text is already pre-completed at the streaming layer (extractMarkdownBlocks)
+  // No need for runtime markdown completion - text is always valid markdown
+  const displayText = text;
   
   // Use a stable key - ReactMarkdown will automatically re-render when content changes
   // Changing the key causes expensive remounts which create delays, especially at the end
   // ReactMarkdown's internal diffing handles content updates efficiently
   const markdownKey = `markdown-${messageId}`;
   
+  // Memoize the processed text to prevent unnecessary re-processing
+  const processedText = React.useMemo(() => {
+    return displayText;
+  }, [displayText]);
+  
+  // Process citations on the full text BEFORE ReactMarkdown splits it
+  // This ensures citations are matched even if ReactMarkdown splits text across elements
+  const processCitationsBeforeMarkdown = (text: string): string => {
+    if (!citations || Object.keys(citations).length === 0) {
+      return text;
+    }
+    
+    // Map superscript characters to numbers
+    const superscriptMap: Record<string, string> = {
+      '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+      '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+    };
+    
+    const superscriptPattern = /[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g;
+    const bracketPattern = /\[(\d+)\]/g;
+    
+    let processedText = text;
+    
+    // Process superscript citations
+    processedText = processedText.replace(superscriptPattern, (match) => {
+      let numStr = '';
+      for (const char of match) {
+        numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
+      }
+      const citData = citations[numStr];
+      if (citData) {
+        return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
+      }
+      return match;
+    });
+    
+    // Clean up periods that follow citations
+    processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
+    processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+    
+    // Process bracket citations
+    processedText = processedText.replace(bracketPattern, (match, num) => {
+      const citData = citations[num];
+      if (citData) {
+        return `%%CITATION_BRACKET_${num}%%`;
+      }
+      return match;
+    });
+    
+    return processedText;
+  };
+  
+  // Process citations before markdown parsing - use memoized processedText for consistency
+  const textWithCitationPlaceholders = React.useMemo(() => {
+    return processCitationsBeforeMarkdown(processedText);
+  }, [processedText, citations]);
+  
+  // Helper to render citation placeholders (no deduplication - show all citations)
+  const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
+    const superscriptMatch = placeholder.match(/^%%CITATION_SUPERSCRIPT_(\d+)%%$/);
+    const bracketMatch = placeholder.match(/^%%CITATION_BRACKET_(\d+)%%$/);
+    
+    if (superscriptMatch) {
+      const num = superscriptMatch[1];
+      const citData = citations?.[num];
+      if (citData) {
+        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+      }
+    } else if (bracketMatch) {
+      const num = bracketMatch[1];
+      const citData = citations?.[num];
+      if (citData) {
+        return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+      }
+    }
+    // No citation data found - return placeholder as text (shouldn't happen)
+    return placeholder;
+  };
+  
+  // Helper to process children and replace citation placeholders
+  const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
+    return React.Children.map(nodes, child => {
+      if (typeof child === 'string') {
+        // Split by citation placeholders and render
+        const parts = child.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET)_\d+%%)/g);
+        const result: React.ReactNode[] = [];
+        parts.forEach((part, idx) => {
+          if (part.startsWith('%%CITATION_')) {
+            const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
+            if (citationNode !== null) {
+              result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
+            }
+          } else if (part) {
+            result.push(<React.Fragment key={`text-${idx}`}>{part}</React.Fragment>);
+          }
+        });
+        return result.length > 0 ? result : null;
+      }
+      if (React.isValidElement(child)) {
+        const childChildren = (child.props as any)?.children;
+        if (childChildren !== undefined) {
+          return React.cloneElement(child, { ...child.props, children: processChildrenWithCitations(childChildren) } as any);
+        }
+      }
+      return child;
+    });
+  };
+
   return (
     <div
       style={{ 
@@ -161,7 +488,10 @@ const StreamingResponseText: React.FC<{
         fontWeight: 400,
         position: 'relative',
         minHeight: '1px', // Prevent collapse
-        contain: 'layout style paint' // Prevent layout shifts
+        contain: 'layout style paint', // Prevent layout shifts
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word'
       }}
     >
       <ReactMarkdown 
@@ -169,104 +499,91 @@ const StreamingResponseText: React.FC<{
         skipHtml={true}
         components={{
           p: ({ children }) => {
-            const citationSeen = new Set<string>();
-            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
-              return React.Children.map(nodes, child => {
-                if (typeof child === 'string' && citations) {
-                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
-                }
-                if (React.isValidElement(child)) {
-                  const childChildren = (child.props as any)?.children;
-                  if (childChildren !== undefined) {
-                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
-                  }
-                }
-                return child;
-              });
-            };
-            return <p style={{ margin: 0, marginBottom: '8px', textAlign: 'left' }}>{processChildren(children)}</p>;
+            return <p style={{ 
+              margin: 0, 
+              marginBottom: '8px', 
+              textAlign: 'left',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</p>;
           },
           h1: ({ children }) => {
-            const citationSeen = new Set<string>();
-            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
-              return React.Children.map(nodes, child => {
-                if (typeof child === 'string' && citations) {
-                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
-                }
-                if (React.isValidElement(child)) {
-                  const childChildren = (child.props as any)?.children;
-                  if (childChildren !== undefined) {
-                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
-                  }
-                }
-                return child;
-              });
-            };
-            return <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0', color: '#111827' }}>{processChildren(children)}</h1>;
+            return <h1 style={{ 
+              fontSize: '16px', 
+              fontWeight: 600, 
+              margin: '12px 0 8px 0', 
+              color: '#111827',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</h1>;
           },
-          h2: () => null, h3: () => null,
-          ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ul>,
-          ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: 0, listStylePosition: 'inside' }}>{children}</ol>,
+          h2: () => null, 
+          h3: () => null,
+          ul: ({ children }) => <ul style={{ 
+            margin: '8px 0', 
+            paddingLeft: 0, 
+            listStylePosition: 'inside',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{children}</ul>,
+          ol: ({ children }) => <ol style={{ 
+            margin: '8px 0', 
+            paddingLeft: 0, 
+            listStylePosition: 'inside',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{children}</ol>,
           li: ({ children }) => {
-            const citationSeen = new Set<string>();
-            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
-              return React.Children.map(nodes, child => {
-                if (typeof child === 'string' && citations) {
-                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
-                }
-                if (React.isValidElement(child)) {
-                  const childChildren = (child.props as any)?.children;
-                  if (childChildren !== undefined) {
-                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
-                  }
-                }
-                return child;
-              });
-            };
-            return <li style={{ marginBottom: '4px' }}>{processChildren(children)}</li>;
+            return <li style={{ 
+              marginBottom: '4px',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</li>;
           },
           strong: ({ children }) => {
-            const citationSeen = new Set<string>();
-            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
-              return React.Children.map(nodes, child => {
-                if (typeof child === 'string' && citations) {
-                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
-                }
-                if (React.isValidElement(child)) {
-                  const childChildren = (child.props as any)?.children;
-                  if (childChildren !== undefined) {
-                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
-                  }
-                }
-                return child;
-              });
-            };
-            return <strong style={{ fontWeight: 600 }}>{processChildren(children)}</strong>;
+            return <strong style={{ 
+              fontWeight: 600,
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</strong>;
           },
           em: ({ children }) => {
-            const citationSeen = new Set<string>();
-            const processChildren = (nodes: React.ReactNode): React.ReactNode => {
-              return React.Children.map(nodes, child => {
-                if (typeof child === 'string' && citations) {
-                  return renderTextWithCitations(child, citations, handleCitationClick, citationSeen);
-                }
-                if (React.isValidElement(child)) {
-                  const childChildren = (child.props as any)?.children;
-                  if (childChildren !== undefined) {
-                    return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
-                  }
-                }
-                return child;
-              });
-            };
-            return <em style={{ fontStyle: 'italic' }}>{processChildren(children)}</em>;
+            return <em style={{ 
+              fontStyle: 'italic',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</em>;
           },
-          code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-          blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
+          code: ({ children }) => <code style={{ 
+            backgroundColor: '#f3f4f6', 
+            padding: '2px 4px', 
+            borderRadius: '3px', 
+            fontSize: '12px', 
+            fontFamily: 'monospace',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{children}</code>,
+          blockquote: ({ children }) => <blockquote style={{ 
+            borderLeft: '3px solid #d1d5db', 
+            paddingLeft: '12px', 
+            margin: '8px 0', 
+            color: '#6b7280',
+            wordWrap: 'break-word',
+            overflowWrap: 'break-word',
+            wordBreak: 'break-word'
+          }}>{children}</blockquote>,
           hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
         }}
       >
-        {displayText}
+        {textWithCitationPlaceholders}
       </ReactMarkdown>
     </div>
   );
@@ -787,7 +1104,7 @@ const renderTextWithCitations = (
       if (seen.has(numStr)) {
         return ''; // Remove duplicate marker
       }
-      const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
+      const placeholder = `%%CITATION_SUPERSCRIPT_${placeholderIndex}%%`;
       citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
       placeholderIndex++;
       seen.add(numStr);
@@ -811,7 +1128,7 @@ const renderTextWithCitations = (
       if (seen.has(num)) {
         return ''; // Remove duplicate marker
       }
-      const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
+      const placeholder = `%%CITATION_BRACKET_${placeholderIndex}%%`;
       citationPlaceholders[placeholder] = { num, data: citData, original: match };
       placeholderIndex++;
       seen.add(num);
@@ -857,7 +1174,7 @@ const renderTextWithCitations = (
   });
   
   // Split by placeholders and render
-  const parts = processedText.split(/(__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__)/g);
+  const parts = processedText.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET)_\d+%%)/g);
   
   return parts.map((part, idx) => {
     const placeholder = citationPlaceholders[part];
@@ -1914,6 +2231,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Calculate QuickStartBar position dynamically based on chat bar position
   React.useLayoutEffect(() => {
     if (!isQuickStartBarVisible || !chatFormRef.current || !chatInputContainerRef.current || !quickStartBarWrapperRef.current) {
+      // Reset to default position when not visible
+      if (!isQuickStartBarVisible) {
+        setQuickStartBarBottom('calc(100% + 12px)');
+      }
       return;
     }
 
@@ -1923,12 +2244,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const quickStartWrapper = quickStartBarWrapperRef.current;
       
       if (!chatForm || !container || !quickStartWrapper) {
+        // Fallback position if refs aren't ready
+        setQuickStartBarBottom('calc(100% + 12px)');
         return;
       }
 
       // Get the form's inner div (the white chat bar container with the actual width)
       const formInnerDiv = chatForm.querySelector('div') as HTMLElement;
       if (!formInnerDiv) {
+        // Fallback position if form structure isn't ready
+        setQuickStartBarBottom('calc(100% + 12px)');
         return;
       }
 
@@ -1943,8 +2268,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // bottom = container height - (form top relative to container) + spacing
       const bottomPosition = containerHeight - formTopRelative + spacing;
       
+      // Ensure position is reasonable (not negative or too large)
+      const safeBottomPosition = Math.max(12, Math.min(bottomPosition, containerHeight + 100));
+      
       // Set the bottom position
-      setQuickStartBarBottom(`${bottomPosition}px`);
+      setQuickStartBarBottom(`${safeBottomPosition}px`);
       
       // QuickStartBar is now centered, so we just need to set maxWidth to match chat bar
         quickStartWrapper.style.width = 'fit-content';
@@ -1952,10 +2280,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // QuickStartBar should match chat bar width (640px) for alignment
       quickStartWrapper.style.maxWidth = '680px'; // Match content wrapper maxWidth
       setQuickStartBarTransform('translateX(-50%)'); // Always center
+      
+      // Ensure visibility
+      quickStartWrapper.style.visibility = 'visible';
+      quickStartWrapper.style.opacity = '1';
     };
 
     // Initial calculation with a small delay to ensure DOM is ready
-    const timeoutId = setTimeout(calculatePosition, 0);
+    const timeoutId = setTimeout(calculatePosition, 50);
 
     // Use ResizeObserver to recalculate when dimensions change
     const resizeObserver = new ResizeObserver(() => {
@@ -2688,61 +3020,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const accumulatedCitations: Record<string, CitationDataType> = {};
             const preloadingDocs = new Set<string>(); // Track documents currently being preloaded to avoid duplicates
             
-            // Extract complete markdown blocks from buffer
+            // Extract complete markdown blocks from buffer using shared helper
+            // Pre-completes markdown so text is always valid when stored in state
             const extractCompleteBlocks = () => {
-              // Combine pending buffer with token buffer
               const combined = pendingBuffer + tokenBuffer;
+              const { completeBlocks, remainingBuffer } = extractMarkdownBlocks(combined);
               
-              if (!combined.trim()) return;
-              
-              // Split by newlines to find complete blocks
-              const lines = combined.split('\n');
-              
-              // Process lines to find complete blocks
-              let completeBlocks: string[] = [];
-              let remainingBuffer = '';
-              
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const isLastLine = i === lines.length - 1;
-                
-                // Check if this line is a complete heading (## Heading)
-                if (line.match(/^##+\s+.+$/)) {
-                  // Complete heading - add to queue
-                  completeBlocks.push(line + '\n');
-                  continue;
-                }
-                
-                // Check if this line completes a paragraph (has newline)
-                if (!isLastLine) {
-                  // Not the last line, so it's complete (ends with newline)
-                  completeBlocks.push(line + '\n');
-                } else {
-                  // Last line - check if it's complete
-                  // If it's a heading, it's complete
-                  if (line.match(/^##+\s+.+$/)) {
-                    completeBlocks.push(line + '\n');
-                  } 
-                  // If it ends with punctuation followed by optional whitespace, it's complete
-                  else if (line.match(/[.!?;:]\s*$/)) {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // If it's a blank line, it's complete (paragraph break)
-                  else if (line.trim() === '') {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // If line is long enough (likely complete sentence), consider it complete
-                  else if (line.trim().length > 50 && line.match(/\s/)) {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // Otherwise, keep in buffer (incomplete)
-                  else {
-                    remainingBuffer = line;
-                  }
-                }
-              }
-              
-              // Add complete blocks to queue
+              // Add complete blocks to queue (already pre-completed by helper)
               if (completeBlocks.length > 0) {
                 blockQueue.push(...completeBlocks);
                 // Start processing queue if not already processing
@@ -2929,12 +3213,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
-                // Use data.summary from backend as source of truth - it has the complete, properly formatted text
-                // NOTE: Streamed tokens (displayedText) are reconstructed word-by-word and may have different whitespace
-                // data.summary is the original formatted text with correct markdown, whitespace, and structure
-                // Fallback to displayedText only if data.summary is not available
-                // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
-                  const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
+                // Use displayedText as source of truth - it was pre-completed during streaming
+                // This ensures text doesn't change when streaming completes (prevents "click" effect)
+                // Fallback to data.summary only if displayedText is empty
+                  const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
                 
                 // Use citations from complete event, fallback to accumulated citations
                 // Ensure all citation keys are strings (backend may send mixed types)
@@ -3882,6 +4164,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               text: msg.content || '',
               attachments: msg.attachments || [],
               propertyAttachments: msg.propertyAttachments || [],
+              citations: msg.citations || {}, // Restore citations for clickable buttons
               isLoading: false
             };
           });
@@ -4060,61 +4343,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const blockQueue: string[] = []; // Queue of complete markdown blocks to display
             let isProcessingQueue = false;
             
-            // Extract complete markdown blocks from buffer
+            // Extract complete markdown blocks from buffer using shared helper
+            // Pre-completes markdown so text is always valid when stored in state
             const extractCompleteBlocks = () => {
-              // Combine pending buffer with token buffer
               const combined = pendingBuffer + tokenBuffer;
+              const { completeBlocks, remainingBuffer } = extractMarkdownBlocks(combined);
               
-              if (!combined.trim()) return;
-              
-              // Split by newlines to find complete blocks
-              const lines = combined.split('\n');
-              
-              // Process lines to find complete blocks
-              let completeBlocks: string[] = [];
-              let remainingBuffer = '';
-              
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const isLastLine = i === lines.length - 1;
-                
-                // Check if this line is a complete heading (## Heading)
-                if (line.match(/^##+\s+.+$/)) {
-                  // Complete heading - add to queue
-                  completeBlocks.push(line + '\n');
-                  continue;
-                }
-                
-                // Check if this line completes a paragraph (has newline)
-                if (!isLastLine) {
-                  // Not the last line, so it's complete (ends with newline)
-                  completeBlocks.push(line + '\n');
-                } else {
-                  // Last line - check if it's complete
-                  // If it's a heading, it's complete
-                  if (line.match(/^##+\s+.+$/)) {
-                    completeBlocks.push(line + '\n');
-                  } 
-                  // If it ends with punctuation followed by optional whitespace, it's complete
-                  else if (line.match(/[.!?;:]\s*$/)) {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // If it's a blank line, it's complete (paragraph break)
-                  else if (line.trim() === '') {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // If line is long enough (likely complete sentence), consider it complete
-                  else if (line.trim().length > 50 && line.match(/\s/)) {
-                    completeBlocks.push(line + '\n');
-                  }
-                  // Otherwise, keep in buffer (incomplete)
-                  else {
-                    remainingBuffer = line;
-                  }
-                }
-              }
-              
-              // Add complete blocks to queue
+              // Add complete blocks to queue (already pre-completed by helper)
               if (completeBlocks.length > 0) {
                 blockQueue.push(...completeBlocks);
                 // Start processing queue if not already processing
@@ -4248,10 +4483,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Wait for queue to finish processing, then set final text
                 const finalizeText = () => {
                   // Citation context is cleared by parent (MainContent) after query
-                // Use data.summary from backend as source of truth - it has the complete, properly formatted text
-                // Fallback to displayedText only if data.summary is not available
-                // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
-                  const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
+                // Use displayedText as source of truth - it was pre-completed during streaming
+                // This ensures text doesn't change when streaming completes (prevents "click" effect)
+                // Fallback to data.summary only if displayedText is empty
+                  const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
                   
                   // Merge accumulated citations with any from backend complete message
                   const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -4499,6 +4734,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       const newHeight = Math.max(24, Math.min(scrollHeight, maxHeight)); // Ensure minimum 24px
       
       // Set new height immediately - this happens in the same frame
+      // Disable transition temporarily to prevent expansion animation
+      inputRef.current.style.transition = 'none';
       inputRef.current.style.height = `${newHeight}px`;
       inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
       inputRef.current.style.minHeight = '24px';
@@ -4507,6 +4744,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       if (Math.abs(newHeight - currentHeight) < 1) {
         inputRef.current.style.height = previousHeight || '24px';
       }
+      
+      // Re-enable transition after a brief delay (only for visual polish, not for initial expansion)
+      requestAnimationFrame(() => {
+        if (inputRef.current) {
+          inputRef.current.style.transition = '';
+        }
+      });
       
       if (!isDeletingRef.current && cursorPos !== null) {
         inputRef.current.setSelectionRange(cursorPos, cursorPos);
@@ -4944,61 +5188,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           const blockQueue: string[] = []; // Queue of complete markdown blocks to display
           let isProcessingQueue = false;
           
-          // Extract complete markdown blocks from buffer
+          // Extract complete markdown blocks from buffer using shared helper
+          // Pre-completes markdown so text is always valid when stored in state
           const extractCompleteBlocks = () => {
-            // Combine pending buffer with token buffer
             const combined = pendingBuffer + tokenBuffer;
+            const { completeBlocks, remainingBuffer } = extractMarkdownBlocks(combined);
             
-            if (!combined.trim()) return;
-            
-            // Split by newlines to find complete blocks
-            const lines = combined.split('\n');
-            
-            // Process lines to find complete blocks
-            let completeBlocks: string[] = [];
-            let remainingBuffer = '';
-            
-            for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              const isLastLine = i === lines.length - 1;
-              
-              // Check if this line is a complete heading (## Heading)
-              if (line.match(/^##+\s+.+$/)) {
-                // Complete heading - add to queue
-                completeBlocks.push(line + '\n');
-                continue;
-              }
-              
-              // Check if this line completes a paragraph (has newline)
-              if (!isLastLine) {
-                // Not the last line, so it's complete (ends with newline)
-                completeBlocks.push(line + '\n');
-              } else {
-                // Last line - check if it's complete
-                // If it's a heading, it's complete
-                if (line.match(/^##+\s+.+$/)) {
-                  completeBlocks.push(line + '\n');
-                } 
-                // If it ends with punctuation followed by optional whitespace, it's complete
-                else if (line.match(/[.!?;:]\s*$/)) {
-                  completeBlocks.push(line + '\n');
-                }
-                // If it's a blank line, it's complete (paragraph break)
-                else if (line.trim() === '') {
-                  completeBlocks.push(line + '\n');
-                }
-                // If line is long enough (likely complete sentence), consider it complete
-                else if (line.trim().length > 50 && line.match(/\s/)) {
-                  completeBlocks.push(line + '\n');
-                }
-                // Otherwise, keep in buffer (incomplete)
-                else {
-                  remainingBuffer = line;
-                }
-              }
-            }
-            
-            // Add complete blocks to queue
+            // Add complete blocks to queue (already pre-completed by helper)
             if (completeBlocks.length > 0) {
               blockQueue.push(...completeBlocks);
               // Start processing queue if not already processing
@@ -5227,10 +5423,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               // Wait for queue to finish processing, then set final text
               const finalizeText = () => {
-              // Use data.summary from backend as source of truth - it has the complete, properly formatted text
-              // Fallback to displayedText only if data.summary is not available
-              // This ensures we use the final formatted response with all correct markdown (bold values, proper structure)
-                const finalText = cleanResponseText(data.summary || displayedText || accumulatedText || "I found some information for you.");
+              // Use displayedText as source of truth - it was pre-completed during streaming
+              // This ensures text doesn't change when streaming completes (prevents "click" effect)
+              // Fallback to data.summary only if displayedText is empty
+                const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
               
                 // Merge accumulated citations with any from backend complete message
                 const mergedCitations = { ...accumulatedCitations, ...(data.citations || {}) };
@@ -6007,7 +6203,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             role: m.type === 'query' ? 'user' : 'assistant',
                             content: m.text || '',
                             attachments: m.attachments || [],
-                            propertyAttachments: m.propertyAttachments || []
+                            propertyAttachments: m.propertyAttachments || [],
+                            citations: m.citations || {} // Include citations for clickable buttons
                           }))
                         });
                       }
@@ -6265,7 +6462,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     width: 'fit-content', // Let content determine width naturally
                     maxWidth: '680px', // Fixed maxWidth to match chat bar - QuickStartBar should align with chat bar
                     display: 'flex',
-                    justifyContent: 'center'
+                    justifyContent: 'center',
+                    pointerEvents: 'auto', // Ensure it's clickable
+                    visibility: 'visible' // Ensure it's visible
                       }}
                     >
                       <QuickStartBar
@@ -6322,10 +6521,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     width: 'min(100%, 640px)', // Fixed width - matches content wrapper's actual content width
                     minWidth: '300px', // Prevent squishing - minimum width for chat bar
                     height: 'auto',
-                    minHeight: 'fit-content',
+                    minHeight: '48px', // Fixed minimum height to prevent expansion when typing starts
                     boxSizing: 'border-box',
                     borderRadius: '12px', // Always use rounded square corners
-                    transition: 'all 0.2s ease-in-out'
+                    transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out' // Only transition visual properties, not height/position
                     // Centered by parent form's justifyContent: 'center'
                   }}
                 >
@@ -6426,7 +6625,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         height: 'auto', // Allow growth but maintain minimum
                         width: '100%',
                         marginTop: '4px', // Additional padding above textarea
-                        marginBottom: '12px' // Default margin to match other chat bars
+                        marginBottom: '12px', // Fixed margin - don't change when typing
+                        flexShrink: 0 // Prevent shrinking
                       }}
                     >
                       <div className="flex-1 relative flex items-start w-full" style={{ 
@@ -6473,7 +6673,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             overflow: 'hidden',
                             overflowY: 'auto',
                             wordWrap: 'break-word',
-                            transition: 'height 0.15s ease-out, overflow 0.15s ease-out', // Smooth transition for height changes
+                            transition: 'none', // Remove transition to prevent expansion animation
                             resize: 'none',
                             width: '100%',
                             minWidth: '0',
@@ -6656,7 +6856,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       </div>
 
                       {/* Right Icons: Attachment, Mic, Send */}
-                      <div className="flex items-center space-x-3" style={{ marginRight: '4px' }}>
+                      <motion.div 
+                        className="flex items-center space-x-3" 
+                        style={{ marginRight: '4px' }}
+                        layout
+                        transition={{ 
+                          layout: { duration: 0.12, ease: [0.16, 1, 0.3, 1] }, // Quicker return animation when send button disappears
+                          default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] } // Normal for other transitions
+                        }}
+                      >
                         <input
                           ref={fileInputRef}
                           type="file"
@@ -6784,7 +6992,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </button>
                         
                         {/* Send button or Stop button (when streaming) */}
-                        <AnimatePresence>
+                        <AnimatePresence mode="wait">
                           {(() => {
                             const isStreaming = chatMessages.some(msg => msg.isLoading);
                             const hasContent = inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0;
@@ -6796,10 +7004,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   key="stop-button"
                                   type="button" 
                                   onClick={handleStopQuery} 
-                                  initial={{ opacity: 0, scale: 0.8 }}
-                                  animate={{ opacity: 1, scale: 1 }}
-                                  exit={{ opacity: 0, scale: 0.8 }}
-                                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                  initial={{ opacity: 0, scale: 0.85, x: 8 }}
+                                  animate={{ opacity: 1, scale: 1, x: 0 }}
+                                  exit={{ opacity: 0, scale: 0.85, x: 8 }}
+                                  transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }} // Quicker exit
                                   className="flex items-center justify-center relative focus:outline-none outline-none"
                                   style={{
                                     width: '28px',
@@ -6833,10 +7041,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   key="send-button"
                                   type="submit" 
                                   onClick={handleSubmit} 
-                                  initial={{ opacity: 0, scale: 0.8 }}
-                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
-                                  exit={{ opacity: 0, scale: 0.8 }}
-                                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                  initial={{ opacity: 0, scale: 0.85, x: 8 }}
+                                  animate={{ opacity: 1, scale: 1, x: 0, backgroundColor: '#415C85' }}
+                                  exit={{ 
+                                    opacity: 0, 
+                                    scale: 0.85, 
+                                    x: 8,
+                                    transition: { duration: 0.12, ease: [0.16, 1, 0.3, 1] } // Quicker exit
+                                  }}
+                                  transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                                   className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                   style={{
                                     width: '32px',
@@ -6870,7 +7083,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             return null;
                           })()}
                         </AnimatePresence>
-                      </div>
+                      </motion.div>
                     </div>
                   </div>
                 </div>

@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -225,7 +225,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 const newHeight = Math.min(scrollHeight, maxHeight);
                 inputRef.current.style.height = `${newHeight}px`;
                 inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-                inputRef.current.style.minHeight = '28.1px';
+                inputRef.current.style.minHeight = '28px';
               }
             });
           });
@@ -481,14 +481,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     };
   }, []);
 
-  // Auto-focus on mount and reset height
-  useEffect(() => {
+  // Auto-focus on mount and set initial height
+  // Use useLayoutEffect to run synchronously before paint, preventing visible jump
+  useLayoutEffect(() => {
     if (inputRef.current) {
+      // Set a stable initial height without the auto->measure->set pattern that causes reflows
+      // Use a fixed initial height that matches CSS minHeight
+      const INITIAL_HEIGHT = 28; // Match CSS minHeight to prevent jump
+      initialScrollHeightRef.current = INITIAL_HEIGHT;
+      inputRef.current.style.height = `${INITIAL_HEIGHT}px`;
       inputRef.current.focus();
-      inputRef.current.style.height = 'auto';
-      const initialHeight = inputRef.current.scrollHeight;
-      initialScrollHeightRef.current = initialHeight; // Store initial height for accurate reset
-      inputRef.current.style.height = `${initialHeight}px`;
     }
   }, []);
 
@@ -668,7 +670,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Always allow scrolling when content exceeds maxHeight
           inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28.1px';
+          inputRef.current.style.minHeight = '28px';
           
           // Restore cursor position to end (where user was typing)
           if (cursorPos !== null) {
@@ -729,21 +731,28 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         }, 50); // Reduced from 100ms
       } else if (shouldBeMultiLine && isMultiLine) {
         // Already in multi-line: update height as text grows
-        // Use direct synchronous update for better performance during deletion
+        // OPTIMIZED: Only recalculate when content grows to avoid unnecessary reflows
         if (inputRef.current) {
-          inputRef.current.style.height = 'auto';
+          const currentHeight = parseFloat(inputRef.current.style.height) || 28;
           const scrollHeight = inputRef.current.scrollHeight;
+          
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
           const maxHeight = isDashboardView
             ? 160
             : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 260 : 350);
-          const newHeight = Math.min(scrollHeight, maxHeight);
-          inputRef.current.style.height = `${newHeight}px`;
+          
+          // Only update height if content has grown OR if we need to shrink (deletion)
+          // This avoids the expensive height:auto -> measure -> set pattern
+          if (scrollHeight > currentHeight || (isDeletingRef.current && scrollHeight < currentHeight)) {
+            const newHeight = Math.min(scrollHeight, maxHeight);
+            inputRef.current.style.height = `${newHeight}px`;
+          }
+          
           // Always allow scrolling when content exceeds maxHeight
           inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28.1px';
+          inputRef.current.style.minHeight = '28px';
         }
       }
       
@@ -1490,7 +1499,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       placeholder={contextConfig.placeholder}
                       className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
-                        minHeight: '24px',
+                        // CRITICAL: Set stable initial height to prevent jump on first keystroke
+                        // Height matches minHeight to ensure no reflow when JS initializes
+                        height: '28px',
+                        minHeight: '28px',
                         maxHeight: contextConfig.position === "bottom" && !isMapVisible 
                           ? 'calc(100vh - 200px)' // Viewport-aware: account for container padding, icons, and spacing
                           : (isMapVisible 
@@ -1498,8 +1510,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                               : (isDashboardView ? '160px' : '350px')), // Dashboard: stop before Recent Projects; others: fixed cap
                         fontSize: '14px',
                         lineHeight: '20px',
-                        paddingTop: '0px',
-                        paddingBottom: '0px',
+                        paddingTop: '4px', // Add vertical padding for proper text centering
+                        paddingBottom: '4px',
                         paddingRight: '0px',
                         paddingLeft: '8px',
                         scrollbarWidth: 'thin',
@@ -1507,7 +1519,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         overflow: 'hidden',
                         overflowY: 'auto',
                         wordWrap: 'break-word',
-                        transition: isMapVisible ? (!searchValue.trim() ? 'none' : 'height 0.2s ease-out, overflow 0.2s ease-out') : 'none',
+                        transition: 'none', // Remove transition to prevent jump - height changes should be instant
                         resize: 'none',
                         width: '100%',
                         minWidth: '0',
@@ -1531,8 +1543,46 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Left group: Panel toggle and Map toggle */}
+                {/* Left group: Map toggle and Panel toggle */}
                 <div className="flex items-center flex-shrink-0">
+                  {/* Map Toggle Button - Aligned with text start */}
+                  {contextConfig.showMapToggle && (
+                    <button 
+                      type="button" 
+                      onClick={(e) => {
+                        console.log('🗺️ Map button clicked!', { 
+                          hasOnMapToggle: !!onMapToggle,
+                          currentVisibility: isMapVisible 
+                        });
+                        onMapToggle?.();
+                      }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid rgba(229, 231, 235, 0.6)',
+                        borderRadius: '12px',
+                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                        marginLeft: '4px'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#F5F5F5';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#FFFFFF';
+                      }}
+                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
+                    >
+                      {isMapVisible ? (
+                        <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
+                      ) : (
+                        <>
+                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          <span className="text-xs font-medium">Map</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                  
                   {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
                   {onPanelToggle && (
                     isPropertyDetailsOpen ? (
@@ -1555,7 +1605,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           transition: 'background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
                           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                           whiteSpace: 'nowrap',
-                          marginLeft: '4px',
+                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
                           animation: 'none'
                         }}
                         title="Open analyse mode"
@@ -1583,7 +1633,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           border: '1px solid rgba(229, 231, 235, 0.6)',
                           borderRadius: '12px',
                           transition: 'background-color 0.2s ease',
-                          marginLeft: '4px'
+                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1597,44 +1647,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         <span className="text-xs font-medium">Chat</span>
                       </button>
                     )
-                  )}
-                  
-                  {/* Map Toggle Button - Aligned with text start */}
-                  {contextConfig.showMapToggle && (
-                    <button 
-                      type="button" 
-                      onClick={(e) => {
-                        console.log('🗺️ Map button clicked!', { 
-                          hasOnMapToggle: !!onMapToggle,
-                          currentVisibility: isMapVisible 
-                        });
-                        onMapToggle?.();
-                      }}
-                      className="flex items-center gap-1.5 px-2 py-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
-                      style={{
-                        backgroundColor: '#FFFFFF',
-                        border: '1px solid rgba(229, 231, 235, 0.6)',
-                        borderRadius: '12px',
-                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                        marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#F5F5F5';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#FFFFFF';
-                      }}
-                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                    >
-                      {isMapVisible ? (
-                        <LayoutDashboard className="w-3.5 h-3.5" strokeWidth={1.5} />
-                      ) : (
-                        <>
-                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          <span className="text-xs font-medium">Map</span>
-                        </>
-                      )}
-                    </button>
                   )}
                 </div>
               

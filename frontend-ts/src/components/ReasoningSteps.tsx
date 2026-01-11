@@ -320,13 +320,12 @@ const ReadingStepWithTransition: React.FC<{
   isLoading?: boolean;
   readingIndex: number; // Which reading step this is (0, 1, 2...)
   onDocumentClick?: (metadata: DocumentMetadata) => void;
-  isTransitioning?: boolean; // New prop to indicate transition phase
   showPreview?: boolean; // Whether to show the preview card (first time only)
   isLastReadingStep?: boolean; // Is this the last reading step?
   hasNextStep?: boolean; // Is there a step after this reading step?
   keepAnimating?: boolean; // Keep the green animation going until planning indicator appears
   hasResponseText?: boolean; // Stop all animations when response text appears
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, isTransitioning = false, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false }) => {
+}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false }) => {
   const [phase, setPhase] = useState<'reading' | 'read'>('reading');
   const [showReadAnimation, setShowReadAnimation] = useState(false); // Track if "Read" should show animation
   
@@ -390,27 +389,26 @@ const ReadingStepWithTransition: React.FC<{
                 transition={hasResponseText ? { duration: 0 } : { duration: 0.15, ease: [0.16, 1, 0.3, 1] }} // Instant when response text appears, otherwise faster animation
       style={{ marginBottom: '4px' }}
     >
-      <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
         {/* Show spinning wheel when actively reading, FileText when reading (not animating), BookOpenCheck when read */}
         {phase === 'reading' && keepAnimating && !hasResponseText ? (
           <div 
             className="reasoning-loading-spinner"
             style={{
-              width: '12px',
-              height: '12px',
+              width: '10px',
+              height: '10px',
               border: '2px solid #D1D5DB',
               borderTop: '2px solid #4B5563',
               borderRadius: '50%',
               flexShrink: 0,
               display: 'inline-block',
-              boxSizing: 'border-box',
-              marginTop: '2px'
+              boxSizing: 'border-box'
             }}
           />
         ) : phase === 'reading' ? (
-          <FileText style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          <FileText style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
         ) : (
-          <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
         )}
         {phase === 'reading' ? (
           <span className="reading-reveal-text">
@@ -445,9 +443,9 @@ const ReadingStepWithTransition: React.FC<{
       {showPreview && docMetadata && docMetadata.doc_id && (
         <motion.div
           initial={{ opacity: 0 }}
-          animate={isTransitioning ? { opacity: 0 } : { opacity: 1 }}
+          animate={{ opacity: 1 }}
           transition={{
-            duration: 0.25,
+            duration: 0.15,
             ease: 'easeOut'
           }}
           style={{
@@ -462,7 +460,17 @@ const ReadingStepWithTransition: React.FC<{
           <DocumentPreviewCard 
             key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, phase)}
             metadata={docMetadata} 
-            onClick={onDocumentClick ? () => onDocumentClick(docMetadata) : undefined}
+            onClick={onDocumentClick ? (e?: React.MouseEvent) => {
+              // Only open on explicit user click, not on any automatic events
+              if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+              // Only trigger if this is a real user click (e.detail > 0 means user clicked)
+              if (!e || e.detail > 0) {
+                onDocumentClick(docMetadata);
+              }
+            } : undefined}
           />
         </motion.div>
       )}
@@ -510,11 +518,10 @@ const StepRenderer: React.FC<{
   isLastReadingStep?: boolean; // Is this the last reading step? (still active)
   totalReadingSteps?: number; // Total number of reading steps
   onDocumentClick?: (metadata: DocumentMetadata) => void;
-  isTransitioning?: boolean; // Indicates transition from loading to stacked view
   shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, isTransitioning = false, shownDocumentsRef, allReadingComplete = false, hasResponseText = false }) => {
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false }) => {
   const actionStyle: React.CSSProperties = {
     color: ACTION_COLOR, // Light gray for main actions (the circled parts)
     fontWeight: 500
@@ -769,7 +776,6 @@ const StepRenderer: React.FC<{
           isLoading={isLoading}
           readingIndex={readingStepIndex}
           onDocumentClick={onDocumentClick}
-          isTransitioning={isTransitioning}
           showPreview={shouldShowPreview}
           isLastReadingStep={isLastReadingStep}
           hasNextStep={hasNextStepAfterReading}
@@ -884,25 +890,18 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   // Track if we just transitioned from loading to not loading (for stacking animation)
   const wasLoadingRef = useRef(isLoading);
   const [shouldAnimateStack, setShouldAnimateStack] = useState(false);
-  const [isTransitioning, setIsTransitioning] = useState(false);
   
   // REAL-TIME: Transition immediately when loading completes (no artificial delays)
   // Detect transition from loading to not loading
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading) {
-      // Just finished loading - start transition immediately
-      setIsTransitioning(true);
-      // Minimal delay for smooth visual transition (100ms)
-      const stackTimer = setTimeout(() => {
-        setShouldAnimateStack(true);
-        setIsTransitioning(false);
-      }, 100); // Minimal delay for smooth transition
-      // Reset quickly after animation
+      // Start stack animation immediately
+      setShouldAnimateStack(true);
+      // Reset stack animation after it completes
       const resetTimer = setTimeout(() => {
         setShouldAnimateStack(false);
-      }, 400); // Fast reset
+      }, 300); // Just enough time for stack animation to complete
       return () => {
-        clearTimeout(stackTimer);
         clearTimeout(resetTimer);
       };
     }
@@ -1018,6 +1017,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
     
     let readingCounter = 0;
     let hasSeenReading = false;
+    let lastStepWasExploring = false;
+    let previousStepDelay = 0;
     
     return filteredSteps
       .filter((step) => step != null && step !== undefined)
@@ -1025,11 +1026,22 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         let currentReadingIndex = 0;
         let isLastReadingStep = false;
         
+        // Check if previous step was exploring/found_documents
+        const prevStep = idx > 0 ? filteredSteps[idx - 1] : null;
+        const isAfterExploring = prevStep && (prevStep.action_type === 'exploring' || prevStep.action_type === 'searching');
+        
         if (step.action_type === 'reading') {
           currentReadingIndex = readingCounter;
           isLastReadingStep = (readingCounter === totalReadingSteps - 1);
           readingCounter++;
           hasSeenReading = true;
+        }
+        
+        // Track if this is an exploring step for next iteration
+        if (step.action_type === 'exploring' || step.action_type === 'searching') {
+          lastStepWasExploring = true;
+        } else {
+          lastStepWasExploring = false;
         }
         
         const stepId = step.details?.doc_metadata?.doc_id 
@@ -1048,10 +1060,19 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         // More pronounced sequential reveal for better flow
         let stepDelay = idx * 0.15; // 150ms stagger - each step waits for previous to appear
         if (step.action_type === 'reading') {
-          stepDelay = idx * 0.05; // Much faster for reading steps (50ms) - appear quickly after document found
+          // If reading step comes right after exploring/found_documents, make it appear almost instantly
+          if (isAfterExploring) {
+            // Appear immediately after the previous step (exploring) with just a tiny delay for smoothness
+            stepDelay = previousStepDelay + 0.01; // 10ms after previous step appears
+          } else {
+            stepDelay = idx * 0.05; // Fast for reading steps (50ms) - appear quickly after document found
+          }
         } else if (hasSeenReading) {
           stepDelay = idx * 0.10; // Faster for steps after reading (100ms)
         }
+        
+        // Store this step's delay for the next iteration
+        previousStepDelay = stepDelay;
         
         return {
           step,
@@ -1280,30 +1301,17 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 animate={{ 
                   opacity: 1, 
                   y: 0,
-                  scale: 1,
-                  // Add collapse animation for reading steps during transition
-                  ...(isTransitioning && hasPreview ? {
-                    height: 'auto',
-                    scale: 0.95
-                  } : {})
+                  scale: 1
                 }}
                 exit={{ 
                   opacity: 0, 
-                  y: -2,
-                  scale: 0.98,
-                  // Collapse preview cards when exiting - but don't animate height to prevent layout shift
-                  // Instead, just fade out
-                  ...(isReadingStep && hasPreview ? {
-                    scale: 0.9,
-                    marginBottom: 0
-                  } : {})
+                  y: 0, // No vertical movement to prevent layout shift
+                  scale: 1 // Keep scale constant to prevent visual jump
                 }}
                 transition={hasResponseText ? { duration: 0 } : { 
-                  duration: isTransitioning && hasPreview ? 0.4 : 0.3,
-                  delay: isTransitioning ? 0 : stepDelay,
-                  ease: isTransitioning && hasPreview 
-                    ? [0.34, 1.56, 0.64, 1] // Bouncy collapse
-                    : [0.16, 1, 0.3, 1] // Smooth ease-out (Cursor-style)
+                  duration: 0.15, // Very fast fade
+                  delay: stepDelay,
+                  ease: [0.16, 1, 0.3, 1] // Smooth ease-out (Cursor-style)
                 }}
                 style={{
                   fontSize: '12px',
@@ -1311,7 +1319,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   padding: '6px 0 6px 0',
                   paddingLeft: '0',
                   lineHeight: 1.5,
-                  overflow: isTransitioning && hasPreview ? 'hidden' : 'visible',
+                  overflow: 'visible',
                   position: 'relative',
                   marginLeft: '0',
                   marginBottom: isLastStep ? '0' : '4px', // No margin on last step for equal spacing
@@ -1340,7 +1348,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 isLastReadingStep={isLastReadingStep}
                 totalReadingSteps={totalReadingSteps}
                 onDocumentClick={onDocumentClick}
-                isTransitioning={isTransitioning}
                 shownDocumentsRef={shownDocumentsRef}
                 allReadingComplete={allReadingComplete}
               />
@@ -1417,7 +1424,6 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                         isLastReadingStep={false}
                         totalReadingSteps={totalReadingSteps}
                         onDocumentClick={onDocumentClick}
-                        isTransitioning={false}
                         shownDocumentsRef={shownDocumentsRef}
                         allReadingComplete={allReadingComplete}
                       />

@@ -265,7 +265,14 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           duration: 0.3, 
           ease: [0.25, 0.1, 0.25, 1] // Smooth ease-out
         }}
-        onClick={onClick}
+        onClick={onClick ? (e: React.MouseEvent) => {
+          // Only trigger on explicit user click events, prevent any automatic triggers
+          if (e.detail > 0) { // e.detail is 0 for programmatic clicks
+            e.preventDefault();
+            e.stopPropagation();
+            onClick(e);
+          }
+        } : undefined}
         style={{
           display: 'flex',
           flexDirection: 'column',

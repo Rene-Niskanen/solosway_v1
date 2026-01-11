@@ -19,7 +19,7 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -2711,7 +2711,8 @@ export const MainContent = ({
                         alignItems: 'center',
                         position: 'relative',
                         transform: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'translateY(-20px)' : 'none', // Move content up slightly for better visual centering
-                        zIndex: 2
+                        zIndex: 2,
+                        overflow: 'visible' // Ensure QuickStartBar is not clipped
                       }}
                     >
                 {/* VELORA Branding Section */}
@@ -2858,51 +2859,151 @@ export const MainContent = ({
                       
                       {/* Upload and Recent Projects Buttons - positioned below search bar */}
                       {!isMapVisible && !isInChatMode && (
-                        <div className="w-full flex items-center justify-center gap-3" style={{ 
-                          marginTop: 'clamp(1rem, 2vh, 1.5rem)',
-                          paddingTop: 'clamp(0.5rem, 1vh, 1rem)',
+                        <div className="w-full" style={{ 
+                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)', // Reduced from 1rem-1.5rem to move closer
+                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)', // Reduced padding
                           paddingLeft: 'clamp(16px, 4vw, 32px)',
                           paddingRight: 'clamp(16px, 4vw, 32px)',
-                          position: 'relative',
+                          position: 'relative', // Keep relative so absolute children position relative to this
                           zIndex: 100,
                           width: '100%',
                           maxWidth: 'clamp(400px, 85vw, 650px)',
                           marginLeft: 'auto',
                           marginRight: 'auto',
-                          visibility: 'visible',
-                          display: 'flex'
+                          visibility: 'visible'
                         }}>
-                          {/* Recent Projects Button */}
-                          <button
-                            onClick={() => setIsRecentProjectsVisible(!isRecentProjectsVisible)}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors focus:outline-none outline-none"
-                            style={{
-                              backgroundColor: '#FFFFFF',
-                              color: '#374151',
-                              border: '1px solid rgba(229, 231, 235, 0.6)',
-                              fontSize: '14px',
-                              fontWeight: 500,
-                              cursor: 'pointer',
-                              height: '40px',
-                              transition: 'all 0.15s ease',
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F9FAFB';
-                              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#FFFFFF';
-                              e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
-                            }}
-                          >
-                            <Folder className="w-4 h-4" strokeWidth={1.5} />
-                            <span>Recent Projects</span>
-                          </button>
+                          <div className="flex items-center justify-center gap-3">
+                            {/* Recent Projects Button */}
+                            <button
+                              onClick={() => setIsRecentProjectsVisible(!isRecentProjectsVisible)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors focus:outline-none outline-none"
+                              style={{
+                                backgroundColor: '#FFFFFF',
+                                color: '#374151',
+                                border: '1px solid rgba(229, 231, 235, 0.6)',
+                                fontSize: '12px', // Reduced from 14px
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                                height: '32px', // Reduced from 40px
+                                transition: 'all 0.15s ease',
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = '#F9FAFB';
+                                e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                              }}
+                            >
+                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} /> {/* Reduced from w-4 h-4 */}
+                              <span>Recent Projects</span>
+                            </button>
+                          </div>
+                          
+                          {/* Recent Projects Section - appears below button when expanded, doesn't affect other elements */}
+                          {isRecentProjectsVisible && (
+                            <motion.div
+                              initial={{ opacity: 0, y: -10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -10 }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                              className="w-full"
+                              style={{ 
+                                marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                                marginBottom: 'clamp(2rem, 5vh, 3rem)',
+                                position: 'absolute', // Use absolute positioning to not affect layout
+                                top: '100%', // Position below the button
+                                left: 0,
+                                right: 0,
+                                zIndex: 99,
+                                width: '100%',
+                                maxWidth: 'clamp(400px, 85vw, 650px)',
+                                marginLeft: 'auto',
+                                marginRight: 'auto',
+                                paddingLeft: 'clamp(16px, 4vw, 32px)',
+                                paddingRight: 'clamp(16px, 4vw, 32px)'
+                              }}
+                            >
+                              <RecentProjectsSection 
+                                onNewProjectClick={() => {
+                                  setShowNewPropertyWorkflow(true);
+                                }}
+                                onOpenProperty={(address, coordinates, propertyId) => {
+                                  console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
+                                  // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
+                                  // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
+                                  
+                                  // OPTIMIZATION: Check cache FIRST for instant display (<1s)
+                                  let instantDisplay = false;
+                                  if (propertyId) {
+                                    try {
+                                      const cacheKey = `propertyCardCache_${propertyId}`;
+                                      const cached = localStorage.getItem(cacheKey);
+                                      if (cached) {
+                                        const cacheData = JSON.parse(cached);
+                                        const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+                                        const cacheAge = Date.now() - cacheData.timestamp;
+                                        
+                                        if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
+                                          // We have cached data - show card INSTANTLY
+                                          console.log('🚀 INSTANT: Using cached property data - showing card immediately');
+                                          instantDisplay = true;
+                                          
+                                          // Open map and select property immediately
+                                          setIsMapVisible(true);
+                                          
+                                          // Store selection for map with property pin location coordinates
+                                          (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+                                          
+                                          // Select property immediately if map is ready, using property pin location coordinates
+                                          if (mapRef.current) {
+                                            mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                          }
+                                        }
+                                      }
+                                    } catch (e) {
+                                      console.warn('Failed to check cache:', e);
+                                    }
+                                  }
+                                  
+                                  // If we didn't show instantly from cache, use normal flow
+                                  if (!instantDisplay) {
+                                    // Open map mode
+                                    setIsMapVisible(true);
+                                    
+                                    // Skip address search when we have a propertyId to avoid geocoding conflicts
+                                    if (!propertyId) {
+                                      setMapSearchQuery(address);
+                                      setHasPerformedSearch(true);
+                                    }
+                                    
+                                    // Store selection for when map is ready, with property pin location coordinates
+                                    (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+                                    
+                                    // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
+                                    if (mapRef.current) {
+                                      console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
+                                      mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                    } else {
+                                      // Map not ready - try again very soon
+                                      setTimeout(() => {
+                                        if (mapRef.current) {
+                                          console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
+                                          mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                        }
+                                      }, 10); // Minimal delay - check every 10ms
+                                    }
+                                  }
+                                }}
+                              />
+                            </motion.div>
+                          )}
                         </div>
                       )}
                       
                       {/* QuickStartBar beside Search Bar - show when Link button is clicked */}
-                      {!isMapVisible && isQuickStartBarVisible && (() => {
+                      {!isMapVisible && !isInChatMode && isQuickStartBarVisible && (() => {
                         // Calculate padding to match search bar
                         const MIN_PADDING = 16;
                         const MAX_PADDING = 32;
@@ -2922,7 +3023,7 @@ export const MainContent = ({
                             transition={{ duration: 0.2, ease: 'easeOut' }}
                             style={{
                               position: 'relative',
-                              zIndex: 10,
+                              zIndex: 1000, // Higher z-index to ensure it's visible
                               width: '100%',
                               maxWidth: 'clamp(400px, 85vw, 650px)',
                               marginLeft: 'auto',
@@ -2943,95 +3044,6 @@ export const MainContent = ({
                         );
                       })()}
                       
-                      {/* Recent Projects Section - appears below buttons when expanded, doesn't affect search bar position */}
-                      {!isMapVisible && !isInChatMode && isRecentProjectsVisible && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          transition={{ duration: 0.2, ease: 'easeOut' }}
-                          className="w-full"
-                          style={{ 
-                            marginTop: 'clamp(1rem, 2vh, 1.5rem)',
-                            marginBottom: 'clamp(2rem, 5vh, 3rem)',
-                            position: 'relative',
-                            zIndex: 99
-                          }}
-                        >
-                          <RecentProjectsSection 
-                            onNewProjectClick={() => {
-                              setShowNewPropertyWorkflow(true);
-                            }}
-                            onOpenProperty={(address, coordinates, propertyId) => {
-                              console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
-                              // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
-                              // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-                              
-                              // OPTIMIZATION: Check cache FIRST for instant display (<1s)
-                              let instantDisplay = false;
-                              if (propertyId) {
-                                try {
-                                  const cacheKey = `propertyCardCache_${propertyId}`;
-                                  const cached = localStorage.getItem(cacheKey);
-                                  if (cached) {
-                                    const cacheData = JSON.parse(cached);
-                                    const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
-                                    const cacheAge = Date.now() - cacheData.timestamp;
-                                    
-                                    if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
-                                      // We have cached data - show card INSTANTLY
-                                      console.log('🚀 INSTANT: Using cached property data - showing card immediately');
-                                      instantDisplay = true;
-                                      
-                                      // Open map and select property immediately
-                                      setIsMapVisible(true);
-                                      
-                                      // Store selection for map with property pin location coordinates
-                                      (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                      
-                                      // Select property immediately if map is ready, using property pin location coordinates
-                                      if (mapRef.current) {
-                                        mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                      }
-                                    }
-                                  }
-                                } catch (e) {
-                                  console.warn('Failed to check cache:', e);
-                                }
-                              }
-                              
-                              // If we didn't show instantly from cache, use normal flow
-                              if (!instantDisplay) {
-                              // Open map mode
-                              setIsMapVisible(true);
-                              
-                              // Skip address search when we have a propertyId to avoid geocoding conflicts
-                              if (!propertyId) {
-                                setMapSearchQuery(address);
-                                setHasPerformedSearch(true);
-                              }
-                              
-                              // Store selection for when map is ready, with property pin location coordinates
-                              (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                              
-                                // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
-                                if (mapRef.current) {
-                                  console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
-                                  mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                } else {
-                                  // Map not ready - try again very soon
-                              setTimeout(() => {
-                                if (mapRef.current) {
-                                  console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
-                                  mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                }
-                                  }, 10); // Minimal delay - check every 10ms
-                                }
-                              }
-                            }}
-                          />
-                        </motion.div>
-                      )}
                     </div>
                   );
                 })() : null}

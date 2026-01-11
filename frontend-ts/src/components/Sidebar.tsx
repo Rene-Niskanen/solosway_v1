@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { BarChart3, Home, MessageSquareDot, LayoutDashboard, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
+import { BarChart3, Home, MessageSquareDot, LibraryBig, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
 import { ProfileDropdown } from "./ProfileDropdown";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -412,10 +412,10 @@ export const Sidebar = ({
           : item.id === 'database'
           ? isFilingSidebarOpen
           : activeItem === item.id;
-        // Always use LayoutDashboard for home icon
+        // Always use LibraryBig for home icon
         // Use ListEnd icon when expanded and item is 'list', TextAlignJustify when not expanded, otherwise use the item's icon
         const Icon = item.id === 'home' 
-          ? LayoutDashboard 
+          ? LibraryBig 
           : (item.id === 'list' && isExpanded) 
             ? ListEnd 
             : (item.id === 'list' && !isExpanded)

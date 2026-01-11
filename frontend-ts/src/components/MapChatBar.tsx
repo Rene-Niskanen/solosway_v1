@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowUp, Paperclip, Mic, LayoutDashboard, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, AudioLines } from "lucide-react";
+import { ArrowUp, Paperclip, Mic, LibraryBig, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, AudioLines } from "lucide-react";
 import { PropertyAttachment } from './PropertyAttachment';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 
@@ -308,7 +308,7 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                   className="p-1 text-gray-400 hover:text-gray-600 transition-colors ml-1"
                   title="Back to search mode"
                 >
-                  <LayoutDashboard className="w-5 h-5" strokeWidth={1.5} />
+                  <LibraryBig className="w-5 h-5" strokeWidth={1.5} />
                 </button>
               </div>
 
