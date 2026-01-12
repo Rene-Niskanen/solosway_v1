@@ -232,7 +232,9 @@ class BackendApiService {
       pageTexts: string[][];
       filenames: string[];
       tempFileIds: string[];
-    } | null
+    } | null,
+    // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
+    onAgentAction?: (action: { action: string; params: any }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -342,6 +344,15 @@ class BackendApiService {
                   break;
                 case 'documents_found':
                   onStatus?.(`Found ${data.count} relevant document(s)`);
+                  break;
+                case 'agent_action':
+                  // AGENT-NATIVE: Handle agent actions (open_document, highlight_bbox, navigate_to_property, save_to_writing)
+                  if (onAgentAction) {
+                    onAgentAction({
+                      action: data.action,
+                      params: data.params || {}
+                    });
+                  }
                   break;
                 case 'complete':
                   onComplete(data.data);

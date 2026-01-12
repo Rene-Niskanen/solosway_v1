@@ -27,6 +27,8 @@ import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
 import { ResponseModeChoice } from './FileChoiceStep';
+import { ModeSelector } from './ModeSelector';
+import { useMode } from '../contexts/ModeContext';
 
 // ChatGPT-style thinking dot animation
 const ThinkingDot: React.FC = () => {
@@ -2321,6 +2323,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [isExpanded, isPropertyDetailsOpen]);
   
   // Handle resize functionality - similar to PDF preview modal
+  // Track if we were in fullscreen when resize started (to handle exit on actual drag)
+  const wasFullscreenOnResizeStartRef = React.useRef(false);
+  const hasExitedFullscreenDuringResizeRef = React.useRef(false);
+  
   const handleResizeStart = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2334,12 +2340,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Get the actual current width from the DOM element (handles fullscreen mode correctly)
     const actualCurrentWidth = rect.width;
     
-    // If we're in fullscreen mode, exit it when user starts resizing
-    // This allows the user to resize freely from the fullscreen width
-    if (isFullscreenMode && !isPropertyDetailsOpen) {
-      setIsFullscreenMode(false);
-      isFullscreenFromDashboardRef.current = false;
-    }
+    // Track if we're in fullscreen - don't exit immediately, wait for actual drag
+    // This prevents accidental exits when just touching the resize handle
+    wasFullscreenOnResizeStartRef.current = isFullscreenMode && !isPropertyDetailsOpen;
+    hasExitedFullscreenDuringResizeRef.current = false;
     
     // Use actual width from DOM, or fallback to draggedWidth, or calculated width
     const currentWidth = draggedWidth !== null 
@@ -2384,6 +2388,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
         const deltaX = e.clientX - state.startPos.x;
         
+        // Only exit fullscreen mode after user has actually dragged (threshold of 10px)
+        // This prevents accidental exits when just touching the resize handle
+        if (wasFullscreenOnResizeStartRef.current && !hasExitedFullscreenDuringResizeRef.current && Math.abs(deltaX) > 10) {
+          setIsFullscreenMode(false);
+          isFullscreenFromDashboardRef.current = false;
+          hasExitedFullscreenDuringResizeRef.current = true;
+        }
+        
         // Calculate new width based on delta (dragging right = positive delta = wider)
         const newWidth = Math.min(Math.max(state.startWidth + deltaX, minWidth), maxWidth);
         
@@ -2410,6 +2422,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setIsResizing(false);
       resizeStateRef.current = null;
       panelElementRef.current = null;
+      wasFullscreenOnResizeStartRef.current = false;
+      hasExitedFullscreenDuringResizeRef.current = false;
       
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -2548,6 +2562,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Filing sidebar integration
   const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
   
+  // Agent mode (reader vs agent)
+  const { mode: agentMode, isAgentMode } = useMode();
+  
+  // Ref to track current agent mode (avoids closure issues in streaming callbacks)
+  const isAgentModeRef = React.useRef(isAgentMode);
+  React.useEffect(() => {
+    isAgentModeRef.current = isAgentMode;
+  }, [isAgentMode]);
+  
+  // Ref to track current fullscreen mode (avoids closure issues in streaming callbacks)
+  const isFullscreenModeRef = React.useRef(isFullscreenMode);
+  React.useEffect(() => {
+    isFullscreenModeRef.current = isFullscreenMode;
+  }, [isFullscreenMode]);
+  
   // Store queries with their attachments
   interface SubmittedQuery {
     text: string;
@@ -2557,7 +2586,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Store messages (both queries and responses)
   interface ReasoningStep {
     step: string;
-    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'complete' | 'context';
+    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'summarizing' | 'complete' | 'context' | 'executing' | 'opening' | 'navigating' | 'highlighting';
     message: string;
     count?: number;
     target?: string;
@@ -3507,7 +3536,77 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               citationContext || undefined, // citationContext (from citation click)
               responseMode, // responseMode (from file choice)
-              attachmentContext // attachmentContext (extracted text from files)
+              attachmentContext, // attachmentContext (extracted text from files)
+              // AGENT-NATIVE: Handle agent actions (open document, highlight, navigate, save)
+              (action: { action: string; params: any }) => {
+                console.log('🎯 [AGENT_ACTION] Received action:', action);
+                
+                // Skip agent actions in reader mode - just show citations without auto-opening
+                // Use ref to get current mode value (avoids closure issues)
+                if (!isAgentModeRef.current) {
+                  console.log('📖 [READER_MODE] Skipping agent action - reader mode active');
+                  return;
+                }
+                
+                console.log('✅ [AGENT_MODE] Executing agent action:', action.action);
+                
+                switch (action.action) {
+                  case 'open_document':
+                    // Open document viewer with the specified document
+                    // handleCitationClick already handles opening and highlighting
+                    // bbox is now included in open_document action (no separate highlight_bbox)
+                    console.log('📂 [AGENT_ACTION] Opening document:', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
+                    if (action.params.doc_id) {
+                      const citationData = {
+                        doc_id: action.params.doc_id,
+                        page: action.params.page || 1,
+                        original_filename: action.params.filename || '',
+                        bbox: action.params.bbox || undefined // Include bbox if available
+                      };
+                      handleCitationClick(citationData as any);
+                    }
+                    break;
+                    
+                  case 'highlight_bbox':
+                    // Legacy: highlight_bbox is now combined into open_document
+                    // This case is kept for backwards compatibility
+                    console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received - should use open_document with bbox instead');
+                    break;
+                    
+                  case 'navigate_to_property':
+                    // Navigate to property details panel
+                    if (action.params.property_id && onOpenProperty) {
+                      onOpenProperty(null, null, action.params.property_id);
+                    }
+                    break;
+                    
+                  case 'save_to_writing':
+                    // Save citation to curated writing collection
+                    if (action.params.citation) {
+                      const curatedKey = 'curated_writing_citations';
+                      const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+                      const newEntry = {
+                        id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                        citation: action.params.citation,
+                        addedAt: new Date().toISOString(),
+                        documentName: action.params.citation.original_filename || 'Unknown document',
+                        content: action.params.citation.block_content || action.params.note || ''
+                      };
+                      existing.push(newEntry);
+                      localStorage.setItem(curatedKey, JSON.stringify(existing));
+                      console.log('📚 [AGENT_ACTION] Saved citation to writing:', newEntry);
+                      
+                      // Dispatch event for UI updates
+                      window.dispatchEvent(new CustomEvent('citation-added-to-writing', {
+                        detail: newEntry
+                      }));
+                    }
+                    break;
+                    
+                  default:
+                    console.warn('Unknown agent action:', action.action);
+                }
+              }
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -3740,6 +3839,97 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
       console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
 
+      // AGENT-NATIVE: Add "Opening citation view" and "Highlighting content" reasoning steps when citation is clicked (only in agent mode)
+      // This provides instant visual feedback before any async work starts
+      // Only add to the LAST message with reasoning steps (prefer completed, but allow loading if no completed found)
+      if (isAgentModeRef.current) {
+        setChatMessages(prev => {
+          // Find the index of the LAST message with reasoning steps
+          // Prefer completed messages, but fall back to loading message if that's all we have
+          let targetMsgIndex = -1;
+          let fallbackLoadingIndex = -1;
+          
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const msg = prev[i];
+            if (msg.reasoningSteps && msg.reasoningSteps.length > 0) {
+              if (!msg.isLoading) {
+                // Found a completed message with reasoning steps - use this
+                targetMsgIndex = i;
+                break;
+              } else if (fallbackLoadingIndex === -1) {
+                // Track the first loading message with reasoning steps as fallback
+                fallbackLoadingIndex = i;
+              }
+            }
+          }
+          
+          // Use completed message if found, otherwise fall back to loading message
+          if (targetMsgIndex === -1) {
+            targetMsgIndex = fallbackLoadingIndex;
+          }
+          
+          if (targetMsgIndex === -1) {
+            return prev; // No message with reasoning steps found
+          }
+          
+          const updated = prev.map((msg, idx) => {
+            // Only modify the target message
+            if (idx !== targetMsgIndex) {
+              return msg;
+            }
+            
+            // Check if steps already exist (avoid duplicates)
+            const hasOpeningStep = msg.reasoningSteps?.some(s => 
+              s.action_type === 'opening' && s.step === 'agent_opening_citation'
+            );
+            const hasHighlightingStep = msg.reasoningSteps?.some(s => 
+              s.action_type === 'highlighting' && s.step === 'agent_highlighting_content'
+            );
+            
+            // Build array of new steps to add
+            const newSteps: ReasoningStep[] = [];
+            
+            // Step 1: Opening citation view (if not already present)
+            if (!hasOpeningStep) {
+              newSteps.push({
+                step: 'agent_opening_citation',
+                action_type: 'opening',
+                message: 'Opening citation view',
+                timestamp: Number.MAX_SAFE_INTEGER - 1, // Second to last (before highlighting)
+                details: {
+                  doc_id: docId,
+                  filename: citationData.original_filename || 'document.pdf'
+                }
+              });
+            }
+            
+            // Step 2: Highlighting content (if not already present)
+            if (!hasHighlightingStep) {
+              newSteps.push({
+                step: 'agent_highlighting_content',
+                action_type: 'highlighting',
+                message: 'Highlighting content',
+                timestamp: Number.MAX_SAFE_INTEGER, // Always last
+                details: {
+                  doc_id: docId,
+                  filename: citationData.original_filename || 'document.pdf'
+                }
+              });
+            }
+            
+            if (newSteps.length > 0) {
+              return {
+                ...msg,
+                reasoningSteps: [...(msg.reasoningSteps || []), ...newSteps]
+              };
+            }
+            return msg;
+          });
+          persistedChatMessagesRef.current = updated;
+          return updated;
+        });
+      }
+
       // Check if document is already loaded in preview context (performance optimization)
       const existingFile = previewFiles.find(f => f.id === docId);
       let file: File;
@@ -3936,7 +4126,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Always switch from fullscreen to 50% width when clicking a citation
       // This creates a 50/50 split with the document preview
       // Check if we're in fullscreen mode OR if we were in fullscreen before (for subsequent citations)
-      if (isFullscreenMode || wasFullscreenBeforeCitationRef.current) {
+      // Use ref to get current fullscreen state (avoids stale closure issues in streaming callbacks)
+      const currentFullscreenMode = isFullscreenModeRef.current;
+      console.log('🔍 [CITATION] Fullscreen mode check:', { currentFullscreenMode, wasFullscreenBefore: wasFullscreenBeforeCitationRef.current });
+      if (currentFullscreenMode || wasFullscreenBeforeCitationRef.current) {
         console.log('🎯 [CITATION] Citation clicked in fullscreen mode - switching to 50% width for 50/50 split');
         // Track that we were in fullscreen mode so we can restore it when document preview closes
         // Keep this true for all subsequent citations
@@ -4665,7 +4858,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 };
               },
               // citationContext: Pass structured citation metadata (hidden from user, for LLM)
-              citationContext || undefined
+              citationContext || undefined,
+              undefined, // responseMode
+              undefined, // attachmentContext
+              // AGENT-NATIVE: Handle agent actions
+              (action: { action: string; params: any }) => {
+                console.log('🎯 [AGENT_ACTION] Received action (initial query):', action);
+                
+                // Skip agent actions in reader mode - just show citations without auto-opening
+                // Use ref to get current mode value (avoids closure issues)
+                if (!isAgentModeRef.current) {
+                  console.log('📖 [READER_MODE] Skipping agent action (initial) - reader mode active');
+                  return;
+                }
+                
+                console.log('✅ [AGENT_MODE] Executing agent action (initial):', action.action);
+                
+                switch (action.action) {
+                  case 'open_document':
+                    console.log('📂 [AGENT_ACTION] Opening document (initial):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
+                    if (action.params.doc_id) {
+                      const citationData = {
+                        doc_id: action.params.doc_id,
+                        page: action.params.page || 1,
+                        original_filename: action.params.filename || '',
+                        bbox: action.params.bbox || undefined
+                      };
+                      handleCitationClick(citationData as any);
+                    }
+                    break;
+                  case 'highlight_bbox':
+                    // Legacy: highlight_bbox is now combined into open_document
+                    console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received (initial)');
+                    break;
+                  case 'navigate_to_property':
+                    if (action.params.property_id && onOpenProperty) {
+                      onOpenProperty(null, null, action.params.property_id);
+                    }
+                    break;
+                  case 'save_to_writing':
+                    if (action.params.citation) {
+                      const curatedKey = 'curated_writing_citations';
+                      const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+                      const newEntry = {
+                        id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                        citation: action.params.citation,
+                        addedAt: new Date().toISOString(),
+                        documentName: action.params.citation.original_filename || 'Unknown document',
+                        content: action.params.citation.block_content || action.params.note || ''
+                      };
+                      existing.push(newEntry);
+                      localStorage.setItem(curatedKey, JSON.stringify(existing));
+                      window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+                    }
+                    break;
+                }
+              }
             );
             
             // Clear abort controller and processing flag on completion
@@ -5661,7 +5909,60 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // for fast-path retrieval when user clicks on a citation
             citationContext || undefined,
             responseMode, // responseMode (from file choice)
-            attachmentContext // attachmentContext (extracted text from files)
+            attachmentContext, // attachmentContext (extracted text from files)
+            // AGENT-NATIVE: Handle agent actions
+            (action: { action: string; params: any }) => {
+              console.log('🎯 [AGENT_ACTION] Received action (follow-up):', action);
+              
+              // Skip agent actions in reader mode - just show citations without auto-opening
+              // Use ref to get current mode value (avoids closure issues)
+              if (!isAgentModeRef.current) {
+                console.log('📖 [READER_MODE] Skipping agent action (follow-up) - reader mode active');
+                return;
+              }
+              
+              console.log('✅ [AGENT_MODE] Executing agent action (follow-up):', action.action);
+              
+              switch (action.action) {
+                case 'open_document':
+                  console.log('📂 [AGENT_ACTION] Opening document (follow-up):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
+                  if (action.params.doc_id) {
+                    const citationData = {
+                      doc_id: action.params.doc_id,
+                      page: action.params.page || 1,
+                      original_filename: action.params.filename || '',
+                      bbox: action.params.bbox || undefined
+                    };
+                    handleCitationClick(citationData as any);
+                  }
+                  break;
+                case 'highlight_bbox':
+                  // Legacy: highlight_bbox is now combined into open_document
+                  console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received (follow-up)');
+                  break;
+                case 'navigate_to_property':
+                  if (action.params.property_id && onOpenProperty) {
+                    onOpenProperty(null, null, action.params.property_id);
+                  }
+                  break;
+                case 'save_to_writing':
+                  if (action.params.citation) {
+                    const curatedKey = 'curated_writing_citations';
+                    const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+                    const newEntry = {
+                      id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                      citation: action.params.citation,
+                      addedAt: new Date().toISOString(),
+                      documentName: action.params.citation.original_filename || 'Unknown document',
+                      content: action.params.citation.block_content || action.params.note || ''
+                    };
+                    existing.push(newEntry);
+                    localStorage.setItem(curatedKey, JSON.stringify(existing));
+                    window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+                  }
+                  break;
+              }
+            }
           );
           
           // Clear abort controller and processing flag on completion
@@ -6024,7 +6325,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             minHeight: '1px' // Prevent collapse
           }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} hasResponseText={!!message.text} />
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -6779,8 +7080,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         minHeight: '32px'
                       }}
                     >
-                      {/* Left Icons: Minimize Chat Button */}
-                      <div className="flex items-center space-x-3">
+                      {/* Left Icons: Mode Selector and Minimize Chat Button */}
+                      <div className="flex items-center space-x-2">
+                        {/* Mode Selector Dropdown */}
+                        {/* - Fullscreen: normal size text (no props)
+                            - 50/50 split (wider): small text (small={true})
+                            - Smallest width (450px or close): icon only (compact={true}) */}
+                        {(() => {
+                          // Calculate current width for mode selector logic
+                          const currentWidth = draggedWidth !== null 
+                            ? draggedWidth 
+                            : (isFullscreenMode 
+                              ? window.innerWidth 
+                              : window.innerWidth * 0.5); // Default 50vw in split view
+                          
+                          // Show icon only when at minimum width (450px) or very close to it
+                          const isAtMinWidth = currentWidth <= 500; // Small buffer above 450px min
+                          const isCompact = !isFullscreenMode && isAtMinWidth;
+                          const isSmall = !isFullscreenMode && !isAtMinWidth;
+                          
+                          return (
+                            <ModeSelector 
+                              compact={isCompact}
+                              small={isSmall}
+                            />
+                          );
+                        })()}
+                        
                         {(() => {
                           // Determine button state:
                           // - If map is visible (side-by-side): Show "Close chat" with MessageCircleDashed

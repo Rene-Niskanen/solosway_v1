@@ -14,6 +14,7 @@ import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { backendApi } from '../services/backendApi';
 import { QuickStartBar } from './QuickStartBar';
+import { ModeSelector } from './ModeSelector';
 
 export interface SearchBarProps {
   className?: string;
@@ -1543,8 +1544,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Left group: Map toggle and Panel toggle */}
-                <div className="flex items-center flex-shrink-0">
+                {/* Left group: Mode selector, Map toggle and Panel toggle */}
+                <div className="flex items-center flex-shrink-0 gap-1">
+                  {/* Mode Selector Dropdown */}
+                  <ModeSelector compact={isMapVisible} />
+                  
                   {/* Map Toggle Button - Aligned with text start */}
                   {contextConfig.showMapToggle && (
                     <button 

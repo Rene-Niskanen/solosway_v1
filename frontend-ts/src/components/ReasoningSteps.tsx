@@ -2,7 +2,7 @@ import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, FileText, BrainCircuit, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect } from 'lucide-react';
+import { Search, SearchCheck, FileText, BrainCircuit, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import * as pdfjs from 'pdfjs-dist';
@@ -16,7 +16,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Types for reasoning steps
 export interface ReasoningStep {
   step: string;
-  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'complete' | 'context' | 'file_choice';
+  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'summarizing' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting';
   message: string;
   count?: number;
   target?: string;
@@ -213,6 +213,7 @@ interface ReasoningStepsProps {
   isLoading?: boolean;
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   hasResponseText?: boolean; // Stop animations when response text has started
+  isAgentMode?: boolean; // Show agent-specific steps only in Agent mode
 }
 
 // True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
@@ -421,58 +422,95 @@ const ReadingStepWithTransition: React.FC<{
             )}
           </span>
         ) : (
-          <span>
-            {/* "Read" with flow animation when it first appears */}
-            {showReadAnimation ? (
-              <>
-                <span className="reading-shimmer-active">Read</span>
-                <span className="reading-shimmer-active"> {filename}</span>
-              </>
-            ) : (
-              <>
-                {/* "Read" in light gray (action) */}
-                <span style={actionStyle}>Read</span>
-                {/* filename in dark gray (detail) */}
-                <span style={{ color: DETAIL_COLOR }}> {filename}</span>
-              </>
-            )}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            {/* "Read" in light gray (action) */}
+            <span style={actionStyle}>Read</span>
+            {/* Styled document name container - light pill with icon */}
+            <div 
+              onClick={onDocumentClick ? (e: React.MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (docMetadata) {
+                  onDocumentClick(docMetadata);
+                }
+              } : undefined}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '3px 8px 3px 6px',
+                backgroundColor: '#F3F4F6',
+                borderRadius: '4px',
+                border: '1px solid #E5E7EB',
+                cursor: onDocumentClick ? 'pointer' : 'default',
+                transition: 'background-color 0.15s ease',
+                fontSize: '12px',
+                fontWeight: 500,
+                color: DETAIL_COLOR,
+                maxWidth: '280px'
+              }}
+              onMouseEnter={(e) => {
+                if (onDocumentClick) {
+                  e.currentTarget.style.backgroundColor = '#E5E7EB';
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = '#F3F4F6';
+              }}
+            >
+              <FileText style={{ width: '12px', height: '12px', color: '#6B7280', flexShrink: 0 }} />
+              <span style={{ 
+                overflow: 'hidden', 
+                textOverflow: 'ellipsis', 
+                whiteSpace: 'nowrap',
+                lineHeight: '1.3'
+              }}>
+                {filename}
+              </span>
+            </div>
           </span>
         )}
       </span>
-      {/* Preview card appears with smooth animation */}
+      {/* Preview card appears with smooth animation, then collapses when step transitions to "read" or next step appears */}
       {showPreview && docMetadata && docMetadata.doc_id && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{
-            duration: 0.15,
-            ease: 'easeOut'
-          }}
-          style={{
-            marginTop: 8,
-            position: 'relative',
-            zIndex: 2, // Above the vertical line
-            isolation: 'isolate', // Create stacking context
-            contain: 'layout style', // Prevent layout shifts
-            minHeight: '1px' // Prevent collapse
-          }}
-        >
-          <DocumentPreviewCard 
-            key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex, phase)}
-            metadata={docMetadata} 
-            onClick={onDocumentClick ? (e?: React.MouseEvent) => {
-              // Only open on explicit user click, not on any automatic events
-              if (e) {
-                e.preventDefault();
-                e.stopPropagation();
-              }
-              // Only trigger if this is a real user click (e.detail > 0 means user clicked)
-              if (!e || e.detail > 0) {
-                onDocumentClick(docMetadata);
-              }
-            } : undefined}
-          />
-        </motion.div>
+        <AnimatePresence>
+          {phase === 'reading' && !hasResponseText && (
+            <motion.div
+              key="preview-card"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{
+                duration: 0.2,
+                ease: 'easeInOut'
+              }}
+              style={{
+                marginTop: 8,
+                position: 'relative',
+                zIndex: 2, // Above the vertical line
+                isolation: 'isolate', // Create stacking context
+                contain: 'layout style', // Prevent layout shifts
+                overflow: 'hidden' // Hide content during collapse
+              }}
+            >
+              <DocumentPreviewCard 
+                key={generateUniqueKey('DocumentPreviewCard', docMetadata.doc_id || readingIndex)}
+                metadata={docMetadata} 
+                onClick={onDocumentClick ? (e?: React.MouseEvent) => {
+                  // Only open on explicit user click, not on any automatic events
+                  if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }
+                  // Only trigger if this is a real user click (e.detail > 0 means user clicked)
+                  if (!e || e.detail > 0) {
+                    onDocumentClick(docMetadata);
+                  }
+                } : undefined}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       )}
     </motion.div>
   );
@@ -805,6 +843,31 @@ const StepRenderer: React.FC<{
         </span>
       );
     
+    case 'summarizing':
+      // "Summarizing content" - with magic wand icon (mirrored to face left)
+      // This step appears after reading documents, before the response
+      const nextStepAfterSummarizing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
+      const isSummarizingActive = isLoading && !hasResponseText && (!nextStepAfterSummarizing || nextStepAfterSummarizing.action_type === 'summarizing');
+      
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+          <WandSparkles style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: ACTION_COLOR, 
+            flexShrink: 0, 
+            marginTop: '2px',
+            transform: 'scaleX(-1)' // Mirror horizontally to face the other way
+          }} />
+          {/* "Summarizing content" text with flowing gradient animation (only if active) */}
+          {isSummarizingActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Summarizing content'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Summarizing content'}</span>
+          )}
+        </span>
+      );
+    
     case 'complete':
       return (
         <span style={{ color: ACTION_COLOR }}>
@@ -853,6 +916,63 @@ const StepRenderer: React.FC<{
         </div>
       );
     
+    case 'executing':
+      // Agent is performing a UI action - show with Play icon
+      // Animation active while loading and no response text yet
+      const isExecutingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+          <Play style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          {isExecutingActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Executing action'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Executing action'}</span>
+          )}
+        </span>
+      );
+    
+    case 'opening':
+      // Agent is opening a document/view - show with FolderOpen icon
+      const isOpeningActive = isLoading && !hasResponseText;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+          <FolderOpen style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          {isOpeningActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Opening document'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Opening document'}</span>
+          )}
+        </span>
+      );
+    
+    case 'highlighting':
+      // Agent is highlighting content in a document - show with Highlighter icon
+      const isHighlightingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+          <Highlighter style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          {isHighlightingActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Highlighting content'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Highlighting content'}</span>
+          )}
+        </span>
+      );
+    
+    case 'navigating':
+      // Agent is navigating to a property/location - show with MapPin icon
+      const isNavigatingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
+          <MapPin style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          {isNavigatingActive ? (
+            <span className="ranking-shimmer-active">{step.message || 'Navigating to location'}</span>
+          ) : (
+            <span style={actionStyle}>{step.message || 'Navigating to location'}</span>
+          )}
+        </span>
+      );
+    
     default:
       // Fallback to message - display as-is
       return <span style={highlightStyle}>{step.message}</span>;
@@ -865,7 +985,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true }) => {
   // Track which documents we've already started preloading
   const preloadedDocsRef = useRef<Set<string>>(new Set());
   
@@ -910,6 +1030,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
   
   // Filter out "Preparing response" steps (planning action type) and context messages
   // Also deduplicate steps to prevent rendering the same step twice
+  // In Reader mode, also filter out agent-specific steps (executing, opening, navigating)
   const filteredSteps = useMemo(() => {
     const seen = new Set<string>();
     const result: ReasoningStep[] = [];
@@ -920,6 +1041,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       
       // Skip context messages entirely - they're redundant with the actual response
       if (step.action_type === 'context') return;
+      
+      // Skip agent-specific steps in Reader mode (only show in Agent mode)
+      if (!isAgentMode && (step.action_type === 'executing' || step.action_type === 'opening' || step.action_type === 'navigating' || step.action_type === 'highlighting')) {
+        return;
+      }
       
       // Deduplicate: Create a unique key for this step based on action_type, message, doc_id, and original index
       // CRITICAL: Include originalIdx to ensure uniqueness even if all other fields are identical
@@ -943,6 +1069,19 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       
       seen.add(stepKey);
       result.push(step);
+    });
+    
+    // Sort by timestamp to ensure correct order
+    // Steps WITHOUT timestamps come first (maintains their original order from backend)
+    // Steps WITH timestamps come after (sorted by timestamp ascending)
+    // This ensures client-side steps (like "Opening citation view") appear at the end
+    result.sort((a, b) => {
+      if (a.timestamp && b.timestamp) {
+        return a.timestamp - b.timestamp;  // Both have timestamps - sort ascending
+      }
+      if (a.timestamp) return 1;   // a has timestamp, b doesn't - a comes AFTER b
+      if (b.timestamp) return -1;  // b has timestamp, a doesn't - b comes AFTER a
+      return 0;  // Neither has timestamp - maintain original order
     });
     
     return result;
@@ -981,7 +1120,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         );
       }
     });
-  }, [steps, isLoading]);
+  }, [steps, isLoading, isAgentMode]);
   
   // Count total reading steps and track indices
   const totalReadingSteps = filteredSteps.filter(s => s.action_type === 'reading').length;
@@ -1150,7 +1289,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 3s ease infinite;
+              animation: reading-glow 1.2s ease infinite;
               filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
             }
             
@@ -1356,113 +1495,76 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           })}
         </AnimatePresence>
       ) : (
-        // When not loading (trace mode), render static divs without AnimatePresence
-        // Use StackedDocumentPreviews for reading steps to save vertical space
+        // When not loading (trace mode), render all steps in order (reading steps stay in their original position)
+        // "Read" replaces "Reading" in place - no separate rendering at bottom
         <div key="reasoning-steps-static">
-          {(() => {
-            // Separate reading steps from other steps for stacked rendering
-            const readingSteps = filteredSteps.filter(s => s.action_type === 'reading');
-            const otherSteps = filteredSteps.filter(s => s.action_type !== 'reading');
+          {filteredSteps.map((step, idx) => {
+            const stepId = step.details?.doc_metadata?.doc_id 
+              || step.details?.filename 
+              || step.timestamp 
+              || idx;
             
-            // Collect document metadata from reading steps for stacked preview
-            // Only require doc_id - original_filename can be null (we'll use classification_type as fallback)
-            const readingDocuments = readingSteps
-              .map(step => step.details?.doc_metadata)
-              .filter((doc): doc is NonNullable<typeof doc> => doc != null && !!doc.doc_id);
+            const finalStepKey = generateAnimatePresenceKey(
+              'ReasoningStep',
+              idx,
+              stepId,
+              step.action_type || 'unknown'
+            );
+            
+            const isLastStep = idx === filteredSteps.length - 1;
+            const isReadingStep = step.action_type === 'reading';
+            
+            // Find reading step index among all reading steps
+            const readingStepIndex = isReadingStep 
+              ? filteredSteps.slice(0, idx).filter(s => s.action_type === 'reading').length
+              : 0;
+            
+            // Check if this is the last reading step
+            const allReadingSteps = filteredSteps.filter(s => s.action_type === 'reading');
+            const isLastReadingStep = isReadingStep && readingStepIndex === allReadingSteps.length - 1;
             
             return (
-              <>
-                {/* Render non-reading steps first */}
-                {otherSteps.map((step, idx) => {
-                  const stepId = step.details?.doc_metadata?.doc_id 
-                    || step.details?.filename 
-                    || step.timestamp 
-                    || idx;
-                  
-                  const finalStepKey = generateAnimatePresenceKey(
-                    'ReasoningStep',
-                    idx,
-                    stepId,
-                    step.action_type || 'unknown'
-                  );
-                  
-                  const isLastStep = idx === otherSteps.length - 1 && readingSteps.length === 0;
-                  
-                  return (
-                    <div
-                      key={finalStepKey}
-                      style={{
-                        fontSize: '12px',
-                        color: DETAIL_COLOR,
-                        padding: '6px 0 6px 0',
-                        paddingLeft: '0',
-                        lineHeight: 1.5,
-                        position: 'relative',
-                        marginLeft: '0',
-                        marginBottom: isLastStep ? '0' : '4px' // No margin on last step for equal spacing
-                      }}
-                    >
-                      {/* Vertical line going DOWN from this step to the next (only if not last step) */}
-                      {!isLastStep && (
-                        <div style={{
-                          position: 'absolute',
-                          left: '7px',
-                          top: '22px', // Moved down from 18px
-                          width: '2px',
-                          height: 'calc(100% - 16px)', // Slightly longer at the bottom
-                          backgroundColor: '#E5E7EB',
-                          zIndex: 0 // Behind preview cards
-                        }} />
-                      )}
-                      <StepRenderer 
-                        step={step} 
-                        allSteps={filteredSteps} 
-                        stepIndex={idx} 
-                        isLoading={isLoading}
-                        readingStepIndex={0}
-                        hasResponseText={hasResponseText}
-                        isLastReadingStep={false}
-                        totalReadingSteps={totalReadingSteps}
-                        onDocumentClick={onDocumentClick}
-                        shownDocumentsRef={shownDocumentsRef}
-                        allReadingComplete={allReadingComplete}
-                      />
-                    </div>
-                  );
-                })}
-                
-                {/* Render reading steps with stacked document previews */}
-                {readingSteps.length > 0 && (
-                  <div style={{ marginTop: '4px' }}>
-                    {/* Show "Read X documents" summary */}
-                    <div style={{
-                      fontSize: '12px',
-                      color: DETAIL_COLOR, // Dark gray for container text
-                      fontWeight: 500,
-                      marginBottom: '4px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px'
-                    }}>
-                      <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
-                      <span>
-                      <span style={{ color: ACTION_COLOR }}>Read</span> {readingSteps.length} document{readingSteps.length > 1 ? 's' : ''}
-                      </span>
-                    </div>
-                    
-                    {/* Stacked document previews */}
-                    {readingDocuments.length > 0 && (
-                      <StackedDocumentPreviews 
-                        documents={readingDocuments}
-                        onDocumentClick={onDocumentClick}
-                        isAnimating={shouldAnimateStack}
-                      />
-                    )}
-                  </div>
+              <div
+                key={finalStepKey}
+                style={{
+                  fontSize: '12px',
+                  color: DETAIL_COLOR,
+                  padding: '6px 0 6px 0',
+                  paddingLeft: '0',
+                  lineHeight: 1.5,
+                  position: 'relative',
+                  marginLeft: '0',
+                  marginBottom: isLastStep ? '0' : '4px' // No margin on last step for equal spacing
+                }}
+              >
+                {/* Vertical line going DOWN from this step to the next (only if not last step) */}
+                {!isLastStep && (
+                  <div style={{
+                    position: 'absolute',
+                    left: '7px',
+                    top: '22px', // Moved down from 18px
+                    width: '2px',
+                    height: 'calc(100% - 16px)', // Slightly longer at the bottom
+                    backgroundColor: '#E5E7EB',
+                    zIndex: 0 // Behind preview cards
+                  }} />
                 )}
-              </>
+                <StepRenderer 
+                  step={step} 
+                  allSteps={filteredSteps} 
+                  stepIndex={idx} 
+                  isLoading={isLoading}
+                  readingStepIndex={readingStepIndex}
+                  hasResponseText={hasResponseText}
+                  isLastReadingStep={isLastReadingStep}
+                  totalReadingSteps={allReadingSteps.length}
+                  onDocumentClick={onDocumentClick}
+                  shownDocumentsRef={shownDocumentsRef}
+                  allReadingComplete={allReadingComplete}
+                />
+              </div>
             );
-          })()}
+          })}
         </div>
       )}
       
@@ -1560,7 +1662,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 3s ease infinite;
+              animation: reading-glow 1.2s ease infinite;
               filter: drop-shadow(0 0 1px rgba(20, 184, 166, 0.25));
             }
             
@@ -1678,7 +1780,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-mask-repeat: no-repeat;
           mask-position: 0% 0;
           -webkit-mask-position: 0% 0;
-          animation: reading-reveal-text 3s ease-in-out infinite;
+          animation: reading-reveal-text 1.2s ease-in-out infinite;
           pointer-events: none;
           z-index: 1;
         }

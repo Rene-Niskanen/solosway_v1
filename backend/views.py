@@ -563,50 +563,97 @@ def query_documents_stream():
                     else:
                         return f"Searching for {target_str}"
                 
-                # ULTRA-FAST PATH: Citation queries and likely follow-ups skip reasoning steps
-                # Since we already have context, no need to show "Searching for X"
+                def detect_action_intent(q: str) -> dict:
+                    """
+                    Detect if user wants agent to perform UI actions.
+                    
+                    Agent-native principle: "Whatever the user can do through the UI, 
+                    the agent should be able to achieve through tools."
+                    
+                    Returns dict with:
+                        - wants_action: bool - whether user wants agent to perform UI action
+                        - action_type: str - type of action ('show', 'save', 'navigate', None)
+                        - target: str - what they want to see/save/navigate to
+                    """
+                    q_lower = q.lower().strip()
+                    
+                    # Patterns that indicate user wants agent to PERFORM an action
+                    show_patterns = [
+                        'show me', 'display', 'open the', 'let me see', 'view the',
+                        'show the', 'pull up', 'bring up', 'show me the', 'can you show',
+                        'could you show', 'please show', 'i want to see', 'show citations',
+                        'show where', 'show evidence', 'open citation', 'open document'
+                    ]
+                    save_patterns = [
+                        'save', 'add to', 'remember', 'keep this', 'store',
+                        'add citation', 'save citation', 'save this', 'bookmark'
+                    ]
+                    navigate_patterns = [
+                        'go to', 'navigate to', 'take me to', 'open property',
+                        'show property', 'go to property'
+                    ]
+                    
+                    # Check for action patterns
+                    for pattern in show_patterns:
+                        if pattern in q_lower:
+                            # Try to extract what they want to see
+                            target = 'citation'  # Default
+                            if 'citation' in q_lower or 'source' in q_lower:
+                                target = 'citation'
+                            elif 'document' in q_lower or 'report' in q_lower or 'epc' in q_lower:
+                                target = 'document'
+                            elif 'property' in q_lower:
+                                target = 'property'
+                            return {'wants_action': True, 'action_type': 'show', 'target': target}
+                    
+                    for pattern in save_patterns:
+                        if pattern in q_lower:
+                            return {'wants_action': True, 'action_type': 'save', 'target': 'citation'}
+                    
+                    for pattern in navigate_patterns:
+                        if pattern in q_lower:
+                            return {'wants_action': True, 'action_type': 'navigate', 'target': 'property'}
+                    
+                    # No action intent detected
+                    return {'wants_action': False, 'action_type': None, 'target': None}
+                
+                # ULTRA-FAST PATH: Only citation queries skip reasoning steps 
+                # This allows follow-up queries to still show agentic reasoning
+                # (Previously follow-ups skipped reasoning, but users want to see the agent "thinking")
                 is_citation_query = citation_context and citation_context.get('cited_text')
                 
-                # Detect likely follow-up query (has message history + short question)
-                query_lower = query.lower()
-                is_likely_followup = (
-                    len(message_history) > 0 and  # Has conversation history
-                    len(query.split()) <= 15 and  # Short question
-                    any(kw in query_lower for kw in [
-                        'explain', 'clarify', 'what do you mean', 'expand', 'tell me more',
-                        'more detail', 'elaborate', 'rephrase', 'summarize', 'what about',
-                        'how about', 'and the', "what's the", 'whats the', 'why', 'how',
-                        # Additional follow-up patterns
-                        'what other', 'any other', 'what else', 'are there', 'does it',
-                        'does the', 'is there', 'other limitations', 'other risks',
-                        'other issues', 'other problems', 'other concerns', 'anything else',
-                        'tell me about', 'can you', 'could you'
-                    ])
-                )
+                # NOTE: is_likely_followup detection removed from fast path
+                # Follow-up queries should still show reasoning steps for an agentic experience
+                # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
-                # Skip reasoning steps for ultra-fast paths
-                is_fast_path = is_citation_query or is_likely_followup
+                # Skip reasoning steps ONLY for citation queries (user clicked on citation text)
+                is_fast_path = is_citation_query
                 
                 if is_fast_path:
-                    # Skip initial reasoning step - go straight to LLM
-                    path_type = "CITATION_QUERY" if is_citation_query else "FAST_FOLLOW_UP"
-                    logger.info(f"⚡ [{path_type}] Skipping initial reasoning step - ultra-fast path")
+                    # Skip initial reasoning step - go straight to LLM (citation queries only)
+                    logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
                     timing.mark("intent_extracted")
                 else:
                     intent_message = extract_query_intent(query)
                     timing.mark("intent_extracted")
+                    
+                    # Emit initial reasoning step with extracted intent (only for non-fast paths)
+                    initial_reasoning = {
+                        'type': 'reasoning_step',
+                        'step': 'initial',
+                        'action_type': 'searching',
+                        'message': intent_message,
+                        'timestamp': time.time(),  # Ensure proper ordering
+                        'details': {'original_query': query}
+                    }
+                    initial_reasoning_json = json.dumps(initial_reasoning)
+                    yield f"data: {initial_reasoning_json}\n\n"
+                    logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
                 
-                # Emit initial reasoning step with extracted intent
-                initial_reasoning = {
-                    'type': 'reasoning_step',
-                    'step': 'initial',
-                    'action_type': 'searching',
-                    'message': intent_message,
-                    'details': {'original_query': query}
-                }
-                initial_reasoning_json = json.dumps(initial_reasoning)
-                yield f"data: {initial_reasoning_json}\n\n"
-                logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
+                # Detect if user wants agent to perform UI actions (show me, save, navigate)
+                action_intent = detect_action_intent(query)
+                if action_intent['wants_action']:
+                    logger.info(f"🎯 [ACTION_INTENT] Detected action intent: {action_intent}")
                 
                 async def run_and_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
@@ -686,6 +733,10 @@ def query_documents_stream():
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
                         
+                        # Track reading timestamp - set when documents are first seen (before summarizing)
+                        # This ensures reading steps appear before summarizing in the UI
+                        reading_timestamp = None
+                        
                         # Track if this is a follow-up for dynamic step generation
                         followup_context = {
                             'is_followup': is_followup,
@@ -714,8 +765,7 @@ def query_documents_stream():
                         # We MUST emit reasoning steps immediately when nodes start
                         # EXCEPTION: Citation queries skip reasoning steps for ultra-fast response
                         if is_fast_path:
-                            path_name = "CITATION_QUERY" if is_citation_query else "FAST_FOLLOW_UP"
-                            logger.info(f"⚡ [{path_name}] Skipping reasoning step emissions - ultra-fast path")
+                            logger.info("⚡ [CITATION_QUERY] Skipping reasoning step emissions - ultra-fast path")
                         else:
                             logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
@@ -833,12 +883,18 @@ def query_documents_stream():
                                                     doc_word = "document" if doc_count == 1 else "documents"
                                                     message = f'Found {doc_count} {doc_word}'
                                             
+                                            # Set reading timestamp when documents are first found (before analyzing/summarizing)
+                                            # This ensures reading steps appear in correct order (after found, before summarizing)
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
+                                            
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': 'found_documents',
                                                 'action_type': 'exploring',
                                                 'message': message,
                                                 'count': doc_count,
+                                                'timestamp': time.time(),  # Ensure proper ordering
                                                 'details': {
                                                     'documents_found': doc_count, 
                                                     'document_names': doc_names,
@@ -846,12 +902,31 @@ def query_documents_stream():
                                                 }
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
+                                            # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
+                                            if not followup_context.get('is_followup'):
+                                                doc_word_analyzing = "document" if doc_count == 1 else "documents"
+                                                analyzing_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'analyzing_documents',
+                                                    'action_type': 'analyzing',
+                                                    'message': f'Analyzing {doc_count} {doc_word_analyzing} for your question',
+                                                    'timestamp': time.time(),  # Ensure proper ordering
+                                                    'details': {'documents_to_analyze': doc_count}
+                                                }
+                                                yield f"data: {json.dumps(analyzing_data)}\n\n"
                                     
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         doc_outputs = state_data.get("document_outputs", [])
                                         doc_outputs_count = len(doc_outputs)
                                         if doc_outputs_count > 0:
+                                            # Use reading timestamp set when documents were found (before analyzing/summarizing)
+                                            # Fallback if not set (shouldn't happen, but safety check)
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
+                                            
                                             # Get relevant_documents from state to match doc_ids
                                             relevant_docs = state_data.get("relevant_documents", [])
                                             
@@ -864,6 +939,7 @@ def query_documents_stream():
                                                     'step': 'analyzing_for_followup',
                                                     'action_type': 'analyzing',
                                                     'message': f'Analyzing {doc_outputs_count} documents for your question',
+                                                    'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {'documents_analyzed': doc_outputs_count}
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
@@ -895,11 +971,16 @@ def query_documents_stream():
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
+                                                    # Use reading_timestamp to ensure reading steps appear before summarizing
+                                                    # Increment slightly for each document to maintain order
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
                                                         'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
@@ -1060,6 +1141,24 @@ def query_documents_stream():
                                             doc_count = len(doc_outputs_from_state) if doc_outputs_from_state else len(relevant_docs_from_state)
                                             yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
                                             
+                                            # Emit "Summarizing content" reasoning step (like Cursor's wand sparkles)
+                                            # Use timestamp to ensure it comes after all reading steps
+                                            summarize_timestamp = time.time()
+                                            summarizing_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'summarizing_content',
+                                                'action_type': 'summarizing',
+                                                'message': 'Summarizing content',
+                                                'timestamp': summarize_timestamp,  # After reading steps
+                                                'details': {'documents_processed': doc_count}
+                                            }
+                                            yield f"data: {json.dumps(summarizing_data)}\n\n"
+                                            logger.info("✨ [STREAM] Emitted 'Summarizing content' reasoning step")
+                                            
+                                            # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
+                                            # This ensures "Opening citation view" appears when document actually opens, not before
+                                            # (Reasoning steps for agent actions removed - they'll be added by frontend on actual execution)
+                                            
                                             # Stream status
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
                                             
@@ -1154,6 +1253,11 @@ def query_documents_stream():
                                                     }
                                                     doc_previews.append(doc_preview)
                                                 
+                                                # Set reading timestamp when documents are first found (before analyzing/summarizing)
+                                                # This ensures reading steps appear in correct order (after found, before summarizing)
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
+                                                
                                                 # Create found_documents step with exploring action_type
                                                 message = f'Found {doc_count} document{"s" if doc_count > 1 else ""}'
                                                 if doc_names:
@@ -1167,6 +1271,7 @@ def query_documents_stream():
                                                     'action_type': 'exploring',
                                                     'message': message,
                                                     'count': doc_count,
+                                                    'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {
                                                         'documents_found': doc_count,
                                                         'document_names': doc_names,
@@ -1174,12 +1279,31 @@ def query_documents_stream():
                                                     }
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                
+                                                # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
+                                                # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
+                                                if not followup_context.get('is_followup'):
+                                                    doc_word_analyzing = "document" if doc_count == 1 else "documents"
+                                                    analyzing_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': 'analyzing_documents',
+                                                        'action_type': 'analyzing',
+                                                        'message': f'Analyzing {doc_count} {doc_word_analyzing} for your question',
+                                                        'timestamp': time.time(),  # Ensure proper ordering
+                                                        'details': {'documents_to_analyze': doc_count}
+                                                    }
+                                                    yield f"data: {json.dumps(analyzing_data)}\n\n"
                                         
                                         elif node_name == "process_documents":
                                             state_data = state_update if state_update else event_data.get("output", {})
                                             doc_outputs = state_data.get("document_outputs", [])
                                             doc_outputs_count = len(doc_outputs)
                                             if doc_outputs_count > 0:
+                                                # Use reading timestamp set when documents were found (before analyzing/summarizing)
+                                                # Fallback if not set (shouldn't happen, but safety check)
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
+                                                
                                                 # Create individual reading steps for each document (for preview cards)
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
@@ -1207,18 +1331,23 @@ def query_documents_stream():
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
-                                                reasoning_data = {
-                                                    'type': 'reasoning_step',
+                                                    # Use reading_timestamp to ensure reading steps appear before summarizing
+                                                    # Increment slightly for each document to maintain order
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
                                                         'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
                                                             'doc_metadata': doc_metadata
                                                         }
-                                                }
-                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
                                         # Store the state from the last event
                                         if state_update:
@@ -1407,6 +1536,69 @@ def query_documents_stream():
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         timing.mark("prepare_complete")
+                        
+                        # AGENT-NATIVE: Emit agent_action events if user requested UI actions
+                        # This follows the principle: "Whatever the user can do through the UI, 
+                        # the agent should be able to achieve through tools."
+                        # NOTE: Reasoning step is now emitted earlier (before response) as part of the reasoning train of thought
+                        if action_intent['wants_action'] and citations_map_for_frontend:
+                            action_type = action_intent['action_type']
+                            
+                            # Agent action for 'show' - open document
+                            if action_type == 'show':
+                                # Get the first citation to open
+                                first_citation_key = next(iter(citations_map_for_frontend.keys()), None)
+                                if first_citation_key:
+                                    first_citation = citations_map_for_frontend[first_citation_key]
+                                    
+                                    # Emit single open_document action with bbox included
+                                    # This prevents double-open race condition that resets to page 1
+                                    bbox = first_citation.get('bbox')
+                                    open_doc_action = {
+                                        'type': 'agent_action',
+                                        'action': 'open_document',
+                                        'params': {
+                                            'doc_id': first_citation.get('doc_id'),
+                                            'page': first_citation.get('page', 1),
+                                            'filename': first_citation.get('original_filename', ''),
+                                            'bbox': bbox if bbox and isinstance(bbox, dict) else None
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                    
+                                    logger.info(f"🎯 [AGENT_ACTION] Emitted open_document (with bbox={bool(bbox)}) for doc_id={first_citation.get('doc_id')}, page={first_citation.get('page', 1)}")
+                            
+                            elif action_type == 'save':
+                                # Emit save_to_writing action for first citation
+                                first_citation_key = next(iter(citations_map_for_frontend.keys()), None)
+                                if first_citation_key:
+                                    first_citation = citations_map_for_frontend[first_citation_key]
+                                    save_action = {
+                                        'type': 'agent_action',
+                                        'action': 'save_to_writing',
+                                        'params': {
+                                            'citation': first_citation,
+                                            'note': 'Saved by agent'
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(save_action)}\n\n"
+                                    logger.info(f"🎯 [AGENT_ACTION] Emitted save_to_writing for citation")
+                            
+                            elif action_type == 'navigate':
+                                # Navigate to property - requires property_id from context
+                                # NOTE: Reasoning step is now emitted earlier (before response)
+                                if property_id:
+                                    nav_action = {
+                                        'type': 'agent_action',
+                                        'action': 'navigate_to_property',
+                                        'params': {
+                                            'property_id': property_id,
+                                            'center_map': True
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(nav_action)}\n\n"
+                                    logger.info(f"🎯 [AGENT_ACTION] Emitted navigate_to_property for property_id={property_id}")
+                        
                         # Send complete message with metadata
                         complete_data = {
                             'type': 'complete',

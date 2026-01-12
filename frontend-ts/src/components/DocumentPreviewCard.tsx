@@ -270,7 +270,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           if (e.detail > 0) { // e.detail is 0 for programmatic clicks
             e.preventDefault();
             e.stopPropagation();
-            onClick(e);
+            onClick();
           }
         } : undefined}
         style={{
