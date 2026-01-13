@@ -80,7 +80,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     return `${docId}:${b.page}:${b.left.toFixed(4)}:${b.top.toFixed(4)}:${b.width.toFixed(4)}:${b.height.toFixed(4)}`;
   }, [highlight, docId]);
   
-  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
+  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
 
   // Try to get filename from cached file data if not provided
@@ -103,6 +103,18 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       setDisplayFilename(filename);
     }
   }, [docId, filename, previewFiles]);
+
+  // AGENT GLOW: Turn off glow effect when document finishes loading
+  useEffect(() => {
+    if (!loading && isAgentOpening) {
+      // Small delay to ensure the document is visually rendered before removing glow
+      const timer = setTimeout(() => {
+        setIsAgentOpening(false);
+      }, 500); // 500ms delay for smooth visual transition
+      
+      return () => clearTimeout(timer);
+    }
+  }, [loading, isAgentOpening, setIsAgentOpening]);
 
   // Load document
   useEffect(() => {
@@ -977,6 +989,110 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         }
       }}
     >
+      {/* Agent Glow Border Effect - Pulsing gradient when agent opens document */}
+      {isAgentOpening && (
+        <div 
+          className="agent-glow-overlay"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 10000,
+            borderRadius: isFullscreen ? 0 : 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Top edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '20px',
+            background: 'linear-gradient(to bottom, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Bottom edge glow */}
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: '20px',
+            background: 'linear-gradient(to top, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Left edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: '20px',
+            background: 'linear-gradient(to right, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Right edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            right: 0,
+            width: '20px',
+            background: 'linear-gradient(to left, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Corner glow overlays for smoother corners */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at top left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at top right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at bottom left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            right: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at bottom right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* CSS Keyframes injected via style tag */}
+          <style>{`
+            @keyframes agentGlowPulse {
+              0%, 100% {
+                opacity: 1;
+              }
+              50% {
+                opacity: 0.4;
+              }
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* Header */}
       <div className="pr-4 pl-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative" style={{ minHeight: '56px', paddingTop: '16px', paddingBottom: '16px' }}>
         <div className="flex items-center gap-2" style={{ marginTop: '2px' }}>

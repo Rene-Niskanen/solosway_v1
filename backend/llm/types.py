@@ -74,6 +74,8 @@ class MainWorkflowState(TypedDict, total=False):
     citation_context: Optional[dict]  # NEW: Structured citation metadata (bbox, page, text, doc_id) - hidden from user
     response_mode: Optional[str]  # NEW: Response mode for file attachments ("fast", "detailed", "full")
     attachment_context: Optional[dict]  # NEW: Extracted text from attached files (texts, pageTexts, filenames)
+    is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+    agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

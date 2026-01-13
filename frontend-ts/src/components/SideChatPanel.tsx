@@ -402,7 +402,8 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
       }
-      return match;
+      // During streaming, hide temporarily; after streaming, show raw if data never arrived
+      return isStreaming ? `%%CITATION_PENDING_${numStr}%%` : match;
     });
     
     // Clean up periods that follow citations
@@ -415,7 +416,8 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_BRACKET_${num}%%`;
       }
-      return match;
+      // During streaming, hide temporarily; after streaming, show raw if data never arrived
+      return isStreaming ? `%%CITATION_PENDING_${num}%%` : match;
     });
     
     return processedText;
@@ -452,11 +454,15 @@ const StreamingResponseText: React.FC<{
   const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
     return React.Children.map(nodes, child => {
       if (typeof child === 'string') {
-        // Split by citation placeholders and render
-        const parts = child.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET)_\d+%%)/g);
+        // Split by citation placeholders (including pending ones) and render
+        const parts = child.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)/g);
         const result: React.ReactNode[] = [];
         parts.forEach((part, idx) => {
-          if (part.startsWith('%%CITATION_')) {
+          if (part.startsWith('%%CITATION_PENDING_')) {
+            // Pending citations - hide completely until data arrives
+            // They'll be converted to proper citations on next render when data is available
+            return;
+          } else if (part.startsWith('%%CITATION_')) {
             const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
             if (citationNode !== null) {
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
@@ -641,232 +647,6 @@ const PropertyImageThumbnail: React.FC<{ property: PropertyData }> = ({ property
       )}
     </div>
   );
-};
-
-// Document Preview Overlay - Shows document preview when clicking reasoning step cards
-const DocumentPreviewOverlay: React.FC<{
-  document: {
-    doc_id: string;
-    original_filename?: string | null;
-    classification_type: string;
-    page_range?: string;
-    page_numbers?: number[];
-    s3_path?: string;
-    download_url?: string;
-  };
-  isFullscreen: boolean;
-  onClose: () => void;
-  onToggleFullscreen: () => void;
-}> = ({ document, isFullscreen, onClose, onToggleFullscreen }) => {
-  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [blobType, setBlobType] = React.useState<string | null>(null);
-  
-  // Determine file type from filename or classification_type
-  const fileName = document.original_filename || '';
-  const classType = document.classification_type?.toLowerCase() || '';
-  const isPDF = fileName.toLowerCase().endsWith('.pdf') || 
-                classType.includes('valuation') || 
-                classType.includes('report') ||
-                classType.includes('pdf');
-  const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)$/i.test(fileName);
-  const isDOCX = /\.(doc|docx)$/i.test(fileName);
-  
-  React.useEffect(() => {
-    const fetchDocument = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-        let fetchUrl: string;
-        
-        if (document.download_url) {
-          fetchUrl = document.download_url.startsWith('http') 
-            ? document.download_url 
-            : `${backendUrl}${document.download_url}`;
-        } else if (document.s3_path) {
-          fetchUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(document.s3_path)}`;
-        } else {
-          fetchUrl = `${backendUrl}/api/files/download?document_id=${document.doc_id}`;
-        }
-        
-        console.log('📄 Fetching document for preview:', fileName, fetchUrl);
-        
-        const response = await fetch(fetchUrl, { credentials: 'include' });
-        
-        if (!response.ok) {
-          throw new Error(`Failed to load document: ${response.status}`);
-        }
-        
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        setBlobType(blob.type);
-        setPreviewUrl(url);
-        setLoading(false);
-        
-        console.log('✅ Document loaded for preview:', fileName, 'Type:', blob.type);
-      } catch (err: any) {
-        console.error('❌ Error loading document:', err);
-        setError(err.message || 'Failed to load document');
-        setLoading(false);
-      }
-    };
-    
-    fetchDocument();
-    
-    // Cleanup blob URL on unmount
-    return () => {
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
-    };
-  }, [document.doc_id]);
-  
-  // Handle escape key to close
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isFullscreen) {
-          onToggleFullscreen();
-        } else {
-          onClose();
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreen, onClose, onToggleFullscreen]);
-  
-  const containerClass = isFullscreen 
-    ? "fixed inset-0 m-0 p-0 w-screen h-screen bg-white flex flex-col z-[10000]" 
-    : "fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4";
-  
-  const contentClass = isFullscreen
-    ? "w-full h-full flex flex-col m-0 p-0"
-    : "bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col max-w-4xl w-full max-h-[90vh]";
-  
-  const overlayContent = (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
-      className={containerClass}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !isFullscreen) {
-          onClose();
-        }
-      }}
-    >
-      <motion.div
-        initial={isFullscreen ? { opacity: 0 } : { scale: 0.95, opacity: 0 }}
-        animate={isFullscreen ? { opacity: 1 } : { scale: 1, opacity: 1 }}
-        exit={isFullscreen ? { opacity: 0 } : { scale: 0.95, opacity: 0 }}
-        transition={{ duration: 0.2 }}
-        className={contentClass}
-        style={isFullscreen ? { transform: 'none' } : undefined}
-      >
-        {/* Header */}
-        <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
-          <div className="flex items-center gap-3 overflow-hidden">
-            <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center shrink-0">
-              {isPDF ? <FileText size={16} className="text-slate-700" /> : 
-               isImage ? <ImageIcon size={16} className="text-purple-500" /> : 
-               isDOCX ? <FileText size={16} className="text-blue-600" /> :
-               <FileIcon size={16} className="text-gray-400" />}
-            </div>
-            <div className="flex flex-col min-w-0">
-              <h3 className="text-sm font-medium text-gray-900 truncate">{fileName}</h3>
-              <span className="text-xs text-gray-500">{document.classification_type || 'Document'}</span>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {/* Fullscreen Toggle */}
-            <button
-              onClick={onToggleFullscreen}
-              className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
-              title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
-            >
-              {isFullscreen ? (
-                <Minimize2 className="w-4 h-4" />
-              ) : (
-                <Fullscreen className="w-4 h-4" />
-              )}
-            </button>
-            
-            <div className="w-px h-4 bg-gray-200 mx-1" />
-            
-            {/* Close Button */}
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-red-50 hover:text-red-500 rounded-lg text-gray-400 transition-colors"
-              title="Close Preview"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-        
-        {/* Content Area */}
-        <div className="flex-1 overflow-hidden bg-gray-50 relative">
-          {loading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white">
-              <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
-            </div>
-          )}
-          
-          {error && (
-            <div className="flex items-center justify-center h-full text-red-500 gap-2">
-              <span className="text-sm">{error}</span>
-            </div>
-          )}
-          
-          {previewUrl && !loading && !error && (
-            <div className="w-full h-full flex items-center justify-center">
-              {isPDF ? (
-                <iframe
-                  src={previewUrl}
-                  className="w-full h-full border-0"
-                  title={fileName}
-                />
-              ) : isImage ? (
-                <img
-                  src={previewUrl}
-                  alt={fileName}
-                  className="max-w-full max-h-full object-contain p-4"
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-                  <div className="w-20 h-20 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center mb-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
-                  </div>
-                  <p className="text-sm font-medium text-gray-900 mb-1">{fileName}</p>
-                  <p className="text-xs text-gray-500 mb-6">Preview not available for this file type</p>
-                  <a
-                    href={previewUrl}
-                    download={fileName}
-                    className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-xs font-medium shadow-sm"
-                  >
-                    Download File
-                  </a>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-  
-  // Use portal for fullscreen mode to break out of parent constraints
-  if (isFullscreen && typeof window !== 'undefined') {
-    return createPortal(overlayContent, window.document.body);
-  }
-  
-  return overlayContent;
 };
 
 // Citation link component - renders clickable citation buttons [1], [2], etc.
@@ -1847,7 +1627,7 @@ interface SideChatPanelProps {
   restoreChatId?: string | null; // Chat ID to restore from history
   onNewChat?: () => void; // Callback when new chat is clicked (to clear query in parent)
   onSidebarToggle?: () => void; // Callback for toggling sidebar
-  onOpenProperty?: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string | number) => void; // Callback for opening property card
+  onOpenProperty?: (address: string | null, coordinates?: { lat: number; lng: number } | null, propertyId?: string | number, navigationOnly?: boolean) => void; // Callback for opening property card
   initialAttachedFiles?: FileAttachmentData[]; // Initial file attachments to restore
   onChatWidthChange?: (width: number) => void; // Callback when chat panel width changes (for map resizing)
   isPropertyDetailsOpen?: boolean; // Whether PropertyDetailsPanel is currently open
@@ -2135,15 +1915,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isExpanded, setIsExpanded] = React.useState<boolean>(false);
   // Track if we're in fullscreen mode from dashboard (persists even after shouldExpand resets)
   const isFullscreenFromDashboardRef = React.useRef<boolean>(false);
+  // Track if user manually requested fullscreen (should not be cleared by useEffect)
+  const isManualFullscreenRef = React.useRef<boolean>(false);
   const [isFullscreenMode, setIsFullscreenMode] = React.useState<boolean>(false);
   // Track actual rendered width of the panel for responsive design
   const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(450);
+  // Track actual input container width for button responsive design
+  const [inputContainerWidth, setInputContainerWidth] = React.useState<number>(450);
   // Track if we just entered fullscreen to disable transition
   const [justEnteredFullscreen, setJustEnteredFullscreen] = React.useState<boolean>(false);
   // State for drag over feedback
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
+  // Track if agent is performing a navigation task (prevents fullscreen re-expansion)
+  const isNavigatingTaskRef = React.useRef<boolean>(false);
   // Track custom dragged width for resizing
   const [draggedWidth, setDraggedWidth] = React.useState<number | null>(null);
   const [isResizing, setIsResizing] = React.useState<boolean>(false);
@@ -2177,7 +1963,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Sync expanded state with shouldExpand prop
   React.useEffect(() => {
-    console.log('🔄 SideChatPanel: shouldExpand changed', { shouldExpand, isExpanded, isFullscreenMode, isPropertyDetailsOpen });
+    console.log('🔄 SideChatPanel: shouldExpand changed', { shouldExpand, isExpanded, isFullscreenMode, isPropertyDetailsOpen, isNavigatingTask: isNavigatingTaskRef.current });
+    
+    // CRITICAL: Don't re-expand to fullscreen if we're in the middle of a navigation task
+    // Navigation tasks shrink the chat to 380px and should NOT be overridden
+    if (isNavigatingTaskRef.current) {
+      console.log('🚫 Skipping fullscreen expansion - navigation task in progress');
+      return;
+    }
+    
     if (shouldExpand) {
       // shouldExpand is true - expand the chat
       if (!isExpanded) {
@@ -2203,16 +1997,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
       } else {
         // Property details is open - use normal 35vw width (not fullscreen)
-        // Clear fullscreen mode if it was set
-        if (isFullscreenMode) {
+        // Clear fullscreen mode if it was set (but not if user manually requested fullscreen)
+        if (isFullscreenMode && !isManualFullscreenRef.current) {
           console.log('📐 Property details open - clearing fullscreen mode, using 35vw');
           setIsFullscreenMode(false);
           isFullscreenFromDashboardRef.current = false;
         }
-        // Lock the width to 35vw for analyse mode
-        lockedWidthRef.current = '35vw';
-        // Clear dragged width so locked width takes effect
-        setDraggedWidth(null);
+        // Lock the width to 35vw for analyse mode (unless user manually requested fullscreen)
+        if (!isManualFullscreenRef.current) {
+          lockedWidthRef.current = '35vw';
+          // Clear dragged width so locked width takes effect
+          setDraggedWidth(null);
+        }
       }
     }
     // DON'T reset fullscreen mode when shouldExpand becomes false
@@ -2226,6 +2022,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // User manually collapsed, reset the flags
       isFullscreenFromDashboardRef.current = false;
       setIsFullscreenMode(false);
+      isManualFullscreenRef.current = false; // Clear manual fullscreen flag
       wasFullscreenBeforeCitationRef.current = false; // Also reset citation flag when manually collapsing
     }
   }, [isExpanded]);
@@ -2586,13 +2383,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Store messages (both queries and responses)
   interface ReasoningStep {
     step: string;
-    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analyzing' | 'summarizing' | 'complete' | 'context' | 'executing' | 'opening' | 'navigating' | 'highlighting';
+    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'complete' | 'context' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
     message: string;
     count?: number;
     target?: string;
     line_range?: string;
     details: any;
     timestamp: number;
+    fromCitationClick?: boolean; // Flag to indicate step was added from citation click (show in all modes)
   }
 
   interface CitationData {
@@ -2724,18 +2522,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     });
   }, [handleFileChoiceSelection]);
   
-  // Document preview state for reasoning step card clicks
-  const [previewDocument, setPreviewDocument] = React.useState<{
-    doc_id: string;
-    original_filename?: string | null;
-    classification_type: string;
-    page_range?: string;
-    page_numbers?: number[];
-    s3_path?: string;
-    download_url?: string;
-  } | null>(null);
-  const [isPreviewFullscreen, setIsPreviewFullscreen] = React.useState(false);
-  
   // Persist chat messages across panel open/close
   const persistedChatMessagesRef = React.useRef<ChatMessage[]>([]);
   
@@ -2813,6 +2599,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       );
       
       if (!isAlreadyAdded) {
+        // Reset navigation task flag on new query - allows fullscreen expansion for fresh queries
+        isNavigatingTaskRef.current = false;
+        
         // Mark this query as being processed
         lastProcessedQueryRef.current = queryText;
         isProcessingQueryRef.current = true;
@@ -3006,11 +2795,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // Clear the file choice step and add "Processing with..." step
               const processingStep: ReasoningStep = {
                 step: 'processing_attachments',
-                action_type: 'analyzing',
+                action_type: 'analysing',
                 message: userChoice === 'fast' 
                   ? 'Generating fast response...' 
                   : userChoice === 'detailed'
-                    ? 'Analyzing documents for detailed citations...'
+                    ? 'Analysing documents for detailed citations...'
                     : 'Processing and adding to project...',
                 details: {},
                 timestamp: Date.now()
@@ -3394,7 +3183,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       
                       const newStep: ReasoningStep = {
                         step: step.step,
-                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
                         message: step.message,
                         count: step.count,
                         details: step.details,
@@ -3557,13 +3346,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     // bbox is now included in open_document action (no separate highlight_bbox)
                     console.log('📂 [AGENT_ACTION] Opening document:', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                     if (action.params.doc_id) {
+                      // AGENT GLOW: Activate glowing border effect before opening
+                      setIsAgentOpening(true);
+                      
                       const citationData = {
                         doc_id: action.params.doc_id,
                         page: action.params.page || 1,
                         original_filename: action.params.filename || '',
                         bbox: action.params.bbox || undefined // Include bbox if available
                       };
-                      handleCitationClick(citationData as any);
+                      handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                     }
                     break;
                     
@@ -3578,6 +3370,110 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     if (action.params.property_id && onOpenProperty) {
                       onOpenProperty(null, null, action.params.property_id);
                     }
+                    break;
+                  
+                  case 'show_map_view':
+                    // Open the map view - SEQUENCED FLOW:
+                    // Step 1: IMMEDIATELY close any open document preview and prevent fullscreen restoration
+                    // Step 2: Wait for "Sure thing!" to appear (delay to let response stream)
+                    // Step 3: Shrink chat panel (map is already visible behind fullscreen chat)
+                    // NOTE: Do NOT call onMapToggle() - that hides the chat!
+                    console.log('🗺️ [AGENT_ACTION] show_map_view received - queuing for sequenced execution:', action.params);
+                    
+                    // CRITICAL: Reset fullscreen restoration flag BEFORE closing document preview
+                    // This prevents the useEffect from restoring fullscreen when expandedCardViewDoc becomes null
+                    wasFullscreenBeforeCitationRef.current = false;
+                    isFullscreenFromDashboardRef.current = false;
+                    
+                    // Mark as navigation task IMMEDIATELY to prevent any fullscreen re-expansion
+                    isNavigatingTaskRef.current = true;
+                    
+                    // Close any open document preview (now it won't trigger fullscreen restoration)
+                    closeExpandedCardView();
+                    
+                    // Exit fullscreen mode IMMEDIATELY (don't wait for setTimeout)
+                    setIsFullscreenMode(false);
+                    
+                    // Delay to let "Sure thing!" response appear first, then shrink chat
+                    setTimeout(() => {
+                      console.log('🗺️ [AGENT_ACTION] show_map_view - Step 2: Shrinking chat panel to reveal map');
+                      // Shrink chat panel - map will be visible behind it
+                      const navMinWidth = 380;
+                      setDraggedWidth(navMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(navMinWidth);
+                      }
+                      // Map is already rendered behind the chat - shrinking reveals it
+                      // Do NOT call onMapToggle() as that hides the chat panel
+                    }, 600); // Wait 600ms for "Sure thing!" to appear
+                    break;
+                  
+                  case 'select_property_pin':
+                    // Select a property pin on the map - SEQUENCED FLOW:
+                    // Step 1: IMMEDIATELY close document preview and prevent fullscreen restoration
+                    // Step 2: Wait for "Navigating to property now..." and reasoning step to appear
+                    // Step 3: Activate overlay
+                    // Step 4: Navigate to pin
+                    // Step 5: Click pin and stop overlay
+                    console.log('📍 [AGENT_ACTION] select_property_pin received - queuing for sequenced execution:', action.params);
+                    
+                    // CRITICAL: Reset fullscreen restoration flags IMMEDIATELY
+                    // This prevents the useEffect from restoring fullscreen when expandedCardViewDoc becomes null
+                    wasFullscreenBeforeCitationRef.current = false;
+                    isFullscreenFromDashboardRef.current = false;
+                    
+                    // Mark as navigation task IMMEDIATELY to prevent any fullscreen re-expansion
+                    isNavigatingTaskRef.current = true;
+                    
+                    // Close any open document preview IMMEDIATELY (now it won't trigger fullscreen restoration)
+                    closeExpandedCardView();
+                    
+                    // Exit fullscreen mode IMMEDIATELY
+                    setIsFullscreenMode(false);
+                    
+                    // Delay to let "Navigating to property now..." and reasoning step appear
+                    setTimeout(() => {
+                      console.log('📍 [AGENT_ACTION] select_property_pin - Step 2: Activating overlay');
+                      // Activate agent task overlay
+                      setAgentTaskActive(true, 'Navigating to property...');
+                      setMapNavigating(true); // Enable map glow effect
+                      // Ensure chat is shrunk (in case show_map_view didn't fire)
+                      const pinNavMinWidth = 380;
+                      setDraggedWidth(pinNavMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(pinNavMinWidth);
+                      }
+                      
+                      // Step 3: Navigate to pin after overlay is visible
+                      setTimeout(() => {
+                        console.log('📍 [AGENT_ACTION] select_property_pin - Step 3: Navigating to pin');
+                        if (action.params.property_id && onOpenProperty) {
+                          const coords = action.params.latitude && action.params.longitude 
+                            ? { lat: action.params.latitude, lng: action.params.longitude }
+                            : undefined;
+                          // Pass navigationOnly=true to just show title card, not full panel
+                          onOpenProperty(action.params.address || null, coords || null, action.params.property_id, true);
+                          
+                          // Step 4: Deactivate overlay after pin is clicked
+                          setTimeout(() => {
+                            console.log('📍 [AGENT_ACTION] select_property_pin - Step 4: Stopping overlay');
+                            setAgentTaskActive(false);
+                            setMapNavigating(false);
+                            // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
+                            // Will be reset when next query starts
+                          }, 1000);
+                        }
+                      }, 500);
+                    }, 800); // Wait 800ms for reasoning step to appear
+                    break;
+                  
+                  case 'search_property_result':
+                    // Property search completed - store result for subsequent actions
+                    console.log('🔍 [AGENT_ACTION] search_property_result received:', action.params);
+                    // Store in window for subsequent actions to use
+                    (window as any).__lastPropertySearchResult = action.params;
                     break;
                     
                   case 'save_to_writing':
@@ -3606,7 +3502,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   default:
                     console.warn('Unknown agent action:', action.action);
                 }
-              }
+              },
+              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -3654,6 +3551,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Observe width changes
     const resizeObserver = new ResizeObserver(updateWidth);
     resizeObserver.observe(panelRef.current);
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isVisible]);
+
+  // Track actual input container width for button responsive design
+  React.useEffect(() => {
+    if (!chatInputContainerRef.current) return;
+    
+    const updateInputWidth = () => {
+      if (chatInputContainerRef.current) {
+        const width = chatInputContainerRef.current.getBoundingClientRect().width;
+        setInputContainerWidth(width);
+      }
+    };
+    
+    // Initial measurement
+    updateInputWidth();
+    
+    // Observe width changes
+    const resizeObserver = new ResizeObserver(updateInputWidth);
+    resizeObserver.observe(chatInputContainerRef.current);
     
     return () => {
       resizeObserver.disconnect();
@@ -3768,7 +3688,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setHighlightCitation, // NEW: Set highlight for PropertyDetailsPanel
     openExpandedCardView, // NEW: Open standalone ExpandedCardView
     closeExpandedCardView, // NEW: Close standalone ExpandedCardView
-    expandedCardViewDoc // Track when document preview is open/closed
+    expandedCardViewDoc, // Track when document preview is open/closed
+    setIsAgentOpening, // NEW: Set agent opening state for glow effect
+    setAgentTaskActive, // NEW: Set agent task overlay active
+    stopAgentTask, // NEW: Stop agent task
+    setMapNavigating // NEW: Set map navigation glow effect
   } = usePreview();
   
   // Track if we were in fullscreen mode before opening a citation
@@ -3782,7 +3706,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     // When expandedCardViewDoc becomes null (document preview closed)
     // Check if we were in fullscreen before - this flag is set when clicking a citation in fullscreen mode
-    if (!expandedCardViewDoc && wasFullscreenBeforeCitationRef.current) {
+    // CRITICAL: Skip restoration if we're navigating (agent navigation closes preview but shouldn't restore fullscreen)
+    if (!expandedCardViewDoc && wasFullscreenBeforeCitationRef.current && !isNavigatingTaskRef.current) {
       console.log('🔄 [CITATION] Document preview closed - restoring fullscreen mode instantly (snap, no animation)');
       // Use flushSync to ensure state updates happen synchronously before render (like dashboard opening)
       flushSync(() => {
@@ -3814,13 +3739,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [expandedCardViewDoc, onChatWidthChange, sidebarWidth]);
 
   // Phase 1: Handle citation click - fetch document and open in viewer
-  const handleCitationClick = React.useCallback(async (citationData: CitationData) => {
+  // fromAgentAction: true when called from agent_action handler (backend already emits reasoning step)
+  const handleCitationClick = React.useCallback(async (citationData: CitationData, fromAgentAction: boolean = false) => {
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
       
       console.groupCollapsed('📚 [CITATION] handleCitationClick');
       console.log('Raw citation payload:', citationData);
       console.log('Matched chunk metadata:', citationData.matched_chunk_metadata);
+      console.log('fromAgentAction:', fromAgentAction);
       console.groupEnd();
 
       const docId = citationData.doc_id;
@@ -3839,10 +3766,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       console.log('📎 Citation data received:', JSON.stringify(citationData, null, 2));
       console.log('📎 source_chunks_metadata:', citationData.source_chunks_metadata);
 
-      // AGENT-NATIVE: Add "Opening citation view" and "Highlighting content" reasoning steps when citation is clicked (only in agent mode)
+      // AGENT-NATIVE: Add "Opening citation view" and "Highlighting content" reasoning steps when citation is clicked (only in Agent mode)
       // This provides instant visual feedback before any async work starts
       // Only add to the LAST message with reasoning steps (prefer completed, but allow loading if no completed found)
-      if (isAgentModeRef.current) {
+      // SKIP when called from agent action - backend already emits the reasoning step
+      if (isAgentModeRef.current && !fromAgentAction) {
         setChatMessages(prev => {
           // Find the index of the LAST message with reasoning steps
           // Prefer completed messages, but fall back to loading message if that's all we have
@@ -3879,48 +3807,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             }
             
             // Check if steps already exist (avoid duplicates)
-            const hasOpeningStep = msg.reasoningSteps?.some(s => 
-              s.action_type === 'opening' && s.step === 'agent_opening_citation'
-            );
-            const hasHighlightingStep = msg.reasoningSteps?.some(s => 
-              s.action_type === 'highlighting' && s.step === 'agent_highlighting_content'
+            // Check for either frontend-added step OR backend-emitted step
+            const hasCombinedStep = msg.reasoningSteps?.some(s => 
+              s.action_type === 'opening' && 
+              (s.step === 'agent_opening_citation' || s.step === 'agent_open_document')
             );
             
-            // Build array of new steps to add
-            const newSteps: ReasoningStep[] = [];
-            
-            // Step 1: Opening citation view (if not already present)
-            if (!hasOpeningStep) {
-              newSteps.push({
+            // Add single combined step for opening and highlighting
+            // Skip if backend already added it (from agent action)
+            if (!hasCombinedStep) {
+              const newStep: ReasoningStep = {
                 step: 'agent_opening_citation',
                 action_type: 'opening',
-                message: 'Opening citation view',
-                timestamp: Number.MAX_SAFE_INTEGER - 1, // Second to last (before highlighting)
+                message: 'Opening citation view & Highlighting content',
+                timestamp: Number.MAX_SAFE_INTEGER,
+                fromCitationClick: true,
                 details: {
                   doc_id: docId,
                   filename: citationData.original_filename || 'document.pdf'
                 }
-              });
-            }
+              };
             
-            // Step 2: Highlighting content (if not already present)
-            if (!hasHighlightingStep) {
-              newSteps.push({
-                step: 'agent_highlighting_content',
-                action_type: 'highlighting',
-                message: 'Highlighting content',
-                timestamp: Number.MAX_SAFE_INTEGER, // Always last
-                details: {
-                  doc_id: docId,
-                  filename: citationData.original_filename || 'document.pdf'
-                }
-              });
-            }
-            
-            if (newSteps.length > 0) {
               return {
                 ...msg,
-                reasoningSteps: [...(msg.reasoningSteps || []), ...newSteps]
+                reasoningSteps: [...(msg.reasoningSteps || []), newStep]
               };
             }
             return msg;
@@ -4193,74 +4103,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
     }
   }, [previewFiles, preloadFile, openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
-  
-  // Handle document preview click from reasoning step cards
-  // Uses shared preview context (addPreviewFile) to open documents the same way as PropertyDetailsPanel
-  const handleDocumentPreviewClick = React.useCallback(async (metadata: {
-    doc_id: string;
-    original_filename?: string | null;
-    classification_type: string;
-    page_range?: string;
-    page_numbers?: number[];
-    s3_path?: string;
-    download_url?: string;
-  }) => {
-    console.log('📄 Opening document preview from reasoning step:', metadata.original_filename);
-    
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-      let downloadUrl: string;
-      
-      // Determine download URL from available metadata
-      if (metadata.download_url) {
-        downloadUrl = metadata.download_url.startsWith('http') 
-          ? metadata.download_url 
-          : `${backendUrl}${metadata.download_url}`;
-      } else if (metadata.s3_path) {
-        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent(metadata.s3_path)}`;
-      } else {
-        downloadUrl = `${backendUrl}/api/files/download?document_id=${metadata.doc_id}`;
-      }
-      
-      // Fetch the document
-      const response = await fetch(downloadUrl, { credentials: 'include' });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch document: ${response.status}`);
-      }
-      
-      const blob = await response.blob();
-      
-      // Build display filename with fallbacks
-      const displayFilename = metadata.original_filename || 
-        (metadata.classification_type ? metadata.classification_type.replace(/_/g, ' ') : 'document.pdf');
-      
-      // Create a File object from the blob
-      const file = new File([blob], displayFilename, { 
-        type: blob.type || 'application/pdf'
-      });
-      
-      // Convert to FileAttachmentData format for DocumentPreviewModal
-      const fileData: FileAttachmentData = {
-        id: metadata.doc_id,
-        file: file,
-        name: displayFilename,
-        type: blob.type || 'application/pdf',
-        size: blob.size
-      };
-      
-      // Use shared preview context to add file (same as PropertyDetailsPanel)
-      addPreviewFile(fileData);
-      
-    } catch (error) {
-      console.error('❌ Error opening document from reasoning step:', error);
-      toast({
-        title: "Error opening document",
-        description: "Failed to load the document preview. Please try again.",
-        variant: "destructive",
-      });
-    }
-  }, [addPreviewFile, toast]);
   
   // Initialize textarea height on mount
   React.useEffect(() => {
@@ -4783,7 +4625,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       
                       const newStep: ReasoningStep = {
                         step: step.step,
-                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
                         message: step.message,
                         count: step.count,
                         details: step.details,
@@ -4878,13 +4720,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   case 'open_document':
                     console.log('📂 [AGENT_ACTION] Opening document (initial):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                     if (action.params.doc_id) {
+                      // AGENT GLOW: Activate glowing border effect before opening
+                      setIsAgentOpening(true);
+                      
                       const citationData = {
                         doc_id: action.params.doc_id,
                         page: action.params.page || 1,
                         original_filename: action.params.filename || '',
                         bbox: action.params.bbox || undefined
                       };
-                      handleCitationClick(citationData as any);
+                      handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                     }
                     break;
                   case 'highlight_bbox':
@@ -4895,6 +4740,68 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     if (action.params.property_id && onOpenProperty) {
                       onOpenProperty(null, null, action.params.property_id);
                     }
+                    break;
+                  case 'show_map_view':
+                    // SEQUENCED FLOW for initial load
+                    // NOTE: Do NOT call onMapToggle() - that hides the chat!
+                    console.log('🗺️ [AGENT_ACTION] show_map_view received (initial) - queuing:', action.params);
+                    // CRITICAL: Reset fullscreen restoration flags IMMEDIATELY
+                    wasFullscreenBeforeCitationRef.current = false;
+                    isFullscreenFromDashboardRef.current = false;
+                    isNavigatingTaskRef.current = true;
+                    // Close any open document preview (won't trigger fullscreen restoration now)
+                    closeExpandedCardView();
+                    // Exit fullscreen mode IMMEDIATELY
+                    setIsFullscreenMode(false);
+                    setTimeout(() => {
+                      const navMinWidth = 380;
+                      setDraggedWidth(navMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(navMinWidth);
+                      }
+                      // Map is already rendered behind the chat - shrinking reveals it
+                    }, 600);
+                    break;
+                  case 'select_property_pin':
+                    // SEQUENCED FLOW for initial load
+                    console.log('📍 [AGENT_ACTION] select_property_pin received (initial) - queuing:', action.params);
+                    // CRITICAL: Reset fullscreen restoration flags IMMEDIATELY
+                    wasFullscreenBeforeCitationRef.current = false;
+                    isFullscreenFromDashboardRef.current = false;
+                    isNavigatingTaskRef.current = true;
+                    // Close any open document preview (won't trigger fullscreen restoration now)
+                    closeExpandedCardView();
+                    // Exit fullscreen mode IMMEDIATELY
+                    setIsFullscreenMode(false);
+                    setTimeout(() => {
+                      setAgentTaskActive(true, 'Navigating to property...');
+                      setMapNavigating(true);
+                      const pinNavMinWidth = 380;
+                      setDraggedWidth(pinNavMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(pinNavMinWidth);
+                      }
+                      setTimeout(() => {
+                        if (action.params.property_id && onOpenProperty) {
+                          const coords = action.params.latitude && action.params.longitude 
+                            ? { lat: action.params.latitude, lng: action.params.longitude }
+                            : undefined;
+                          onOpenProperty(action.params.address || null, coords || null, action.params.property_id, true);
+                          setTimeout(() => {
+                            setAgentTaskActive(false);
+                            setMapNavigating(false);
+                            // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
+                            // Will be reset when next query starts
+                          }, 1000);
+                        }
+                      }, 500);
+                    }, 800);
+                    break;
+                  case 'search_property_result':
+                    console.log('🔍 [AGENT_ACTION] search_property_result received (initial):', action.params);
+                    (window as any).__lastPropertySearchResult = action.params;
                     break;
                   case 'save_to_writing':
                     if (action.params.citation) {
@@ -4913,7 +4820,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     }
                     break;
                 }
-              }
+              },
+              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
             );
             
             // Clear abort controller and processing flag on completion
@@ -5295,6 +5203,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     e.preventDefault();
     const submitted = inputValue.trim();
     
+    // Reset navigation task flag on new query - allows fullscreen expansion for fresh queries
+    isNavigatingTaskRef.current = false;
+    
     // CRITICAL: Sync initialAttachedFiles to state if they exist and state is empty
     // This ensures attachments from SearchBar are included when submitting via input field
     if (initialAttachedFiles && initialAttachedFiles.length > 0 && attachedFiles.length === 0) {
@@ -5552,7 +5463,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Clear the file choice step and add "Processing with..." step
             const processingStep: ReasoningStep = {
               step: 'processing_attachments',
-              action_type: 'analyzing',
+              action_type: 'analysing',
               message: userChoice === 'fast' 
                 ? 'Generating fast response...' 
                 : userChoice === 'detailed'
@@ -5616,8 +5527,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   { type: fileType }
                 );
                 
-                // Add to preview files cache
-                addPreviewFile({
+                // Preload file to cache WITHOUT opening preview modal
+                preloadFile({
                   id: docId,
                   file,
                   name: filename || 'document.pdf',
@@ -5825,7 +5736,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     
                     const newStep: ReasoningStep = {
                       step: step.step,
-                      action_type: (step.action_type as ReasoningStep['action_type']) || 'analyzing',
+                      action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
                       message: step.message,
                       count: step.count,
                       details: step.details,
@@ -5927,13 +5838,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 case 'open_document':
                   console.log('📂 [AGENT_ACTION] Opening document (follow-up):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                   if (action.params.doc_id) {
+                    // AGENT GLOW: Activate glowing border effect before opening
+                    setIsAgentOpening(true);
+                    
                     const citationData = {
                       doc_id: action.params.doc_id,
                       page: action.params.page || 1,
                       original_filename: action.params.filename || '',
                       bbox: action.params.bbox || undefined
                     };
-                    handleCitationClick(citationData as any);
+                    handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                   }
                   break;
                 case 'highlight_bbox':
@@ -5944,6 +5858,63 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   if (action.params.property_id && onOpenProperty) {
                     onOpenProperty(null, null, action.params.property_id);
                   }
+                  break;
+                case 'show_map_view':
+                  // SEQUENCED FLOW for follow-up
+                  // NOTE: Do NOT call onMapToggle() - that hides the chat!
+                  console.log('🗺️ [AGENT_ACTION] show_map_view received (follow-up) - queuing:', action.params);
+                  // CRITICAL: Set navigation flag BEFORE closing preview to prevent fullscreen restoration
+                  isNavigatingTaskRef.current = true;
+                  wasFullscreenBeforeCitationRef.current = false;
+                  // IMMEDIATELY close any open document preview
+                  closeExpandedCardView();
+                  setTimeout(() => {
+                    const navMinWidth = 380;
+                    setIsFullscreenMode(false);
+                    setDraggedWidth(navMinWidth);
+                    lockedWidthRef.current = null;
+                    if (onChatWidthChange) {
+                      onChatWidthChange(navMinWidth);
+                    }
+                    // Map is already rendered behind the chat - shrinking reveals it
+                  }, 600);
+                  break;
+                case 'select_property_pin':
+                  // SEQUENCED FLOW for follow-up
+                  console.log('📍 [AGENT_ACTION] select_property_pin received (follow-up) - queuing:', action.params);
+                  // CRITICAL: Set navigation flag IMMEDIATELY to prevent fullscreen restoration
+                  isNavigatingTaskRef.current = true;
+                  wasFullscreenBeforeCitationRef.current = false;
+                  closeExpandedCardView();
+                  setTimeout(() => {
+                    setAgentTaskActive(true, 'Navigating to property...');
+                    setMapNavigating(true);
+                    const pinNavMinWidth = 380;
+                    setIsFullscreenMode(false);
+                    setDraggedWidth(pinNavMinWidth);
+                    lockedWidthRef.current = null;
+                    if (onChatWidthChange) {
+                      onChatWidthChange(pinNavMinWidth);
+                    }
+                    setTimeout(() => {
+                      if (action.params.property_id && onOpenProperty) {
+                        const coords = action.params.latitude && action.params.longitude 
+                          ? { lat: action.params.latitude, lng: action.params.longitude }
+                          : undefined;
+                        onOpenProperty(action.params.address || null, coords || null, action.params.property_id, true);
+                        setTimeout(() => {
+                          setAgentTaskActive(false);
+                          setMapNavigating(false);
+                          // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
+                          // Will be reset when next query starts
+                        }, 1000);
+                      }
+                    }, 500);
+                  }, 800);
+                  break;
+                case 'search_property_result':
+                  console.log('🔍 [AGENT_ACTION] search_property_result received (follow-up):', action.params);
+                  (window as any).__lastPropertySearchResult = action.params;
                   break;
                 case 'save_to_writing':
                   if (action.params.citation) {
@@ -5962,7 +5933,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                   break;
               }
-            }
+            },
+            isAgentModeRef.current // Pass agent mode to backend for tool-based actions
           );
           
           // Clear abort controller and processing flag on completion
@@ -6325,7 +6297,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             minHeight: '1px' // Prevent collapse
           }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} onDocumentClick={handleDocumentPreviewClick} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -6356,7 +6328,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         </div>
       );
     }).filter(Boolean);
-  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleDocumentPreviewClick, handleCitationClick, onOpenProperty, scrollToBottom, previewDocument, expandedCardViewDoc, propertyAttachments]);
+  }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments]);
 
   return (
     <AnimatePresence>
@@ -6379,26 +6351,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           style={{
             left: `${sidebarWidth}px`, // Always positioned after sidebar
             width: (() => {
-              // If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
-              // Check shouldExpand first to ensure correct width from the start
-              if (shouldExpand && !isPropertyDetailsOpen) {
-                return `calc(100vw - ${sidebarWidth}px)`;
-              }
-              if (shouldExpand && isFullscreenMode && !isPropertyDetailsOpen) {
-                return `calc(100vw - ${sidebarWidth}px)`;
-              }
+              // PRIORITY 1: If draggedWidth is set (e.g., during navigation), use it
+              // This takes precedence over fullscreen to allow navigation tasks to shrink the chat
               if (draggedWidth !== null) {
                 return `${draggedWidth}px`;
               }
+              // PRIORITY 2: If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
+              // Check shouldExpand directly (don't wait for isFullscreenMode to be set) to prevent initial 450px flash
+              if (shouldExpand && !isPropertyDetailsOpen) {
+                return `calc(100vw - ${sidebarWidth}px)`;
+              }
               if (isExpanded) {
-                if (isFullscreenMode && !isPropertyDetailsOpen) {
-                  const fullWidth = `calc(100vw - ${sidebarWidth}px)`;
-                  console.log('📐 SideChatPanel: Using fullscreen width', { isFullscreenMode, fullWidth, sidebarWidth, isExpanded });
-                  return fullWidth;
+                // Use fullscreen width if fullscreen mode is enabled AND (property details is closed OR user manually requested fullscreen)
+                if (isFullscreenMode && (!isPropertyDetailsOpen || isManualFullscreenRef.current)) {
+                  return `calc(100vw - ${sidebarWidth}px)`;
                 }
-                const normalWidth = lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw');
-                console.log('📐 SideChatPanel: Using normal expanded width', { normalWidth, isFullscreenMode, isExpanded, isPropertyDetailsOpen });
-                return normalWidth;
+                return lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw');
               }
               return '450px';
             })(),
@@ -6456,17 +6424,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <div className="flex items-center gap-2">
                   <button
                     onClick={onSidebarToggle}
-                    className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200"
+                    className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 transition-all duration-200`}
                     title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
                     type="button"
+                    style={{
+                      padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
+                      height: '24px',
+                      minHeight: '24px'
+                    }}
                   >
                     {isMainSidebarOpen ? (
                       <PanelRightClose
-                        className="w-4 h-4 lg:w-4 lg:h-4 scale-x-[-1]"
+                        className="w-3.5 h-3.5 scale-x-[-1]"
                         strokeWidth={1.5}
                       />
                     ) : (
-                      <PanelLeftOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                      <PanelLeftOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
+                    )}
+                    {inputContainerWidth >= 450 && (
+                      <span className="text-xs font-medium">
+                        {isMainSidebarOpen ? "Close" : "Sidebar"}
+                      </span>
                     )}
                   </button>
 
@@ -6480,11 +6458,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                         onClick={toggleFilingSidebar}
-                        className="w-8 h-8 flex items-center justify-center text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-colors duration-200"
+                        className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 transition-colors duration-200`}
                         title="Toggle Files sidebar"
                         type="button"
+                        style={{
+                          padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
+                          height: '24px',
+                          minHeight: '24px'
+                        }}
                       >
-                        <FolderOpen className="w-4 h-4 lg:w-4 lg:h-4" strokeWidth={1.5} />
+                        <FolderOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        {inputContainerWidth >= 450 && (
+                          <span className="text-xs font-medium">Files</span>
+                        )}
                       </motion.button>
                   </AnimatePresence>
                   )}
@@ -6603,14 +6589,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         if (isFullscreenMode) {
                           setIsFullscreenMode(false);
                           isFullscreenFromDashboardRef.current = false;
+                          isManualFullscreenRef.current = false; // Clear manual fullscreen flag
                         }
                         setDraggedWidth(newWidth);
                       } else {
                         // Currently small - make it fullscreen
                         newExpandedState = true;
-                        // Set fullscreen mode
+                        // Set fullscreen mode (user manually requested)
                         setIsFullscreenMode(true);
                         isFullscreenFromDashboardRef.current = true;
+                        isManualFullscreenRef.current = true; // Mark as manual fullscreen request
                         setJustEnteredFullscreen(true);
                         // Clear dragged width so fullscreen width calculation takes effect
                         setDraggedWidth(null);
@@ -6778,6 +6766,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         }}
                         onPopupVisibilityChange={() => {}}
                         isInChatPanel={true}
+                        chatInputRef={inputRef}
                       />
                     </div>
                   )}
@@ -7115,8 +7104,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           const showCloseChat = isMapVisible && !showMapButton;
                           // For "Close chat", only show text when chat is big enough to avoid squishing (higher threshold)
                           // For "Map" button, show text when chat is big OR when in fullscreen/property details/document preview
-                          const isChatBig = isExpanded || (draggedWidth !== null && draggedWidth > 450);
-                          const isChatBigEnoughForCloseChat = isExpanded || (draggedWidth !== null && draggedWidth > 550); // Higher threshold for "Close chat" to prevent squishing
+                          // IMPORTANT: When draggedWidth is set, use it as the source of truth (not isExpanded)
+                          const actualWidth = draggedWidth !== null ? draggedWidth : (isExpanded ? 600 : 380);
+                          const isChatBig = actualWidth > 450;
+                          // Much higher threshold for "Close chat" to prevent text from appearing when chat is small (380px)
+                          // Only show text when chat is significantly wider than the small size
+                          const isChatBigEnoughForCloseChat = actualWidth > 600; // Increased from 550 to 600 to prevent stretching
                           const showText = showCloseChat 
                             ? isChatBigEnoughForCloseChat  // Only show "Close chat" text when chat is big enough
                             : (isChatBig || showMapButton); // Show "Map" text when chat is big OR when showing map button
@@ -7145,14 +7138,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   onMapToggle();
                                 }
                               }}
-                              className={`flex items-center ${showText ? 'gap-1.5 px-2 py-1.5 rounded-full' : 'justify-center p-1.5 border rounded-md'} transition-all duration-200 group focus:outline-none outline-none ${showText ? 'text-gray-900' : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'}`}
+                              className={`flex items-center flex-shrink-0 ${showText ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center p-1.5 border rounded-md'} transition-all duration-200 group focus:outline-none outline-none ${showText ? 'text-gray-900' : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'}`}
                               style={{
                                 marginLeft: '4px',
                                 ...(showText ? {
                                   backgroundColor: '#FFFFFF',
                                   border: '1px solid rgba(229, 231, 235, 0.6)',
-                                  transition: 'background-color 0.2s ease'
-                                } : {})
+                                  transition: 'background-color 0.2s ease',
+                                  height: '24px',
+                                  minHeight: '24px',
+                                  maxWidth: 'fit-content' // Prevent button from stretching
+                                } : {
+                                  height: '24px',
+                                  minHeight: '24px',
+                                  width: '24px' // Fixed width when no text
+                                })
                               }}
                               onMouseEnter={(e) => {
                                 if (showText) {
@@ -7172,7 +7172,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 <MapPinHouse className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
                               )}
                               {showText && (
-                                <span className="text-xs font-medium">
+                                <span className="text-xs font-medium whitespace-nowrap">
                                   {showCloseChat ? 'Close chat' : 'Map'}
                                 </span>
                               )}
@@ -7183,7 +7183,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
                       {/* Right Icons: Attachment, Mic, Send */}
                       <motion.div 
-                        className="flex items-center space-x-3" 
+                        className="flex items-center space-x-3 flex-shrink-0" 
                         style={{ marginRight: '4px' }}
                         layout
                         transition={{ 
@@ -7251,71 +7251,96 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             </div>
                           )}
                         {/* Link and Attach buttons grouped together with smaller gap */}
-                        <div className="flex items-center gap-1.5">
-                          {onQuickStartToggle && (
-                            <button
-                              type="button"
-                              onClick={onQuickStartToggle}
-                              className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                              style={{
-                                backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
-                                border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
-                                transition: 'background-color 0.2s ease, border-color 0.2s ease'
-                              }}
-                              onMouseEnter={(e) => {
-                                if (!isQuickStartBarVisible) {
-                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (!isQuickStartBarVisible) {
-                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                }
-                              }}
-                              title="Link document to property"
-                            >
-                              <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
-                              <span className="text-xs font-medium">Link</span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                            style={{
-                              backgroundColor: '#FFFFFF',
-                              border: '1px solid rgba(229, 231, 235, 0.6)',
-                              transition: 'background-color 0.2s ease'
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F5F5F5';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.backgroundColor = '#FFFFFF';
-                            }}
-                            title="Attach file"
-                          >
-                            <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            <span className="text-xs font-medium">Attach</span>
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                          style={{
-                            backgroundColor: '#ECECEC',
-                            transition: 'background-color 0.2s ease'
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = '#E0E0E0';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = '#ECECEC';
-                          }}
-                        >
-                          <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          <span className="text-xs font-medium">Voice</span>
-                        </button>
+                        {/* Shrink to icons when property details panel is open and chat is small */}
+                        {(() => {
+                          // Show only icons when property details is open AND chat is small (not expanded or narrow)
+                          const showIconOnly = isPropertyDetailsOpen && (!isExpanded || inputContainerWidth < 450);
+                          return (
+                            <>
+                              <div className="flex items-center gap-1.5">
+                                {onQuickStartToggle && (
+                                  <button
+                                    type="button"
+                                    onClick={onQuickStartToggle}
+                                    className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                                    style={{
+                                      backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
+                                      border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
+                                      transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                                      padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
+                                      height: '24px',
+                                      minHeight: '24px'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      if (!isQuickStartBarVisible) {
+                                        e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                      }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      if (!isQuickStartBarVisible) {
+                                        e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                      }
+                                    }}
+                                    title="Link document to property"
+                                  >
+                                    <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
+                                    {!showIconOnly && inputContainerWidth >= 450 && (
+                                    <span className="text-xs font-medium">Link</span>
+                                    )}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => fileInputRef.current?.click()}
+                                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                                  style={{
+                                    backgroundColor: '#FFFFFF',
+                                    border: '1px solid rgba(229, 231, 235, 0.6)',
+                                    transition: 'background-color 0.2s ease',
+                                    padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
+                                    height: '24px',
+                                    minHeight: '24px'
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                  }}
+                                  title="Attach file"
+                                >
+                                  <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                  {!showIconOnly && inputContainerWidth >= 450 && (
+                                  <span className="text-xs font-medium">Attach</span>
+                                  )}
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                                style={{
+                                  backgroundColor: '#ECECEC',
+                                  transition: 'background-color 0.2s ease',
+                                  padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
+                                  height: '24px',
+                                  minHeight: '24px'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#E0E0E0';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#ECECEC';
+                                }}
+                                title="Voice input"
+                              >
+                                <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                {!showIconOnly && inputContainerWidth >= 450 && (
+                                <span className="text-xs font-medium">Voice</span>
+                                )}
+                              </button>
+                            </>
+                          );
+                        })()}
                         
                         {/* Send button or Stop button (when streaming) */}
                         <AnimatePresence mode="wait">
@@ -7534,19 +7559,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               />
             </motion.div>
           </motion.div>
-        )}
-      </AnimatePresence>
-      
-      {/* Document Preview Overlay - Opens when clicking on reasoning step document cards */}
-      <AnimatePresence key="document-preview-presence">
-        {previewDocument && (
-          <DocumentPreviewOverlay
-            key="document-preview-overlay"
-            document={previewDocument}
-            isFullscreen={isPreviewFullscreen}
-            onClose={() => setPreviewDocument(null)}
-            onToggleFullscreen={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
-          />
         )}
       </AnimatePresence>
     </AnimatePresence>

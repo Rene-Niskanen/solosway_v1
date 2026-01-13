@@ -26,6 +26,7 @@ import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
+import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
@@ -1800,7 +1801,11 @@ export const MainContent = ({
     addPreviewFile,
     MAX_PREVIEW_TABS,
     expandedCardViewDoc,
-    closeExpandedCardView
+    closeExpandedCardView,
+    isAgentTaskActive,
+    agentTaskMessage,
+    stopAgentTask,
+    isMapNavigating
   } = usePreview();
   
   // Use the prop value for chat mode
@@ -3605,6 +3610,34 @@ export const MainContent = ({
         </div>
       )}
       
+      {/* Map navigation glow overlay - at root level for proper z-index stacking */}
+      {isMapNavigating && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: chatPanelWidth + sidebarWidthValue, // Start after chat panel and sidebar
+            right: 0,
+            bottom: 0,
+            pointerEvents: 'none',
+            zIndex: 900, // Above map but below agent task overlay
+            border: '4px solid rgba(217, 119, 8, 0.6)',
+            boxShadow: 'inset 0 0 150px 60px rgba(217, 119, 8, 0.15), inset 0 0 80px 30px rgba(217, 119, 8, 0.2)',
+            animation: 'mapGlowPulse 2s ease-in-out infinite'
+          }}
+        />
+      )}
+      
+      {/* Agent Task Overlay - Rendered at root level with high z-index to appear above chat */}
+      {isAgentTaskActive && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1000, pointerEvents: 'none' }}>
+          <AgentTaskOverlay
+            message={agentTaskMessage}
+            onStop={stopAgentTask}
+          />
+        </div>
+      )}
+      
       {/* Background based on current view - Hidden to show white background */}
       {/* Background components commented out to show white background */}
       
@@ -3850,8 +3883,8 @@ export const MainContent = ({
             // Update chat panel width for map resizing
             setChatPanelWidth(width);
           }}
-          onOpenProperty={(address, coordinates, propertyId) => {
-            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
+          onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
+            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
             
             // Ensure map is visible
             if (!isMapVisible) {
@@ -3862,21 +3895,22 @@ export const MainContent = ({
             const propertyIdStr = propertyId ? String(propertyId) : undefined;
             
             // Select property on map
+            // Pass navigationOnly to control whether to show full panel or just title card
             if (mapRef.current && coordinates) {
-              mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+              mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
             } else if (mapRef.current) {
               // Try to select even without coordinates
-              mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+              mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
             } else {
               // Map not ready - store for later
-              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr };
+              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
               // Try again soon
               setTimeout(() => {
                 if (mapRef.current) {
                   if (coordinates) {
-                    mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+                    mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
                   } else {
-                    mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+                    mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
                   }
                 }
               }, 100);

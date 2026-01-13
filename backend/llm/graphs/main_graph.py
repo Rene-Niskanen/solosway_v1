@@ -25,7 +25,7 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast
+from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
     check_cached_documents,
@@ -284,6 +284,15 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Skips ALL retrieval - single LLM call with cited text + user query
     - ~5-10x faster than normal pipeline
     """
+    
+    builder.add_node("handle_navigation_action", handle_navigation_action)
+    """
+    INSTANT Path Node: Navigation Action Handler (~0.1s)
+    - User wants to navigate to a property on the map
+    - Examples: "take me to highlands", "show me on the map"
+    - Skips ALL document retrieval - directly emits agent actions
+    - Frontend handles map opening and pin selection
+    """
 
     # EXISTING NODES (Full Pipeline)
     builder.add_node("rewrite_query", rewrite_query_with_context)
@@ -367,7 +376,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     """
     
     # ROUTING LOGIC FUNCTIONS
-    def should_route(state: MainWorkflowState) -> Literal["direct_document", "simple_search", "complex_search"]:
+    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "direct_document", "simple_search", "complex_search"]:
         """
         Conditional routing - makes decision based on initial state.
         
@@ -383,6 +392,49 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         citation_context = state.get("citation_context")
         attachment_context = state.get("attachment_context")
         response_mode = state.get("response_mode")
+        is_agent_mode = state.get("is_agent_mode", False)
+        
+        # DEBUG: Log is_agent_mode and query for navigation detection
+        logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, query='{user_query[:60]}...'")
+        
+        # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
+        # When user wants to navigate to a property on the map
+        # Only in agent mode - reader mode doesn't have navigation tools
+        if is_agent_mode:
+            # Explicit navigation phrases - must be very specific
+            navigation_patterns = [
+                "take me to the", "take me to ", "go to the map", "navigate to the",
+                "show me on the map", "show on map", "find on map", "open the map",
+                "go to map", "click on the", "select the pin", "click the pin"
+            ]
+            
+            # Pin-specific patterns - strong indicator of navigation
+            pin_patterns = [" pin", "property pin", "map pin"]
+            
+            # Information query keywords - these should NOT trigger navigation
+            info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
+                           "inspection", "document", "tell me about", "what is", "how much",
+                           "summary", "details", "information", "data"]
+            
+            # Check if this looks like an information query (NOT navigation)
+            is_info_query = any(keyword in user_query for keyword in info_keywords)
+            
+            # Only check navigation if NOT an info query
+            if not is_info_query:
+                has_navigation_intent = any(pattern in user_query for pattern in navigation_patterns)
+                has_pin_intent = any(pattern in user_query for pattern in pin_patterns)
+                
+                if has_navigation_intent or has_pin_intent:
+                    logger.info(f"⚡ [ROUTER] should_route → navigation_action (navigation intent detected: '{user_query}')")
+                    return "navigation_action"
+        
+        # PATH 0: CITATION QUERY (ULTRA-FAST ~2s)
+        # When user clicked on a citation and asked a question about it
+        if citation_context and isinstance(citation_context, dict):
+            cited_text = citation_context.get("cited_text", "")
+            if cited_text and len(str(cited_text).strip()) > 0:
+                logger.info("⚡ [ROUTER] should_route → citation_query (citation_context provided)")
+                return "citation_query"
         
         # ORIGINAL ROUTING LOGIC - Restored from HEAD to match working version
         # NOTE: Citation and attachment routing handled in route_query node, not here
@@ -473,17 +525,23 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     logger.debug("Conditional: check_cached_documents -> [process_documents|route_query] (RESTORED FROM HEAD)")
 
     # Router → Conditional routing (ORIGINAL - restored from HEAD)
-    # NOTE: Citation and attachment routing handled inside route_query node itself
+    # NOTE: Citation routing is handled by should_route based on citation_context
     builder.add_conditional_edges(
         "route_query",
         should_route,
         {
+            "navigation_action": "handle_navigation_action",  # INSTANT: Map navigation
+            "citation_query": "handle_citation_query",  # ULTRA-FAST: Citation click query
             "direct_document": "fetch_direct_chunks",
             "simple_search": "query_vector_documents",  # Skip expand/clarify
             "complex_search": "rewrite_query"  # Full pipeline
         }
     )
-    logger.debug("Conditional: route_query -> [direct_document|simple_search|complex_search]")
+    logger.debug("Conditional: route_query -> [navigation_action|citation_query|direct_document|simple_search|complex_search]")
+    
+    # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
+    builder.add_edge("handle_navigation_action", "format_response")
+    logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
     
     # ATTACHMENT FAST PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
     builder.add_edge("handle_attachment_fast", "format_response")

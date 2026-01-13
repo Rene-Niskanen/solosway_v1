@@ -31,9 +31,16 @@ async def format_response(state: MainWorkflowState) -> MainWorkflowState:
     final_summary = state.get("final_summary", "")
     user_query = state.get("user_query", "")
     query_category = state.get("query_category", "")
+    agent_actions = state.get("agent_actions")
     
     if not final_summary:
         logger.warning("[FORMAT_RESPONSE] No final_summary to format")
+        return state
+    
+    # Skip formatting for navigation actions - they're already conversational
+    # Navigation responses like "Sure thing!\n\nNavigating to the property now..." don't need reformatting
+    if agent_actions and any(a.get('action') in ['navigate_to_property_by_name', 'show_map_view', 'select_property_pin'] for a in agent_actions if isinstance(a, dict)):
+        logger.info("[FORMAT_RESPONSE] Skipping formatting for navigation action response")
         return state
     
     # For general queries and text transformations, formatting is optional

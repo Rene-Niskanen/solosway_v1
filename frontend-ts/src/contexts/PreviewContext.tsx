@@ -59,8 +59,19 @@ interface PreviewContextType {
   // NEW: Standalone ExpandedCardView support
   expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
   setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight } | null>>;
-  openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight) => void;
+  openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => void;
   closeExpandedCardView: () => void;
+  // NEW: Agent opening state for glowing border effect
+  isAgentOpening: boolean;
+  setIsAgentOpening: React.Dispatch<React.SetStateAction<boolean>>;
+  // NEW: Agent task overlay state (for navigation tasks)
+  isAgentTaskActive: boolean;
+  agentTaskMessage: string;
+  setAgentTaskActive: (active: boolean, message?: string) => void;
+  stopAgentTask: () => void;
+  // NEW: Map navigation glow effect state
+  isMapNavigating: boolean;
+  setMapNavigating: (active: boolean) => void;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -74,6 +85,13 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [highlightCitation, setHighlightCitation] = React.useState<CitationHighlight | null>(null);
   // NEW: Standalone ExpandedCardView state
   const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
+  // NEW: Agent opening state for glowing border effect
+  const [isAgentOpening, setIsAgentOpening] = React.useState<boolean>(false);
+  // NEW: Agent task overlay state (for navigation tasks)
+  const [isAgentTaskActive, setIsAgentTaskActiveState] = React.useState<boolean>(false);
+  const [agentTaskMessage, setAgentTaskMessage] = React.useState<string>('');
+  // NEW: Map navigation glow effect state
+  const [isMapNavigating, setIsMapNavigatingState] = React.useState<boolean>(false);
   // NEW: Cache PDF documents in memory to avoid reloading when switching between documents
   const [pdfDocumentCache, setPdfDocumentCache] = React.useState<Map<string, PDFDocumentProxy>>(new Map());
   // NEW: Cache rendered PDF pages (fileId -> pageNumber -> ImageData) for instant page switching
@@ -86,13 +104,35 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   // NEW: Open standalone ExpandedCardView
-  const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight) => {
+  const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => {
+    if (isAgentTriggered) {
+      setIsAgentOpening(true);
+    }
     setExpandedCardViewDoc({ docId, filename, highlight });
   }, []);
 
   // NEW: Close standalone ExpandedCardView
   const closeExpandedCardView = React.useCallback(() => {
     setExpandedCardViewDoc(null);
+    setIsAgentOpening(false); // Reset glow state when closing
+  }, []);
+
+  // NEW: Set agent task active (for navigation overlay)
+  const setAgentTaskActive = React.useCallback((active: boolean, message?: string) => {
+    setIsAgentTaskActiveState(active);
+    setAgentTaskMessage(message || '');
+  }, []);
+
+  // NEW: Stop agent task (for overlay stop button)
+  const stopAgentTask = React.useCallback(() => {
+    setIsAgentTaskActiveState(false);
+    setAgentTaskMessage('');
+    setIsMapNavigatingState(false); // Also stop map glow
+  }, []);
+
+  // NEW: Set map navigation glow state
+  const setMapNavigating = React.useCallback((active: boolean) => {
+    setIsMapNavigatingState(active);
   }, []);
 
   // NEW: Preload file without opening preview (for citation preloading)
@@ -353,6 +393,14 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setExpandedCardViewDoc,
     openExpandedCardView,
     closeExpandedCardView,
+    isAgentOpening,
+    setIsAgentOpening,
+    isAgentTaskActive,
+    agentTaskMessage,
+    setAgentTaskActive,
+    stopAgentTask,
+    isMapNavigating,
+    setMapNavigating,
     preloadFile,
     getCachedPdfDocument,
     setCachedPdfDocument,
@@ -363,7 +411,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setHighlightCitation,
     clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating]);
 
   return (
     <PreviewContext.Provider value={value}>

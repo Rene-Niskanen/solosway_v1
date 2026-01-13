@@ -564,6 +564,9 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     So we skip ALL retrieval and do a SINGLE LLM call with just the cited text + user query.
     This is ~5-10x faster than the normal pipeline.
     
+    AGENT MODE: When is_agent_mode is True, binds agent action tools (open_document, navigate)
+    to allow the LLM to proactively open the document for the user.
+    
     Returns:
         State with final_summary (ready for format_response)
     """
@@ -571,17 +574,20 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     from langchain_core.messages import HumanMessage
     from backend.llm.config import config
     from backend.llm.utils.system_prompts import get_system_prompt
+    from backend.llm.tools.agent_actions import create_agent_action_tools
     from datetime import datetime
     
     citation_context = state.get("citation_context", {})
     user_query = state.get("user_query", "")
+    is_agent_mode = state.get("is_agent_mode", False)
     
     cited_text = citation_context.get("cited_text", "")
     page_number = citation_context.get("page_number", "unknown")
     doc_id = citation_context.get("document_id", "")
     filename = citation_context.get("original_filename", "the document")
+    bbox = citation_context.get("bbox", {})
     
-    logger.info(f"⚡ [CITATION_QUERY] Processing citation query - doc: {doc_id[:8] if doc_id else 'unknown'}, page: {page_number}")
+    logger.info(f"⚡ [CITATION_QUERY] Processing citation query - doc: {doc_id[:8] if doc_id else 'unknown'}, page: {page_number}, agent_mode: {is_agent_mode}")
     logger.info(f"⚡ [CITATION_QUERY] Cited text length: {len(cited_text)} chars")
     logger.info(f"⚡ [CITATION_QUERY] User query: {user_query[:100]}...")
     
@@ -598,16 +604,40 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
             }]
         }
     
-    # Create fast LLM call
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Create LLM - bind agent tools if in agent mode
+    agent_action_instance = None
+    agent_actions = []
+    
+    if is_agent_mode:
+        # Create agent action tools for proactive document display
+        agent_tools, agent_action_instance = create_agent_action_tools()
+        logger.info(f"⚡ [CITATION_QUERY] Agent mode enabled - binding {len(agent_tools)} agent tools")
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        ).bind_tools(agent_tools, tool_choice="auto")
+    else:
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        )
     
     system_msg = get_system_prompt('analyze')
     
     # Build focused prompt with just the citation context
+    agent_instructions = ""
+    if is_agent_mode:
+        agent_instructions = """
+
+**AGENT MODE INSTRUCTIONS:**
+You have access to the `open_document` tool. Since this is a citation query (the user clicked on a citation):
+- If the user is asking about the content of the citation, CALL open_document to show them the source
+- Use citation_number=1 (this citation) with a reason explaining what they'll see
+- Example: open_document(citation_number=1, reason="Displays the source text the user is asking about")
+"""
+    
     human_content = f"""You are answering a question about a specific piece of text from a document.
 
 **CITATION CONTEXT:**
@@ -625,6 +655,7 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
 4. If the question cannot be answered from the cited text alone, provide relevant general knowledge
 5. Be concise but thorough
 6. Do NOT say you need to search documents - you already have the relevant text above
+7. Include [1] citation marker when referencing the cited text{agent_instructions}
 
 Provide a direct, helpful answer:"""
 
@@ -632,6 +663,38 @@ Provide a direct, helpful answer:"""
         messages = [system_msg, HumanMessage(content=human_content)]
         response = await llm.ainvoke(messages)
         answer = response.content.strip()
+        
+        # Process agent tool calls if in agent mode
+        if is_agent_mode and agent_action_instance:
+            # Check for tool calls in the response
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.get('name', '')
+                    tool_args = tool_call.get('args', {})
+                    
+                    if tool_name == 'open_document':
+                        citation_number = tool_args.get('citation_number', 1)
+                        reason = tool_args.get('reason', 'Displaying source document')
+                        agent_action_instance.open_document(citation_number, reason)
+                        logger.info(f"⚡ [CITATION_QUERY] Agent tool call: open_document({citation_number}, '{reason}')")
+                    elif tool_name == 'navigate_to_property':
+                        property_id = tool_args.get('property_id', '')
+                        reason = tool_args.get('reason', 'Navigating to property')
+                        agent_action_instance.navigate_to_property(property_id, reason)
+                        logger.info(f"⚡ [CITATION_QUERY] Agent tool call: navigate_to_property({property_id}, '{reason}')")
+            
+            agent_actions = agent_action_instance.get_actions()
+            logger.info(f"⚡ [CITATION_QUERY] Collected {len(agent_actions)} agent actions")
+            
+            # If no tools were called but this is a citation query in agent mode,
+            # automatically add an open_document action (the user is asking about a citation)
+            if not agent_actions:
+                logger.info("⚡ [CITATION_QUERY] No agent tool calls - auto-adding open_document for citation query")
+                agent_actions = [{
+                    'action': 'open_document',
+                    'citation_number': 1,
+                    'reason': 'Displaying the source document for this citation'
+                }]
         
         logger.info(f"⚡ [CITATION_QUERY] Generated answer ({len(answer)} chars)")
         
@@ -642,7 +705,7 @@ Provide a direct, helpful answer:"""
             "page_number": page_number,
             "cited_text": cited_text[:200] + "..." if len(cited_text) > 200 else cited_text,
             "original_filename": filename,
-            "bbox": citation_context.get("bbox", {}),
+            "bbox": bbox,
             "block_id": f"citation_source_{doc_id[:8] if doc_id else 'unknown'}"
         }
         
@@ -659,7 +722,8 @@ Provide a direct, helpful answer:"""
                 "timestamp": datetime.now().isoformat(),
                 "document_ids": [doc_id] if doc_id else [],
                 "query_category": "citation_query"
-            }]
+            }],
+            "agent_actions": agent_actions if agent_actions else None  # AGENT MODE: Actions for frontend
         }
         
     except Exception as e:
@@ -673,4 +737,116 @@ Provide a direct, helpful answer:"""
                 "timestamp": datetime.now().isoformat(),
                 "query_category": "citation_query"
             }]
+        }
+
+
+async def handle_navigation_action(state: MainWorkflowState) -> MainWorkflowState:
+    """
+    NAVIGATION ACTION HANDLER (INSTANT - NO DOCUMENT RETRIEVAL)
+    
+    Handles navigation requests like:
+    - "take me to the highlands property"
+    - "go to the map"
+    - "show me highlands on the map"
+    
+    This is an ULTRA-FAST path that:
+    1. Extracts property name from query
+    2. Returns agent actions directly (no document search)
+    3. Frontend will handle map opening and pin selection
+    """
+    import re
+    from datetime import datetime
+    
+    user_query = state.get("user_query", "").strip()
+    user_query_lower = user_query.lower()
+    
+    logger.info(f"🧭 [NAVIGATION] Handling navigation action: '{user_query}'")
+    
+    # Extract property name from query
+    property_name = None
+    
+    # Common patterns for property names
+    patterns = [
+        r"take me to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"go to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+        r"navigate to (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+        r"show me (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"find (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin|on the map))?$",
+        r"where is (?:the )?([a-zA-Z\s]+?)(?:\s+(?:property|pin))?$",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, user_query_lower)
+        if match:
+            property_name = match.group(1).strip()
+            # Clean up common trailing words (including filler words like "please")
+            property_name = re.sub(r'\s+(property|pin|map|on|the|please|now|quickly|asap).*$', '', property_name, flags=re.IGNORECASE).strip()
+            # Also clean if property_name ends with these words
+            property_name = re.sub(r'\s*(property|pin|map|please|now)$', '', property_name, flags=re.IGNORECASE).strip()
+            if property_name:
+                break
+    
+    # If no pattern matched, try to find property-like words
+    if not property_name:
+        # Look for known property keywords
+        property_keywords = ["highlands", "highland", "berden", "cottage"]
+        for kw in property_keywords:
+            if kw in user_query_lower:
+                property_name = kw
+                break
+    
+    # If still no property name, it might just be "show me the map"
+    if not property_name and any(phrase in user_query_lower for phrase in ["the map", "go to map", "open map"]):
+        # Just open the map, no specific property
+        logger.info("🧭 [NAVIGATION] Map-only navigation (no specific property)")
+        return {
+            "final_summary": "Sure thing!\n\nOpening the map for you now...",
+            "citations": [],
+            "conversation_history": [{
+                "query": user_query,
+                "summary": "Opening map view",
+                "timestamp": datetime.now().isoformat(),
+                "query_category": "navigation_action"
+            }],
+            "agent_actions": [{
+                "action": "show_map_view",
+                "reason": "Opening map view as requested"
+            }]
+        }
+    
+    if property_name:
+        logger.info(f"🧭 [NAVIGATION] Extracted property name: '{property_name}'")
+        
+        # Create navigation action
+        agent_actions_list = [{
+            "action": "navigate_to_property_by_name",
+            "property_name": property_name,
+            "reason": f"Navigating to {property_name.title()} property as requested"
+        }]
+        logger.info(f"🧭 [NAVIGATION] Created agent_actions: {agent_actions_list}")
+        
+        return {
+            "final_summary": f"Sure thing!\n\nNavigating to the {property_name.title()} property now...",
+            "citations": [],
+            "conversation_history": [{
+                "query": user_query,
+                "summary": f"Navigating to {property_name.title()} property",
+                "timestamp": datetime.now().isoformat(),
+                "query_category": "navigation_action"
+            }],
+            "agent_actions": agent_actions_list
+        }
+    
+    # Fallback - couldn't understand the navigation request
+    logger.warning(f"🧭 [NAVIGATION] Could not extract property name from: '{user_query}'")
+    return {
+        "final_summary": "I couldn't understand which property you want to navigate to. Could you please specify the property name?",
+        "citations": [],
+        "conversation_history": [{
+            "query": user_query,
+            "summary": "Navigation request not understood",
+            "timestamp": datetime.now().isoformat(),
+            "query_category": "navigation_action"
+        }],
+        "agent_actions": None
         }

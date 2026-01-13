@@ -1756,11 +1756,15 @@ def get_final_answer_prompt(
     conversation_history: str,
     formatted_outputs: str,
     citations: list = None,
-    is_citation_query: bool = False
+    is_citation_query: bool = False,
+    is_agent_mode: bool = False
 ) -> str:
     """
     Prompt for answer generation with real-time citation tracking.
     Citations are now created as the LLM writes the answer.
+    
+    Args:
+        is_agent_mode: If True, LLM has access to open_document tool for proactive display
     """
     # Format citations for prompt (only if provided - backward compatibility)
     citation_list = ""
@@ -1899,6 +1903,72 @@ Create a comprehensive answer using ONLY the document extracts above, focusing o
 - **Balance**: Provide helpful, comprehensive answers using document content when available, supplemented with general knowledge when needed
 
 Create a comprehensive answer to the user's question, prioritizing information from the document extracts above."""
+    
+    # AGENT MODE: Add instructions for proactive document display and navigation
+    agent_mode_instructions = ""
+    if is_agent_mode:
+        agent_mode_instructions = """
+
+**🎯 AGENT MODE - AVAILABLE TOOLS:**
+
+You have tools to proactively help the user with navigation and document display.
+
+---
+**1. 🧭 NAVIGATION TOOL (PREFERRED for property map requests)**
+
+**navigate_to_property_by_name(property_name: str, reason: str)**
+
+This is the MAIN tool for navigation requests. Use it when the user wants to go to a property on the map.
+
+**WHEN TO USE:**
+- "take me to [property name]"
+- "go to [property]"
+- "show me [property] on the map"
+- "navigate to [property]"
+- "where is [property]" (if they want to see it on map)
+- "find [property] on the map"
+
+**HOW TO USE:**
+1. Write a brief response: "I'll take you to the Highlands property on the map."
+2. Call the tool: navigate_to_property_by_name(property_name="highlands", reason="Navigating to Highlands property as requested")
+
+**EXAMPLES:**
+- User: "take me to the highlands pin"
+  → Call: navigate_to_property_by_name(property_name="highlands", reason="Navigating to Highlands property as requested")
+
+- User: "show me berden road on the map"
+  → Call: navigate_to_property_by_name(property_name="berden road", reason="Showing Berden Road property on map")
+
+**CRITICAL:**
+- This tool handles EVERYTHING: search + map open + pin selection
+- DO NOT also call search_property, show_map_view, or select_property_pin
+- DO NOT try to answer navigation requests with document content
+
+---
+**2. 📄 DOCUMENT DISPLAY TOOL (for showing source documents)**
+
+**open_document(citation_number: int, reason: str)**
+
+Shows the user the source document for a citation. Use AFTER answering factual questions.
+
+**WHEN TO USE:**
+- ✅ After answering with citations - show the source
+- ✅ When answer contains values (prices, valuations) - show evidence
+- ✅ When user asks "what does it say about..."
+
+**WHEN NOT TO USE:**
+- ❌ For navigation requests (use navigate_to_property_by_name instead)
+- ❌ For simple yes/no questions
+- ❌ When you have no citations
+
+---
+**TOOL RULES:**
+- Use actual TOOLS, not text - the tools perform the actions
+- DO NOT write function calls as text in your response
+- For navigation: brief response + call navigate_to_property_by_name
+- For document display: full answer with citations + call open_document
+"""
+    
         answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
    - **General knowledge allowed**: If documents don't contain the information, you may use general knowledge to provide a helpful answer
    - **Citation markers**: Only add [1], [2], [3]... for facts from document extracts (not general knowledge)
@@ -1969,8 +2039,16 @@ Create a comprehensive answer to the user's question, prioritizing information f
 
 ### TASK: Create Final Answer with Citations
 
-{sourcing_rules}
+**⚠️ CRITICAL - FORMATTING CONSISTENCY FOR ALL RESPONSES ⚠️**
+- Apply the SAME formatting standards (headings, structure, citations, Key Concepts section) as if this were the FIRST response in the conversation
+- DO NOT abbreviate, shorten, or reduce formatting quality because of conversation history
+- Even for follow-up questions, you MUST use the full CANONICAL TEMPLATE STRUCTURE below
+- ALWAYS include: H1 heading, Key Concepts section with vertical label-value format, and proper citations
+- The fact that there's conversation history does NOT mean you should provide less formatted answers
+- Each response should be comprehensive and well-structured on its own
 
+{sourcing_rules}
+{agent_mode_instructions}
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 - If the user is asking about "value" or "valuation", you MUST include ALL valuation scenarios found in the documents
 - **MANDATORY**: If documents mention "90-day value" or "180-day value", you MUST include them with their assumptions
@@ -2512,28 +2590,38 @@ You must answer the user's question while citing your sources. Do this in ONE re
 **STEP 1 - For EACH fact you include in your answer:**
 - Call the `cite_source` tool with:
   - `block_id`: The BLOCK_CITE_ID from the document (e.g., "BLOCK_CITE_ID_42")
-  - `citation_number`: Sequential number (1, 2, 3...)
+  - `citation_number`: Sequential number (1, 2, 3...) - MUST BE UNIQUE AND INCREMENT FOR EACH CALL
   - `cited_text`: The fact you're citing
 
 **STEP 2 - Write your answer with citation markers:**
 - Place [1], [2], [3]... immediately after each fact
 - Example: "The Market Value is £2,300,000[1] as of February 2024[2]"
 
+**⚠️ CRITICAL - CITATION NUMBERING RULES (MUST FOLLOW) ⚠️**
+- EACH cite_source call MUST have a DIFFERENT citation_number
+- citation_number MUST increment: first call = 1, second call = 2, third call = 3, etc.
+- NEVER use the same citation_number twice - every fact gets a UNIQUE number
+- In your answer text, use the SAME numbers: [1] for first fact, [2] for second fact, [3] for third fact
+- **WRONG**: cite_source(..., citation_number=1), cite_source(..., citation_number=1), cite_source(..., citation_number=1)
+- **CORRECT**: cite_source(..., citation_number=1), cite_source(..., citation_number=2), cite_source(..., citation_number=3)
+
 **CRITICAL RULES:**
 - Call cite_source for EVERY factual claim
-- Use sequential citation numbers (1, 2, 3...)
+- Use STRICTLY sequential citation numbers (1, 2, 3...) - NEVER repeat a number
 - Place citations IMMEDIATELY after the fact, NO space
 - For valuation queries: include ALL scenarios (90-day, 180-day, Market Rent)
 - Do NOT add periods at the end of standalone lines, headings, or bullet points - only use periods when text continues on the same line
 
 **EXAMPLE:**
 If you see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,300,000"</BLOCK>
+And: <BLOCK id="BLOCK_CITE_ID_43">Content: "Valuation date: 12th February 2024"</BLOCK>
 1. Call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
-2. Write: "The Market Value is £2,300,000[1]"
+2. Call: cite_source(block_id="BLOCK_CITE_ID_43", citation_number=2, cited_text="Valuation date: 12th February 2024")
+3. Write: "The Market Value is £2,300,000[1] as of 12th February 2024[2]"
 
 **IMPORTANT: You MUST return BOTH:**
-1. Call cite_source() for each fact (tool calls)
-2. Write the complete answer text below (with [1], [2] markers)
+1. Call cite_source() for each fact (tool calls) - with UNIQUE sequential citation_numbers
+2. Write the complete answer text below (with [1], [2], [3]... markers matching the tool calls)
 
 DO NOT return only tool calls - you MUST also write the answer text!
 

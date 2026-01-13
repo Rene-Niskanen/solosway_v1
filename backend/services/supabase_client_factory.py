@@ -6,21 +6,59 @@ import os
 from functools import lru_cache
 from supabase import create_client, Client
 import logging
+import httpx
 
 logger = logging.getLogger(__name__)
+
+# Configure timeout to prevent long hangs (default httpx timeout is 5s connect, but can hang longer on errors)
+# These timeouts prevent the 55s hangs mentioned in the codebase
+SUPABASE_TIMEOUT = httpx.Timeout(
+    connect=5.0,   # Time to establish connection
+    read=10.0,      # Time to read response
+    write=10.0,     # Time to send request
+    pool=5.0        # Time to get connection from pool
+)
 
 
 @lru_cache(maxsize=1)
 def get_supabase_client() -> Client:
     """
     Create (and cache) a Supabase client with shared configuration.
+    Includes timeout settings to prevent long hangs during authentication and queries.
+    
+    The Supabase Python client uses httpx internally. By configuring timeouts, we prevent
+    the 55-second hangs that occur on connection errors.
 
     Returns:
-        Supabase Client instance configured with service role credentials.
+        Supabase Client instance configured with service role credentials and timeouts.
     """
     supabase_url = os.environ["SUPABASE_URL"]
     supabase_key = os.environ["SUPABASE_SERVICE_KEY"]
 
+    # Create httpx client with timeout configuration
+    # The supabase-py library accepts a custom httpx client via SyncClientOptions
+    http_client = httpx.Client(timeout=SUPABASE_TIMEOUT)
+    
+    try:
+        # Import SyncClientOptions to properly configure the client
+        from supabase.lib.client_options import SyncClientOptions
+        
+        # Create client with custom httpx client and timeout settings
+        # This prevents the 55s hangs on connection errors
+        options = SyncClientOptions(
+            httpx_client=http_client,
+            # Additional timeout settings for specific clients
+            postgrest_client_timeout=10.0,  # PostgREST API timeout
+            storage_client_timeout=10.0,    # Storage API timeout
+            function_client_timeout=10.0    # Functions API timeout
+        )
+        
+        return create_client(supabase_url, supabase_key, options=options)
+    except (ImportError, TypeError, ValueError) as e:
+        # Fallback if SyncClientOptions import fails or doesn't work
+        logger.warning(f"Could not configure custom httpx client: {e}. Using default client with limited timeout control.")
+        # Fallback: create client without custom http_client
+        # Note: This may still experience long hangs on connection errors
     return create_client(supabase_url, supabase_key)
 
 

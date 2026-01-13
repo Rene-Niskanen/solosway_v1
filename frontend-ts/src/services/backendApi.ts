@@ -234,7 +234,9 @@ class BackendApiService {
       tempFileIds: string[];
     } | null,
     // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
-    onAgentAction?: (action: { action: string; params: any }) => void
+    onAgentAction?: (action: { action: string; params: any }) => void,
+    // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
+    isAgentMode?: boolean
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -247,7 +249,8 @@ class BackendApiService {
       documentIds: documentIds || undefined,
       citationContext: citationContext || undefined, // Pass citation context to backend
       responseMode: responseMode || undefined, // NEW: Pass response mode for attachment queries
-      attachmentContext: attachmentContext || undefined // NEW: Pass extracted text from attachments
+      attachmentContext: attachmentContext || undefined, // NEW: Pass extracted text from attachments
+      isAgentMode: isAgentMode ?? false // AGENT MODE: Pass to backend for tool binding
     };
     
     if (import.meta.env.DEV) {
@@ -315,7 +318,7 @@ class BackendApiService {
                   if (onReasoningStep) {
                     onReasoningStep({
                       step: data.step,
-                      action_type: data.action_type || 'analyzing',
+                      action_type: data.action_type || 'analysing',
                       message: data.message,
                       count: data.count,
                       details: data.details || {}

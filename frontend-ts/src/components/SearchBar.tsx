@@ -1560,13 +1560,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         });
                         onMapToggle?.();
                       }}
-                      className="flex items-center gap-1.5 px-2 py-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
+                      className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
                         backgroundColor: '#FFFFFF',
                         border: '1px solid rgba(229, 231, 235, 0.6)',
                         borderRadius: '12px',
                         transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                        marginLeft: '4px'
+                        marginLeft: '4px',
+                        height: '24px',
+                        minHeight: '24px'
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1610,7 +1612,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                           whiteSpace: 'nowrap',
                           marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
-                          animation: 'none'
+                          animation: 'none',
+                          height: '24px',
+                          minHeight: '24px'
                         }}
                         title="Open analyse mode"
                         onMouseEnter={(e) => {
@@ -1631,13 +1635,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       <button
                         type="button"
                         onClick={onPanelToggle}
-                        className="flex items-center gap-1.5 px-2 py-1.5 text-gray-900 transition-colors focus:outline-none outline-none"
+                        className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
                           backgroundColor: '#FFFFFF',
                           border: '1px solid rgba(229, 231, 235, 0.6)',
                           borderRadius: '12px',
                           transition: 'background-color 0.2s ease',
-                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
+                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
+                          height: '24px',
+                          minHeight: '24px'
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1722,11 +1728,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     <button
                       type="button"
                       onClick={onQuickStartToggle}
-                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
                         backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
                         border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
-                        transition: 'background-color 0.2s ease, border-color 0.2s ease'
+                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                        height: '24px',
+                        minHeight: '24px'
                       }}
                       onMouseEnter={(e) => {
                         if (!isQuickStartBarVisible) {
@@ -1764,11 +1772,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
                           backgroundColor: '#FFFFFF',
                           border: '1px solid rgba(229, 231, 235, 0.6)',
-                          transition: 'background-color 0.2s ease'
+                          transition: 'background-color 0.2s ease',
+                          height: '24px',
+                          minHeight: '24px'
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1788,10 +1798,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     <button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
                         backgroundColor: '#ECECEC',
-                        transition: 'background-color 0.2s ease'
+                        transition: 'background-color 0.2s ease',
+                        height: '24px',
+                        minHeight: '24px'
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = '#E0E0E0';

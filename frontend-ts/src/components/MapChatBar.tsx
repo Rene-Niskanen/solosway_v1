@@ -305,7 +305,12 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 <button
                   type="button"
                   onClick={onMapToggle}
-                  className="p-1 text-gray-400 hover:text-gray-600 transition-colors ml-1"
+                  className="flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors ml-1"
+                  style={{
+                    padding: '4px',
+                    minHeight: '24px',
+                    height: '24px'
+                  }}
                   title="Back to search mode"
                 >
                   <LibraryBig className="w-5 h-5" strokeWidth={1.5} />
@@ -317,13 +322,18 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 <button
                   type="button"
                   onClick={toggleSelectionMode}
-                  className={`p-1 transition-colors ${
+                  className={`flex items-center justify-center transition-colors ${
                     propertyAttachments.length > 0
                       ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
                       : isSelectionModeActive 
                         ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
                         : 'text-gray-900 hover:text-gray-700'
                   }`}
+                  style={{
+                    padding: '4px',
+                    minHeight: '24px',
+                    height: '24px'
+                  }}
                   title={
                     propertyAttachments.length > 0
                       ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
@@ -342,11 +352,13 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                   style={{
                     backgroundColor: '#FFFFFF',
                     border: '1px solid rgba(0, 0, 0, 0.1)',
-                    transition: 'background-color 0.2s ease'
+                    transition: 'background-color 0.2s ease',
+                    height: '24px',
+                    minHeight: '24px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -360,10 +372,12 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                   style={{
                     backgroundColor: '#ECECEC',
-                    transition: 'background-color 0.2s ease'
+                    transition: 'background-color 0.2s ease',
+                    height: '24px',
+                    minHeight: '24px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.backgroundColor = '#E0E0E0';

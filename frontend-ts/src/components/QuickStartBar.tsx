@@ -26,6 +26,7 @@ interface QuickStartBarProps {
   onPopupVisibilityChange?: (isVisible: boolean) => void;
   className?: string;
   isInChatPanel?: boolean; // Whether this is being used in the chat panel (for space-saving adjustments)
+  chatInputRef?: React.RefObject<HTMLTextAreaElement | HTMLInputElement>; // Reference to chat input to detect focus
 }
 
 // Property Image Thumbnail Component
@@ -84,7 +85,8 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
   onDocumentLinked,
   onPopupVisibilityChange,
   className,
-  isInChatPanel = false
+  isInChatPanel = false,
+  chatInputRef
 }) => {
   const [searchQuery, setSearchQuery] = React.useState<string>("");
   const [searchResults, setSearchResults] = React.useState<PropertyData[]>([]);
@@ -114,6 +116,50 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
   React.useEffect(() => {
     onPopupVisibilityChange?.(showResultsPopup);
   }, [showResultsPopup, onPopupVisibilityChange]);
+
+  // Close popup when search input loses focus (user clicks away or starts typing elsewhere)
+  React.useEffect(() => {
+    if (!isSearchInputFocused && showResultsPopup) {
+      // Small delay to allow click events on popup items to register
+      const timer = setTimeout(() => {
+        if (!isSearchInputFocused) {
+          setShowResultsPopup(false);
+        }
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [isSearchInputFocused, showResultsPopup]);
+
+  // Close popup when chat input is focused or when user starts typing in chat
+  React.useEffect(() => {
+    if (!chatInputRef?.current || !isInChatPanel) return;
+
+    const chatInput = chatInputRef.current;
+    
+    const handleChatFocus = () => {
+      // Close popup immediately when chat input is focused
+      if (showResultsPopup) {
+        setShowResultsPopup(false);
+      }
+    };
+
+    const handleChatInput = () => {
+      // Close popup when user types in chat input
+      if (showResultsPopup && document.activeElement === chatInput) {
+        setShowResultsPopup(false);
+      }
+    };
+
+    chatInput.addEventListener('focus', handleChatFocus);
+    chatInput.addEventListener('input', handleChatInput);
+    chatInput.addEventListener('keydown', handleChatInput);
+
+    return () => {
+      chatInput.removeEventListener('focus', handleChatFocus);
+      chatInput.removeEventListener('input', handleChatInput);
+      chatInput.removeEventListener('keydown', handleChatInput);
+    };
+  }, [chatInputRef, isInChatPanel, showResultsPopup]);
   
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const resultsPopupRef = React.useRef<HTMLDivElement>(null);
@@ -838,14 +884,14 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                         if (searchResults.length > 0) {
                           setShowResultsPopup(true);
                         }
-                        // Subtle focus state
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
-                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 2px rgba(229, 231, 235, 0.2)';
+                        // Enhanced focus state (without blue glow)
+                        e.currentTarget.style.borderColor = 'rgba(156, 163, 175, 0.9)';
+                        e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.1)';
                       }}
                       onBlur={(e) => {
                         setIsSearchInputFocused(false);
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
-                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04)';
+                        e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
+                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
                       }}
                       placeholder="Find property to link documents"
                       className="quick-start-search-input"
@@ -853,7 +899,7 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                         width: '100%',
                         padding: isInChatPanel ? '6px 10px 6px 10px' : '6px 12px 6px 12px',
                         background: '#FFFFFF',
-                        border: '1px solid rgba(229, 231, 235, 0.6)',
+                        border: '1px solid rgba(209, 213, 219, 0.8)',
                         borderRadius: '12px',
                         fontSize: isInChatPanel ? '13px' : '14px',
                         outline: 'none',
@@ -861,15 +907,19 @@ export const QuickStartBar: React.FC<QuickStartBarProps> = ({
                         position: 'relative',
                         zIndex: 1,
                         color: '#1F2937',
-                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)'
+                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05), 0 0 0 0 rgba(59, 130, 246, 0)'
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                        if (document.activeElement !== e.currentTarget) {
+                          e.currentTarget.style.borderColor = 'rgba(156, 163, 175, 0.9)';
+                          e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 0 rgba(59, 130, 246, 0)';
+                        }
                       }}
                       onMouseLeave={(e) => {
                         // Keep focus styles if focused; otherwise revert to default state.
                         if (document.activeElement === e.currentTarget) return;
-                        e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                        e.currentTarget.style.borderColor = 'rgba(209, 213, 219, 0.8)';
+                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05), 0 0 0 0 rgba(59, 130, 246, 0)';
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Escape') {

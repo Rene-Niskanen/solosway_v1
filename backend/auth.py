@@ -5,6 +5,7 @@ from . import db
 from flask_login import login_user, login_required, logout_user, current_user
 from .services.supabase_auth_service import SupabaseAuthService
 import logging
+import os
 from uuid import UUID, uuid4
 
 auth = Blueprint('auth', __name__)

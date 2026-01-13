@@ -74,7 +74,7 @@ export const FileChoiceStep: React.FC<FileChoiceStepProps> = ({
           {isExtracting ? (
             <>
               <Loader2 size={12} style={{ display: 'inline', marginRight: '4px', animation: 'spin 1s linear infinite' }} />
-              Analyzing {fileCount} {fileCount === 1 ? 'file' : 'files'}...
+              Analysing {fileCount} {fileCount === 1 ? 'file' : 'files'}...
             </>
           ) : hasExtractedText ? (
             <>

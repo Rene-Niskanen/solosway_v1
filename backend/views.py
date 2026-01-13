@@ -16,6 +16,7 @@ import boto3
 import time
 import re
 import math
+import queue
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
@@ -351,6 +352,7 @@ def query_documents_stream():
         citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
+        is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
         # Frontend sends undefined which becomes null in JSON, but we want None in Python
@@ -456,6 +458,7 @@ def query_documents_stream():
                     "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
+                    "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
@@ -634,21 +637,58 @@ def query_documents_stream():
                     logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
                     timing.mark("intent_extracted")
                 else:
-                    intent_message = extract_query_intent(query)
+                    # Detect if this is a navigation query (similar to should_route logic)
+                    query_lower = query.lower().strip()
+                    # is_agent_mode is already defined at the top level (line 354)
+                    is_navigation_query = False
+                    
+                    if is_agent_mode:
+                        navigation_patterns = [
+                            "take me to the", "take me to ", "go to the map", "navigate to the",
+                            "show me on the map", "show on map", "find on map", "open the map",
+                            "go to map", "click on the", "select the pin", "click the pin"
+                        ]
+                        pin_patterns = [" pin", "property pin", "map pin"]
+                        info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
+                                       "inspection", "document", "tell me about", "what is", "how much",
+                                       "summary", "details", "information", "data"]
+                        
+                        is_info_query = any(keyword in query_lower for keyword in info_keywords)
+                        
+                        if not is_info_query:
+                            has_navigation_intent = any(pattern in query_lower for pattern in navigation_patterns)
+                            has_pin_intent = any(pattern in query_lower for pattern in pin_patterns)
+                            is_navigation_query = has_navigation_intent or has_pin_intent
+                    
                     timing.mark("intent_extracted")
                     
-                    # Emit initial reasoning step with extracted intent (only for non-fast paths)
-                    initial_reasoning = {
+                    # Always emit "Planning next moves" first
+                    planning_reasoning = {
                         'type': 'reasoning_step',
                         'step': 'initial',
-                        'action_type': 'searching',
-                        'message': intent_message,
-                        'timestamp': time.time(),  # Ensure proper ordering
+                        'action_type': 'planning',
+                        'message': 'Planning next moves',
+                        'timestamp': time.time(),
                         'details': {'original_query': query}
                     }
-                    initial_reasoning_json = json.dumps(initial_reasoning)
-                    yield f"data: {initial_reasoning_json}\n\n"
-                    logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
+                    planning_reasoning_json = json.dumps(planning_reasoning)
+                    yield f"data: {planning_reasoning_json}\n\n"
+                    logger.info(f"🟡 [REASONING] Emitted planning reasoning step: {planning_reasoning_json}")
+                    
+                    # If it's a data query (not navigation), switch to "Searching for information"
+                    if not is_navigation_query:
+                        intent_message = extract_query_intent(query)
+                        searching_reasoning = {
+                            'type': 'reasoning_step',
+                            'step': 'searching',
+                        'action_type': 'searching',
+                        'message': intent_message,
+                            'timestamp': time.time() + 0.001,  # Slightly after planning step
+                        'details': {'original_query': query}
+                    }
+                        searching_reasoning_json = json.dumps(searching_reasoning)
+                        yield f"data: {searching_reasoning_json}\n\n"
+                        logger.info(f"🟡 [REASONING] Emitted searching reasoning step: {searching_reasoning_json}")
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -749,7 +789,7 @@ def query_documents_stream():
                         node_messages = {
                             # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
-                                'action_type': 'analyzing',
+                                'action_type': 'analysing',
                                 'message': 'Ranking results',
                                 'details': {}
                             },
@@ -795,7 +835,7 @@ def query_documents_stream():
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': node_name,
-                                            'action_type': node_messages[node_name].get('action_type', 'analyzing'),
+                                            'action_type': node_messages[node_name].get('action_type', 'analysing'),
                                             'message': node_messages[node_name]['message'],
                                             'details': node_messages[node_name]['details']
                                         }
@@ -910,8 +950,8 @@ def query_documents_stream():
                                                 analyzing_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'analyzing_documents',
-                                                    'action_type': 'analyzing',
-                                                    'message': f'Analyzing {doc_count} {doc_word_analyzing} for your question',
+                                                    'action_type': 'analysing',
+                                                    'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
                                                     'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {'documents_to_analyze': doc_count}
                                                 }
@@ -937,8 +977,8 @@ def query_documents_stream():
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'analyzing_for_followup',
-                                                    'action_type': 'analyzing',
-                                                    'message': f'Analyzing {doc_outputs_count} documents for your question',
+                                                    'action_type': 'analysing',
+                                                    'message': f'Analysing {doc_outputs_count} documents for your question',
                                                     'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {'documents_analyzed': doc_outputs_count}
                                                 }
@@ -1147,8 +1187,8 @@ def query_documents_stream():
                                             summarizing_data = {
                                                 'type': 'reasoning_step',
                                                 'step': 'summarizing_content',
-                                                'action_type': 'summarizing',
-                                                'message': 'Summarizing content',
+                                                'action_type': 'summarising',
+                                                'message': 'Summarising content',
                                                 'timestamp': summarize_timestamp,  # After reading steps
                                                 'details': {'documents_processed': doc_count}
                                             }
@@ -1204,7 +1244,7 @@ def query_documents_stream():
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': node_name,
-                                                'action_type': node_messages[node_name].get('action_type', 'analyzing'),
+                                                'action_type': node_messages[node_name].get('action_type', 'analysing'),
                                                 'message': node_messages[node_name]['message'],
                                                 'details': node_messages[node_name]['details']
                                             }
@@ -1287,8 +1327,8 @@ def query_documents_stream():
                                                     analyzing_data = {
                                                         'type': 'reasoning_step',
                                                         'step': 'analyzing_documents',
-                                                        'action_type': 'analyzing',
-                                                        'message': f'Analyzing {doc_count} {doc_word_analyzing} for your question',
+                                                        'action_type': 'analysing',
+                                                        'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
                                                         'timestamp': time.time(),  # Ensure proper ordering
                                                         'details': {'documents_to_analyze': doc_count}
                                                     }
@@ -1531,29 +1571,344 @@ def query_documents_stream():
                                     'block_id': block_id  # Include block_id for debugging
                                 }
                         else:
-                            logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
+                            # FALLBACK: Check for citations list format (used by citation_query handler)
+                            citations_list = final_result.get('citations', [])
+                            if citations_list:
+                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query")
+                                for cit in citations_list:
+                                    citation_num = str(cit.get('citation_number', 1))
+                                    doc_id = cit.get('doc_id', '')
+                                    page = cit.get('page_number', 0)
+                                    bbox = cit.get('bbox', {})
+                                    
+                                    citations_map_for_frontend[citation_num] = {
+                                        'doc_id': doc_id,
+                                        'page': page,
+                                        'bbox': bbox,
+                                        'method': 'citation-query',
+                                        'block_id': cit.get('block_id', 'citation_source')
+                                    }
+                                    structured_citations.append({
+                                        'id': int(citation_num),
+                                        'document_id': doc_id,
+                                        'page': page,
+                                        'bbox': bbox
+                                    })
+                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}")
+                            else:
+                                logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         timing.mark("prepare_complete")
                         
-                        # AGENT-NATIVE: Emit agent_action events if user requested UI actions
-                        # This follows the principle: "Whatever the user can do through the UI, 
-                        # the agent should be able to achieve through tools."
-                        # NOTE: Reasoning step is now emitted earlier (before response) as part of the reasoning train of thought
-                        if action_intent['wants_action'] and citations_map_for_frontend:
-                            action_type = action_intent['action_type']
+                        # AGENT-NATIVE (TOOL-BASED): Process LLM tool-called agent actions
+                        # The LLM autonomously decides when to call open_document, navigate_to_property, etc.
+                        # based on query context and available citations
+                        agent_actions = final_result.get('agent_actions', [])
+                        
+                        # DEBUG: Log agent_actions and is_agent_mode
+                        logger.info(f"🎯 [AGENT_DEBUG] agent_actions from final_result: {agent_actions}")
+                        logger.info(f"🎯 [AGENT_DEBUG] is_agent_mode: {is_agent_mode}")
+                        logger.info(f"🎯 [AGENT_DEBUG] final_result keys: {list(final_result.keys()) if final_result else 'None'}")
+                        
+                        if agent_actions and is_agent_mode:
+                            logger.info(f"🎯 [AGENT_TOOLS] Processing {len(agent_actions)} LLM-requested agent actions")
                             
-                            # Agent action for 'show' - open document
+                            for action in agent_actions:
+                                action_type = action.get('action')
+                                
+                                if action_type == 'open_document':
+                                    # LLM requested to open a specific citation
+                                    citation_number = action.get('citation_number', 1)
+                                    reason = action.get('reason', '')
+                                    
+                                    # Emit single reasoning step for opening and highlighting
+                                    opening_step = {
+                                        'type': 'reasoning_step',
+                                        'step': 'agent_open_document',
+                                        'action_type': 'opening',
+                                        'message': 'Opening citation view & Highlighting content',
+                                        'details': {'citation_number': citation_number, 'reason': reason}
+                                    }
+                                    yield f"data: {json.dumps(opening_step)}\n\n"
+                                    
+                                    # Look up citation data from citations_map_for_frontend
+                                    citation_key = str(citation_number)
+                                    if citation_key in citations_map_for_frontend:
+                                        citation = citations_map_for_frontend[citation_key]
+                                        bbox = citation.get('bbox')
+                                        open_doc_action = {
+                                            'type': 'agent_action',
+                                            'action': 'open_document',
+                                            'params': {
+                                                'doc_id': citation.get('doc_id'),
+                                                'page': citation.get('page', 1),
+                                                'filename': citation.get('original_filename', ''),
+                                                'bbox': bbox if bbox and isinstance(bbox, dict) else None,
+                                                'reason': reason  # Include LLM's reasoning
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted open_document for citation [{citation_number}]: {reason}")
+                                    else:
+                                        logger.warning(f"🎯 [AGENT_TOOLS] Citation [{citation_number}] not found in map, trying first available")
+                                        # Fallback: use first citation if requested one not found
+                                        first_key = next(iter(citations_map_for_frontend.keys()), None)
+                                        if first_key:
+                                            citation = citations_map_for_frontend[first_key]
+                                            bbox = citation.get('bbox')
+                                            open_doc_action = {
+                                                'type': 'agent_action',
+                                                'action': 'open_document',
+                                                'params': {
+                                                    'doc_id': citation.get('doc_id'),
+                                                    'page': citation.get('page', 1),
+                                                    'filename': citation.get('original_filename', ''),
+                                                    'bbox': bbox if bbox and isinstance(bbox, dict) else None,
+                                                    'reason': reason
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted open_document (fallback to [{first_key}]): {reason}")
+                                        else:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] No citations available to open")
+                                
+                                elif action_type == 'navigate_to_property':
+                                    # LLM requested to navigate to a property
+                                    target_property_id = action.get('property_id') or property_id
+                                    reason = action.get('reason', '')
+                                    
+                                    if target_property_id:
+                                        # Emit reasoning step for navigation
+                                        nav_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_navigate',
+                                            'action_type': 'navigating',
+                                            'message': 'Navigating to property',
+                                            'details': {'property_id': target_property_id, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(nav_step)}\n\n"
+                                        
+                                        nav_action = {
+                                            'type': 'agent_action',
+                                            'action': 'navigate_to_property',
+                                            'params': {
+                                                'property_id': target_property_id,
+                                                'center_map': True,
+                                                'reason': reason
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(nav_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted navigate_to_property: {reason}")
+                                
+                                elif action_type == 'search_property':
+                                    # LLM requested to search for a property by name
+                                    search_query = action.get('query', '')
+                                    
+                                    if search_query:
+                                        # Emit reasoning step for search
+                                        search_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_search_property',
+                                            'action_type': 'searching',
+                                            'message': f'Searching for property: {search_query}',
+                                            'details': {'query': search_query}
+                                        }
+                                        yield f"data: {json.dumps(search_step)}\n\n"
+                                        
+                                        # Perform property search
+                                        from backend.services.property_search_service import PropertySearchService
+                                        property_service = PropertySearchService()
+                                        search_results = property_service.search_properties(
+                                            business_id=business_id or '',
+                                            query=search_query
+                                        )
+                                        
+                                        if search_results:
+                                            found_property = search_results[0]  # Take top result
+                                            found_property_id = found_property.get('id') or found_property.get('property_id')
+                                            found_address = found_property.get('formatted_address', 'Unknown')
+                                            found_lat = found_property.get('latitude')
+                                            found_lng = found_property.get('longitude')
+                                            
+                                            search_action = {
+                                                'type': 'agent_action',
+                                                'action': 'search_property_result',
+                                                'params': {
+                                                    'property_id': found_property_id,
+                                                    'formatted_address': found_address,
+                                                    'latitude': found_lat,
+                                                    'longitude': found_lng,
+                                                    'query': search_query
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(search_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Property search found: {found_address} ({found_property_id})")
+                                        else:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] No property found for query: {search_query}")
+                                
+                                elif action_type == 'show_map_view':
+                                    # LLM requested to show the map view
+                                    reason = action.get('reason', 'Opening map view')
+                                    
+                                    # Emit reasoning step for opening map
+                                    map_step = {
+                                        'type': 'reasoning_step',
+                                        'step': 'agent_show_map',
+                                        'action_type': 'opening_map',
+                                        'message': 'Opening map view',
+                                        'details': {'reason': reason}
+                                    }
+                                    yield f"data: {json.dumps(map_step)}\n\n"
+                                    
+                                    show_map_action = {
+                                        'type': 'agent_action',
+                                        'action': 'show_map_view',
+                                        'params': {
+                                            'reason': reason
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(show_map_action)}\n\n"
+                                    logger.info(f"🎯 [AGENT_TOOLS] Emitted show_map_view: {reason}")
+                                
+                                elif action_type == 'select_property_pin':
+                                    # LLM requested to select a property pin on the map
+                                    target_property_id = action.get('property_id')
+                                    reason = action.get('reason', '')
+                                    
+                                    if target_property_id:
+                                        # Emit reasoning step for pin selection
+                                        pin_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_select_pin',
+                                            'action_type': 'selecting_pin',
+                                            'message': 'Selecting property pin',
+                                            'details': {'property_id': target_property_id, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(pin_step)}\n\n"
+                                        
+                                        # Get property coordinates if available
+                                        property_lat = None
+                                        property_lng = None
+                                        property_address = None
+                                        
+                                        # Try to get property details for coordinates
+                                        try:
+                                            from backend.services.property_search_service import PropertySearchService
+                                            property_service = PropertySearchService()
+                                            # Search by property_id
+                                            search_results = property_service.search_properties(
+                                                business_id=business_id or '',
+                                                query=target_property_id
+                                            )
+                                            if search_results:
+                                                prop = search_results[0]
+                                                property_lat = prop.get('latitude')
+                                                property_lng = prop.get('longitude')
+                                                property_address = prop.get('formatted_address')
+                                        except Exception as e:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] Could not fetch property details: {e}")
+                                        
+                                        select_pin_action = {
+                                            'type': 'agent_action',
+                                            'action': 'select_property_pin',
+                                            'params': {
+                                                'property_id': target_property_id,
+                                                'latitude': property_lat,
+                                                'longitude': property_lng,
+                                                'address': property_address,
+                                                'reason': reason
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(select_pin_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted select_property_pin: {target_property_id}")
+                                
+                                elif action_type == 'navigate_to_property_by_name':
+                                    # Combined navigation tool: search + show map + select pin
+                                    property_name = action.get('property_name', '')
+                                    reason = action.get('reason', '')
+                                    
+                                    if property_name:
+                                        logger.info(f"🎯 [AGENT_TOOLS] navigate_to_property_by_name: searching for '{property_name}'")
+                                        
+                                        # Step 1: Search for the property
+                                        from backend.services.property_search_service import PropertySearchService
+                                        property_service = PropertySearchService()
+                                        search_results = property_service.search_properties(
+                                            business_id=business_id or '',
+                                            query=property_name
+                                        )
+                                        
+                                        if search_results:
+                                            found_property = search_results[0]
+                                            found_property_id = found_property.get('id') or found_property.get('property_id')
+                                            found_address = found_property.get('formatted_address', property_name)
+                                            found_lat = found_property.get('latitude')
+                                            found_lng = found_property.get('longitude')
+                                            
+                                            logger.info(f"🎯 [AGENT_TOOLS] Found property: {found_address} (ID: {found_property_id})")
+                                            
+                                            # Emit combined reasoning step
+                                            nav_step = {
+                                                'type': 'reasoning_step',
+                                                'step': 'agent_navigate_to_property',
+                                                'action_type': 'navigating',
+                                                'message': f'Navigating to {found_address}',
+                                                'details': {'property_name': property_name, 'property_id': found_property_id, 'reason': reason}
+                                            }
+                                            yield f"data: {json.dumps(nav_step)}\n\n"
+                                            
+                                            # Step 2: Emit show_map_view action
+                                            show_map_action = {
+                                                'type': 'agent_action',
+                                                'action': 'show_map_view',
+                                                'params': {
+                                                    'reason': f'Opening map to navigate to {found_address}'
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(show_map_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted show_map_view for navigation")
+                                            
+                                            # Step 3: Emit select_property_pin action
+                                            select_pin_action = {
+                                                'type': 'agent_action',
+                                                'action': 'select_property_pin',
+                                                'params': {
+                                                    'property_id': found_property_id,
+                                                    'latitude': found_lat,
+                                                    'longitude': found_lng,
+                                                    'address': found_address,
+                                                    'reason': reason
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(select_pin_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted select_property_pin: {found_property_id}")
+                                        else:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] No property found for: '{property_name}'")
+                        
+                        # FALLBACK: Legacy keyword-based detection (for backwards compatibility)
+                        # Only used if LLM didn't call any tools but user explicitly requested action
+                        elif action_intent['wants_action'] and citations_map_for_frontend and not agent_actions:
+                            action_type = action_intent['action_type']
+                            logger.info(f"🎯 [AGENT_LEGACY] Using keyword-based action detection: {action_type}")
+                            
                             if action_type == 'show':
-                                # Get the first citation to open
                                 first_citation_key = next(iter(citations_map_for_frontend.keys()), None)
                                 if first_citation_key:
                                     first_citation = citations_map_for_frontend[first_citation_key]
-                                    
-                                    # Emit single open_document action with bbox included
-                                    # This prevents double-open race condition that resets to page 1
                                     bbox = first_citation.get('bbox')
+                                    
+                                    # Emit reasoning step BEFORE agent action (matches tool-based behavior)
+                                    opening_step = {
+                                        'type': 'reasoning_step',
+                                        'step': 'agent_open_document',
+                                        'action_type': 'opening',
+                                        'message': 'Opening citation view & Highlighting content',
+                                        'details': {'citation_number': first_citation_key, 'reason': 'User requested to show document'}
+                                    }
+                                    yield f"data: {json.dumps(opening_step)}\n\n"
+                                    
                                     open_doc_action = {
                                         'type': 'agent_action',
                                         'action': 'open_document',
@@ -1565,39 +1920,29 @@ def query_documents_stream():
                                         }
                                     }
                                     yield f"data: {json.dumps(open_doc_action)}\n\n"
-                                    
-                                    logger.info(f"🎯 [AGENT_ACTION] Emitted open_document (with bbox={bool(bbox)}) for doc_id={first_citation.get('doc_id')}, page={first_citation.get('page', 1)}")
+                                    logger.info(f"🎯 [AGENT_LEGACY] Emitted open_document for doc_id={first_citation.get('doc_id')}")
                             
-                            elif action_type == 'save':
-                                # Emit save_to_writing action for first citation
-                                first_citation_key = next(iter(citations_map_for_frontend.keys()), None)
-                                if first_citation_key:
-                                    first_citation = citations_map_for_frontend[first_citation_key]
-                                    save_action = {
-                                        'type': 'agent_action',
-                                        'action': 'save_to_writing',
-                                        'params': {
-                                            'citation': first_citation,
-                                            'note': 'Saved by agent'
-                                        }
+                            elif action_type == 'navigate' and property_id:
+                                # Emit reasoning step BEFORE agent action (matches tool-based behavior)
+                                nav_step = {
+                                    'type': 'reasoning_step',
+                                    'step': 'agent_navigate',
+                                    'action_type': 'navigating',
+                                    'message': 'Navigating to property',
+                                    'details': {'property_id': property_id, 'reason': 'User requested navigation'}
+                                }
+                                yield f"data: {json.dumps(nav_step)}\n\n"
+                                
+                                nav_action = {
+                                    'type': 'agent_action',
+                                    'action': 'navigate_to_property',
+                                    'params': {
+                                        'property_id': property_id,
+                                        'center_map': True
                                     }
-                                    yield f"data: {json.dumps(save_action)}\n\n"
-                                    logger.info(f"🎯 [AGENT_ACTION] Emitted save_to_writing for citation")
-                            
-                            elif action_type == 'navigate':
-                                # Navigate to property - requires property_id from context
-                                # NOTE: Reasoning step is now emitted earlier (before response)
-                                if property_id:
-                                    nav_action = {
-                                        'type': 'agent_action',
-                                        'action': 'navigate_to_property',
-                                        'params': {
-                                            'property_id': property_id,
-                                            'center_map': True
-                                        }
-                                    }
-                                    yield f"data: {json.dumps(nav_action)}\n\n"
-                                    logger.info(f"🎯 [AGENT_ACTION] Emitted navigate_to_property for property_id={property_id}")
+                                }
+                                yield f"data: {json.dumps(nav_action)}\n\n"
+                                logger.info(f"🎯 [AGENT_LEGACY] Emitted navigate_to_property for property_id={property_id}")
                         
                         # Send complete message with metadata
                         complete_data = {
@@ -1689,20 +2034,40 @@ def query_documents_stream():
                         if chunk is None:  # Completion signal
                             break
                         yield chunk
-                    except:
-                        # Timeout or error - check if thread is still alive
+                    except (BrokenPipeError, ConnectionResetError):
+                        # Client disconnected (e.g., aborted request, navigated away)
+                        # This is expected behavior - gracefully stop streaming
+                        logger.info("🔴 [STREAM] Client disconnected (broken pipe), stopping stream")
+                        break
+                    except queue.Empty:
+                        # Timeout - check if thread is still alive
                         if not thread.is_alive():
                             if error_occurred.is_set():
-                                yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                                try:
+                                    yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                                except (BrokenPipeError, ConnectionResetError):
+                                    logger.info("🔴 [STREAM] Client disconnected while sending error")
+                            break
+                        continue
+                    except Exception as queue_err:
+                        # Other queue errors - check thread status
+                        logger.warning(f"⚠️ [STREAM] Queue error: {queue_err}")
+                        if not thread.is_alive():
                             break
                         continue
                         
+            except (BrokenPipeError, ConnectionResetError):
+                # Client disconnected at outer level - this is expected
+                logger.info("🔴 [STREAM] Client disconnected (broken pipe), stream ended")
             except Exception as e:
                 # Handle any errors in the main generate_stream logic
                 logger.error(f"❌ [STREAM] Error in generate_stream: {e}")
                 import traceback
                 logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                try:
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.info("🔴 [STREAM] Client disconnected while sending error")
         
         # Return SSE response with proper CORS headers
         # Note: generate_stream() already has internal error handling that yields error messages

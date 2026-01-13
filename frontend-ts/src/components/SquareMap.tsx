@@ -31,7 +31,7 @@ interface SquareMapProps {
 export interface SquareMapRef {
   updateLocation: (query: string) => Promise<void>;
   flyToLocation: (lat: number, lng: number, zoom?: number) => void;
-  selectPropertyByAddress: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string) => void;
+  selectPropertyByAddress: (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, navigationOnly?: boolean) => void;
 }
 
 // Utility function to preload document covers
@@ -621,7 +621,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               // Pass the loaded properties directly to avoid state timing issues
               // Use property pin location coordinates (user-set) to center map on pin location
               requestAnimationFrame(() => {
-                  selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, validPreloadedProperties);
+                  selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, false, 0, validPreloadedProperties);
               });
             }
           });
@@ -743,7 +743,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               // Use a small delay to ensure state has updated
               // Use property pin location coordinates (user-set) to center map on pin location
               setTimeout(() => {
-                selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0, transformedProperties);
+                selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, false, 0, transformedProperties);
               }, 50);
             }
           } catch (error) {
@@ -2699,9 +2699,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     });
   };
 
+  // Track if current selection is navigation-only (just show title card, not full panel)
+  const isNavigationOnlyRef = useRef<boolean>(false);
+
   // Expose methods to parent component
   // Method to select a property by address (same logic as clicking a pin)
-  const selectPropertyByAddress = async (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, retryCount = 0, providedProperties?: any[]) => {
+  // navigationOnly: if true, only show title card, don't open full PropertyDetailsPanel
+  const selectPropertyByAddress = async (address: string, coordinates?: { lat: number; lng: number }, propertyId?: string, navigationOnly = false, retryCount = 0, providedProperties?: any[]) => {
+    // Track navigation mode in ref for use in nested callbacks
+    if (retryCount === 0) {
+      isNavigationOnlyRef.current = navigationOnly;
+      console.log(`🧭 selectPropertyByAddress: navigationOnly=${navigationOnly}`);
+    }
     // Clear any stale property selection on first attempt to prevent showing wrong card
     // Also reset map centering flag for new selection
     if (retryCount === 0) {
@@ -2759,7 +2768,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             const cachedProperty = cacheData.data;
             setSelectedProperty(cachedProperty);
             setShowPropertyCard(true);
+            // Only show property details panel if not in navigation-only mode
+            if (!isNavigationOnlyRef.current) {
             setShowPropertyDetailsPanel(true);
+            }
             setIsExpanded(false);
             setShowFullDescription(false);
             
@@ -2768,7 +2780,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             // Retry map update with very short delays (10ms) for fastest response
             // Map centering will happen when map is ready, property card is already showing
             if (retryCount < 20) {
-              setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), 10);
+              setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, isNavigationOnlyRef.current, retryCount + 1, providedProperties), 10);
             }
             return;
           }
@@ -2785,7 +2797,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Use shorter delay for faster response (50ms instead of 200ms)
         const retryDelay = Math.min(50 * (retryCount + 1), 200);
         console.log('⏳ Map not ready yet, retrying with coordinates preserved:', { coordinates, retryCount });
-        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), retryDelay);
+        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, isNavigationOnlyRef.current, retryCount + 1, providedProperties), retryDelay);
       } else {
         // Map still not ready after retries - store for when map loads
         console.log('⏳ Map not ready after retries, storing pending selection with coordinates');
@@ -2906,6 +2918,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 });
                 
                 // Helper function to create title card marker (called AFTER flyTo completes)
+                // This matches the normal pin click flow to ensure proper "default click state"
                 const createTitleCardMarker = () => {
                   if (!map.current || !finalProperty || finalLat === null || finalLng === null) return;
                 
@@ -2929,7 +2942,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   currentPropertyNameMarkerRef.current = null;
                 }
                 
-                  // Create new PropertyTitleCard marker (same as property pin click)
+                  // Create new PropertyTitleCard marker (same as property pin click - full structure)
       const markerElement = document.createElement('div');
                   markerElement.className = 'property-title-card-marker';
                   markerElement.style.cssText = `
@@ -2940,6 +2953,47 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     pointer-events: auto;
                   `;
                   
+                  // Create inner scalable container for the React component
+                  // This is what we'll scale with zoom
+                  const scalableContainer = document.createElement('div');
+                  scalableContainer.className = 'property-title-card-scalable';
+                  scalableContainer.style.cssText = `
+                    position: relative;
+                    transform-origin: bottom center;
+                    transition: none;
+                    pointer-events: auto; /* Only the card content captures clicks */
+                    user-select: text; /* Allow text selection */
+                    -webkit-user-select: text; /* Safari */
+                  `;
+                  markerElement.appendChild(scalableContainer);
+                  
+                  // Store reference to scalable container for zoom updates
+                  (markerElement as any).scalableContainer = scalableContainer;
+                  
+                  // Disable map dragging when hovering over the card to allow text selection
+                  scalableContainer.addEventListener('mouseenter', () => {
+                    if (map.current) {
+                      map.current.dragPan.disable();
+                    }
+                    
+                    // Preload document covers on hover for faster loading when clicked
+                    if (finalProperty?.id && backendApi) {
+                      const propertyId = finalProperty.id;
+                      const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+                      if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+                        preloadDocumentCoversForProperty(preloadedFiles);
+                      } else {
+                        fetchAndPreloadDocumentCovers(propertyId, backendApi);
+                      }
+                    }
+                  });
+                  
+                  scalableContainer.addEventListener('mouseleave', () => {
+                    if (map.current) {
+                      map.current.dragPan.enable();
+                    }
+                  });
+                  
                   // Handle card click - opens PropertyDetailsPanel
                   const handleCardClick = () => {
                     console.log('📍 Property title card clicked (from selectPropertyByAddress) - opening PropertyDetailsPanel');
@@ -2949,14 +3003,18 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                       }
                       setSelectedProperty(finalProperty);
                       setShowPropertyCard(true);
+                      // Only show property details panel if not in navigation-only mode
+                      if (!isNavigationOnlyRef.current) {
                       setShowPropertyDetailsPanel(true);
+                      }
                       setIsExpanded(false);
                       setShowFullDescription(false);
                     }
                   };
                   
-                  // Render PropertyTitleCard component into marker element
-                  const root = createRoot(markerElement);
+                  // Render PropertyTitleCard component into scalable container (same as pin click)
+                  try {
+                    const root = createRoot(scalableContainer);
                   root.render(
                     <PropertyTitleCard
                       property={finalProperty}
@@ -2964,19 +3022,36 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     />
                   );
                   
-                  // Anchor at bottom center so the bottom of the card aligns with coordinates
+                    // Store root reference for cleanup
+                    currentPropertyTitleCardRootRef.current = root;
+                  } catch (error) {
+                    console.error('Error rendering PropertyTitleCard:', error);
+                  }
+                  
+                  // Calculate offset for positioning (PropertyTitleCard without green pin)
+                  // Position the card raised above the pin so it doesn't overlap
+                  const cardHeight = 360; // Approximate card height (image + details, no pin/pointer)
+                  const pinRadius = 10; // Approximate pin radius
+                  const gapAbovePin = 20; // Gap between pin and card bottom
+                  const verticalOffset = -(pinRadius + gapAbovePin); // Negative Y moves upward
+                  
+                  // Anchor at bottom center and raise card above the pin (same as pin click)
                   const marker = new mapboxgl.Marker({
                     element: markerElement,
                     anchor: 'bottom',
-                    offset: [0, 0]
+                    offset: [0, verticalOffset] // Raise card above pin
                   })
                     .setLngLat([finalLng, finalLat])
                     .addTo(map.current);
                   
+                  // Store marker reference for cleanup
                   currentPropertyNameMarkerRef.current = marker;
                   storeMarkerCoordinates(marker, finalProperty?.id);
                   
-                  // Update state to show title card
+                  // Set up zoom listener - card stays fixed size when zoomed in, scales down when zoomed out
+                  setupMarkerZoomListener(marker);
+                  
+                  // Update state to show title card (same as pin click)
                   setShowPropertyTitleCard(true);
                   setTitleCardPropertyId(finalProperty?.id?.toString() || null);
                 };
@@ -2985,13 +3060,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
                 const cardHeight = 360;
                 const verticalOffset = (cardHeight / 2) - 40;
-                const leftEdge = chatPanelWidth + sidebarWidth;
+                // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
+                const currentChatPanelWidth = chatPanelWidthRef.current;
+                const leftEdge = currentChatPanelWidth + sidebarWidth;
                 const visibleWidth = window.innerWidth - leftEdge;
                 const visibleCenterX = leftEdge + (visibleWidth / 2);
                 const viewportCenterX = window.innerWidth / 2;
+                // No extra offset needed - chat panel is shrunk to minimum during navigation
+                // The pin will be centered in the visible map area (right of the narrow chat panel)
                 const horizontalOffset = visibleCenterX - viewportCenterX;
                 
-                console.log('📍 Recent project: Flying to property pin location:', { lat: finalLat, lng: finalLng });
+                console.log('📍 Recent project: Flying to property pin location:', { lat: finalLat, lng: finalLng, chatPanelWidth: currentChatPanelWidth, horizontalOffset });
                 
                 // NOTE: Don't clean up marker yet - keep it visible until panel shows
                 // Cleanup will happen after property details panel is shown
@@ -3056,9 +3135,28 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                       }
                     }
                     
-                    // SKIP title card for recent projects - go straight to property details panel
-                    // Don't create title card marker - we want to skip directly to the panel
-                    // NOTE: Don't clean up existing marker here - it will be cleaned up after panel shows
+                    // For navigation-only mode, show the title card (not the full panel)
+                    // For normal mode, skip title card and go straight to property details panel
+                    if (isNavigationOnlyRef.current) {
+                      // Navigation mode: Show title card only
+                      console.log('🧭 Navigation mode: Showing title card only');
+                      
+                      // Store pin coordinates
+                      if (finalLat !== null && finalLng !== null) {
+                        selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+                      }
+                      
+                      // Set selected property
+                      setSelectedProperty(propertyToShow);
+                      setShowPropertyCard(true);
+                      
+                      // Create and show the title card marker
+                      createTitleCardMarker();
+                      
+                      panelShown = true;
+                      console.log('✅ Navigation mode: Title card shown');
+                    } else {
+                      // Normal mode: Skip title card and go straight to property details panel
                     setShowPropertyTitleCard(false); // Ensure title card is not shown
                     setTitleCardPropertyId(null); // Clear any title card ID
                     
@@ -3108,6 +3206,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     
                     panelShown = true;
                     console.log('✅ Recent project: Starting panel animation (behaving like title card click)');
+                    }
                   });
                 }, panelStartDelay);
                 
@@ -3157,8 +3256,27 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         }
                       }
                       
-                      // SKIP title card for recent projects - go straight to property details panel
-                      // Don't create title card marker - we want to skip directly to the panel
+                      // For navigation-only mode, show the title card (not the full panel)
+                      // For normal mode, skip title card and go straight to property details panel
+                      if (isNavigationOnlyRef.current) {
+                        // Navigation mode: Show title card only
+                        console.log('🧭 Navigation mode: Showing title card only (backup)');
+                        
+                        // Store pin coordinates
+                        if (finalLat !== null && finalLng !== null) {
+                          selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
+                        }
+                        
+                        // Set selected property
+                        setSelectedProperty(propertyToShow);
+                        setShowPropertyCard(true);
+                        
+                        // Create and show the title card marker
+                        createTitleCardMarker();
+                        
+                        console.log('✅ Navigation mode: Title card shown (backup)');
+                      } else {
+                        // Normal mode: Skip title card and go straight to property details panel
                       setShowPropertyTitleCard(false); // Ensure title card is not shown
                       setTitleCardPropertyId(null); // Clear any title card ID
                       // Ensure no title card marker exists
@@ -3213,7 +3331,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                       setShowFullDescription(false);
                       
                       // CRITICAL: Now that panel is shown (backup path), clean up the PropertyTitleCard marker
+                        // Only clean up if NOT in navigation mode (navigation mode keeps the title card)
+                        if (!isNavigationOnlyRef.current) {
                       cleanupPropertyTitleCardMarker();
+                        }
+                      }
                       
                       panelShown = true;
                       console.log('✅ Recent project: Animation complete (backup), showing property details panel');
@@ -3361,14 +3483,17 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         const cardHeight = 360; // Approximate card height
         const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
         // Calculate horizontal offset to center in visible area (between chat panel and screen edge)
-        const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
+        // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
+        const currentChatPanelWidth = chatPanelWidthRef.current;
+        const leftEdge = currentChatPanelWidth + sidebarWidth; // Right edge of chat panel
         const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
         const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
         const viewportCenterX = window.innerWidth / 2; // Center of full viewport
+        // No extra offset needed - chat panel is shrunk to minimum during navigation
         const horizontalOffset = visibleCenterX - viewportCenterX;
         
         console.log('📍 Property centering (instant jump):', {
-          chatPanelWidth,
+          chatPanelWidth: currentChatPanelWidth,
           sidebarWidth,
           leftEdge,
           visibleWidth,
@@ -3410,12 +3535,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               }
             });
             
-            // Open property details panel after zoom animation completes
+            // Open property details panel after zoom animation completes (only if not navigation-only mode)
             // Total animation time: 600ms (center) + 1000ms (zoom) = 1600ms
             // Wait 1700ms to ensure animation is fully complete
+            if (!isNavigationOnlyRef.current) {
             setTimeout(() => {
               setShowPropertyDetailsPanel(true);
             }, 1700);
+            }
           }
         }, 650); // Start zoom after centering completes (600ms + 50ms buffer)
         
@@ -3511,7 +3638,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               : Math.min(30 * (retryCount + 1), 150); // Faster exponential backoff, max 150ms
             
             setTimeout(() => {
-              selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties);
+              selectPropertyByAddress(address, coordinates, propertyId, isNavigationOnlyRef.current, retryCount + 1, providedProperties);
             }, retryDelay);
             return; // Don't show card until property is found
           } else {
@@ -3890,7 +4017,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           availableProperties: allProperties.length,
           sampleAddresses: allProperties.slice(0, 3).map(p => p.address)
         });
-        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, retryCount + 1, providedProperties), 400);
+        setTimeout(() => selectPropertyByAddress(address, coordinates, propertyId, isNavigationOnlyRef.current, retryCount + 1, providedProperties), 400);
       } else {
         console.log('⚠️ Property not found in search results after retries:', address, {
           totalProperties: allProperties.length,
@@ -4081,7 +4208,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           // The retry logic will handle waiting for properties to load
           // Use property pin location coordinates (user-set) to center map on pin location
           setTimeout(() => {
-            selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, 0);
+            selectPropertyByAddress(pendingSelection.address, pendingSelection.coordinates, pendingSelection.propertyId, false, 0);
           }, 10);
         }
         
