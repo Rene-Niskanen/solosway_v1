@@ -1903,6 +1903,22 @@ Create a comprehensive answer using ONLY the document extracts above, focusing o
 - **Balance**: Provide helpful, comprehensive answers using document content when available, supplemented with general knowledge when needed
 
 Create a comprehensive answer to the user's question, prioritizing information from the document extracts above."""
+        # Default answer instructions for non-citation, non-agent mode (Reader mode)
+        answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain the information, you may use general knowledge to provide a helpful answer
+   - **Citation markers**: Only add [1], [2], [3]... for facts from document extracts (not general knowledge)
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
+   - If using general knowledge, provide helpful context but don't add citation markers for it
+   - Start directly with the answer - do NOT repeat the question"""
+        extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
+   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value FROM THE DOCUMENTS
+   - **Note**: Don't add citation markers to general knowledge - only to facts from document extracts
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - prioritize document content, supplement with general knowledge when helpful"""
     
     # AGENT MODE: Add instructions for proactive document display and navigation
     agent_mode_instructions = ""

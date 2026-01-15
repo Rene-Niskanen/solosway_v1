@@ -232,6 +232,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Store React root for PropertyTitleCard cleanup
   const currentPropertyTitleCardRootRef = useRef<any>(null);
   // Store zoom listener cleanup function for PropertyTitleCard scaling
+  // Flag to prevent map click handler from deselecting when title card is clicked
+  const titleCardClickedRef = useRef<boolean>(false);
   const propertyTitleCardZoomListenerRef = useRef<(() => void) | null>(null);
   // Store map click handler reference for deselection
   const mapClickHandlerRef = useRef<((e: any) => void) | null>(null);
@@ -1332,6 +1334,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     // Create the click handler function
     const propertyClickHandler = (e: any) => {
+      // CRITICAL: If title card is already visible for this property, skip pin click logic
+      // This prevents re-creating the title card when clicking on it during navigation
+      const clickedPropertyId = e.features?.[0]?.properties?.id;
+      if (clickedPropertyId && showPropertyTitleCard && titleCardPropertyId === clickedPropertyId.toString()) {
+        console.log('⏭️ Property pin clicked but title card already visible - skipping pin click handler');
+        return; // Title card is already shown, don't recreate it
+      }
+      
       console.log('🎯 Property-click-target handler fired!', {
         features: e.features?.length,
         feature_properties: e.features[0]?.properties
@@ -1579,9 +1589,39 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           // The dragPan.disable() from mouseenter should handle preventing map drag
         });
         
+        // CRITICAL: Prevent map click events from firing when clicking on the marker
+        // Stop propagation in bubble phase (not capture) so React onClick fires first
+        markerElement.addEventListener('click', (e) => {
+          e.stopPropagation();
+          console.log('🛑 Marker element click - preventing map click handler');
+        }, false); // Bubble phase - let React onClick fire first, then stop propagation to map
+        
+        // Also stop mousedown propagation to prevent map drag
+        markerElement.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+        }, false);
+        
+        // ALSO add click handler to scalableContainer to catch clicks that might not bubble to markerElement
+        // Stop propagation immediately - React's synthetic events will still fire
+        scalableContainer.addEventListener('click', (e) => {
+          e.stopPropagation();
+          console.log('🛑 Scalable container click - preventing map click handler');
+        }, false);
+        
+        scalableContainer.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+        }, false);
+        
         // Handle card click - opens PropertyDetailsPanel above the title card
         const handleCardClick = () => {
           console.log('📍 Property title card clicked - opening PropertyDetailsPanel above title card');
+          
+          // Set flag to prevent map click handler from deselecting (backup)
+          titleCardClickedRef.current = true;
+          // Clear flag after a short delay to allow map click handler to check it
+          setTimeout(() => {
+            titleCardClickedRef.current = false;
+          }, 200); // Increased timeout to ensure map handler checks it
           
           // Preload document covers immediately when title card is clicked
           if (property?.id && backendApi) {
@@ -1641,14 +1681,23 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             const propertyPinCoordinates: [number, number] = [property.longitude, property.latitude];
             const cardHeight = 360;
             const verticalOffset = (cardHeight / 2) - 40;
+            
+            // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+            const mapContainer = map.current.getContainer();
+            const containerRect = mapContainer.getBoundingClientRect();
+            const containerWidth = containerRect.width;
+            const containerLeft = containerRect.left;
+            
             const leftEdge = chatPanelWidth + sidebarWidth;
-            const visibleWidth = window.innerWidth - leftEdge;
+            const visibleWidth = containerWidth - (leftEdge - containerLeft);
             const visibleCenterX = leftEdge + (visibleWidth / 2);
-            const viewportCenterX = window.innerWidth / 2;
-            const horizontalOffset = visibleCenterX - viewportCenterX;
+            const containerCenterX = containerLeft + (containerWidth / 2);
+            const horizontalOffset = (visibleCenterX - containerCenterX);
             
             console.log('📍 Title card clicked - re-centering with chat panel:', {
               chatPanelWidth,
+              containerWidth,
+              containerLeft,
               horizontalOffset,
               source: 'title-card-click'
             });
@@ -1719,23 +1768,35 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
         
         // Calculate horizontal offset to center in the visible map area (between chat panel and screen edge)
+        // CRITICAL: Mapbox offset is relative to the map container, not the viewport
         // Use refs to get current values (handler might have been created before chat panel opened)
         const currentChatPanelWidth = chatPanelWidthRef.current;
         const currentSidebarWidth = sidebarWidthRef.current;
+        
+        // Get the map container's actual dimensions and position
+        const mapContainer = map.current.getContainer();
+        const containerRect = mapContainer.getBoundingClientRect();
+        const containerWidth = containerRect.width;
+        const containerLeft = containerRect.left;
+        
+        // Calculate the center of the visible map area (accounting for chat panel and sidebar)
         const leftEdge = currentChatPanelWidth + currentSidebarWidth; // Left edge of visible map area (right edge of chat panel)
-        const visibleWidth = window.innerWidth - leftEdge; // Width of visible map area (from chat edge to screen edge)
-        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area (middle between chat edge and screen edge)
-        const viewportCenterX = window.innerWidth / 2; // Center of full viewport
-        // Calculate offset needed to center property pin in visible map area
-        const horizontalOffset = visibleCenterX - viewportCenterX;
+        const visibleWidth = containerWidth - (leftEdge - containerLeft); // Width of visible map area within container
+        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area in viewport coordinates
+        const containerCenterX = containerLeft + (containerWidth / 2); // Center of map container in viewport coordinates
+        
+        // Calculate offset relative to map container center (Mapbox expects this)
+        const horizontalOffset = (visibleCenterX - containerCenterX);
         
         console.log('📍 Property pin clicked - centering calculation:', {
           chatPanelWidth: currentChatPanelWidth,
           sidebarWidth: currentSidebarWidth,
+          containerWidth,
+          containerLeft,
           leftEdge,
           visibleWidth,
           visibleCenterX,
-          viewportCenterX,
+          containerCenterX,
           horizontalOffset,
           windowWidth: window.innerWidth,
           source: 'pin-click',
@@ -1880,6 +1941,12 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         return;
       }
       
+      // Check if title card was just clicked (prevents race condition)
+      if (titleCardClickedRef.current) {
+        console.log('🗺️ Title card click flag set - skipping deselection');
+        return;
+      }
+      
       // Check if click is on the PropertyTitleCard element
       // Since markerElement has pointer-events: none, only clicks on the card content will reach here
       const clickedElement = e.originalEvent.target as HTMLElement;
@@ -1889,6 +1956,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         if (cardContent) {
           // Click is on card content - don't deselect (card click handler will handle it)
           console.log('🗺️ Map click detected on PropertyTitleCard content - skipping deselection');
+          return;
+        }
+        // Also check if click is on the marker element itself
+        const markerElement = clickedElement.closest('.property-title-card-marker');
+        if (markerElement) {
+          // Click is on marker element - don't deselect
+          console.log('🗺️ Map click detected on PropertyTitleCard marker - skipping deselection');
           return;
         }
       }
@@ -2919,8 +2993,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 
                 // Helper function to create title card marker (called AFTER flyTo completes)
                 // This matches the normal pin click flow to ensure proper "default click state"
-                const createTitleCardMarker = () => {
-                  if (!map.current || !finalProperty || finalLat === null || finalLng === null) return;
+                // CRITICAL: Pass property as parameter to avoid using stale closure-captured finalProperty
+                const createTitleCardMarker = (propertyToUse: any) => {
+                  if (!map.current || !propertyToUse || finalLat === null || finalLng === null) return;
                 
                 // Always remove existing marker and create new PropertyTitleCard to avoid duplicates
                 if (currentPropertyNameMarkerRef.current) {
@@ -2970,6 +3045,28 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   // Store reference to scalable container for zoom updates
                   (markerElement as any).scalableContainer = scalableContainer;
                   
+                  // CRITICAL: Prevent map click events from firing when clicking on the marker
+                  // Stop propagation in bubble phase (not capture) so React onClick fires first
+                  markerElement.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    console.log('🛑 Marker element click (selectPropertyByAddress) - preventing map click handler');
+                  }, false); // Bubble phase - let React onClick fire first, then stop propagation to map
+                  
+                  markerElement.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                  }, false);
+                  
+                  // ALSO add click handler to scalableContainer to catch clicks that might not bubble to markerElement
+                  // Stop propagation immediately - React's synthetic events will still fire
+                  scalableContainer.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    console.log('🛑 Scalable container click (selectPropertyByAddress) - preventing map click handler');
+                  }, false);
+                  
+                  scalableContainer.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                  }, false);
+                  
                   // Disable map dragging when hovering over the card to allow text selection
                   scalableContainer.addEventListener('mouseenter', () => {
                     if (map.current) {
@@ -2977,8 +3074,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     }
                     
                     // Preload document covers on hover for faster loading when clicked
-                    if (finalProperty?.id && backendApi) {
-                      const propertyId = finalProperty.id;
+                    if (propertyToUse?.id && backendApi) {
+                      const propertyId = propertyToUse.id;
                       const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
                       if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
                         preloadDocumentCoversForProperty(preloadedFiles);
@@ -2994,21 +3091,104 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     }
                   });
                   
-                  // Handle card click - opens PropertyDetailsPanel
+                  // Handle card click - opens PropertyDetailsPanel above the title card
                   const handleCardClick = () => {
-                    console.log('📍 Property title card clicked (from selectPropertyByAddress) - opening PropertyDetailsPanel');
-                    if (finalProperty) {
+                    console.log('📍 Property title card clicked (from selectPropertyByAddress) - opening PropertyDetailsPanel above title card');
+                    
+                    // Set flag to prevent map click handler from deselecting (backup)
+                    titleCardClickedRef.current = true;
+                    // Clear flag after a short delay to allow map click handler to check it
+                    setTimeout(() => {
+                      titleCardClickedRef.current = false;
+                    }, 200); // Increased timeout to ensure map handler checks it
+                    
+                    if (propertyToUse) {
+                      // Preload document covers immediately when title card is clicked
+                      if (propertyToUse?.id && backendApi) {
+                        const propertyId = propertyToUse.id;
+                        // Check if we already have preloaded files
+                        const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+                        if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+                          // Preload covers for existing documents
+                          preloadDocumentCoversForProperty(preloadedFiles);
+                        } else {
+                          // Fetch documents and preload covers
+                          fetchAndPreloadDocumentCovers(propertyId, backendApi);
+                        }
+                      }
+                      
+                      // Store pin coordinates
                       if (finalLat !== null && finalLng !== null) {
                         selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
                       }
-                      setSelectedProperty(finalProperty);
-                      setShowPropertyCard(true);
-                      // Only show property details panel if not in navigation-only mode
-                      if (!isNavigationOnlyRef.current) {
-                      setShowPropertyDetailsPanel(true);
+                      
+                      // Calculate position for PropertyDetailsPanel above the title card
+                      // The title card is positioned above the pin, so we position PropertyDetailsPanel above the title card
+                      if (map.current && finalLng !== null && finalLat !== null) {
+                        const point = map.current.project([finalLng, finalLat]);
+                        // Get map container position to convert to viewport coordinates
+                        const mapContainer = map.current.getContainer();
+                        const containerRect = mapContainer.getBoundingClientRect();
+                        // Position PropertyDetailsPanel using the SAME logic as PropertyTitleCard
+                        const titleCardHeight = 360;
+                        const pinRadius = 10;
+                        const gapAbovePin = 20; // Gap between pin and title card bottom (same as PropertyTitleCard)
+                        const titleCardBottomY = point.y - (pinRadius + gapAbovePin); // Where title card bottom is
+                        const titleCardTopY = titleCardBottomY - titleCardHeight; // Where title card top is
+                        const panelGap = 20; // Gap between PropertyDetailsPanel and title card
+                        // Position PropertyDetailsPanel so its bottom is above the title card top with a gap
+                        setSelectedPropertyPosition({
+                          x: containerRect.left + point.x, // Pin X position (same as PropertyTitleCard - will be centered with translate(-50%))
+                          y: containerRect.top + titleCardTopY - panelGap // Position above title card with gap
+                        });
                       }
+                      
+                      // Set selected property - this will trigger the useEffect to re-center if chat panel width changes
+                      setSelectedProperty(propertyToUse);
+                      setShowPropertyCard(true);
+                      // ALWAYS show property details panel when user CLICKS the title card
+                      // (isNavigationOnlyRef only controls whether panel opens automatically during navigation,
+                      // not whether it opens when user explicitly clicks)
+                      setShowPropertyDetailsPanel(true);
+                      setIsLargeCardMode(true); // Enable large card mode (positioned above title card)
                       setIsExpanded(false);
                       setShowFullDescription(false);
+                      // Keep title card visible (it should remain below PropertyDetailsPanel)
+                      
+                      // Also re-center immediately when title card is clicked (in case chat panel is open)
+                      if (map.current && finalLng !== null && finalLat !== null && chatPanelWidth > 0) {
+                        const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
+                        const cardHeight = 360;
+                        const verticalOffset = (cardHeight / 2) - 40;
+                        
+                        // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+                        const mapContainer = map.current.getContainer();
+                        const containerRect = mapContainer.getBoundingClientRect();
+                        const containerWidth = containerRect.width;
+                        const containerLeft = containerRect.left;
+                        
+                        const leftEdge = chatPanelWidth + sidebarWidth;
+                        const visibleWidth = containerWidth - (leftEdge - containerLeft);
+                        const visibleCenterX = leftEdge + (visibleWidth / 2);
+                        const containerCenterX = containerLeft + (containerWidth / 2);
+                        const horizontalOffset = (visibleCenterX - containerCenterX);
+                        
+                        console.log('📍 Title card clicked (navigation) - re-centering with chat panel:', {
+                          chatPanelWidth,
+                          containerWidth,
+                          containerLeft,
+                          horizontalOffset,
+                          source: 'title-card-click-navigation'
+                        });
+                        
+                        map.current.flyTo({
+                          center: propertyPinCoordinates,
+                          zoom: map.current.getZoom(),
+                          duration: 300,
+                          offset: [horizontalOffset, verticalOffset],
+                          essential: true
+                        });
+                      }
                     }
                   };
                   
@@ -3017,7 +3197,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     const root = createRoot(scalableContainer);
                   root.render(
                     <PropertyTitleCard
-                      property={finalProperty}
+                      property={propertyToUse}
                       onCardClick={handleCardClick}
                     />
                   );
@@ -3046,31 +3226,46 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   
                   // Store marker reference for cleanup
                   currentPropertyNameMarkerRef.current = marker;
-                  storeMarkerCoordinates(marker, finalProperty?.id);
+                  storeMarkerCoordinates(marker, propertyToUse?.id);
                   
                   // Set up zoom listener - card stays fixed size when zoomed in, scales down when zoomed out
                   setupMarkerZoomListener(marker);
                   
                   // Update state to show title card (same as pin click)
                   setShowPropertyTitleCard(true);
-                  setTitleCardPropertyId(finalProperty?.id?.toString() || null);
+                  setTitleCardPropertyId(propertyToUse?.id?.toString() || null);
+                  
+                  console.log('✅ Created title card marker with property:', propertyToUse?.address || propertyToUse?.formatted_address || propertyToUse?.id);
                 };
                 
                 // CRITICAL: Fly to property pin location FIRST before showing any UI
                 const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
                 const cardHeight = 360;
                 const verticalOffset = (cardHeight / 2) - 40;
+                
+                // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+                const mapContainer = map.current.getContainer();
+                const containerRect = mapContainer.getBoundingClientRect();
+                const containerWidth = containerRect.width;
+                const containerLeft = containerRect.left;
+                
                 // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
                 const currentChatPanelWidth = chatPanelWidthRef.current;
                 const leftEdge = currentChatPanelWidth + sidebarWidth;
-                const visibleWidth = window.innerWidth - leftEdge;
+                const visibleWidth = containerWidth - (leftEdge - containerLeft);
                 const visibleCenterX = leftEdge + (visibleWidth / 2);
-                const viewportCenterX = window.innerWidth / 2;
-                // No extra offset needed - chat panel is shrunk to minimum during navigation
-                // The pin will be centered in the visible map area (right of the narrow chat panel)
-                const horizontalOffset = visibleCenterX - viewportCenterX;
+                const containerCenterX = containerLeft + (containerWidth / 2);
+                // Calculate offset relative to map container center (Mapbox expects this)
+                const horizontalOffset = (visibleCenterX - containerCenterX);
                 
-                console.log('📍 Recent project: Flying to property pin location:', { lat: finalLat, lng: finalLng, chatPanelWidth: currentChatPanelWidth, horizontalOffset });
+                console.log('📍 Recent project: Flying to property pin location:', { 
+                  lat: finalLat, 
+                  lng: finalLng, 
+                  chatPanelWidth: currentChatPanelWidth, 
+                  containerWidth,
+                  containerLeft,
+                  horizontalOffset 
+                });
                 
                 // NOTE: Don't clean up marker yet - keep it visible until panel shows
                 // Cleanup will happen after property details panel is shown
@@ -3096,6 +3291,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 setTimeout(() => {
                   // Use requestAnimationFrame for smooth timing
                   requestAnimationFrame(async () => {
+                    // CRITICAL: Mark panel as being shown IMMEDIATELY to prevent backup handler race condition
+                    if (panelShown) {
+                      console.log('⏭️ Panel already shown by another handler, skipping');
+                      return;
+                    }
+                    panelShown = true; // Set flag immediately before async work
+                    
                     // CRITICAL: Fetch full property hub data to ensure all details are available
                     // Cached data might be incomplete, so fetch fresh data like pin clicks do
                     let propertyToShow = finalProperty;
@@ -3150,10 +3352,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                       setSelectedProperty(propertyToShow);
                       setShowPropertyCard(true);
                       
-                      // Create and show the title card marker
-                      createTitleCardMarker();
+                      // Create and show the title card marker - CRITICAL: pass propertyToShow, not stale finalProperty
+                      createTitleCardMarker(propertyToShow);
                       
-                      panelShown = true;
+                      // panelShown already set at start of handler
                       console.log('✅ Navigation mode: Title card shown');
                     } else {
                       // Normal mode: Skip title card and go straight to property details panel
@@ -3204,7 +3406,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     // This ensures the marker stays visible during the animation, then disappears when panel appears
                     cleanupPropertyTitleCardMarker();
                     
-                    panelShown = true;
+                    // panelShown already set at start of handler
                     console.log('✅ Recent project: Starting panel animation (behaving like title card click)');
                     }
                   });
@@ -3218,6 +3420,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                     
                     // Ensure panel is shown (in case setTimeout didn't fire) - same as title card click
                     if (!panelShown) {
+                      // CRITICAL: Mark panel as being shown IMMEDIATELY to prevent race condition with main handler
+                      panelShown = true;
+                      
                       // CRITICAL: Fetch full property hub data to ensure all details are available
                       let propertyToShow = finalProperty;
                       if (finalProperty?.id && backendApi) {
@@ -3271,8 +3476,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         setSelectedProperty(propertyToShow);
                         setShowPropertyCard(true);
                         
-                        // Create and show the title card marker
-                        createTitleCardMarker();
+                        // Create and show the title card marker - CRITICAL: pass propertyToShow, not stale finalProperty
+                        createTitleCardMarker(propertyToShow);
                         
                         console.log('✅ Navigation mode: Title card shown (backup)');
                       } else {
@@ -3337,7 +3542,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         }
                       }
                       
-                      panelShown = true;
+                      // panelShown already set at start of handler
                       console.log('✅ Recent project: Animation complete (backup), showing property details panel');
                     }
                   }
@@ -3483,22 +3688,29 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         const cardHeight = 360; // Approximate card height
         const verticalOffset = (cardHeight / 2) - 40; // Offset down to center, then move up slightly
         // Calculate horizontal offset to center in visible area (between chat panel and screen edge)
+        // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+        const mapContainer = map.current.getContainer();
+        const containerRect = mapContainer.getBoundingClientRect();
+        const containerWidth = containerRect.width;
+        const containerLeft = containerRect.left;
+        
         // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
         const currentChatPanelWidth = chatPanelWidthRef.current;
-        const leftEdge = currentChatPanelWidth + sidebarWidth; // Right edge of chat panel
-        const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
-        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
-        const viewportCenterX = window.innerWidth / 2; // Center of full viewport
-        // No extra offset needed - chat panel is shrunk to minimum during navigation
-        const horizontalOffset = visibleCenterX - viewportCenterX;
+        const leftEdge = currentChatPanelWidth + sidebarWidth;
+        const visibleWidth = containerWidth - (leftEdge - containerLeft);
+        const visibleCenterX = leftEdge + (visibleWidth / 2);
+        const containerCenterX = containerLeft + (containerWidth / 2);
+        const horizontalOffset = (visibleCenterX - containerCenterX);
         
         console.log('📍 Property centering (instant jump):', {
           chatPanelWidth: currentChatPanelWidth,
           sidebarWidth,
+          containerWidth,
+          containerLeft,
           leftEdge,
           visibleWidth,
           visibleCenterX,
-          viewportCenterX,
+          containerCenterX,
           horizontalOffset
         });
         
@@ -3877,6 +4089,28 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Store reference to scalable container for zoom updates
         (markerElement as any).scalableContainer = scalableContainer;
         
+        // CRITICAL: Prevent map click events from firing when clicking on the marker
+        // Stop propagation in bubble phase (not capture) so React onClick fires first
+        markerElement.addEventListener('click', (e) => {
+          e.stopPropagation();
+          console.log('🛑 Marker element click (selectPropertyByAddress end) - preventing map click handler');
+        }, false); // Bubble phase - let React onClick fire first, then stop propagation to map
+        
+        markerElement.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+        }, false);
+        
+        // ALSO add click handler to scalableContainer to catch clicks that might not bubble to markerElement
+        // Stop propagation immediately - React's synthetic events will still fire
+        scalableContainer.addEventListener('click', (e) => {
+          e.stopPropagation();
+          console.log('🛑 Scalable container click (selectPropertyByAddress end) - preventing map click handler');
+        }, false);
+        
+        scalableContainer.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+        }, false);
+        
         // Disable map dragging when hovering over the card to allow text selection
         // Attach to scalableContainer since it has pointer-events: auto
         scalableContainer.addEventListener('mouseenter', () => {
@@ -3908,18 +4142,101 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           // The dragPan.disable() from mouseenter should handle preventing map drag
         });
         
-        // Handle card click - opens PropertyDetailsPanel
+        // Handle card click - opens PropertyDetailsPanel above the title card
         const handleCardClick = () => {
-          console.log('📍 Property title card clicked (from selectPropertyByAddress end) - opening PropertyDetailsPanel');
+          console.log('📍 Property title card clicked (from selectPropertyByAddress end) - opening PropertyDetailsPanel above title card');
+          
+          // Set flag to prevent map click handler from deselecting (backup)
+          titleCardClickedRef.current = true;
+          // Clear flag after a short delay to allow map click handler to check it
+          setTimeout(() => {
+            titleCardClickedRef.current = false;
+          }, 200); // Increased timeout to ensure map handler checks it
+          
           if (finalProperty) {
+            // Preload document covers immediately when title card is clicked
+            if (finalProperty?.id && backendApi) {
+              const propertyId = finalProperty.id;
+              // Check if we already have preloaded files
+              const preloadedFiles = (window as any).__preloadedPropertyFiles?.[propertyId];
+              if (preloadedFiles && Array.isArray(preloadedFiles) && preloadedFiles.length > 0) {
+                // Preload covers for existing documents
+                preloadDocumentCoversForProperty(preloadedFiles);
+              } else {
+                // Fetch documents and preload covers
+                fetchAndPreloadDocumentCovers(propertyId, backendApi);
+              }
+            }
+            
+            // Store pin coordinates
             if (finalLat !== null && finalLng !== null) {
               selectedPropertyPinCoordsRef.current = { lat: finalLat, lng: finalLng };
             }
+            
+            // Calculate position for PropertyDetailsPanel above the title card
+            // The title card is positioned above the pin, so we position PropertyDetailsPanel above the title card
+            if (map.current && finalLng !== null && finalLat !== null) {
+              const point = map.current.project([finalLng, finalLat]);
+              // Get map container position to convert to viewport coordinates
+              const mapContainer = map.current.getContainer();
+              const containerRect = mapContainer.getBoundingClientRect();
+              // Position PropertyDetailsPanel using the SAME logic as PropertyTitleCard
+              const titleCardHeight = 360;
+              const pinRadius = 10;
+              const gapAbovePin = 20; // Gap between pin and title card bottom (same as PropertyTitleCard)
+              const titleCardBottomY = point.y - (pinRadius + gapAbovePin); // Where title card bottom is
+              const titleCardTopY = titleCardBottomY - titleCardHeight; // Where title card top is
+              const panelGap = 20; // Gap between PropertyDetailsPanel and title card
+              // Position PropertyDetailsPanel so its bottom is above the title card top with a gap
+              setSelectedPropertyPosition({
+                x: containerRect.left + point.x, // Pin X position (same as PropertyTitleCard - will be centered with translate(-50%))
+                y: containerRect.top + titleCardTopY - panelGap // Position above title card with gap
+              });
+            }
+            
+            // Set selected property - this will trigger the useEffect to re-center if chat panel width changes
             setSelectedProperty(finalProperty);
             setShowPropertyCard(true);
             setShowPropertyDetailsPanel(true);
+            setIsLargeCardMode(true); // Enable large card mode (positioned above title card)
             setIsExpanded(false);
             setShowFullDescription(false);
+            // Keep title card visible (it should remain below PropertyDetailsPanel)
+            
+            // Also re-center immediately when title card is clicked (in case chat panel is open)
+            if (map.current && finalLng !== null && finalLat !== null && chatPanelWidth > 0) {
+              const propertyPinCoordinates: [number, number] = [finalLng, finalLat];
+              const cardHeight = 360;
+              const verticalOffset = (cardHeight / 2) - 40;
+              
+              // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+              const mapContainer = map.current.getContainer();
+              const containerRect = mapContainer.getBoundingClientRect();
+              const containerWidth = containerRect.width;
+              const containerLeft = containerRect.left;
+              
+              const leftEdge = chatPanelWidth + sidebarWidth;
+              const visibleWidth = containerWidth - (leftEdge - containerLeft);
+              const visibleCenterX = leftEdge + (visibleWidth / 2);
+              const containerCenterX = containerLeft + (containerWidth / 2);
+              const horizontalOffset = (visibleCenterX - containerCenterX);
+              
+              console.log('📍 Title card clicked (navigation end) - re-centering with chat panel:', {
+                chatPanelWidth,
+                containerWidth,
+                containerLeft,
+                horizontalOffset,
+                source: 'title-card-click-navigation-end'
+              });
+              
+              map.current.flyTo({
+                center: propertyPinCoordinates,
+                zoom: map.current.getZoom(),
+                duration: 300,
+                offset: [horizontalOffset, verticalOffset],
+                essential: true
+              });
+            }
           }
         };
         
@@ -4482,13 +4799,19 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     
     // When chat is open, center in visible area. When chat closes, center in full viewport
     let horizontalOffset: number;
-    if (chatPanelWidth > 0) {
+    if (chatPanelWidth > 0 && map.current) {
       // Chat is open - center in visible area (between chat panel and screen edge)
-    const leftEdge = chatPanelWidth + sidebarWidth; // Right edge of chat panel
-    const visibleWidth = window.innerWidth - leftEdge; // Width from chat edge to screen edge
-    const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area
-    const viewportCenterX = window.innerWidth / 2; // Center of full viewport
-      horizontalOffset = visibleCenterX - viewportCenterX;
+      // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+      const mapContainer = map.current.getContainer();
+      const containerRect = mapContainer.getBoundingClientRect();
+      const containerWidth = containerRect.width;
+      const containerLeft = containerRect.left;
+      
+      const leftEdge = chatPanelWidth + sidebarWidth;
+      const visibleWidth = containerWidth - (leftEdge - containerLeft);
+      const visibleCenterX = leftEdge + (visibleWidth / 2);
+      const containerCenterX = containerLeft + (containerWidth / 2);
+      horizontalOffset = (visibleCenterX - containerCenterX);
     } else {
       // Chat is closed - center in full viewport (no offset)
       horizontalOffset = 0;
@@ -4502,7 +4825,9 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       horizontalOffset,
       hasSelectedProperty,
       hasVisibleTitleCard,
-      titleCardPropertyId
+      titleCardPropertyId,
+      containerWidth: map.current ? map.current.getContainer().getBoundingClientRect().width : 'N/A',
+      containerLeft: map.current ? map.current.getContainer().getBoundingClientRect().left : 'N/A'
     });
     
     // Longer delay to ensure chat panel has finished animating and any ongoing animations have settled

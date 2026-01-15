@@ -2582,6 +2582,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
+              // Minimum width when chat panel is open: enough for 3 document cards
+              // Each card is 160px, gaps are 24px (gap-6), padding is 24px each side (p-6)
+              // 3 cards: 3 * 160px + 2 * 24px (gaps) + 48px (padding) = 576px, round to 600px
+              minWidth: isChatPanelOpen ? '600px' : 'auto',
               transition: 'none', // No transition for width/position changes - instant like chat
               
               // Normal Mode: Centered with margins
