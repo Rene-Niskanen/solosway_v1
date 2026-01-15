@@ -22,12 +22,13 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     FAST ROUTER: Determines execution path based on query complexity and context.
     
     Routing decisions (in order):
-    0. "attachment_fast": ONLY if attachment_context has content AND response_mode='fast' → FASTEST path (~2s)
-    1. "citation_query": ONLY if citation_context has content → FASTEST path (~2s)
-    2. "direct_document": User attached file(s) → Fastest path (~2s)
-    3. "property_document": Property-specific query → Fast path (~4s)
-    4. "simple_search": Simple query → Medium path (~6s)
-    5. "complex_search": Complex query → Full pipeline (~12s)
+    0. "navigation_action": Navigation queries in agent mode → INSTANT path (~0.1s)
+    1. "attachment_fast": ONLY if attachment_context has content AND response_mode='fast' → FASTEST path (~2s)
+    2. "citation_query": ONLY if citation_context has content → FASTEST path (~2s)
+    3. "direct_document": User attached file(s) → Fastest path (~2s)
+    4. "property_document": Property-specific query → Fast path (~4s)
+    5. "simple_search": Simple query → Medium path (~6s)
+    6. "complex_search": Complex query → Full pipeline (~12s)
     
     CRITICAL: Attachment/citation checks ONLY run if values exist AND have actual content.
     Normal queries (None values) skip these checks entirely and use original routing.
@@ -41,6 +42,39 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     citation_context = state.get("citation_context")
     attachment_context = state.get("attachment_context")
     response_mode = state.get("response_mode")
+    is_agent_mode = state.get("is_agent_mode", False)
+    
+    # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
+    # Check for navigation queries FIRST to avoid any document processing
+    if is_agent_mode:
+        navigation_patterns = [
+            "take me to the", "take me to ", "please take me to", "please take me to the",
+            "go to the map", "navigate to the", "please navigate to", "please navigate to the",
+            "show me on the map", "show on map", "find on map", "open the map",
+            "go to map", "click on the", "select the pin", "click the pin",
+            "please show me", "please go to", "please find"
+        ]
+        pin_patterns = [" pin", "property pin", "map pin"]
+        info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
+                       "inspection", "document", "tell me about", "what is", "how much",
+                       "summary", "details", "information", "data"]
+        
+        is_info_query = any(keyword in user_query for keyword in info_keywords)
+        if not is_info_query:
+            has_navigation_intent = any(pattern in user_query for pattern in navigation_patterns)
+            has_pin_intent = any(pattern in user_query for pattern in pin_patterns)
+            
+            if has_navigation_intent or has_pin_intent:
+                logger.info(f"⚡ [ROUTER] INSTANT PATH: Navigation action detected: '{user_query}'")
+                return {
+                    "route_decision": "navigation_action",
+                    "workflow": "navigation",
+                    "skip_expansion": True,
+                    "skip_vector_search": True,
+                    "skip_clarify": True,
+                    "skip_process_documents": True,
+                    "skip_retrieval": True
+                }
     
     # PATH 0: ATTACHMENT FAST - DISABLED FOR DEBUGGING NORMAL QUERIES
     # Check if attachment_context exists AND has actual text content AND response_mode is 'fast'
@@ -673,7 +707,12 @@ Provide a direct, helpful answer:"""
                     tool_args = tool_call.get('args', {})
                     
                     if tool_name == 'open_document':
-                        citation_number = tool_args.get('citation_number', 1)
+                        citation_number = tool_args.get('citation_number')
+                        if citation_number is None:
+                            logger.warning(f"⚡ [CITATION_QUERY] LLM called open_document without citation_number - this should not happen!")
+                            citation_number = 1  # Fallback only if truly missing
+                        elif citation_number == 1:
+                            logger.warning(f"⚡ [CITATION_QUERY] LLM used citation_number=1 - verify this matches user's query!")
                         reason = tool_args.get('reason', 'Displaying source document')
                         agent_action_instance.open_document(citation_number, reason)
                         logger.info(f"⚡ [CITATION_QUERY] Agent tool call: open_document({citation_number}, '{reason}')")

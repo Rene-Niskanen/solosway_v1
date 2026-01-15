@@ -1910,7 +1910,8 @@ Create a comprehensive answer to the user's question, prioritizing information f
    - The information IS available in the document extracts above (if citations were extracted)
    - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
    - If using general knowledge, provide helpful context but don't add citation markers for it
-   - Start directly with the answer - do NOT repeat the question"""
+   - Start directly with the answer - do NOT repeat the question
+   - **CRITICAL - NO REDUNDANCY**: Present each fact ONCE only. Do NOT list the same information twice in different formats (e.g., first in a summary, then again in details). Each piece of data should appear exactly once with its citation."""
         extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
    - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
    - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
@@ -1961,28 +1962,111 @@ This is the MAIN tool for navigation requests. Use it when the user wants to go 
 - DO NOT try to answer navigation requests with document content
 
 ---
-**2. 📄 DOCUMENT DISPLAY TOOL (for showing source documents)**
+**2. 📄 DOCUMENT DISPLAY TOOL (MANDATORY for all queries with citations)**
 
 **open_document(citation_number: int, reason: str)**
 
-Shows the user the source document for a citation. Use AFTER answering factual questions.
+Shows the user the source document for a citation.
 
-**WHEN TO USE:**
-- ✅ After answering with citations - show the source
-- ✅ When answer contains values (prices, valuations) - show evidence
-- ✅ When user asks "what does it say about..."
+**⚠️ MANDATORY RULE: If you have citations in your response, you MUST call open_document.**
+- This applies to ALL queries that result in citations
+- No exceptions - if you cited information, show the source
+- Call this AFTER providing your answer with citations
 
-**WHEN NOT TO USE:**
+**⚠️ CRITICAL - CHOOSING THE RIGHT CITATION FOR open_document:**
+
+**BEFORE calling open_document, you MUST follow these steps:**
+
+**Step 1 - IDENTIFY THE PRIMARY REQUEST (CRITICAL FOR COMPLEX QUERIES):**
+  - Parse the user's query to find the PRIMARY object/information being requested
+  - IGNORE contextual words like "company", "property", "that valued", "of the", etc. - these are just context
+  - Focus on the MAIN thing the user wants to see: "phone number", "address", "email", "value", "planning", etc.
+  - Examples:
+    * "phone number of the company" → PRIMARY: "phone number" (NOT "company")
+    * "address of the property" → PRIMARY: "address" (NOT "property")
+    * "email for the company" → PRIMARY: "email" (NOT "company")
+    * "value of the property" → PRIMARY: "value" (NOT "property")
+  - The PRIMARY request is what you need to match to a citation - contextual words are just for finding the right source
+  - Be precise: "phone number" means a telephone number, NOT an address or company name
+  - Remember: The PRIMARY request is the guide - match the citation to what they asked for, NOT to contextual words
+
+**Step 2 - FIND THE CITATION NUMBER IN YOUR ACTUAL RESPONSE:**
+  - Look at your ACTUAL response text (not what you intended to write)
+  - **CRITICAL**: Check the DETAILED response section, not just the summary line
+  - If you have both a summary and detailed sections, the detailed section is more accurate
+  - Find the EXACT text that answers the user's PRIMARY request
+  - Find the citation number [N] that is IMMEDIATELY attached to that specific text
+  - CRITICAL: Match the citation number to what you ACTUALLY wrote, not what you intended
+  - Example: If user asked for "phone number" and your ACTUAL response has:
+    * Summary: "Phone number is +44...[1]" (summary line)
+    * Detailed: "Company: MJ Group[1]. Address: 15 Alfred[2]. Phone: +44 (0) 203 463 8725[3]" (detailed section)
+    * Use citation_number=3 (from detailed section, NOT [1] from summary)
+  - Example: If user asked for "address" and your ACTUAL response has "Company: MJ Group[1]. Address: 15 Alfred Place[2]", use citation_number=2 (NOT [1])
+  - ⚠️ DO NOT assume citation [1] has the PRIMARY info - CHECK your actual detailed response to see which citation number is attached to the PRIMARY information
+
+**Step 3 - VERIFY THE MATCH:**
+  - Double-check: Does the citation number you selected correspond to the EXACT information the user requested?
+  - If the user asked for "phone number", the citation must be attached to phone number text, NOT address, company name, or anything else
+  - Look at your ACTUAL response: if phone number is at [3], use citation_number=3 (even if you intended to put it at [1])
+  - If unsure, search your response for the PRIMARY keyword and find which citation number [N] is attached to it
+
+**Step 4 - SELECT:** Use the citation number that matches the PRIMARY information in your ACTUAL response.
+  - **CRITICAL**: Match to your ACTUAL response, not your intended structure
+  - If PRIMARY info is at citation [1] → use citation_number=1
+  - If PRIMARY info is at citation [2] → use citation_number=2
+  - If PRIMARY info is at citation [3] → use citation_number=3
+  - Example: User asks "phone number" → Your ACTUAL response: "Company: MJ Group[1]. Phone: +44...[3]" → Use citation_number=3 (NOT [1])
+  - Example: User asks "address" → Your ACTUAL response: "Company: MJ Group[1]. Address: 15 Alfred[2]" → Use citation_number=2 (NOT [1])
+  - ⚠️ ALWAYS check your ACTUAL response text to find which citation number has the PRIMARY information
+
+**REASONING EXAMPLES:**
+- User: "What is the phone number?"
+  → PRIMARY: "phone number" (ignore other words)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+  → Reasoning: User asked for PHONE NUMBER. I check my ACTUAL response: phone number is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response, not intended structure)
+
+- User: "please show me the phone number of the company that valued the highlands property"
+  → PRIMARY: "phone number" (ignore "company", "valued", "highlands", "property" - these are just context)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+  → Reasoning: User asked for PHONE NUMBER. I check my ACTUAL response: phone number is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response where PRIMARY info appears)
+
+- User: "What is the address?"
+  → PRIMARY: "address" (ignore other words)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place, London[2]..."
+  → Reasoning: User asked for ADDRESS. I check my ACTUAL response: address is at citation [2]
+  → Use: citation_number=2 (match to ACTUAL response where PRIMARY info appears)
+
+- User: "Tell me about planning"
+  → PRIMARY: "planning" (ignore other words)
+  → Your ACTUAL response: "Property details: ... Planning: No recent applications[3]..."
+  → Reasoning: User asked for PLANNING. I check my ACTUAL response: planning is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response where PRIMARY info appears)
+
+**CRITICAL: MATCH CITATION NUMBER TO YOUR ACTUAL RESPONSE, NOT YOUR INTENDED STRUCTURE**
+
+**MANDATORY USAGE:**
+- ✅ **ALWAYS call open_document if you have citations in your response**
+- ✅ This applies to ALL queries: information queries, location queries, general queries, etc.
+- ✅ If you provided factual information with citations, you MUST call open_document
+- ✅ Examples: "What is the phone number?" (has citations → call open_document), "Where are the cables?" (has citations → call open_document), "Tell me about the property" (has citations → call open_document)
+
+**ONLY EXCEPTIONS (when NOT to use):**
 - ❌ For navigation requests (use navigate_to_property_by_name instead)
-- ❌ For simple yes/no questions
-- ❌ When you have no citations
+- ❌ When you have NO citations in your response (e.g., conversational queries like "hello", "thanks")
 
 ---
 **TOOL RULES:**
-- Use actual TOOLS, not text - the tools perform the actions
-- DO NOT write function calls as text in your response
+- **CALL the tools using the tool-calling interface - DO NOT write prose about calling tools**
+- ❌ WRONG: "I will now open the document to show you the source"
+- ❌ WRONG: "Let me open the document for you"
+- ✅ RIGHT: Simply call open_document(citation_number=1, reason="...") using the tool interface
 - For navigation: brief response + call navigate_to_property_by_name
-- For document display: full answer with citations + call open_document
+- **For ALL other queries with citations: full answer with citations + MANDATORY tool call to open_document**
+- **CRITICAL**: If your response contains citations [1], [2], [3], etc., you MUST call the open_document tool
+- Use the citation number that matches the PRIMARY information in your ACTUAL response (check which citation [N] has the PRIMARY info)
+- **DO NOT write "I will open the document" - just CALL the tool**
 """
     
         answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
@@ -1991,7 +2075,14 @@ Shows the user the source document for a citation. Use AFTER answering factual q
    - The information IS available in the document extracts above (if citations were extracted)
    - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
    - If using general knowledge, provide helpful context but don't add citation markers for it
-   - Start directly with the answer - do NOT repeat the question"""
+   - Start directly with the answer - do NOT repeat the question
+   - **CRITICAL - STRUCTURE RESPONSE FOR CORRECT CITATION OPENING**:
+     * **PRIMARY INFORMATION FIRST (BEST PRACTICE)**: Identify what the user is asking for (the PRIMARY request) and try to place that information FIRST in your response with citation [1]
+     * **Example**: If user asks "What is the phone number?", ideally start with "Phone Number: +44 (0) 203 463 8725[1]..." (NOT "Company: MJ Group[1]. Phone: +44...[2]")
+     * **Example**: If user asks "What is the address?", ideally start with "Address: 15 Alfred Place[1]..." (NOT "Company: MJ Group[1]. Address: 15 Alfred[2]")
+     * **Example**: If user asks "phone number of the company", PRIMARY is "phone number" → ideally start with "Phone Number: +44...[1]..." (NOT "Company: MJ Group[1]. Phone: +44...[2]")
+     * **IMPORTANT**: When calling open_document, match the citation number to where the PRIMARY information ACTUALLY appears in your response (even if it's not at [1])
+   - **CRITICAL - NO REDUNDANCY**: Present each fact ONCE only. Do NOT list the same information twice in different formats (e.g., first in a summary, then again in details). Each piece of data should appear exactly once with its citation."""
         extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
    - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
    - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
@@ -2041,8 +2132,10 @@ Shows the user the source document for a citation. Use AFTER answering factual q
 - **CRITICAL**: Place citation markers IMMEDIATELY after the specific value/amount/date/name being cited - NO SPACE between the fact and citation
 - **CRITICAL**: Each citation marker is permanently attached to its fact - write them together as a unit with NO separation
 - **CRITICAL**: Write fact and citation as ONE unit: "£2,300,000[1]" NOT "£2,300,000 [1]" and NOT "£2,300,000. [1]"
+- **CRITICAL - AVOID UNNECESSARY PERIODS**: Do NOT add periods before citations. Use periods only for complete sentences, not for simple value statements like "Phone Number: +44 (0) 203 463 8725[1]"
 - **WORKFLOW**: Before writing each fact, check the Phase 1 citation list to find the matching citation number
-- **Example CORRECT**: If Phase 1 has citations [1]=Market Value, [2]=Valuation date, [3]=Property Address, [4]=90-day value, write: "Market Value: £2,300,000[1]. Property Address: Highlands[3]. 90-day value: £1,950,000[4]. Valuation date: 12th February 2024[2]."
+- **Example CORRECT**: If Phase 1 has citations [1]=Market Value, [2]=Valuation date, [3]=Property Address, [4]=90-day value, write: "Market Value: £2,300,000[1]. Property Address: Highlands[3]. 90-day value: £1,950,000[4]. Valuation date: 12th February 2024[2]"
+- **CRITICAL - MINIMIZE PERIODS**: Only use periods (.) when necessary for complete sentences. For simple value statements, avoid periods: "Phone Number: +44 (0) 203 463 8725[1]" (not "Phone Number: +44 (0) 203 463 8725.[1]")
 - **Example CORRECT (Multiple Valuers)**: If Phase 1 has [6]=Sukhbir Tiwana, [7]=Graham Finegold, write: "Valuation conducted by Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS"
 - **Example CORRECT (Descriptive Facts)**: If Phase 1 has [10]=CCTV coverage, [11]=Well-maintained gardens, write: "Security: CCTV coverage throughout the external areas of the property[10]. Landscaping: Well-maintained gardens with defined boundaries of timber fencing and mature hedging[11]."
 - **CRITICAL**: Descriptive facts like security features and landscaping MUST have citations - do NOT write them without citation markers
@@ -2056,10 +2149,10 @@ Shows the user the source document for a citation. Use AFTER answering factual q
 ### TASK: Create Final Answer with Citations
 
 **⚠️ CRITICAL - FORMATTING CONSISTENCY FOR ALL RESPONSES ⚠️**
-- Apply the SAME formatting standards (headings, structure, citations, Key Concepts section) as if this were the FIRST response in the conversation
+- Apply the SAME formatting standards (headings, structure, citations) as if this were the FIRST response in the conversation
 - DO NOT abbreviate, shorten, or reduce formatting quality because of conversation history
 - Even for follow-up questions, you MUST use the full CANONICAL TEMPLATE STRUCTURE below
-- ALWAYS include: H1 heading, Key Concepts section with vertical label-value format, and proper citations
+- ALWAYS include: H1 heading and proper citations - present information directly without separate concept sections
 - The fact that there's conversation history does NOT mean you should provide less formatted answers
 - Each response should be comprehensive and well-structured on its own
 
@@ -2115,12 +2208,10 @@ Shows the user the source document for a citation. Use AFTER answering factual q
    - Maximum 2-3 sentences
    - Example: "# Property Valuation Summary"
 
-2. **Key Concepts (H2)**:
-   - Use markdown heading ## (double hash) for "Key Concepts" section
-   - Use vertical label-value format (NOT inline format)
-   - Format: "**Label:**\nValue[1]\n*Secondary note*"
-   - Maximum 5 key concepts
-   - Example: "## Key Concepts\n\n**Market Value:**\n£2,300,000[1]\n*The primary valuation figure*"
+2. **Key Concepts (H2)** - REMOVED:
+   - DO NOT include a "Key Concepts" section
+   - Present information directly in the main answer without separate concept sections
+   - Information should flow naturally in the response
 
 3. **Process/Steps (H2 - Conditional)**{steps_note}:
    - Only include if applicable (procedural queries)
@@ -2151,7 +2242,7 @@ Shows the user the source document for a citation. Use AFTER answering factual q
 - NEVER skip heading levels (# → ## → ###, not # → ###)
 - If a section can be read independently → it deserves a ## (H2)
 - # (H1) = Final outcome/main answer (only one H1 per response)
-- ## (H2) = Major sections (Key Concepts, Process/Steps, Practical Application, etc.)
+- ## (H2) = Major sections (Process/Steps, Practical Application, etc.) - DO NOT create "Key Concepts" sections
 - ### (H3) = Sub-sections within H2 sections
 - Regular paragraphs = Explanation text
 - **CRITICAL - Use Bullet Points for Lists**: When presenting multiple items (amenities, features, structures, etc.), use bullet points:
@@ -2168,8 +2259,8 @@ Shows the user the source document for a citation. Use AFTER answering factual q
 
 **INFORMATION ORDERING (MUST FOLLOW)**:
 1. Answer first (# H1 - primary answer)
-2. Explain later (## H2 - Key Concepts)
-3. Extend optionally (Process, Practical Application, Risks, Next Actions)
+2. Present information directly in the response - DO NOT create separate "Key Concepts" sections
+3. Extend optionally (Process, Practical Application, Risks, Next Actions) - only if relevant
 
 **MINIMAL COGNITIVE LOAD RULES**:
 - Maximum 3-5 bullet points per list
@@ -2183,7 +2274,7 @@ Shows the user the source document for a citation. Use AFTER answering factual q
 - Include "Practical Application" only if query requires real-world usage guidance
 - Include "Risks / Edge Cases" only if limitations or risks are relevant
 - Include "Next Actions" only if follow-up actions are appropriate
-- For simple queries: # H1 + ## Key Concepts may be sufficient
+- For simple queries: # H1 with direct information presentation is sufficient
 
 **CONTENT GENERATION INSTRUCTIONS**:
 
@@ -2332,7 +2423,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - **MUST**: Do NOT add, remove, or modify any information
 - **MUST**: Do NOT generate new content - only reorganize and format what's already there
 - **CRITICAL**: When reorganizing, citations MUST move WITH their associated facts - never separate them
-- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. Key Concepts should be concise and comprehensive.
+- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. Present each fact once with its citation.
 
 **CRITICAL CITATION PRESERVATION RULES** (MUST FOLLOW):
 
@@ -2358,7 +2449,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
    - If raw response uses [1], [2], [3], formatted must use same sequence
 
 4. **When Reorganizing Content**:
-   - If moving "Market Value: £2,300,000[1]" to Key Concepts section, keep it as "Market Value: £2,300,000[1]"
+   - Present information directly: "Market Value: £2,300,000[1]"
    - Citations are part of the fact - they move together as a unit
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
@@ -2373,7 +2464,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 
 2. **Verify Information Ordering**:
    - H1 (#) primary answer must come first (with citations preserved)
-   - H2 (##) Key Concepts should come early (if applicable) - extract key facts WITH their citations
+   - Present key facts directly in the response WITH their citations - no separate concept sections
    - Optional sections (Process, Practical Application, Risks, Next Actions) come last
    - Reorganize content if ordering is incorrect, but keep citations with their facts
 
@@ -2387,24 +2478,21 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 
 4. **Apply Canonical Template Structure**:
    - If response lacks H1, create one from the primary answer - preserve all citations
-   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Key Concepts" section, extract 3-5 key points WITH their citations and create H2 section
-   - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy
-   - **CRITICAL**: When extracting key concepts, use vertical label-value format:
-     ```
-     ## Key Concepts
-     
-     **Market Value:**
-     £2,300,000[1]
-     *The primary valuation figure for the freehold interest*
-     ```
-   - **DO NOT** use inline format like "- **Market Value**: £2,300,000[1] - The primary valuation figure"
-   - **CRITICAL**: Key Concepts should be comprehensive and concise - include all important information using the vertical label-value layout
+   - **CRITICAL - AVOID DUPLICATION**: Present all key information directly in the response with citations
+   - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy (if needed)
+   - **CRITICAL**: Present information naturally - do NOT create separate "Key Concepts" sections
+   - Use clear labels and values directly in the response: "**Market Value:** £2,300,000[1]"
+   - **DO NOT** create separate concept sections - integrate information into the main response
 
 **CITATION HANDLING** (CRITICAL):
 - **MUST INCLUDE citation markers** ([1], [2], [3], etc.) in the text immediately after each fact
 - **CRITICAL**: Citation markers are REQUIRED in the text - the frontend automatically converts them to clickable citation buttons
 - **IMPORTANT**: The markers will NOT appear as raw text "[1]" to users - they will be rendered as styled clickable buttons by the frontend
 - Place citation markers directly after the fact they support: "£2,300,000[1]" not "£2,300,000 [1]" or "£2,300,000[1]."
+- **CRITICAL - NO UNNECESSARY PERIODS**: Do NOT add periods (.) before citations or at the end of simple value statements
+- **Example CORRECT**: "Phone Number: +44 (0) 203 463 8725[1]" (no period needed)
+- **Example INCORRECT**: "Phone Number: +44 (0) 203 463 8725.[1]" (unnecessary period)
+- Only use periods at the end of complete sentences that require them, not after simple value statements
 - Use the EXACT citation numbers from Phase 1 (see citation list above)
 - **DO NOT** remove citation markers - they are essential for the frontend to render citations correctly
 - **DO NOT** place citations at the end of sentences or paragraphs - they must be inline with the fact
@@ -2523,9 +2611,7 @@ The property has a market value of £2,300,000 (Two Million, Three Hundred Thous
 
 ❌ **INCORRECT - Citations renumbered or reused**:
 ```
-## Key Concepts
-
-- **Market Value**: £2,300,000¹
+- **Market Value**: £2,300,000¹ (WRONG - should use correct citation number)
 - **Valuation Date**: 12th February 2024¹ (WRONG - should be ²)
 - **Valuers**: Sukhbir Tiwana¹ MRICS (WRONG - should be ³)
 ```

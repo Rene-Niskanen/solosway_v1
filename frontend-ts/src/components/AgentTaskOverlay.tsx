@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Square } from 'lucide-react';
 
 interface AgentTaskOverlayProps {
   message: string;
@@ -8,6 +7,9 @@ interface AgentTaskOverlayProps {
 }
 
 export const AgentTaskOverlay: React.FC<AgentTaskOverlayProps> = ({ message, onStop }) => {
+  const [isStopHovered, setIsStopHovered] = useState(false);
+  const [isStopPressed, setIsStopPressed] = useState(false);
+
   return (
     <AnimatePresence>
       <motion.div
@@ -23,29 +25,29 @@ export const AgentTaskOverlay: React.FC<AgentTaskOverlayProps> = ({ message, onS
           overflow: 'hidden',
         }}
       >
-        {/* Pulsing orange overlay - radial gradient from center */}
+        {/* Subtle ambient glow */}
         <motion.div
           style={{
             position: 'absolute',
             inset: 0,
-            background: 'radial-gradient(ellipse at center, transparent 20%, rgba(217, 119, 8, 0.15) 100%)',
+            background: 'radial-gradient(ellipse at center, transparent 30%, rgba(217, 119, 8, 0.12) 100%)',
           }}
           animate={{
-            opacity: [0.12, 0.18, 0.12],
+            opacity: [0.1, 0.15, 0.1],
           }}
           transition={{
-            duration: 2,
+            duration: 2.5,
             repeat: Infinity,
             ease: 'easeInOut',
           }}
         />
 
-        {/* Floating control bar at bottom center */}
+        {/* Floating control bar */}
         <motion.div
-          initial={{ y: 20, opacity: 0 }}
+          initial={{ y: 16, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 20, opacity: 0 }}
-          transition={{ duration: 0.3, delay: 0.1 }}
+          exit={{ y: 16, opacity: 0 }}
+          transition={{ duration: 0.35, ease: [0.23, 1, 0.32, 1] }}
           style={{
             position: 'absolute',
             bottom: '24px',
@@ -58,71 +60,93 @@ export const AgentTaskOverlay: React.FC<AgentTaskOverlayProps> = ({ message, onS
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '12px',
-              padding: '8px 12px 8px 16px',
-              backgroundColor: '#1F2937',
-              borderRadius: '9999px',
-              boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2)',
+              gap: '14px',
+              padding: '10px 14px 10px 14px',
+              backgroundColor: 'rgba(255, 255, 255, 0.98)',
+              borderRadius: '16px',
+              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.06)',
+              border: '1px solid rgba(0, 0, 0, 0.06)',
+              backdropFilter: 'blur(12px)',
             }}
           >
             {/* Velora Agent branding */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {/* Infinity icon as Velora logo placeholder */}
-              <div
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              {/* Velora Icon - larger */}
+              <img 
+                src="/velora-dash-logo.png" 
+                alt="Velora" 
                 style={{
-                  width: '20px',
-                  height: '20px',
-                  borderRadius: '4px',
-                  background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  width: '26px',
+                  height: '26px',
+                  objectFit: 'contain',
                 }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.739-8-4.585 0-4.585 8 0 8 5.606 0 7.644-8 12.74-8z" />
-                </svg>
-              </div>
-              <span style={{ color: 'white', fontWeight: 600, fontSize: '14px', whiteSpace: 'nowrap' }}>
+              />
+              <span style={{ 
+                color: '#18181B', 
+                fontWeight: 600, 
+                fontSize: '14px', 
+                whiteSpace: 'nowrap',
+                letterSpacing: '-0.01em',
+              }}>
                 Velora Agent
               </span>
             </div>
 
             {/* Divider */}
-            <div style={{ width: '1px', height: '20px', backgroundColor: 'rgba(255, 255, 255, 0.2)' }} />
+            <div style={{ width: '1px', height: '22px', backgroundColor: 'rgba(0, 0, 0, 0.08)' }} />
 
             {/* Task message */}
-            <span style={{ color: 'rgba(255, 255, 255, 0.8)', fontSize: '13px', whiteSpace: 'nowrap' }}>
+            <span style={{ 
+              color: '#71717A', 
+              fontSize: '13px', 
+              whiteSpace: 'nowrap',
+              fontWeight: 450,
+            }}>
               {message || 'Working...'}
             </span>
 
-            {/* Stop button */}
-            <button
+            {/* Premium Stop button */}
+            <motion.button
               onClick={onStop}
+              onMouseEnter={() => setIsStopHovered(true)}
+              onMouseLeave={() => { setIsStopHovered(false); setIsStopPressed(false); }}
+              onMouseDown={() => setIsStopPressed(true)}
+              onMouseUp={() => setIsStopPressed(false)}
+              animate={{
+                scale: isStopPressed ? 0.96 : 1,
+                backgroundColor: isStopHovered ? '#DC2626' : '#EF4444',
+              }}
+              transition={{ duration: 0.15, ease: 'easeOut' }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
+                justifyContent: 'center',
                 gap: '6px',
-                padding: '6px 12px',
-                backgroundColor: '#EF4444',
+                padding: '7px 14px 7px 12px',
+                background: '#EF4444',
                 border: 'none',
-                borderRadius: '6px',
+                borderRadius: '10px',
                 color: 'white',
                 fontWeight: 500,
                 fontSize: '13px',
                 cursor: 'pointer',
-                transition: 'background-color 0.15s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = '#DC2626';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = '#EF4444';
+                boxShadow: isStopHovered 
+                  ? '0 2px 8px rgba(239, 68, 68, 0.35)' 
+                  : '0 1px 3px rgba(239, 68, 68, 0.2)',
+                transition: 'box-shadow 0.2s ease',
               }}
             >
-              <Square size={12} fill="white" />
-              Stop
-            </button>
+              {/* Stop icon - refined square */}
+              <svg 
+                width="10" 
+                height="10" 
+                viewBox="0 0 10 10" 
+                fill="white"
+              >
+                <rect x="0" y="0" width="10" height="10" rx="2" />
+              </svg>
+              <span style={{ letterSpacing: '0.01em' }}>Stop</span>
+            </motion.button>
           </div>
         </motion.div>
       </motion.div>

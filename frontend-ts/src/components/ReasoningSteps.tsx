@@ -2,7 +2,7 @@ import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, FileText, BrainCircuit, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter, Infinity } from 'lucide-react';
+import { Search, SearchCheck, FileText, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter, Infinity } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import * as pdfjs from 'pdfjs-dist';
@@ -693,18 +693,26 @@ const StepRenderer: React.FC<{
       );
     
     case 'analysing':
-      // "Analysing X documents" - entire text with flowing gradient animation (only if this is the current active step)
+      // "Analyzing documents" - entire text with flowing gradient animation (only if this is the current active step)
       // Animation stops when next step (reading) appears OR when loading completes OR when response text starts
       const nextStepAfterAnalyzing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isRankingActive = isLoading && !hasResponseText && (!nextStepAfterAnalyzing || nextStepAfterAnalyzing.action_type === 'analysing');
       
+      // Transform message to be more natural and conversational (OpenAI/Claude style)
+      let fixedMessage = step.message || 'Analyzing documents';
       // Fix grammar: "1 documents" -> "1 document"
-      const fixedMessage = step.message?.replace(/\b1 documents\b/gi, '1 document') || 'Analysing';
+      fixedMessage = fixedMessage.replace(/\b1 documents\b/gi, '1 document');
+      // Convert British spelling to US spelling and make more conversational
+      fixedMessage = fixedMessage.replace(/\bAnalysing\b/gi, 'Analyzing');
+      // If message is just "Analyzing" or doesn't mention documents, make it more complete
+      if (!fixedMessage.toLowerCase().includes('document')) {
+        fixedMessage = 'Analyzing documents';
+      }
       
       return (
         <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <BrainCircuit style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
-          {/* Entire "Analysing X documents" text with flowing gradient animation (only if active) */}
+          <TextSearch style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />
+          {/* Entire "Analyzing documents" text with flowing gradient animation (only if active) */}
           {isRankingActive ? (
             <span className="ranking-shimmer-active">{fixedMessage}</span>
           ) : (

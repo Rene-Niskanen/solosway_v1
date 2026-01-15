@@ -29,6 +29,7 @@ import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
 import { ResponseModeChoice } from './FileChoiceStep';
 import { ModeSelector } from './ModeSelector';
 import { useMode } from '../contexts/ModeContext';
+import { BotStatusOverlay } from './BotStatusOverlay';
 
 // ChatGPT-style thinking dot animation
 const ThinkingDot: React.FC = () => {
@@ -424,14 +425,31 @@ const StreamingResponseText: React.FC<{
   };
   
   // Process citations before markdown parsing - use memoized processedText for consistency
+  // Include isStreaming in dependencies to handle pending citations properly
   const textWithCitationPlaceholders = React.useMemo(() => {
     return processCitationsBeforeMarkdown(processedText);
-  }, [processedText, citations]);
+  }, [processedText, citations, isStreaming]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
   const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
     const superscriptMatch = placeholder.match(/^%%CITATION_SUPERSCRIPT_(\d+)%%$/);
     const bracketMatch = placeholder.match(/^%%CITATION_BRACKET_(\d+)%%$/);
+    const pendingSuperscriptMatch = placeholder.match(/^%%CITATION_PENDING_(\d+)%%$/);
+    const pendingBracketMatch = placeholder.match(/^%%CITATION_PENDING_(\d+)%%$/);
+    
+    // Handle pending citations - check if data is now available
+    if (pendingSuperscriptMatch || pendingBracketMatch) {
+      const num = pendingSuperscriptMatch?.[1] || pendingBracketMatch?.[1];
+      if (num) {
+        const citData = citations?.[num];
+        if (citData) {
+          // Citation data now available - render as link
+          return <CitationLink key={key} citationNumber={num} citationData={citData} onClick={handleCitationClick} />;
+        }
+        // Still pending - show as plain number during streaming
+        return isStreaming ? <span key={key} style={{ opacity: 0.5 }}>[{num}]</span> : <span key={key}>[{num}]</span>;
+      }
+    }
     
     if (superscriptMatch) {
       const num = superscriptMatch[1];
@@ -1731,6 +1749,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
+  
+  // Bot status overlay state
+  const [isBotActive, setIsBotActive] = React.useState<boolean>(false);
+  const [botActivityMessage, setBotActivityMessage] = React.useState<string>('Running...');
+  const [isBotPaused, setIsBotPaused] = React.useState<boolean>(false);
+  const isBotPausedRef = React.useRef<boolean>(false); // Ref for pause state (accessible in closures)
+  const isOpeningDocumentRef = React.useRef<boolean>(false); // Track when document is being opened
+  const resumeProcessingRef = React.useRef<(() => void) | null>(null); // Function to resume processing when unpaused
+  
   // Property search state
   const [propertySearchQuery, setPropertySearchQuery] = React.useState<string>("");
   const [propertySearchResults, setPropertySearchResults] = React.useState<PropertyData[]>([]);
@@ -1940,6 +1967,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const resizeStateRef = React.useRef<{
     startPos: { x: number };
     startWidth: number;
+    hasStartedDragging: boolean; // Track if user has actually started dragging (for fullscreen exit)
   } | null>(null);
   const rafIdRef = React.useRef<number | null>(null);
   const panelElementRef = React.useRef<HTMLElement | null>(null);
@@ -2134,32 +2162,64 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     panelElementRef.current = panelElement;
     const rect = panelElement.getBoundingClientRect();
     
-    // Get the actual current width from the DOM element (handles fullscreen mode correctly)
+    // Get the actual current width from the DOM element
     const actualCurrentWidth = rect.width;
     
-    // Track if we're in fullscreen - don't exit immediately, wait for actual drag
-    // This prevents accidental exits when just touching the resize handle
-    wasFullscreenOnResizeStartRef.current = isFullscreenMode && !isPropertyDetailsOpen;
+    // Check if we're in fullscreen mode
+    const isInFullscreen = isFullscreenMode && !isPropertyDetailsOpen;
+    wasFullscreenOnResizeStartRef.current = isInFullscreen;
     hasExitedFullscreenDuringResizeRef.current = false;
     
-    // Use actual width from DOM, or fallback to draggedWidth, or calculated width
-    const currentWidth = draggedWidth !== null 
-      ? draggedWidth 
-      : actualCurrentWidth > 0
-      ? actualCurrentWidth
-      : (isExpanded 
-        ? (isPropertyDetailsOpen 
-          ? window.innerWidth * 0.35 
-          : window.innerWidth * 0.5)
-        : 450);
+    // If in fullscreen, immediately exit and set width to cursor position
+    if (isInFullscreen) {
+      setIsFullscreenMode(false);
+      isFullscreenFromDashboardRef.current = false;
+      hasExitedFullscreenDuringResizeRef.current = true;
+      
+      // Calculate width based on cursor position (where user touched the handle)
+      const availableWidth = window.innerWidth - sidebarWidth;
+      const cursorDistanceFromLeft = e.clientX - sidebarWidth;
+      // Clamp to min/max bounds
+      const minWidth = 450;
+      const maxWidth = availableWidth;
+      const targetWidth = Math.min(Math.max(cursorDistanceFromLeft, minWidth), maxWidth);
+      
+      // Apply the width immediately based on cursor position
+      panelElement.style.width = `${targetWidth}px`;
+      setDraggedWidth(targetWidth);
+      if (onChatWidthChange) {
+        onChatWidthChange(targetWidth);
+      }
+      
+      // Set starting width to cursor position for resize calculations
+      // But don't start tracking drag until user actually moves mouse
+      resizeStateRef.current = {
+        startPos: { x: e.clientX },
+        startWidth: targetWidth,
+        hasStartedDragging: false // Track if user has actually started dragging
+      };
+    } else {
+      // Not in fullscreen - use current width
+      let currentWidth: number;
+      
+      if (draggedWidth !== null) {
+        currentWidth = draggedWidth;
+      } else if (actualCurrentWidth > 0) {
+        currentWidth = actualCurrentWidth;
+      } else {
+        currentWidth = isExpanded 
+          ? (isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5)
+          : 450;
+      }
+      
+      resizeStateRef.current = {
+        startPos: { x: e.clientX },
+        startWidth: currentWidth,
+        hasStartedDragging: true // Already have a width, can start tracking immediately
+      };
+    }
     
     setIsResizing(true);
-    
-    // Store in ref for fast access during drag
-    resizeStateRef.current = {
-      startPos: { x: e.clientX },
-      startWidth: currentWidth
-    };
   };
 
   // Handle resize mouse move and cleanup - using useEffect like PDF preview modal
@@ -2183,18 +2243,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       rafIdRef.current = requestAnimationFrame(() => {
         if (!panelElementRef.current || !resizeStateRef.current) return;
 
-        const deltaX = e.clientX - state.startPos.x;
+        const deltaX = e.clientX - resizeStateRef.current.startPos.x;
         
-        // Only exit fullscreen mode after user has actually dragged (threshold of 10px)
-        // This prevents accidental exits when just touching the resize handle
-        if (wasFullscreenOnResizeStartRef.current && !hasExitedFullscreenDuringResizeRef.current && Math.abs(deltaX) > 10) {
-          setIsFullscreenMode(false);
-          isFullscreenFromDashboardRef.current = false;
-          hasExitedFullscreenDuringResizeRef.current = true;
+        // If we exited fullscreen and haven't started dragging yet, check if user has moved enough
+        if (hasExitedFullscreenDuringResizeRef.current && !resizeStateRef.current.hasStartedDragging) {
+          // Only start tracking drag after user moves mouse at least 5px
+          // This prevents accidental movement when just touching the handle
+          if (Math.abs(deltaX) < 5) {
+            return; // Don't update width until user actually starts dragging
+          }
+          // User has started dragging - mark it and reset start position to current mouse position
+          // startWidth is already set to cursor position in handleResizeStart, keep it
+          resizeStateRef.current.hasStartedDragging = true;
+          resizeStateRef.current.startPos.x = e.clientX;
+          return; // This frame just marks dragging as started, next frame will update width
         }
         
-        // Calculate new width based on delta (dragging right = positive delta = wider)
-        const newWidth = Math.min(Math.max(state.startWidth + deltaX, minWidth), maxWidth);
+        // Calculate new width based on delta
+        // NOTE: Handle is on RIGHT edge, so dragging left (negative delta) = narrower, right (positive) = wider
+        const newWidth = Math.min(Math.max(resizeStateRef.current.startWidth + deltaX, minWidth), maxWidth);
         
         // Direct DOM manipulation for immediate visual feedback
         if (panelElementRef.current) {
@@ -2299,6 +2366,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       
+      // Clear resume processing ref when query is stopped
+      resumeProcessingRef.current = null;
+      
       // Mark the current loading message as stopped (preserve reasoning steps)
       setChatMessages(prev => {
         const updated = prev.map(msg => 
@@ -2311,6 +2381,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       });
     }
   }, []);
+
+  // Function to handle pause/resume toggle
+  const handlePauseToggle = React.useCallback(() => {
+    const newPausedState = !isBotPaused;
+    setIsBotPaused(newPausedState);
+    isBotPausedRef.current = newPausedState;
+    
+    if (!newPausedState) {
+      // Resuming - trigger processing of any buffered tokens
+      if (resumeProcessingRef.current) {
+        resumeProcessingRef.current();
+      }
+    }
+  }, [isBotPaused]);
   
   // Expose getAttachments method via ref
   React.useImperativeHandle(ref, () => ({
@@ -2366,6 +2450,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const isAgentModeRef = React.useRef(isAgentMode);
   React.useEffect(() => {
     isAgentModeRef.current = isAgentMode;
+    // Hide bot overlay when switching from agent mode to reader mode
+    if (!isAgentMode) {
+      setIsBotActive(false);
+    }
   }, [isAgentMode]);
   
   // Ref to track current fullscreen mode (avoids closure issues in streaming callbacks)
@@ -2373,6 +2461,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   React.useEffect(() => {
     isFullscreenModeRef.current = isFullscreenMode;
   }, [isFullscreenMode]);
+  
   
   // Store queries with their attachments
   interface SubmittedQuery {
@@ -2599,6 +2688,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       );
       
       if (!isAlreadyAdded) {
+        // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
+        if (isAgentMode) {
+          console.log('🤖 [BOT_STATUS] Activating bot status overlay (from query prop)');
+          setIsBotActive(true);
+          setBotActivityMessage('Running...');
+          setIsBotPaused(false);
+          isBotPausedRef.current = false; // Reset pause ref
+        }
+        
         // Reset navigation task flag on new query - allows fullscreen expansion for fresh queries
         isNavigatingTaskRef.current = false;
         
@@ -2862,15 +2960,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const processBlockQueue = () => {
               if (isProcessingQueue || blockQueue.length === 0) return;
               
+              // Don't process if paused
+              if (isBotPausedRef.current) {
+                return;
+              }
+              
               isProcessingQueue = true;
               
               const processNext = () => {
+                // Check if paused - if so, stop processing
+                if (isBotPausedRef.current) {
+                  isProcessingQueue = false;
+                  return;
+                }
+                
                 if (blockQueue.length === 0) {
                   isProcessingQueue = false;
                   // Check if we have more blocks to extract
                   if (tokenBuffer.trim() || pendingBuffer.trim()) {
                     extractCompleteBlocks();
-                    if (blockQueue.length > 0) {
+                    if (blockQueue.length > 0 && !isBotPausedRef.current) {
                       processBlockQueue();
                     }
                   }
@@ -2913,14 +3022,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             
             // Process tokens and extract complete blocks
             const processTokensWithDelay = () => {
+              // Don't process if paused
+              if (isBotPausedRef.current) {
+                return;
+              }
+              
               // Extract complete blocks from current buffer
               extractCompleteBlocks();
               
-              // If we have blocks in queue and not processing, start processing
-              if (blockQueue.length > 0 && !isProcessingQueue) {
+              // If we have blocks in queue and not processing, start processing (only if not paused)
+              if (blockQueue.length > 0 && !isProcessingQueue && !isBotPausedRef.current) {
                 processBlockQueue();
               }
             };
+            
+            // Store resume function so it can be called when unpaused
+            resumeProcessingRef.current = processTokensWithDelay;
             
             // Helper function to preload a document by doc_id - fires immediately, no delays
             const preloadDocumentById = (docId: string, filename?: string) => {
@@ -3010,9 +3127,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 accumulatedText += token;
                 tokenBuffer += token;
                 
-                // Process tokens to find complete markdown blocks
-                // This allows ReactMarkdown to render formatted output progressively
-                processTokensWithDelay();
+                // Only process tokens if not paused
+                if (!isBotPausedRef.current) {
+                  // Process tokens to find complete markdown blocks
+                  // This allows ReactMarkdown to render formatted output progressively
+                  processTokensWithDelay();
+                }
+                // If paused, tokens are still accumulated in tokenBuffer but not processed
+                // When resumed, processTokensWithDelay() will be called to process buffered tokens
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
@@ -3048,6 +3170,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 };
                 
                 const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                
+                // Hide bot status overlay when streaming completes
+                // BUT keep it visible in agent mode if navigation task or document opening is in progress
+                if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
+                  setIsBotActive(false);
+                }
+                
+                // Clear resume processing ref when query completes
+                resumeProcessingRef.current = null;
                 
                   // Set the complete formatted text
                 setChatMessages(prev => {
@@ -3089,6 +3220,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onError: Handle errors
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error:', error);
+                
+                // Hide bot status overlay on error
+                setIsBotActive(false);
+                
+                // Clear resume processing ref on error
+                resumeProcessingRef.current = null;
                 
                 // Check if this is an attachment without query error
                 // Note: documentIdsArray is defined in the parent scope
@@ -3341,6 +3478,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 
                 switch (action.action) {
                   case 'open_document':
+                    // SKIP opening document if we're navigating to a property
+                    // Navigation queries should not open documents - they should just navigate
+                    if (isNavigatingTaskRef.current) {
+                      console.log('⏭️ [AGENT_ACTION] Skipping open_document - navigation in progress');
+                      break;
+                    }
+                    
                     // Open document viewer with the specified document
                     // handleCitationClick already handles opening and highlighting
                     // bbox is now included in open_document action (no separate highlight_bbox)
@@ -3348,13 +3492,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     if (action.params.doc_id) {
                       // AGENT GLOW: Activate glowing border effect before opening
                       setIsAgentOpening(true);
+                      // Keep bot overlay visible during document opening
+                      isOpeningDocumentRef.current = true;
+                      setBotActivityMessage('Opening document...');
                       
+                      // Use the citation data from the backend action directly
                       const citationData = {
                         doc_id: action.params.doc_id,
                         page: action.params.page || 1,
                         original_filename: action.params.filename || '',
-                        bbox: action.params.bbox || undefined // Include bbox if available
+                        bbox: action.params.bbox || undefined
                       };
+                      
                       handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                     }
                     break;
@@ -3387,6 +3536,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     
                     // Mark as navigation task IMMEDIATELY to prevent any fullscreen re-expansion
                     isNavigatingTaskRef.current = true;
+                    
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
                     
                     // Close any open document preview (now it won't trigger fullscreen restoration)
                     closeExpandedCardView();
@@ -3461,6 +3613,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             console.log('📍 [AGENT_ACTION] select_property_pin - Step 4: Stopping overlay');
                             setAgentTaskActive(false);
                             setMapNavigating(false);
+                            setIsBotActive(false); // Hide bot status overlay when navigation completes
                             // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
                             // Will be reset when next query starts
                           }, 1000);
@@ -3496,6 +3649,41 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       window.dispatchEvent(new CustomEvent('citation-added-to-writing', {
                         detail: newEntry
                       }));
+                    }
+                    break;
+                  
+                  case 'prepare_document':
+                    // EARLY DOCUMENT PREPARATION: Start loading document before answer is generated
+                    // This happens WHILE the LLM is still generating the answer, so the document
+                    // will be cached and ready when open_document action comes
+                    console.log('📥 [AGENT_ACTION] prepare_document - pre-loading document:', action.params.doc_id);
+                    if (action.params.doc_id && backendApi) {
+                      // Pre-cache the document by fetching its metadata
+                      // This warms up the cache so open_document is faster
+                      (async () => {
+                        try {
+                          // Pre-fetch document info to warm cache
+                          const docId = action.params.doc_id;
+                          const downloadUrl = action.params.download_url || `/api/files/download?document_id=${docId}`;
+                          
+                          // Start fetching the document in background (this warms the browser cache)
+                          fetch(downloadUrl, { 
+                            method: 'HEAD',  // Just check if accessible, don't download full file yet
+                            credentials: 'include'
+                          }).then(() => {
+                            console.log('✅ [EARLY_PREP] Document URL validated:', docId.substring(0, 8) + '...');
+                          }).catch(() => {
+                            // Ignore errors - this is just pre-warming
+                          });
+                          
+                          // Store doc_id for immediate use when open_document comes
+                          (window as any).__preparedDocumentId = docId;
+                          (window as any).__preparedDocumentFilename = action.params.filename;
+                          console.log('✅ [EARLY_PREP] Document prepared for fast opening:', docId.substring(0, 8) + '...');
+                        } catch (e) {
+                          // Ignore errors - this is just optimization
+                        }
+                      })();
                     }
                     break;
                     
@@ -3588,13 +3776,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track previous loading state to detect when response completes
   const prevLoadingRef = React.useRef(false);
   
-  // Auto-scroll to bottom - uses direct scrollTop for reliability
+  // Auto-scroll to bottom - uses scrollIntoView for reliable positioning
   const scrollToBottom = React.useCallback(() => {
     const contentArea = contentAreaRef.current;
+    const messagesEnd = messagesEndRef.current;
     if (!contentArea || !autoScrollEnabledRef.current) return;
     
-    // Scroll to absolute bottom
-    contentArea.scrollTop = contentArea.scrollHeight;
+    // Use scrollIntoView on the anchor element for reliable positioning
+    // This ensures the bottom content is visible above the chat bar
+    if (messagesEnd) {
+      messagesEnd.scrollIntoView({ behavior: 'instant', block: 'end' });
+    } else {
+      // Fallback to direct scrollTop
+      contentArea.scrollTop = contentArea.scrollHeight;
+    }
   }, []);
   
   // Detect manual scroll to disable auto-scroll temporarily
@@ -3668,7 +3863,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Only scroll if content actually grew
       if (currentHeight > lastHeight) {
         lastHeight = currentHeight;
-        contentArea.scrollTop = currentHeight;
+        // Use scrollIntoView for reliable positioning above chat bar
+        const messagesEnd = messagesEndRef.current;
+        if (messagesEnd) {
+          messagesEnd.scrollIntoView({ behavior: 'instant', block: 'end' });
+        } else {
+          contentArea.scrollTop = currentHeight;
+        }
       }
     };
     
@@ -3737,6 +3938,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }, 100); // Same timing as dashboard opening (100ms)
     }
   }, [expandedCardViewDoc, onChatWidthChange, sidebarWidth]);
+
+  // Hide bot overlay when document finishes opening (after agent action)
+  React.useEffect(() => {
+    // When document preview opens (expandedCardViewDoc becomes truthy)
+    // AND we were waiting for document to open (isOpeningDocumentRef is true)
+    // Hide the bot status overlay after a brief moment
+    if (expandedCardViewDoc && isOpeningDocumentRef.current) {
+      console.log('📂 [BOT_STATUS] Document opened - hiding bot overlay');
+      // Small delay to let the document fully render
+      setTimeout(() => {
+        isOpeningDocumentRef.current = false;
+        setIsBotActive(false);
+      }, 500);
+    }
+  }, [expandedCardViewDoc]);
 
   // Phase 1: Handle citation click - fetch document and open in viewer
   // fromAgentAction: true when called from agent_action handler (backend already emits reasoning step)
@@ -4269,6 +4485,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Mark as processing to prevent duplicate API calls
         isProcessingQueryRef.current = true;
         lastProcessedQueryRef.current = queryText;
+        
+        // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
+        if (isAgentMode) {
+          console.log('🤖 [BOT_STATUS] Activating bot status overlay (from initial query)');
+          setIsBotActive(true);
+          setBotActivityMessage('Running...');
+          setIsBotPaused(false);
+          isBotPausedRef.current = false; // Reset pause ref
+        }
+        
         // CRITICAL: Use performance.now() + random to ensure uniqueness
         const queryId = `query-${performance.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
@@ -4402,15 +4628,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const processBlockQueue = () => {
               if (isProcessingQueue || blockQueue.length === 0) return;
               
+              // Don't process if paused
+              if (isBotPausedRef.current) {
+                return;
+              }
+              
               isProcessingQueue = true;
               
               const processNext = () => {
+                // Check if paused - if so, stop processing
+                if (isBotPausedRef.current) {
+                  isProcessingQueue = false;
+                  return;
+                }
+                
                 if (blockQueue.length === 0) {
                   isProcessingQueue = false;
                   // Check if we have more blocks to extract
                   if (tokenBuffer.trim() || pendingBuffer.trim()) {
                     extractCompleteBlocks();
-                    if (blockQueue.length > 0) {
+                    if (blockQueue.length > 0 && !isBotPausedRef.current) {
                       processBlockQueue();
                     }
                   }
@@ -4532,6 +4769,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     citations: Object.keys(mergedCitations).length
                 });
                 
+                // Hide bot status overlay when streaming completes
+                // BUT keep it visible in agent mode if navigation task or document opening is in progress
+                if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
+                  setIsBotActive(false);
+                }
+                
+                // Clear resume processing ref when query completes
+                resumeProcessingRef.current = null;
+                
                   // Set the complete formatted text
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -4573,6 +4819,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (error: string) => {
                 console.error('❌ SideChatPanel: Streaming error for initial query:', error);
                 
+                // Hide bot status overlay on error
+                setIsBotActive(false);
+                
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
@@ -4601,6 +4850,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // onStatus: Show status messages
               (message: string) => {
                 console.log('📊 SideChatPanel: Status:', message);
+                // Update bot status overlay with current activity
+                setBotActivityMessage(message);
               },
               // abortSignal: Pass abort signal for cancellation
               abortController.signal,
@@ -4722,13 +4973,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     if (action.params.doc_id) {
                       // AGENT GLOW: Activate glowing border effect before opening
                       setIsAgentOpening(true);
+                      // Keep bot overlay visible during document opening
+                      isOpeningDocumentRef.current = true;
+                      setBotActivityMessage('Opening document...');
                       
+                      // Use the citation data from the backend action directly
                       const citationData = {
                         doc_id: action.params.doc_id,
                         page: action.params.page || 1,
                         original_filename: action.params.filename || '',
                         bbox: action.params.bbox || undefined
                       };
+                      
                       handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                     }
                     break;
@@ -4749,6 +5005,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     wasFullscreenBeforeCitationRef.current = false;
                     isFullscreenFromDashboardRef.current = false;
                     isNavigatingTaskRef.current = true;
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
                     // Close any open document preview (won't trigger fullscreen restoration now)
                     closeExpandedCardView();
                     // Exit fullscreen mode IMMEDIATELY
@@ -4792,6 +5050,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           setTimeout(() => {
                             setAgentTaskActive(false);
                             setMapNavigating(false);
+                            setIsBotActive(false); // Hide bot status overlay when navigation completes
                             // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
                             // Will be reset when next query starts
                           }, 1000);
@@ -4830,6 +5089,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           } catch (error) {
             abortControllerRef.current = null;
             isProcessingQueryRef.current = false;
+            // Hide bot status overlay on error
+            setIsBotActive(false);
             // Don't log error if it was aborted
             if (error instanceof Error && error.message !== 'Request aborted') {
               console.error('❌ SideChatPanel: Error calling LLM API for initial query:', error);
@@ -5202,6 +5463,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const submitted = inputValue.trim();
+    
+    // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
+    if (isAgentMode) {
+      console.log('🤖 [BOT_STATUS] Activating bot status overlay');
+      setIsBotActive(true);
+      setBotActivityMessage('Running...');
+      setIsBotPaused(false);
+      isBotPausedRef.current = false; // Reset pause ref
+    }
     
     // Reset navigation task flag on new query - allows fullscreen expansion for fresh queries
     isNavigatingTaskRef.current = false;
@@ -5597,6 +5867,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   citationKeys: Object.keys(mergedCitations)
                 });
                 
+                // Hide bot status overlay when streaming completes
+                // BUT keep it visible in agent mode if navigation task is in progress
+                if (!isAgentModeRef.current || !isNavigatingTaskRef.current) {
+                  setIsBotActive(false);
+                }
+                
                 // Set the complete formatted text
               setChatMessages(prev => {
                 const existingMessage = prev.find(msg => msg.id === loadingResponseId);
@@ -5640,6 +5916,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onError: Handle errors
             (error: string) => {
               console.error('❌ SideChatPanel: Streaming error:', error);
+              
+              // Hide bot status overlay on error
+              setIsBotActive(false);
               
               // Check if this is an attachment without query error
               const isQueryRequiredError = error.includes('Query is required') || 
@@ -5687,7 +5966,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onStatus: Show status messages
             (message: string) => {
               console.log('📊 SideChatPanel: Status:', message);
-              // Optionally show status in UI
+              // Update bot status overlay with current activity
+              setBotActivityMessage(message);
             },
             // abortSignal: Pass abort signal for cancellation
             abortController.signal,
@@ -5696,6 +5976,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // onReasoningStep: Handle reasoning step events
             (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
               console.log('🟡 SideChatPanel: Received reasoning step:', step);
+              
+              // FILTER: Skip "Opening citation view" reasoning step during navigation
+              // Navigation queries should not show document opening steps
+              if (isNavigatingTaskRef.current && 
+                  (step.step === 'agent_open_document' || 
+                   step.message?.toLowerCase().includes('opening citation view') ||
+                   step.message?.toLowerCase().includes('highlighting content'))) {
+                console.log('⏭️ [REASONING_STEP] Skipping document opening step - navigation in progress');
+                return; // Don't add this reasoning step to the UI
+              }
               
               // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
               if (step.details) {
@@ -5836,17 +6126,29 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               
               switch (action.action) {
                 case 'open_document':
+                  // SKIP opening document if we're navigating to a property
+                  // Navigation queries should not open documents - they should just navigate
+                  if (isNavigatingTaskRef.current) {
+                    console.log('⏭️ [AGENT_ACTION] Skipping open_document - navigation in progress');
+                    break;
+                  }
+                  
                   console.log('📂 [AGENT_ACTION] Opening document (follow-up):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                   if (action.params.doc_id) {
                     // AGENT GLOW: Activate glowing border effect before opening
                     setIsAgentOpening(true);
+                    // Keep bot overlay visible during document opening
+                    isOpeningDocumentRef.current = true;
+                    setBotActivityMessage('Opening document...');
                     
+                    // Use the citation data from the backend action directly
                     const citationData = {
                       doc_id: action.params.doc_id,
                       page: action.params.page || 1,
                       original_filename: action.params.filename || '',
                       bbox: action.params.bbox || undefined
                     };
+                    
                     handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
                   }
                   break;
@@ -5866,6 +6168,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // CRITICAL: Set navigation flag BEFORE closing preview to prevent fullscreen restoration
                   isNavigatingTaskRef.current = true;
                   wasFullscreenBeforeCitationRef.current = false;
+                  // Update bot status to show navigation activity
+                  setBotActivityMessage('Navigating...');
                   // IMMEDIATELY close any open document preview
                   closeExpandedCardView();
                   setTimeout(() => {
@@ -5905,6 +6209,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         setTimeout(() => {
                           setAgentTaskActive(false);
                           setMapNavigating(false);
+                          setIsBotActive(false); // Hide bot status overlay when navigation completes
                           // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
                           // Will be reset when next query starts
                         }, 1000);
@@ -5943,6 +6248,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         } catch (error) {
           abortControllerRef.current = null;
           isProcessingQueryRef.current = false;
+          // Hide bot status overlay on error
+          setIsBotActive(false);
           // Don't log error if it was aborted
           if (error instanceof Error && error.message !== 'Request aborted') {
             console.error('❌ SideChatPanel: Error calling LLM API:', error);
@@ -6415,7 +6722,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // Hide content briefly when opening in fullscreen to prevent flash
               opacity: (shouldExpand && !isFullscreenMode) ? 0 : 1,
               transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
-              visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible'
+              visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible',
+              position: 'relative'
             }}
           >
             {/* Header */}
@@ -6698,7 +7006,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 flexShrink: 1, // Allow shrinking but with minWidth constraint
                 display: 'flex',
                 flexDirection: 'column',
-                alignItems: 'center' // Center content wrapper horizontally
+                alignItems: 'center', // Center content wrapper horizontally
+                position: 'relative' // For BotStatusOverlay positioning
               }}
             >
               {/* Centered content wrapper - ChatGPT-like centered layout */}
@@ -6714,7 +7023,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   {renderedMessages}
                 </AnimatePresence>
                 {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
-                <div ref={messagesEndRef} style={{ height: '40px', minHeight: '40px', flexShrink: 0 }} />
+                {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
+                <div ref={messagesEndRef} style={{ height: '120px', minHeight: '120px', flexShrink: 0 }} />
                 </div>
               </div>
             </div>
@@ -6790,34 +7100,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
               >
-                <div 
-                  className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
-                  style={{
-                    background: isDragOver ? '#F5F5F5' : '#ffffff',
-                    border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
-                    boxShadow: isDragOver 
-                      ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
-                      : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
-                    position: 'relative',
-                    paddingTop: '8px', // Default padding top
-                    paddingBottom: '8px', // Default padding bottom
-                    paddingRight: '12px',
-                    paddingLeft: '12px',
-                    overflow: 'visible',
-                    // Chat bar should maintain fixed width and be centered, regardless of panel width
-                    // Content wrapper: 680px maxWidth with 32px padding each side = 616px content width
-                    // Chat bar: 12px padding each side (24px total), so inner div = 616px + 24px = 640px
-                    // This ensures chat bar aligns with content and stays at readable width
-                    width: 'min(100%, 640px)', // Fixed width - matches content wrapper's actual content width
-                    minWidth: '300px', // Prevent squishing - minimum width for chat bar
-                    height: 'auto',
-                    minHeight: '48px', // Fixed minimum height to prevent expansion when typing starts
-                    boxSizing: 'border-box',
-                    borderRadius: '12px', // Always use rounded square corners
-                    transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out' // Only transition visual properties, not height/position
-                    // Centered by parent form's justifyContent: 'center'
-                  }}
-                >
+                {/* Wrapper for chat bar + overlay to enable proper z-index stacking */}
+                <div style={{ position: 'relative', width: 'min(100%, 640px)', minWidth: '300px' }}>
+                  {/* Bot Status Overlay - sits BEHIND the chat bar */}
+                  <BotStatusOverlay
+                    isActive={isBotActive}
+                    activityMessage={botActivityMessage}
+                    isPaused={isBotPaused}
+                    onPauseToggle={handlePauseToggle}
+                  />
+                  {/* Chat bar - sits ON TOP of the overlay */}
+                  <div 
+                    className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+                    style={{
+                      background: isDragOver ? '#F5F5F5' : '#ffffff',
+                      border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
+                      boxShadow: isDragOver 
+                        ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
+                        : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                      position: 'relative',
+                      paddingTop: '8px', // Default padding top
+                      paddingBottom: '8px', // Default padding bottom
+                      paddingRight: '12px',
+                      paddingLeft: '12px',
+                      overflow: 'visible',
+                      width: '100%',
+                      height: 'auto',
+                      minHeight: '48px', // Fixed minimum height to prevent expansion when typing starts
+                      boxSizing: 'border-box',
+                      borderRadius: '12px', // Original rounded square corners
+                      transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                      zIndex: 1, // Above the bot status overlay
+                    }}
+                  >
                   {/* Input row */}
                   <div 
                     className="relative flex flex-col w-full" 
@@ -7436,6 +7751,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         </AnimatePresence>
                       </motion.div>
                     </div>
+                  </div>
                   </div>
                 </div>
               </form>

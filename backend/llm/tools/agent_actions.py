@@ -20,16 +20,25 @@ class OpenDocumentInput(BaseModel):
     """Schema for open_document tool"""
     citation_number: int = Field(
         description=(
-            "REQUIRED. The integer citation number to open. "
-            "This MUST match a [N] citation marker in your response. "
-            "Example: If you wrote 'Market Value: £2,300,000[1]', use citation_number=1"
+            "REQUIRED. Match the citation number to where the PRIMARY information ACTUALLY appears in your response. "
+            "Step 1: Parse the query to find the PRIMARY object/information requested. "
+            "  - IGNORE contextual words like 'company', 'property', 'that valued', 'of the' - these are just context. "
+            "  - Focus on the MAIN thing: 'phone number', 'address', 'email', 'value', etc. "
+            "  - Example: 'phone number of the company' → PRIMARY is 'phone number' (NOT 'company'). "
+            "Step 2: Check your ACTUAL response text to find which citation number [N] is attached to the PRIMARY information. "
+            "  - Look at what you ACTUALLY wrote, not what you intended to write. "
+            "  - Example: User asks 'phone number' → Your ACTUAL response: 'Company: MJ Group[1]. Phone: +44...[3]' → Use citation_number=3 (NOT [1]) "
+            "  - Example: User asks 'address' → Your ACTUAL response: 'Company: MJ Group[1]. Address: 15 Alfred[2]' → Use citation_number=2 (NOT [1]) "
+            "Step 3: Use the citation number that matches the PRIMARY information in your ACTUAL response. "
+            "CRITICAL: Match to your ACTUAL response text - if PRIMARY info is at [3], use citation_number=3 (even if you intended to put it at [1]). "
+            "This ensures the correct citation opens automatically."
         )
     )
     reason: str = Field(
         description=(
-            "REQUIRED. A concise explanation (10-20 words) of why opening this document helps the user. "
-            "Focus on what the user will SEE and VERIFY. "
-            "Good: 'Shows the official valuation figure on page 2 of the report' "
+            "REQUIRED. State what the user asked for AND which citation you matched it to. "
+            "Format: 'Shows [TOPIC USER ASKED FOR] - citation [N] contains this information' "
+            "Good: 'Shows the phone number the user asked for - citation [2] contains +44 203...' "
             "Bad: 'Opening document' (too vague)"
         )
     )
@@ -272,42 +281,54 @@ Opens a document preview panel to display the source of a citation. The user wil
 
 ## DECISION FRAMEWORK: Should I call open_document?
 
-Follow this decision tree IN ORDER:
+**SIMPLE RULE: If you have citations in your response, automatically call open_document.**
+
+Follow this decision tree:
 
 1. DID I CREATE ANY CITATIONS in my response?
    - NO → DO NOT call open_document (nothing to show)
-   - YES → Continue to step 2
+   - YES → CALL open_document with the most relevant citation (the one matching the user's PRIMARY request)
 
-2. DOES THE QUERY REQUEST VISUAL EVIDENCE?
-   Check if query contains phrases like:
-   - "show me", "let me see", "display", "open"
-   - "what does it say", "where does it mention"
-   - "can I see", "prove it", "evidence"
-   → YES to any = CALL open_document with the most relevant citation
+**THAT'S IT.** If you have citations, open them. This applies to ALL queries in agent mode that result in citations:
+- Information queries: "What is the phone number?", "Where are the cables?", "What is the value?"
+- General queries: "Tell me about the property", "What does it say about planning?"
+- Any query that results in citations → automatically open the document
 
-3. DID I CITE IMPORTANT FACTUAL INFORMATION?
-   Important = information the user would likely want to verify:
-   - Financial values (£2,300,000, valuations, prices, rents)
-   - Dates (valuation dates, inspection dates, deadlines)
-   - Names (valuers, surveyors, signatories)
-   - Legal information (ownership, tenure, restrictions)
-   - Measurements (square footage, dimensions, acreage)
-   → YES to any = CALL open_document with citation for the primary fact
-
-4. IS THIS A SIMPLE/CONVERSATIONAL QUERY?
-   Examples: "hello", "thanks", "yes", "no", clarifying questions
-   → YES = DO NOT call open_document
+**ONLY EXCEPTION**: Purely conversational queries like "hello", "thanks", "okay" typically don't have citations, so they won't trigger open_document (which is correct).
 
 ## MANDATORY RULE: CALL ONLY ONCE PER RESPONSE
 - You MUST call open_document AT MOST ONCE per response
-- Choose the SINGLE MOST IMPORTANT citation to display
-- Priority order: (1) Financial values > (2) Dates > (3) Names > (4) Other facts
+- Choose the SINGLE MOST RELEVANT citation based on what the user asked for
+
+## ⚠️ CRITICAL: MATCH CITATION NUMBER TO YOUR ACTUAL RESPONSE
+Parse the query to find the PRIMARY object/information requested. IGNORE contextual words.
+
+**CHECK YOUR ACTUAL RESPONSE** to find which citation number [N] has the PRIMARY information:
+- User asks for "phone number of the company" → PRIMARY is "phone number"
+  → Your ACTUAL response: "Company: MJ Group[1]. Phone: +44...[3]" → Use citation_number=3 (NOT [1])
+- User asks for "address of the property" → PRIMARY is "address"
+  → Your ACTUAL response: "Company: MJ Group[1]. Address: 15 Alfred[2]" → Use citation_number=2 (NOT [1])
+- User asks for "email for the company" → PRIMARY is "email"
+  → Your ACTUAL response: "Company: MJ Group[1]. Email: info@...[2]" → Use citation_number=2 (NOT [1])
+- User asks for "value" or "valuation" or "price" → PRIMARY is "value"
+  → Your ACTUAL response: "Property: Highlands[1]. Market Value: £2,300,000[2]" → Use citation_number=2 (NOT [1])
+- User asks ONLY "company" or "who valued" (no other primary request) → PRIMARY is "company" → Start with "Company: MJ Group[1]..."
+- User asks for "date" → PRIMARY is "date"
+  → Your ACTUAL response: "Property: Highlands[1]. Date: 12th February 2024[2]" → Use citation_number=2 (NOT [1])
+
+⚠️ KEY RULE: Match the citation number to where the PRIMARY information ACTUALLY appears in your response.
+  Example: "phone number of the company" → PRIMARY = "phone number" → ACTUAL Response: "Company: MJ Group[1]. Phone: +44...[3]" → Use citation_number=3 (NOT [1])
+  Example: "address of the property" → PRIMARY = "address" → ACTUAL Response: "Company: MJ Group[1]. Address: 15 Alfred[2]" → Use citation_number=2 (NOT [1])
+
+**MATCH TO YOUR ACTUAL RESPONSE** - if PRIMARY info is at [3], use citation_number=3 (even if you intended to put it at [1]).
 
 ## PARAMETER REQUIREMENTS
 
 ### citation_number (integer, REQUIRED)
-- Must be an integer matching a [N] marker in your response text
-- Example: If you wrote "Market Value: £2,300,000[1]", use citation_number=1
+- Match the citation number to where the PRIMARY information ACTUALLY appears in your response
+- Check your ACTUAL response text to find which citation [N] has the PRIMARY information
+- Example: User asks "what is the address" → Your ACTUAL response: "Company: MJ Group[1]. Address: 123 Main St[2]..." → use citation_number=2 (NOT [1])
+- Example: User asks "what is the phone number" → Your ACTUAL response: "Company: MJ Group[1]. Phone Number: 020 1234 5678[3]..." → use citation_number=3 (NOT [1])
 - INVALID: citation_number=0, citation_number="1", citation_number=99 (if [99] not in response)
 
 ### reason (string, REQUIRED)
@@ -324,30 +345,58 @@ Follow this decision tree IN ORDER:
 
 ## CONCRETE EXAMPLES
 
-### Example 1: Valuation Query
+### Example 1: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "What is the property valued at?"
 Your response: "The property has a Market Value of £2,300,000[1] as of 12th February 2024[2]..."
 → CALL: open_document(citation_number=1, reason="Displays the official valuation figure from the RICS report")
+  ✓ Information retrieval query with citations → automatically open
 
-### Example 2: Visual Evidence Request
-User: "Show me where it mentions the 90-day value"
+### Example 2: General Information Retrieval (AUTOMATIC - No keywords needed)
+User: "What is the 90-day value?"
 Your response: "The 90-day marketing period value is £1,950,000[3]..."
 → CALL: open_document(citation_number=3, reason="Shows the reduced value section with 90-day assumptions")
+  ✓ Information retrieval query with citations → automatically open
 
-### Example 3: Name Verification
+### Example 3: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "Who conducted the valuation?"
 Your response: "The valuation was conducted by Sukhbir Tiwana MRICS[4]..."
 → CALL: open_document(citation_number=4, reason="Shows the valuer's name and RICS credentials on the report")
+  ✓ Information retrieval query with citations → automatically open
 
-### Example 4: Simple Query (DO NOT CALL)
+### Example 4: Address Query (AUTOMATIC - Information retrieval)
+User: "What is the address of the company?"
+→ PRIMARY: "address" (ignore "company" - it's context)
+Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place, London[2]. Phone: +44 203 463 8725[3]..."
+→ CALL: open_document(citation_number=2, reason="Highlights the company address on the document")
+  ✓ Information retrieval query with citations → automatically open
+  ✓ PRIMARY info (address) is at [2] in ACTUAL response → use citation_number=2
+
+### Example 5: Phone Number Query (AUTOMATIC - Information retrieval)
+User: "What is the phone number?"
+→ PRIMARY: "phone number"
+Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 203 463 8725[3]..."
+→ CALL: open_document(citation_number=3, reason="Shows the contact phone number on the document")
+  ✓ Information retrieval query with citations → automatically open
+  ✓ PRIMARY info (phone) is at [3] in ACTUAL response → use citation_number=3
+
+### Example 6: Complex Query with Context Words (AUTOMATIC - Information retrieval)
+User: "please show me the phone number of the company that valued the highlands property"
+→ PRIMARY REQUEST: "phone number" (ignore "company", "valued", "highlands", "property" - these are context)
+Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+→ CALL: open_document(citation_number=3, reason="Shows the phone number the user requested on the document")
+  ✓ Information retrieval query with citations → automatically open
+  ✓ PRIMARY info (phone number) is at [3] in ACTUAL response → use citation_number=3
+  ✓ Even though query mentions "company", PRIMARY is "phone number" so match to where it appears ([3])
+
+### Example 7: Conversational Query (DO NOT CALL)
 User: "Thanks for that information"
 Your response: "You're welcome! Let me know if you need anything else."
-→ DO NOT CALL open_document (no citations, conversational)
+→ DO NOT CALL open_document (no citations, conversational - not information retrieval)
 
-### Example 5: No Citations (DO NOT CALL)
+### Example 8: No Citations (DO NOT CALL)
 User: "What's the weather like?"
 Your response: "I don't have weather information..."
-→ DO NOT CALL open_document (no relevant citations)
+→ DO NOT CALL open_document (no relevant citations - not information retrieval)
 """
     
     open_doc_tool = StructuredTool.from_function(

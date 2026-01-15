@@ -1170,8 +1170,28 @@ def _renumber_citations_by_appearance(
                 
                 if orphan_fact:
                     # Semantic search for matching block
-                    best_orphan_match = None
-                    best_orphan_score = 0
+                    # Track best matches separately for page 0 and pages 1+
+                    best_page0_match = None
+                    best_page0_score = 0
+                    best_page1plus_match = None
+                    best_page1plus_score = 0
+                    
+                    # Patterns that indicate title/header blocks (should be avoided)
+                    title_patterns = [
+                        r'^valuation\s+report',
+                        r'^report\s*$',
+                        r'^valuation\s*$',
+                        r'^property\s+valuation',
+                        r'^company\s+name\s*$',
+                        r'^logo\s*$',
+                        r'^header\s*$',
+                        r'^title\s*$'
+                    ]
+                    
+                    # Extract phone numbers, emails, addresses from orphan fact for exact matching
+                    orphan_phone_match = re.search(r'\+?\d[\d\s\-\(\)]{8,}', orphan_fact)
+                    orphan_email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', orphan_fact)
+                    orphan_address_match = re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court|gardens|park)', orphan_fact, re.IGNORECASE)
                     
                     for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
                         for search_block_id, search_block_meta in search_metadata_table.items():
@@ -1179,8 +1199,23 @@ def _renumber_citations_by_appearance(
                             if not search_block_content:
                                 continue
                             
-                            block_lower = search_block_content.lower()
+                            block_lower = search_block_content.lower().strip()
                             fact_lower = orphan_fact.lower()
+                            block_page = search_block_meta.get('page_number', 0)
+                            
+                            # Skip title/header blocks - they rarely contain actual information
+                            is_title_block = False
+                            for pattern in title_patterns:
+                                if re.match(pattern, block_lower):
+                                    is_title_block = True
+                                    break
+                            
+                            # Also skip very short blocks (likely headers/titles)
+                            if len(block_lower.split()) <= 3 and not any(char.isdigit() for char in block_lower):
+                                is_title_block = True
+                            
+                            if is_title_block:
+                                continue
                             
                             # Check for phrase match
                             score = 0
@@ -1194,31 +1229,85 @@ def _renumber_citations_by_appearance(
                                 if len(matched_terms) >= 3:
                                     score = len(matched_terms) * 20
                             
-                            if score > best_orphan_score:
-                                best_orphan_score = score
-                                best_orphan_match = {
-                                    'doc_id': search_doc_id,
-                                    'block_id': search_block_id,
-                                    'metadata': search_block_meta,
-                                    'score': score
-                                }
+                            # CRITICAL: Heavy boost if block contains the EXACT phone number/email/address from orphan fact
+                            if orphan_phone_match:
+                                phone_in_fact = orphan_phone_match.group(0)
+                                if phone_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact phone match
+                            if orphan_email_match:
+                                email_in_fact = orphan_email_match.group(0).lower()
+                                if email_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact email match
+                            if orphan_address_match:
+                                address_in_fact = orphan_address_match.group(0).lower()
+                                if address_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact address match
+                            
+                            # Boost score if block contains phone numbers, emails, or addresses (actual contact info)
+                            if re.search(r'\+?\d[\d\s\-\(\)]{8,}', block_lower):  # Phone number pattern
+                                score += 50
+                            if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', block_lower):  # Email pattern
+                                score += 50
+                            if re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court|gardens|park)', block_lower, re.IGNORECASE):  # Address pattern
+                                score += 50
+                            
+                            # Track best matches separately by page
+                            match_data = {
+                                'doc_id': search_doc_id,
+                                'block_id': search_block_id,
+                                'metadata': search_block_meta,
+                                'score': score
+                            }
+                            
+                            if block_page == 0:
+                                if score > best_page0_score:
+                                    best_page0_score = score
+                                    best_page0_match = match_data
+                            else:
+                                if score > best_page1plus_score:
+                                    best_page1plus_score = score
+                                    best_page1plus_match = match_data
                     
-                    if best_orphan_match and best_orphan_score >= 60:
+                    # PREFER pages 1+ over page 0
+                    # Use page 1+ match if score >= 40, otherwise fall back to page 0
+                    best_orphan_match = None
+                    best_orphan_score = 0
+                    
+                    if best_page1plus_match and best_page1plus_score >= 40:
+                        # Use page 1+ match (preferred)
+                        best_orphan_match = best_page1plus_match
+                        best_orphan_score = best_page1plus_score
+                        logger.info(
+                            f"[RENUMBER_CITATIONS] Using page 1+ match (score: {best_page1plus_score}) "
+                            f"over page 0 match (score: {best_page0_score})"
+                        )
+                    elif best_page0_match and best_page0_score >= 60:
+                        # Fall back to page 0 if no good page 1+ match
+                        best_orphan_match = best_page0_match
+                        best_orphan_score = best_page0_score
+                        logger.warning(
+                            f"[RENUMBER_CITATIONS] Using page 0 match as fallback (score: {best_page0_score}, "
+                            f"no page 1+ match >= 40)"
+                        )
+                    
+                    if best_orphan_match and best_orphan_score >= 40:
                         # Found a good match - create citation entry
                         orphan_block_meta = best_orphan_match['metadata']
+                        orphan_page = orphan_block_meta.get('page_number', 0)
+                        
                         bbox = {
                             'left': orphan_block_meta.get('bbox_left', 0),
                             'top': orphan_block_meta.get('bbox_top', 0),
                             'width': orphan_block_meta.get('bbox_width', 1),
                             'height': orphan_block_meta.get('bbox_height', 0.05),
-                            'page': orphan_block_meta.get('page_number', 0)
+                            'page': orphan_page
                         }
                         
                         orphan_cit = {
                             'citation_number': new_num,
                             'block_id': best_orphan_match['block_id'],
                             'doc_id': best_orphan_match['doc_id'],
-                            'page_number': orphan_block_meta.get('page_number', 0),
+                            'page_number': orphan_page,
                             'bbox': bbox,
                             'cited_text': orphan_fact[:200],
                             'method': 'orphan-semantic-search'
@@ -1226,7 +1315,9 @@ def _renumber_citations_by_appearance(
                         renumbered_citations.append(orphan_cit)
                         logger.info(
                             f"[RENUMBER_CITATIONS] ✅ RESCUED orphan citation [{old_num}] → [{new_num}] "
-                            f"via semantic search (score: {best_orphan_score}, block: {best_orphan_match['block_id']})"
+                            f"via semantic search (score: {best_orphan_score}, block: {best_orphan_match['block_id']}, "
+                            f"page: {orphan_page}, "
+                            f"fact: '{orphan_fact[:100]}...')"
                         )
                     else:
                         # Couldn't find a match - remove the citation from text
@@ -1759,7 +1850,12 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                 tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
                 
                 if tool_name == 'open_document':
-                    citation_number = tool_args.get('citation_number', 1)
+                    citation_number = tool_args.get('citation_number')
+                    if citation_number is None:
+                        logger.warning(f"[SUMMARIZE_RESULTS] LLM called open_document without citation_number - this should not happen!")
+                        citation_number = 1  # Fallback only if truly missing
+                    elif citation_number == 1:
+                        logger.warning(f"[SUMMARIZE_RESULTS] LLM used citation_number=1 - verify this matches user's query!")
                     reason = tool_args.get('reason', '')
                     agent_action_instance.open_document(citation_number, reason)
                     logger.info(f"[SUMMARIZE_RESULTS] Agent requested open_document: citation={citation_number}, reason={reason}")
@@ -1801,6 +1897,25 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                 reason = open_doc_match.group(2)
                 agent_action_instance.open_document(citation_number, reason)
                 logger.info(f"[SUMMARIZE_RESULTS] Parsed open_document from text: citation={citation_number}, reason={reason}")
+            
+            # FALLBACK: Detect prose indicating intent to open document (LLM wrote prose instead of calling tool)
+            # Examples: "I will now open the document", "I'll open the document", "Let me open the document"
+            if not agent_action_instance.get_actions():
+                prose_open_patterns = [
+                    r"(?:i will|i'll|let me|i'm going to|i am going to)\s+(?:now\s+)?open\s+(?:the\s+)?document",
+                    r"opening\s+(?:the\s+)?(?:citation|document)\s+(?:view|panel)",
+                    r"(?:i will|i'll)\s+(?:now\s+)?(?:show|display)\s+(?:you\s+)?(?:the\s+)?(?:source|document)",
+                    r"to\s+provide\s+you\s+with\s+the\s+source",
+                ]
+                for pattern in prose_open_patterns:
+                    if re.search(pattern, summary, re.IGNORECASE):
+                        # Extract first citation number from response to use
+                        citation_match = re.search(r'\[(\d+)\]', summary)
+                        citation_number = int(citation_match.group(1)) if citation_match else 1
+                        reason = "Showing source document based on user query"
+                        agent_action_instance.open_document(citation_number, reason)
+                        logger.info(f"[SUMMARIZE_RESULTS] Detected prose open_document intent: citation={citation_number}")
+                        break
             
             # Look for navigate_to_property written as text
             nav_match = re.search(
@@ -1863,7 +1978,21 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                 agent_action_instance.navigate_to_property_by_name(property_name, reason)
                 logger.info(f"[SUMMARIZE_RESULTS] Parsed navigate_to_property_by_name from text: property_name={property_name}, reason={reason}")
         
+        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically trigger it
+        # This ensures citations always open without relying on LLM tool calls or keyword detection
         agent_actions = agent_action_instance.get_actions()
+        has_open_document = any(action.get('action') == 'open_document' for action in agent_actions)
+        
+        if not has_open_document and citations_from_state:
+            # Automatically open the first citation (or best citation based on query)
+            # The citation selection logic in views.py will refine this based on user intent
+            first_citation = citations_from_state[0]
+            citation_number = first_citation.get('citation_number', 1)
+            reason = "Showing source document for the information provided"
+            agent_action_instance.open_document(citation_number, reason)
+            logger.info(f"[SUMMARIZE_RESULTS] AUTO-TRIGGERED open_document: citation={citation_number} (citations present but no tool call)")
+            agent_actions = agent_action_instance.get_actions()  # Refresh actions list
+        
         logger.info(f"[SUMMARIZE_RESULTS] Collected {len(agent_actions)} agent actions")
     
     phase2_end = time.time()

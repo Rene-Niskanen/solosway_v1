@@ -410,6 +410,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     }
   }, [isVisible, isInChatMode]);
 
+  // Ensure map container display matches isVisible prop
+  React.useEffect(() => {
+    if (mapContainer.current && map.current) {
+      mapContainer.current.style.display = isVisible ? 'block' : 'none';
+    }
+  }, [isVisible]);
+
   // Track previous visibility to detect when map becomes visible
   const prevIsVisibleRef = React.useRef<boolean>(isVisible);
   
@@ -2822,6 +2829,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       setShowPropertyCard(false);
       setShowPropertyDetailsPanel(false);
       hasCenteredMapRef.current = null; // Reset so map can center for this new selection
+      hasJumpedToPropertyPinRef.current = false; // Reset flag to allow new navigation
     }
     
     // OPTIMIZATION: If we have cached data and propertyId, show card immediately even if map isn't ready

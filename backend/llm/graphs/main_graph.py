@@ -402,10 +402,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # Only in agent mode - reader mode doesn't have navigation tools
         if is_agent_mode:
             # Explicit navigation phrases - must be very specific
+            # Include variations with "please" and other polite words
             navigation_patterns = [
-                "take me to the", "take me to ", "go to the map", "navigate to the",
+                "take me to the", "take me to ", "please take me to", "please take me to the",
+                "go to the map", "navigate to the", "please navigate to", "please navigate to the",
                 "show me on the map", "show on map", "find on map", "open the map",
-                "go to map", "click on the", "select the pin", "click the pin"
+                "go to map", "click on the", "select the pin", "click the pin",
+                "please show me", "please go to", "please find"
             ]
             
             # Pin-specific patterns - strong indicator of navigation

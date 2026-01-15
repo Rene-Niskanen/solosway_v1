@@ -112,6 +112,116 @@ class _Timing:
         out["total_ms"] = _perf_ms(self._t0, time.perf_counter())
         return out
 
+
+# ---------------------------------------------------------------------------
+# SINGLE SOURCE OF TRUTH: Citation Selection Based on User Intent
+# ---------------------------------------------------------------------------
+def select_best_citation_for_query(query: str, citations_map: dict, preferred_citation_key: str = None) -> tuple[str, dict]:
+    """
+    Select the best citation that matches the user's query intent.
+    
+    Args:
+        query: The user's query text
+        citations_map: Dict of citation_key -> citation_data
+        preferred_citation_key: Optional preferred citation (from LLM), will verify it matches intent
+    
+    Returns:
+        Tuple of (selected_key, selected_citation) or (None, None) if no citations
+    """
+    if not citations_map:
+        return None, None
+    
+    query_lower = query.lower() if query else ''
+    
+    # Detect query intent
+    is_phone_query = any(kw in query_lower for kw in ['phone', 'telephone', 'call', 'contact number', 'tel'])
+    is_email_query = any(kw in query_lower for kw in ['email', 'e-mail', 'mail address'])
+    is_address_query = any(kw in query_lower for kw in ['address', 'location', 'where is', 'office'])
+    
+    # If we have a preferred citation and it matches intent, use it
+    if preferred_citation_key and preferred_citation_key in citations_map:
+        preferred_cit = citations_map[preferred_citation_key]
+        cit_text = preferred_cit.get('cited_text', '').lower()
+        
+        # Check if preferred citation matches query intent
+        matches_intent = True
+        if is_phone_query:
+            has_phone = bool(re.search(r'\+?\d[\d\s\-\(\)]{8,}', cit_text)) or 'phone' in cit_text or 'tel' in cit_text
+            if not has_phone:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match phone intent")
+        elif is_email_query:
+            has_email = bool(re.search(r'[\w\.-]+@[\w\.-]+\.\w+', cit_text)) or 'email' in cit_text
+            if not has_email:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match email intent")
+        elif is_address_query:
+            has_address = bool(re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court)', cit_text, re.IGNORECASE)) or 'address' in cit_text
+            if not has_address:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match address intent")
+        
+        if matches_intent:
+            logger.info(f"🎯 [CITATION_SELECT] Using preferred citation [{preferred_citation_key}]")
+            return preferred_citation_key, preferred_cit
+    
+    # Need to find a better citation - score all citations
+    best_key = None
+    best_score = -1
+    best_cit = None
+    
+    for cit_key, cit in citations_map.items():
+        cit_text = cit.get('cited_text', '').lower()
+        cit_page = cit.get('page', 0)
+        cit_method = cit.get('method', '')
+        score = 0
+        
+        # Score based on content match with query intent
+        if is_phone_query:
+            if re.search(r'\+?\d[\d\s\-\(\)]{8,}', cit_text):
+                score += 100  # Has phone number pattern
+            if 'phone' in cit_text or 'tel' in cit_text:
+                score += 50  # Has phone keyword
+        elif is_email_query:
+            if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', cit_text):
+                score += 100  # Has email pattern
+            if 'email' in cit_text:
+                score += 50  # Has email keyword
+        elif is_address_query:
+            if re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court)', cit_text, re.IGNORECASE):
+                score += 100  # Has address pattern
+            if 'address' in cit_text:
+                score += 50  # Has address keyword
+        else:
+            # No specific intent - prefer higher-numbered citations (usually more specific)
+            score = 10
+        
+        # Penalize page 0 (cover pages)
+        if cit_page == 0:
+            score -= 50
+        
+        # Penalize orphan citations (less reliable)
+        if 'orphan' in cit_method.lower():
+            score -= 20
+        
+        # Boost for later pages (more likely to be actual content)
+        if cit_page >= 2:
+            score += 10
+        
+        if score > best_score:
+            best_score = score
+            best_key = cit_key
+            best_cit = cit
+    
+    if best_key:
+        logger.info(f"🎯 [CITATION_SELECT] Selected citation [{best_key}] with score {best_score}")
+        return best_key, best_cit
+    
+    # Fallback to first available
+    first_key = next(iter(citations_map.keys()), None)
+    logger.info(f"🎯 [CITATION_SELECT] Fallback to first citation [{first_key}]")
+    return first_key, citations_map.get(first_key) if first_key else None
+
 # ============================================================================
 # HEALTH & STATUS ENDPOINTS
 # ============================================================================
@@ -957,6 +1067,19 @@ def query_documents_stream():
                                                 }
                                                 yield f"data: {json.dumps(analyzing_data)}\n\n"
                                     
+                                            # EARLY DOCUMENT PREPARATION: In agent mode, emit prepare_document action
+                                            # This allows frontend to start loading the document BEFORE answer generation
+                                            if is_agent_mode and doc_previews:
+                                                first_doc = doc_previews[0]
+                                                prepare_action = {
+                                                    'type': 'prepare_document',
+                                                    'doc_id': first_doc.get('doc_id'),
+                                                    'filename': first_doc.get('original_filename', ''),
+                                                    'download_url': first_doc.get('download_url', '')
+                                                }
+                                                yield f"data: {json.dumps(prepare_action)}\n\n"
+                                                logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                    
                                     elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         doc_outputs = state_data.get("document_outputs", [])
@@ -1097,10 +1220,16 @@ def query_documents_stream():
                                                     citation_bbox = citation.get('bbox')
                                                     citation_page = citation.get('page_number') or (citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None) or 0
                                                     
+                                                    # CRITICAL: Ensure bbox page matches citation page_number
+                                                    # This prevents mismatches where bbox has page 0 but citation has page 1
+                                                    if citation_bbox and isinstance(citation_bbox, dict):
+                                                        citation_bbox = citation_bbox.copy()  # Don't modify original
+                                                        citation_bbox['page'] = citation_page  # Update bbox page to match citation page
+                                                    
                                                     citation_data = {
                                                         'doc_id': citation.get('doc_id'),
                                                         'page': citation_page,
-                                                        'bbox': citation_bbox,  # Should already have bbox from CitationTool
+                                                        'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
                                                         'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
@@ -1568,7 +1697,8 @@ def query_documents_stream():
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
-                                    'block_id': block_id  # Include block_id for debugging
+                                    'block_id': block_id,  # Include block_id for debugging
+                                    'cited_text': citation_data.get('cited_text', '')  # Include for smart citation selection
                                 }
                         else:
                             # FALLBACK: Check for citations list format (used by citation_query handler)
@@ -1620,59 +1750,54 @@ def query_documents_stream():
                                 
                                 if action_type == 'open_document':
                                     # LLM requested to open a specific citation
-                                    citation_number = action.get('citation_number', 1)
+                                    llm_citation_number = action.get('citation_number')
                                     reason = action.get('reason', '')
                                     
-                                    # Emit single reasoning step for opening and highlighting
-                                    opening_step = {
-                                        'type': 'reasoning_step',
-                                        'step': 'agent_open_document',
-                                        'action_type': 'opening',
-                                        'message': 'Opening citation view & Highlighting content',
-                                        'details': {'citation_number': citation_number, 'reason': reason}
-                                    }
-                                    yield f"data: {json.dumps(opening_step)}\n\n"
+                                    # Use SINGLE SOURCE OF TRUTH for citation selection
+                                    # This ensures the best citation is selected based on user intent
+                                    preferred_key = str(llm_citation_number) if llm_citation_number else None
+                                    citation_key, citation = select_best_citation_for_query(
+                                        query, 
+                                        citations_map_for_frontend, 
+                                        preferred_key
+                                    )
                                     
-                                    # Look up citation data from citations_map_for_frontend
-                                    citation_key = str(citation_number)
-                                    if citation_key in citations_map_for_frontend:
-                                        citation = citations_map_for_frontend[citation_key]
+                                    if citation_key and citation:
+                                        citation_number = int(citation_key)
+                                        citation_page = citation.get('page', 1)
                                         bbox = citation.get('bbox')
+                                        
+                                        # Ensure bbox page matches citation page
+                                        if bbox and isinstance(bbox, dict):
+                                            bbox = bbox.copy()
+                                            bbox['page'] = citation_page
+                                        
+                                        # Emit reasoning step
+                                        opening_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_open_document',
+                                            'action_type': 'opening',
+                                            'message': 'Opening citation view & Highlighting content',
+                                            'details': {'citation_number': citation_number, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(opening_step)}\n\n"
+                                        
+                                        # Emit open_document action
                                         open_doc_action = {
                                             'type': 'agent_action',
                                             'action': 'open_document',
                                             'params': {
                                                 'doc_id': citation.get('doc_id'),
-                                                'page': citation.get('page', 1),
+                                                'page': citation_page,
                                                 'filename': citation.get('original_filename', ''),
                                                 'bbox': bbox if bbox and isinstance(bbox, dict) else None,
-                                                'reason': reason  # Include LLM's reasoning
+                                                'reason': reason
                                             }
                                         }
                                         yield f"data: {json.dumps(open_doc_action)}\n\n"
                                         logger.info(f"🎯 [AGENT_TOOLS] Emitted open_document for citation [{citation_number}]: {reason}")
                                     else:
-                                        logger.warning(f"🎯 [AGENT_TOOLS] Citation [{citation_number}] not found in map, trying first available")
-                                        # Fallback: use first citation if requested one not found
-                                        first_key = next(iter(citations_map_for_frontend.keys()), None)
-                                        if first_key:
-                                            citation = citations_map_for_frontend[first_key]
-                                            bbox = citation.get('bbox')
-                                            open_doc_action = {
-                                                'type': 'agent_action',
-                                                'action': 'open_document',
-                                                'params': {
-                                                    'doc_id': citation.get('doc_id'),
-                                                    'page': citation.get('page', 1),
-                                                    'filename': citation.get('original_filename', ''),
-                                                    'bbox': bbox if bbox and isinstance(bbox, dict) else None,
-                                                    'reason': reason
-                                                }
-                                            }
-                                            yield f"data: {json.dumps(open_doc_action)}\n\n"
-                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted open_document (fallback to [{first_key}]): {reason}")
-                                        else:
-                                            logger.warning(f"🎯 [AGENT_TOOLS] No citations available to open")
+                                        logger.warning(f"🎯 [AGENT_TOOLS] No citations available to open")
                                 
                                 elif action_type == 'navigate_to_property':
                                     # LLM requested to navigate to a property
@@ -1887,62 +2012,52 @@ def query_documents_stream():
                                         else:
                                             logger.warning(f"🎯 [AGENT_TOOLS] No property found for: '{property_name}'")
                         
-                        # FALLBACK: Legacy keyword-based detection (for backwards compatibility)
-                        # Only used if LLM didn't call any tools but user explicitly requested action
-                        elif action_intent['wants_action'] and citations_map_for_frontend and not agent_actions:
-                            action_type = action_intent['action_type']
-                            logger.info(f"🎯 [AGENT_LEGACY] Using keyword-based action detection: {action_type}")
+                        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically open
+                        # This ensures citations always open without relying on keywords or LLM tool calls
+                        has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
+                        if is_agent_mode and citations_map_for_frontend and not has_open_doc:
+                            logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
                             
-                            if action_type == 'show':
-                                first_citation_key = next(iter(citations_map_for_frontend.keys()), None)
-                                if first_citation_key:
-                                    first_citation = citations_map_for_frontend[first_citation_key]
-                                    bbox = first_citation.get('bbox')
-                                    
-                                    # Emit reasoning step BEFORE agent action (matches tool-based behavior)
-                                    opening_step = {
-                                        'type': 'reasoning_step',
-                                        'step': 'agent_open_document',
-                                        'action_type': 'opening',
-                                        'message': 'Opening citation view & Highlighting content',
-                                        'details': {'citation_number': first_citation_key, 'reason': 'User requested to show document'}
-                                    }
-                                    yield f"data: {json.dumps(opening_step)}\n\n"
-                                    
-                                    open_doc_action = {
-                                        'type': 'agent_action',
-                                        'action': 'open_document',
-                                        'params': {
-                                            'doc_id': first_citation.get('doc_id'),
-                                            'page': first_citation.get('page', 1),
-                                            'filename': first_citation.get('original_filename', ''),
-                                            'bbox': bbox if bbox and isinstance(bbox, dict) else None
-                                        }
-                                    }
-                                    yield f"data: {json.dumps(open_doc_action)}\n\n"
-                                    logger.info(f"🎯 [AGENT_LEGACY] Emitted open_document for doc_id={first_citation.get('doc_id')}")
+                            # Use SINGLE SOURCE OF TRUTH for citation selection
+                            selected_citation_key, selected_citation = select_best_citation_for_query(
+                                query, 
+                                citations_map_for_frontend,
+                                None  # No preferred citation from LLM
+                            )
                             
-                            elif action_type == 'navigate' and property_id:
-                                # Emit reasoning step BEFORE agent action (matches tool-based behavior)
-                                nav_step = {
-                                    'type': 'reasoning_step',
-                                    'step': 'agent_navigate',
-                                    'action_type': 'navigating',
-                                    'message': 'Navigating to property',
-                                    'details': {'property_id': property_id, 'reason': 'User requested navigation'}
-                                }
-                                yield f"data: {json.dumps(nav_step)}\n\n"
+                            if selected_citation_key and selected_citation:
+                                citation_page = selected_citation.get('page', 1)
+                                bbox = selected_citation.get('bbox')
                                 
-                                nav_action = {
+                                # Ensure bbox page matches citation page
+                                if bbox and isinstance(bbox, dict):
+                                    bbox = bbox.copy()
+                                    bbox['page'] = citation_page
+                                
+                                # Emit reasoning step BEFORE agent action
+                                opening_step = {
+                                    'type': 'reasoning_step',
+                                    'step': 'agent_open_document',
+                                    'action_type': 'opening',
+                                    'message': 'Opening citation view & Highlighting content',
+                                    'details': {'citation_number': selected_citation_key, 'reason': 'Automatically opening citation for information query'}
+                                }
+                                yield f"data: {json.dumps(opening_step)}\n\n"
+                                
+                                open_doc_action = {
                                     'type': 'agent_action',
-                                    'action': 'navigate_to_property',
+                                    'action': 'open_document',
                                     'params': {
-                                        'property_id': property_id,
-                                        'center_map': True
+                                        'doc_id': selected_citation.get('doc_id'),
+                                        'page': citation_page,
+                                        'filename': selected_citation.get('original_filename', ''),
+                                        'bbox': bbox if bbox and isinstance(bbox, dict) else None
                                     }
                                 }
-                                yield f"data: {json.dumps(nav_action)}\n\n"
-                                logger.info(f"🎯 [AGENT_LEGACY] Emitted navigate_to_property for property_id={property_id}")
+                                yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                logger.info(f"🎯 [AUTO_OPEN] Automatically opened citation={selected_citation_key}, doc_id={selected_citation.get('doc_id')}")
+                            else:
+                                logger.warning(f"🎯 [AUTO_OPEN] No suitable citation found to auto-open")
                         
                         # Send complete message with metadata
                         complete_data = {

@@ -357,6 +357,20 @@ class BackendApiService {
                     });
                   }
                   break;
+                case 'prepare_document':
+                  // EARLY DOCUMENT PREPARATION: Start loading document before answer is generated
+                  // This allows faster document display when open_document action comes later
+                  if (onAgentAction) {
+                    onAgentAction({
+                      action: 'prepare_document',
+                      params: {
+                        doc_id: data.doc_id,
+                        filename: data.filename,
+                        download_url: data.download_url
+                      }
+                    });
+                  }
+                  break;
                 case 'complete':
                   onComplete(data.data);
                   return;
