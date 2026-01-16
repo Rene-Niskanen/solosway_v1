@@ -3,7 +3,6 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { SearchBar } from './SearchBar';
-import ChatInterface from './ChatInterface';
 import PropertyValuationUpload from './PropertyValuationUpload';
 import Analytics from './Analytics';
 import { CloudBackground } from './CloudBackground';
@@ -35,6 +34,7 @@ import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { FilingSidebar } from './FilingSidebar';
 import { UploadProgressBar } from './UploadProgressBar';
+import { ProjectsPage } from './ProjectsPage';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1537,6 +1537,7 @@ export interface MainContentProps {
   onRestoreSidebarState?: (shouldBeCollapsed: boolean) => void;
   getSidebarState?: () => boolean;
   isSidebarCollapsed?: boolean;
+  isSidebarExpanded?: boolean;
   onSidebarToggle?: () => void;
   onMapVisibilityChange?: (isVisible: boolean) => void; // Callback to notify parent of map visibility changes
 }
@@ -1556,6 +1557,7 @@ export const MainContent = ({
   onRestoreSidebarState,
   getSidebarState,
   isSidebarCollapsed = false,
+  isSidebarExpanded = false,
   onSidebarToggle,
   onMapVisibilityChange
 }: MainContentProps) => {
@@ -1699,7 +1701,8 @@ export const MainContent = ({
   }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
   
   // Calculate sidebar width for property pin centering
-  const sidebarWidthValue = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
+  // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px, toggle rail w-3 = 12px
+  const sidebarWidthValue = isSidebarCollapsed ? 12 : 236; // 0 + 12 = 12 when collapsed, 224 + 12 = 236 when normal
   
   // Notify parent of map visibility changes
   React.useEffect(() => {
@@ -1742,7 +1745,7 @@ export const MainContent = ({
   // Be VERY aggressive - hide projects if there's ANY risk of search bar being cut off
   const SEARCH_BAR_MIN_WIDTH = 350;
   const SEARCH_BAR_MIN_HEIGHT = 300; // Logo + search bar + spacing (increased for more safety)
-  const SIDEBAR_WIDTH = 64; // Approximate sidebar width
+  const SIDEBAR_WIDTH = 236; // Sidebar (w-56 = 224px) + toggle rail (w-3 = 12px)
   const CONTAINER_PADDING = 32; // Container padding on both sides
   const EXTRA_SAFETY_MARGIN = 100; // Extra safety margin to ensure search bar is never cut
   
@@ -1811,13 +1814,14 @@ export const MainContent = ({
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
   
-  // Handle chat selection when in map view - open in SideChatPanel instead of ChatInterface
+  // Handle chat selection - always open in SideChatPanel (not old ChatInterface)
+  // This ensures the new design is used when selecting chats from history
   React.useEffect(() => {
-    if (isMapVisible && isInChatMode && currentChatData && currentChatId) {
-      // We're in map view and a chat was selected - open it in SideChatPanel
-      console.log('📋 MainContent: Chat selected in map view, opening in SideChatPanel', {
+    if (isInChatMode && currentChatData && currentChatId) {
+      console.log('📋 MainContent: Chat selected, opening in SideChatPanel', {
         chatId: currentChatId,
-        query: currentChatData.query
+        query: currentChatData.query,
+        isMapVisible
       });
       
       // Set the map search query to the chat's preview/query
@@ -1825,10 +1829,12 @@ export const MainContent = ({
       setHasPerformedSearch(true);
       setRestoreChatId(currentChatId);
       
-      // Prevent ChatInterface from showing by resetting chat mode
-      // We'll handle this by not showing ChatInterface when in map view
+      // Always show map view to use SideChatPanel instead of old ChatInterface
+      if (!isMapVisible) {
+        setIsMapVisible(true);
+      }
     }
-  }, [isMapVisible, isInChatMode, currentChatData, currentChatId]);
+  }, [isInChatMode, currentChatData, currentChatId]);
 
   // CRITICAL: Preload property pins IMMEDIATELY on mount (before anything else)
   // This ensures property pins are ready instantly when map loads
@@ -2504,7 +2510,14 @@ export const MainContent = ({
 
   // Track previous view to detect actual navigation changes
   const prevViewRef = React.useRef<string>(currentView);
-  
+
+  // Close project workflow when navigating away from projects view
+  React.useEffect(() => {
+    if (currentView !== 'projects' && showNewPropertyWorkflow) {
+      setShowNewPropertyWorkflow(false);
+    }
+  }, [currentView, showNewPropertyWorkflow]);
+
   // Reset chat mode and map visibility when currentView changes (sidebar navigation)
   // IMPORTANT: This should ONLY trigger on actual navigation, NOT on sidebar toggle
   React.useEffect(() => {
@@ -2544,9 +2557,11 @@ export const MainContent = ({
       setMapSearchQuery("");
       setHasPerformedSearch(false);
       onChatModeChange?.(false);
+      // Close document preview when home is clicked
+      closeExpandedCardView();
       onHomeResetComplete?.(); // Notify parent that reset is complete
     }
-  }, [homeClicked, onChatModeChange, onHomeResetComplete]);
+  }, [homeClicked, onChatModeChange, onHomeResetComplete, closeExpandedCardView]);
 
   // Reset SearchBar when switching to chat mode or creating new chat
   React.useEffect(() => {
@@ -2578,22 +2593,6 @@ export const MainContent = ({
     }
   }, [parentResetTrigger]);
 
-  // Debug: Log ChatInterface ref when it changes
-  React.useEffect(() => {
-    const hasRef = !!chatInterfaceRef.current;
-    console.log('🔍 ChatInterface ref status:', { 
-      hasRef,
-      currentChatId,
-      isInChatMode,
-      refValue: chatInterfaceRef.current
-    });
-    if (hasRef) {
-      console.log('✅ ChatInterface ref is available!');
-    } else {
-      console.log('❌ ChatInterface ref is NOT available');
-    }
-  }, [currentChatId, isInChatMode]);
-
   // Track if we have a previous session to restore
   const [previousSessionQuery, setPreviousSessionQuery] = React.useState<string | null>(null);
 
@@ -2610,42 +2609,8 @@ export const MainContent = ({
       case 'search':
         return <>
           <AnimatePresence mode="wait">
-            {isInChatMode && !isMapVisible ? <motion.div key="chat" initial={{
-            opacity: 0
-          }} animate={{
-            opacity: 1
-          }} exit={{
-            opacity: 0
-          }} transition={{
-            duration: 0.3,
-            ease: [0.23, 1, 0.32, 1]
-          }} className="w-full h-full flex flex-col relative">
-                {/* Interactive Dot Grid Background for chat mode */}
-                {/* No background needed here as it's handled globally */}
-                
-                
-                 {/* Chat Interface with elevated z-index */}
-                <div className="relative z-10 w-full h-full" data-chat-container="true">
-                  <div
-                    onDragEnter={handleDragEnter}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    className="w-full h-full"
-                    data-chat-wrapper="true"
-                  >
-                  <ChatInterface 
-                      ref={chatInterfaceRefCallback}
-                    key={`chat-${currentChatId || 'new'}`}
-                    initialQuery={currentChatData?.query || ""} 
-                    onBack={handleBackToSearch} 
-                    onMessagesUpdate={handleChatMessagesUpdate}
-                    loadedMessages={currentChatData?.messages}
-                    isFromHistory={currentChatData?.isFromHistory}
-                  />
-                  </div>
-                </div>
-              </motion.div> : <motion.div key="search" initial={{
+            {/* Always show search view - SideChatPanel handles all chat functionality */}
+            <motion.div key="search" initial={{
             opacity: 0
           }} animate={{
             opacity: 1
@@ -3056,7 +3021,7 @@ export const MainContent = ({
                 {/* MapChatBar and SideChatPanel are now rendered outside content container for proper visibility */}
                 
                 {/* Map is now rendered at top level for background mode */}
-              </motion.div>}
+              </motion.div>
           </AnimatePresence>
           
         </>
@@ -3064,6 +3029,12 @@ export const MainContent = ({
         // Database/Files section is now handled by FilingSidebar popout
         // Return empty div - the sidebar will be rendered globally
         return <div />;
+      case 'projects':
+        return (
+          <div className="w-full h-full overflow-auto">
+            <ProjectsPage onCreateProject={() => setShowNewPropertyWorkflow(true)} />
+          </div>
+        );
       case 'profile':
         return <div className="w-full max-w-none">
             <Profile onNavigate={handleNavigate} />
@@ -3143,36 +3114,14 @@ export const MainContent = ({
   const [dragCounter, setDragCounter] = React.useState(0);
   const searchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
   const mapSearchBarRef = React.useRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null>(null);
-  const chatInterfaceRef = React.useRef<{ handleFileDrop: (file: File) => void } | null>(null);
   const pendingFileDropRef = React.useRef<File | null>(null);
   const [refsReady, setRefsReady] = React.useState(false);
-  
-  // File drop handler - can be passed directly to components
-  const handleFileDropToComponent = React.useCallback((file: File) => {
-    console.log('📎 MainContent: handleFileDropToComponent called with file:', file.name);
-    // This will be passed to SearchBar and ChatInterface as onFileDrop prop
-    // They can use it directly instead of relying on refs
-  }, []);
   
   // Memoize ref callbacks to ensure they're stable across renders
   const searchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
     searchBarRef.current = instance;
     // Update state to trigger pending file processing
-    setRefsReady(prev => {
-      const newReady = !!instance || !!chatInterfaceRef.current;
-      return newReady;
-    });
-  }, []);
-  
-  const chatInterfaceRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void } | null) => {
-    console.log('🔗 ChatInterface ref callback called with:', instance);
-    chatInterfaceRef.current = instance;
-    // Update state to trigger pending file processing
-    setRefsReady(prev => {
-      const newReady = !!instance || !!searchBarRef.current;
-      console.log('🔗 ChatInterface ref ready state:', { instance: !!instance, searchRef: !!searchBarRef.current, newReady });
-      return newReady;
-    });
+    setRefsReady(!!instance);
   }, []);
   
   const mapSearchBarRefCallback = React.useCallback((instance: { handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] } | null) => {
@@ -3264,19 +3213,8 @@ export const MainContent = ({
             
             console.log('✅ Property document fetched:', file.name, file.size, 'bytes');
             
-            // Pass to chat or search bar - check mode first, then refs
-            if (isInChatMode && chatInterfaceRef.current) {
-              console.log('📤 Passing property document to ChatInterface');
-              try {
-                chatInterfaceRef.current.handleFileDrop(file);
-                console.log('✅ Property document successfully passed to ChatInterface');
-              } catch (err) {
-                console.error('❌ Error passing file to ChatInterface:', err);
-                // Fallback: store for later
-                pendingFileDropRef.current = file;
-                setHasPendingFile(true);
-              }
-            } else if (!isInChatMode && searchBarRef.current) {
+            // Pass to search bar
+            if (searchBarRef.current) {
               console.log('📤 Passing property document to SearchBar');
               try {
                 searchBarRef.current.handleFileDrop(file);
@@ -3288,11 +3226,7 @@ export const MainContent = ({
                 setHasPendingFile(true);
               }
             } else {
-              console.log('📦 Storing property document for later (refs not ready)', {
-                isInChatMode,
-                hasChatRef: !!chatInterfaceRef.current,
-                hasSearchRef: !!searchBarRef.current
-              });
+              console.log('📦 Storing property document for later (ref not ready)');
               pendingFileDropRef.current = file;
               setHasPendingFile(true); // Trigger the polling mechanism
             }
@@ -3312,51 +3246,27 @@ export const MainContent = ({
       const file = files[0];
       console.log('📁 File dropped:', file.name);
       console.log('📊 Drop context:', {
-        isInChatMode,
         currentView,
-        hasChatRef: !!chatInterfaceRef.current,
-        hasSearchRef: !!searchBarRef.current,
-        chatRefValue: chatInterfaceRef.current,
-        searchRefValue: searchBarRef.current
+        hasSearchRef: !!searchBarRef.current
       });
       
-      // Try to pass file directly via refs first
-      if (chatInterfaceRef.current) {
-        console.log('📤 Passing file to ChatInterface (via ref)');
-        chatInterfaceRef.current.handleFileDrop(file);
-      } else if (searchBarRef.current) {
+      // Pass file to SearchBar
+      if (searchBarRef.current) {
         console.log('📤 Passing file to SearchBar (via ref)');
         searchBarRef.current.handleFileDrop(file);
       } else {
         // Fallback: Try to trigger file upload via the file input element
-        // This works by finding the hidden file input and programmatically triggering it
-        console.warn('⚠️ No valid ref found, trying direct file input approach');
-        console.warn('⚠️ Details:', {
-          isInChatMode,
-          currentView,
-          hasChatRef: !!chatInterfaceRef.current,
-          hasSearchRef: !!searchBarRef.current
-        });
+        console.warn('⚠️ SearchBar ref not found, trying direct file input approach');
         
-        // Find the file input in the currently visible component (SearchBar or ChatInterface)
+        // Find the file input in the SearchBar
         const fileInputs = document.querySelectorAll('input[type="file"]');
         let targetInput: HTMLInputElement | null = null;
         
-        // Prefer the input in the active component
-        if (isInChatMode) {
-          // Look for input in ChatInterface
-          const chatContainer = document.querySelector('[class*="ChatInterface"]') || 
-                                document.querySelector('[class*="chat"]');
-          if (chatContainer) {
-            targetInput = chatContainer.querySelector('input[type="file"]') as HTMLInputElement;
-          }
-        } else {
-          // Look for input in SearchBar
-          const searchContainer = document.querySelector('[class*="SearchBar"]') ||
-                                  document.querySelector('form');
-          if (searchContainer) {
-            targetInput = searchContainer.querySelector('input[type="file"]') as HTMLInputElement;
-          }
+        // Look for input in SearchBar
+        const searchContainer = document.querySelector('[class*="SearchBar"]') ||
+                                document.querySelector('form');
+        if (searchContainer) {
+          targetInput = searchContainer.querySelector('input[type="file"]') as HTMLInputElement;
         }
         
         // Fallback to first available file input
@@ -3389,69 +3299,32 @@ export const MainContent = ({
         }
       }
     }
-  }, [currentView, isInChatMode]);
+  }, [currentView]);
 
   // Poll for refs to become available (fallback mechanism)
   const [hasPendingFile, setHasPendingFile] = React.useState(false);
   
   // Process pending file drop when refs become available
   React.useEffect(() => {
-    if (pendingFileDropRef.current && (chatInterfaceRef.current || searchBarRef.current)) {
+    if (pendingFileDropRef.current && searchBarRef.current) {
       const pendingFile = pendingFileDropRef.current;
       console.log('🔄 Processing pending file drop:', pendingFile.name, { 
         refsReady, 
-        hasChatRef: !!chatInterfaceRef.current, 
         hasSearchRef: !!searchBarRef.current,
-        isInChatMode,
         currentView
       });
       
-      // Check mode first, then appropriate ref
-      if (isInChatMode && chatInterfaceRef.current) {
-        console.log('📤 Processing pending file in ChatInterface');
-        try {
-          chatInterfaceRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in ChatInterface');
-        } catch (err) {
-          console.error('❌ Error processing pending file in ChatInterface:', err);
-        }
-      } else if (!isInChatMode && searchBarRef.current) {
-        console.log('📤 Processing pending file in SearchBar');
-        try {
-          searchBarRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in SearchBar');
-        } catch (err) {
-          console.error('❌ Error processing pending file in SearchBar:', err);
-        }
-      } else if (chatInterfaceRef.current) {
-        // Fallback: if chat ref is available, use it
-        console.log('📤 Processing pending file in ChatInterface (fallback)');
-        try {
-          chatInterfaceRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
-        } catch (err) {
-          console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
-        }
-      } else if (searchBarRef.current) {
-        // Fallback: if search ref is available, use it
-        console.log('📤 Processing pending file in SearchBar (fallback)');
-        try {
-          searchBarRef.current.handleFileDrop(pendingFile);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-          console.log('✅ Pending file successfully processed in SearchBar (fallback)');
-        } catch (err) {
-          console.error('❌ Error processing pending file in SearchBar (fallback):', err);
-        }
+      console.log('📤 Processing pending file in SearchBar');
+      try {
+        searchBarRef.current.handleFileDrop(pendingFile);
+        pendingFileDropRef.current = null;
+        setHasPendingFile(false);
+        console.log('✅ Pending file successfully processed in SearchBar');
+      } catch (err) {
+        console.error('❌ Error processing pending file in SearchBar:', err);
       }
     }
-  }, [refsReady, isInChatMode, currentView, hasPendingFile]);
+  }, [refsReady, currentView, hasPendingFile]);
   
   React.useEffect(() => {
     if (hasPendingFile && pendingFileDropRef.current) {
@@ -3467,49 +3340,11 @@ export const MainContent = ({
         }
         
         console.log('🔄 Polling for refs:', { 
-          hasChatRef: !!chatInterfaceRef.current, 
           hasSearchRef: !!searchBarRef.current,
-          isInChatMode,
           currentView
         });
         
-        // Check mode first, then appropriate ref
-        if (isInChatMode && chatInterfaceRef.current) {
-          console.log('📤 Processing pending file in ChatInterface (via polling)');
-          try {
-            chatInterfaceRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in ChatInterface');
-          } catch (err) {
-            console.error('❌ Error processing pending file in ChatInterface:', err);
-          }
-        } else if (!isInChatMode && searchBarRef.current) {
-          console.log('📤 Processing pending file in SearchBar (via polling)');
-          try {
-            searchBarRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in SearchBar');
-          } catch (err) {
-            console.error('❌ Error processing pending file in SearchBar:', err);
-          }
-        } else if (chatInterfaceRef.current) {
-          // Fallback: if chat ref is available, use it
-          console.log('📤 Processing pending file in ChatInterface (fallback)');
-          try {
-            chatInterfaceRef.current.handleFileDrop(pendingFile);
-            pendingFileDropRef.current = null;
-            setHasPendingFile(false);
-            clearInterval(interval);
-            console.log('✅ Pending file successfully processed in ChatInterface (fallback)');
-          } catch (err) {
-            console.error('❌ Error processing pending file in ChatInterface (fallback):', err);
-          }
-        } else if (searchBarRef.current) {
-          // Fallback: if search ref is available, use it
+        if (searchBarRef.current) {
           console.log('📤 Processing pending file in SearchBar (fallback)');
           try {
             searchBarRef.current.handleFileDrop(pendingFile);
@@ -3538,16 +3373,21 @@ export const MainContent = ({
         clearTimeout(timeout);
       };
     }
-  }, [hasPendingFile, isInChatMode, currentView]);
+  }, [hasPendingFile, currentView]);
 
   // Calculate left margin based on sidebar state
-  // Sidebar is w-10 lg:w-14 (40px/56px) when expanded, w-2 (8px) when collapsed
-  const leftMargin = isSidebarCollapsed ? 'ml-2' : 'ml-10 lg:ml-14';
+  // Sidebar is w-56 (224px) when normal, w-0 when collapsed
+  const leftMargin = isSidebarCollapsed ? 'ml-0' : 'ml-56';
   
   return (
     <div 
     className={`flex-1 relative ${(currentView === 'search' || currentView === 'home') ? '' : 'bg-white'} ${leftMargin} ${className || ''}`} 
-    style={{ backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', position: 'relative', zIndex: 1 }}
+    style={{ 
+      backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
+      position: 'relative', 
+      zIndex: 1,
+      transition: 'margin-left 0.2s ease-out' // Smooth transition when sidebar opens/closes
+    }}
     onDragEnter={handleDragEnter}
     onDragOver={handleDragOver}
     onDragLeave={handleDragLeave}
@@ -3623,7 +3463,8 @@ export const MainContent = ({
             zIndex: 900, // Above map but below agent task overlay
             border: '4px solid rgba(217, 119, 8, 0.6)',
             boxShadow: 'inset 0 0 150px 60px rgba(217, 119, 8, 0.15), inset 0 0 80px 30px rgba(217, 119, 8, 0.2)',
-            animation: 'mapGlowPulse 2s ease-in-out infinite'
+            animation: 'mapGlowPulse 2s ease-in-out infinite',
+            transition: 'left 0.2s ease-out' // Smooth transition when sidebar opens/closes
           }}
         />
       )}
@@ -3792,28 +3633,24 @@ export const MainContent = ({
           citationContext={citationContext}
           isSidebarCollapsed={isSidebarCollapsed}
           sidebarWidth={(() => {
-            // Base sidebar width
-            const baseSidebarWidth = isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40);
-            // Add FilingSidebar width when it's open (uses context width which tracks dragged width)
-            // FilingSidebar positioning (from FilingSidebar.tsx):
-            // - When collapsed (isSmallSidebarMode): starts at 12px (just toggle rail)
-            // - When NOT collapsed: starts at baseSidebarWidth + 12px (sidebar + toggle rail)
-            // So SideChatPanel should start after the FilingSidebar ends:
-            // - When collapsed and FilingSidebar open: 12px + filingSidebarWidth
-            // - When NOT collapsed and FilingSidebar open: baseSidebarWidth + 12px + filingSidebarWidth
-            // - When FilingSidebar closed: baseSidebarWidth
-            const toggleRailWidth = 12;
+            // Sidebar widths match Tailwind classes:
+            // - w-0 when collapsed = 0px
+            // - w-56 when normal = 224px (14rem)
+            // Toggle rail is w-3 = 12px
+            const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
+            const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+            
+            // Add FilingSidebar width when it's open
             if (isFilingSidebarOpen) {
-              if (isSidebarCollapsed) {
-                // Collapsed: FilingSidebar starts at 12px, ends at 12px + filingSidebarWidth
-                return 12 + filingSidebarWidth;
-              } else {
-                // Not collapsed: FilingSidebar starts at baseSidebarWidth + 12px, ends at baseSidebarWidth + 12px + filingSidebarWidth
-                return baseSidebarWidth + toggleRailWidth + filingSidebarWidth;
-              }
+              // FilingSidebar starts at:
+              // - 224px when sidebar not collapsed (covering toggle rail)
+              // - 12px when sidebar collapsed (after toggle rail)
+              const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+              return filingSidebarStart + filingSidebarWidth;
             } else {
-              // FilingSidebar closed: just use base sidebar width
-              return baseSidebarWidth;
+              // FilingSidebar closed: use sidebar + toggle rail width
+              const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+              return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
             }
           })()}
           restoreChatId={restoreChatId}
@@ -4019,11 +3856,20 @@ export const MainContent = ({
           highlight={expandedCardViewDoc.highlight}
           onClose={closeExpandedCardView}
           chatPanelWidth={chatPanelWidth}
-          sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+          sidebarWidth={(() => {
+            // Use same pixel calculation as SideChatPanel for consistency
+            // Sidebar widths: w-0 = 0px when collapsed, w-56 = 224px when normal
+            // Toggle rail is w-3 = 12px
+            const SIDEBAR_COLLAPSED_WIDTH = 0;
+            const SIDEBAR_NORMAL_WIDTH = 224;
+            const TOGGLE_RAIL_WIDTH = 12;
+            const baseSidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+          })()}
         />
       )}
       
-      {/* Shared Document Preview Modal - used by SearchBar, ChatInterface, and PropertyFilesModal */}
+      {/* Shared Document Preview Modal - used by SearchBar, SideChatPanel, and PropertyFilesModal */}
       <DocumentPreviewModal
         files={previewFiles}
         activeTabIndex={activePreviewTabIndex}
@@ -4082,7 +3928,14 @@ export const MainContent = ({
         isMapVisible={isMapVisible}
         isSidebarCollapsed={isSidebarCollapsed}
         chatPanelWidth={chatPanelWidth}
-        sidebarWidth={isSidebarCollapsed ? 8 : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 56 : 40)}
+        sidebarWidth={(() => {
+          // Use same pixel calculation as SideChatPanel for consistency
+          const SIDEBAR_COLLAPSED_WIDTH = 0;
+          const SIDEBAR_NORMAL_WIDTH = 224;
+          const TOGGLE_RAIL_WIDTH = 12;
+          const baseSidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_NORMAL_WIDTH;
+          return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+        })()}
       />
       
       {/* Drag and Drop Overlay - Full Screen */}
@@ -4140,6 +3993,22 @@ export const MainContent = ({
       {/* New Property Pin Workflow */}
       <NewPropertyPinWorkflow
         isVisible={showNewPropertyWorkflow}
+        sidebarWidth={(() => {
+          // Calculate sidebar width based on state (matching DashboardLayout logic)
+          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+          let sidebarWidth = 0;
+          
+          if (isSidebarCollapsed) {
+            sidebarWidth = 0; // w-0 when collapsed
+          } else if (isSidebarExpanded) {
+            sidebarWidth = 320; // w-80 = 320px when expanded
+          } else {
+            // Normal state: w-56 = 224px (sidebar with labels)
+            sidebarWidth = 224;
+          }
+          
+          return sidebarWidth + TOGGLE_RAIL_WIDTH;
+        })()}
         onClose={() => {
           setShowNewPropertyWorkflow(false);
         }}
@@ -4173,23 +4042,20 @@ export const MainContent = ({
       {/* FilingSidebar - Global popout sidebar for document management */}
       <FilingSidebar 
         sidebarWidth={(() => {
-          // Calculate sidebar width based on state (matching ChatPanel logic exactly)
-          // Note: MainContent doesn't have isSidebarExpanded, so we only handle collapsed vs normal
-          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-          let calculatedWidth = 0;
+          // Sidebar widths match Tailwind classes:
+          // - w-0 when collapsed = 0px
+          // - w-56 when normal = 224px (14rem)
+          // Toggle rail is w-3 = 12px
+          const SIDEBAR_COLLAPSED_WIDTH = 0;
+          const SIDEBAR_NORMAL_WIDTH = 224;
+          const TOGGLE_RAIL_WIDTH = 12;
           
           if (isSidebarCollapsed) {
-            calculatedWidth = 8; // w-2 = 8px
-            // Add toggle rail width when collapsed
-            return calculatedWidth + TOGGLE_RAIL_WIDTH;
+            // When collapsed: FilingSidebar starts after toggle rail only
+            return SIDEBAR_COLLAPSED_WIDTH + TOGGLE_RAIL_WIDTH; // 0 + 12 = 12px
           } else {
-            // Normal state (small sidebar): position directly against sidebar (no toggle rail gap)
-            if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
-              calculatedWidth = 56; // lg:w-14
-            } else {
-              calculatedWidth = 40; // w-10
-            }
-            return calculatedWidth;
+            // When normal: FilingSidebar starts after sidebar (no extra toggle rail gap since it's visually part of sidebar)
+            return SIDEBAR_NORMAL_WIDTH;
           }
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}

@@ -597,7 +597,7 @@ const StepRenderer: React.FC<{
               paddingLeft: '20px',
               color: DETAIL_COLOR,
               fontStyle: 'italic',
-              fontSize: '11px'
+              fontSize: '12px'
             }}>
               (document details not available)
             </div>
@@ -764,7 +764,7 @@ const StepRenderer: React.FC<{
       return (
         <div style={{
           color: DETAIL_COLOR,
-          fontSize: '13px',
+          fontSize: '12px',
           lineHeight: '1.5',
           marginTop: '0',
           marginBottom: '0',
@@ -817,7 +817,7 @@ const StepRenderer: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 10px 3px 8px',
+          padding: '3px 8px 3px 6px',
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
@@ -848,7 +848,7 @@ const StepRenderer: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 10px 3px 8px',
+          padding: '3px 8px 3px 6px',
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
@@ -879,7 +879,7 @@ const StepRenderer: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 10px 3px 8px',
+          padding: '3px 8px 3px 6px',
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
@@ -910,7 +910,7 @@ const StepRenderer: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 10px 3px 8px',
+          padding: '3px 8px 3px 6px',
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
@@ -941,7 +941,7 @@ const StepRenderer: React.FC<{
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '3px 10px 3px 8px',
+          padding: '3px 8px 3px 6px',
           borderRadius: '6px',
           border: '1px solid rgba(251, 191, 36, 0.4)',
           backgroundColor: 'rgba(251, 191, 36, 0.08)',
@@ -1498,10 +1498,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               {!isLastStep && (
                 <div style={{
                   position: 'absolute',
-                  left: '7px',
-                  top: '22px', // Moved down from 18px
+                  left: '8px',
+                  top: '20px',
                   width: '2px',
-                  height: 'calc(100% - 16px)', // Slightly longer at the bottom
+                  height: 'calc(100% - 14px)',
                   backgroundColor: '#E5E7EB',
                   zIndex: 0 // Behind preview cards
                 }} />
@@ -1583,10 +1583,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 {!isLastStep && (
                   <div style={{
                     position: 'absolute',
-                    left: '7px',
-                    top: '22px', // Moved down from 18px
+                    left: '8px',
+                    top: '20px',
                     width: '2px',
-                    height: 'calc(100% - 16px)', // Slightly longer at the bottom
+                    height: 'calc(100% - 14px)',
                     backgroundColor: '#E5E7EB',
                     zIndex: 0 // Behind preview cards
                   }} />

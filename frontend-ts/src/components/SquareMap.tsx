@@ -463,7 +463,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
 
   // NOTE: Recent projects are now only updated when user actually interacts:
   // - Files are uploaded/deleted via PropertyDetailsPanel
-  // - Chat interactions happen (handled in MainContent/ChatInterface)
+  // - Chat interactions happen (handled in MainContent/SideChatPanel)
   // This prevents recent projects from updating just by opening a property card
 
   // Listen for property pins updates (when new properties are created)

@@ -1,29 +1,31 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "framer-motion";
-import { BarChart3, Home, MessageSquareDot, LibraryBig, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
-import { ProfileDropdown } from "./ProfileDropdown";
+import { motion, AnimatePresence } from "framer-motion";
+import { 
+  FolderOpen, 
+  MessageSquare, 
+  ListEnd, 
+  PanelLeftClose,
+  Plus,
+  MoreHorizontal,
+  Edit,
+  Archive,
+  Trash2,
+  ArchiveRestore,
+  LibraryBig,
+  BarChart3,
+  ChevronDown,
+  Settings,
+  LogOut,
+  MessageCircle,
+  User,
+  Layers
+} from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
-
-const sidebarItems = [{
-  icon: List,
-  id: 'list',
-  label: 'List'
-}, {
-  icon: Home,
-  id: 'home',
-  label: 'Dashboard'
-}, {
-  icon: BarChart3,
-  id: 'analytics',
-  label: 'Analytics'
-}, {
-  icon: FolderOpen,
-  id: 'database',
-  label: 'Files'
-}] as any[];
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { backendApi } from "@/services/backendApi";
 
 export interface SidebarProps {
   className?: string;
@@ -39,8 +41,17 @@ export interface SidebarProps {
   onSignOut?: () => void;
   onChatSelect?: (chatId: string) => void;
   onNewChat?: () => void;
-  isMapVisible?: boolean; // Whether map view is currently visible
+  isMapVisible?: boolean;
+  onCreateProject?: () => void;
 }
+
+type NavItem = {
+  id: string;
+  label: string;
+  icon: React.ComponentType<any>;
+  badge?: string;
+  action?: 'navigate' | 'expand' | 'toggleFiling';
+};
 
 export const Sidebar = ({
   className,
@@ -56,12 +67,19 @@ export const Sidebar = ({
   onSignOut,
   onChatSelect,
   onNewChat,
-  isMapVisible = false
+  isMapVisible = false,
+  onCreateProject
 }: SidebarProps) => {
-  const [mousePosition, setMousePosition] = React.useState({ x: 0, y: 0 });
-  const [showToggleButton, setShowToggleButton] = React.useState(false);
-  const [isTopIconHovered, setIsTopIconHovered] = React.useState(false);
-  
+  const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
+  const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
+  const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = React.useState<string>('');
+  const [showArchived, setShowArchived] = React.useState<boolean>(false);
+  const [isBrandDropdownOpen, setIsBrandDropdownOpen] = React.useState<boolean>(false);
+  const [userData, setUserData] = React.useState<any>(null);
+  const brandButtonRef = React.useRef<HTMLButtonElement>(null);
+  const brandDropdownRef = React.useRef<HTMLDivElement>(null);
+
   // Chat history state
   const {
     chatHistory,
@@ -70,15 +88,56 @@ export const Sidebar = ({
     archiveChat,
     unarchiveChat
   } = useChatHistory();
-  
-  const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
-  const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
-  const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = React.useState<string>('');
-  const [showArchived, setShowArchived] = React.useState<boolean>(false);
-  
+
   // Filing sidebar integration
-  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  const { toggleSidebar: toggleFilingSidebar, closeSidebar: closeFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+
+  // Fetch user data on mount
+  React.useEffect(() => {
+    const fetchUserData = async () => {
+      try {
+        const authResult = await backendApi.checkAuth();
+        if (authResult.success && authResult.data?.user) {
+          console.log('User data from API:', authResult.data.user);
+          console.log('Role field:', authResult.data.user.role);
+          setUserData(authResult.data.user);
+        }
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+      }
+    };
+    fetchUserData();
+  }, []);
+
+  // Debug: Log when userData changes
+  React.useEffect(() => {
+    if (userData) {
+      console.log('userData state updated:', userData);
+      console.log('userData.role:', userData.role);
+    }
+  }, [userData]);
+
+  // Close brand dropdown when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        brandDropdownRef.current && 
+        !brandDropdownRef.current.contains(event.target as Node) &&
+        brandButtonRef.current &&
+        !brandButtonRef.current.contains(event.target as Node)
+      ) {
+        setIsBrandDropdownOpen(false);
+      }
+    };
+
+    if (isBrandDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isBrandDropdownOpen]);
 
   // Close menu when clicking outside
   React.useEffect(() => {
@@ -88,29 +147,79 @@ export const Sidebar = ({
       return () => document.removeEventListener('click', handleClickOutside);
     }
   }, [openMenuId]);
-  
-  // Mouse proximity detection
-  React.useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      setMousePosition({ x: e.clientX, y: e.clientY });
-      
-      // Calculate distance from left edge (where toggle button is)
-      const distanceFromLeft = e.clientX;
-      const distanceFromCenter = Math.abs(e.clientY - window.innerHeight / 2);
-      
-      // Show button if mouse is within 100px of left edge and reasonable vertical range
-      const shouldShow = distanceFromLeft < 100 && distanceFromCenter < 200;
-      setShowToggleButton(shouldShow);
-    };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
+  // Generate user display info - use useMemo to recalculate when userData changes
+  const userName = React.useMemo(() => {
+    // Use role/profile ID if available (e.g., "Admin")
+    if (userData?.role) {
+      // Capitalize the first letter (e.g., "admin" -> "Admin")
+      const role = String(userData.role);
+      console.log('Using role for userName:', role);
+      return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+    }
+    if (userData?.first_name) {
+      return userData.first_name + (userData.last_name ? ` ${userData.last_name}` : '');
+    }
+    if (userData?.email) {
+      const emailPrefix = userData.email.split('@')[0];
+      return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+    }
+    return "User";
+  }, [userData]);
 
-  // NOTE: We'll render a full-height thin rail as the toggle so users can click anywhere on the side
+  const userHandle = React.useMemo(() => {
+    if (userData?.email) {
+      const emailPrefix = userData.email.split('@')[0];
+      return `@${emailPrefix}`;
+    }
+    return "@user";
+  }, [userData]);
+
+  // Primary navigation items
+  const primaryNav: NavItem[] = [
+    { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
+    { id: 'projects', label: 'Projects', icon: Layers, action: 'navigate' },
+    { id: 'database', label: 'Files', icon: FolderOpen, action: 'toggleFiling' },
+    { id: 'analytics', label: 'Analytics', icon: BarChart3, action: 'navigate' },
+  ];
+
+  // Secondary navigation items
+  const secondaryNav: NavItem[] = [
+    { id: 'settings', label: 'Settings', icon: Settings, action: 'navigate' },
+  ];
 
   const handleItemClick = (itemId: string) => {
     onItemClick?.(itemId);
+  };
+
+  const handleNavClick = (item: NavItem) => {
+    // Close filing sidebar when clicking any navigation item except Files
+    if (item.action !== 'toggleFiling' && isFilingSidebarOpen) {
+      closeFilingSidebar();
+    }
+    
+    if (item.action === 'expand') {
+      onExpand?.();
+    } else if (item.action === 'toggleFiling') {
+      toggleFilingSidebar();
+    } else if (item.id === 'home') {
+      handleItemClick('home');
+    } else if (item.id === 'settings') {
+      onNavigate?.('settings');
+    } else {
+      handleItemClick(item.id);
+    }
+  };
+
+  const isItemActive = (item: NavItem) => {
+    // Mutually exclusive selection: Filing sidebar takes priority, then check activeItem
+    if (isFilingSidebarOpen) {
+      return item.action === 'toggleFiling';
+    }
+    if (item.id === 'home') {
+      return activeItem === 'search' && !isMapVisible;
+    }
+    return activeItem === item.id;
   };
 
   // Chat history handlers
@@ -166,361 +275,432 @@ export const Sidebar = ({
   const activeChats = chatHistory.filter(chat => !chat.archived);
   const archivedChats = chatHistory.filter(chat => chat.archived);
   const displayedChats = showArchived ? archivedChats : activeChats;
-  
+
   // Determine if chat history should be shown
   const showChatHistoryInSidebar = isExpanded && isChatPanelOpen;
 
-  // Calculate sidebar width based on state
+  // Calculate sidebar width based on state - default to showing labels
   const getSidebarWidth = () => {
-    if (isCollapsed) return 'w-2';
-    if (isExpanded) return 'w-80'; // 320px (matches ChatPanel width)
-    return 'w-10 lg:w-14';
+    if (isCollapsed) return 'w-0';
+    if (isExpanded) return 'w-80';
+    return 'w-56'; // Default width with labels
   };
 
-  // Calculate sidebar background color
-  const getSidebarBackground = () => {
-    if (isCollapsed) return 'rgba(254, 253, 252, 0)'; // Almost white with transparency when collapsed
-    return 'rgba(254, 253, 252, 1)'; // #FEFDFC - very light, almost white
-  };
+  // Render a nav item with icon and label
+  const renderNavItem = (item: NavItem) => {
+    const Icon = item.icon;
+    const active = isItemActive(item);
 
-  return <>
-    <div 
-      className={`${getSidebarWidth()} flex flex-col ${isExpanded ? 'items-stretch' : 'items-center'} py-6 fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[300]'} ${className || ''}`} 
-      style={{ 
-        background: getSidebarBackground(),
-        backgroundColor: getSidebarBackground(),
-        transition: 'width 0.2s ease-out, background-color 0.2s ease-out'
-      }}
-    >
-      {!isCollapsed && (
-        <>
-      {/* Top Section: Chat History and Close List buttons (when expanded) */}
-      <div className={isExpanded ? 'px-5 mb-6' : 'mb-6'}>
-        {isExpanded ? (
-          <div className="flex items-center gap-2">
-      {/* Chat Toggle Button */}
-            <button 
-              onMouseEnter={() => setIsTopIconHovered(true)}
-              onMouseLeave={() => setIsTopIconHovered(false)}
-              onClick={onChatToggle} 
-              className={`flex-1 px-4 h-11 lg:h-13 flex items-center gap-2 rounded-lg group cursor-pointer transition-colors duration-150 ${isChatPanelOpen ? 'bg-white border border-gray-200 shadow-sm' : 'hover:bg-gray-100'}`}
-              aria-label="Toggle Chat History"
-            >
-              <div className="flex-shrink-0">
-                {!isTopIconHovered ? (
-                  <img
-                    src="/velora-dash-logo.png"
-                    alt="VELORA"
-                    className="w-7 h-7 lg:w-8 lg:h-8 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
-                  />
-                ) : (
-                  <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
-                )}
-              </div>
-              <span className={`text-xs font-medium ${isChatPanelOpen ? 'text-gray-900' : 'text-gray-700'}`}>
-                Chat History
-              </span>
-            </button>
-            
-            {/* Close List Button - Icon only */}
-            <button 
-              onClick={() => {
-                // Close expanded sidebar
-                onExpand?.();
-                // If chat history is open, also close it
-                if (isChatPanelOpen) {
-                  onChatToggle?.();
-                }
-              }}
-              className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center rounded-lg group cursor-pointer transition-colors duration-150 hover:bg-gray-100"
-              aria-label="Close List"
-            >
-              <ListEnd className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]" strokeWidth={1.8} style={{ color: '#8B8B8B' }} />
-            </button>
-          </div>
-        ) : (
-          /* Chat Toggle Button (collapsed/normal mode) */
-          <button 
-        onMouseEnter={() => setIsTopIconHovered(true)}
-        onMouseLeave={() => setIsTopIconHovered(false)}
-        onClick={onChatToggle} 
-            className="w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center relative group cursor-pointer transition-colors duration-150"
-        aria-label="Toggle Chat History"
+    return (
+      <button
+        key={item.id}
+        onClick={() => handleNavClick(item)}
+        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 group relative ${
+          active 
+            ? 'bg-white text-gray-900' 
+            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
+        }`}
+        style={{
+          boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+        }}
+        aria-label={item.label}
       >
-            <div className="absolute inset-0 flex items-center justify-center">
-          {!isTopIconHovered ? (
-                <img
-              src="/velora-dash-logo.png"
-              alt="VELORA"
-                  className="w-5 h-5 lg:w-6 lg:h-6 object-contain drop-shadow-sm flex-shrink-0 opacity-45 transition-opacity duration-150"
-            />
-          ) : (
-                <MessageSquareDot className="w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[5px]" strokeWidth={1.8} style={{ color: isChatPanelOpen ? '#22c55e' : '#8B8B8B' }} />
+        <Icon
+          className="w-[18px] h-[18px] flex-shrink-0"
+          strokeWidth={1.75}
+        />
+        <span className="text-[13px] font-normal flex-1 text-left">
+          {item.label}
+        </span>
+        {item.badge && (
+          <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-50 text-emerald-600">
+            {item.badge}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  return (
+    <>
+      <div
+        className={`${getSidebarWidth()} flex flex-col fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
+        style={{
+          background: '#F1F1F1', // Always solid background to prevent map showing through
+          transition: 'width 0s ease-out', // Instant transition to prevent map showing through gaps
+          overflow: 'hidden',
+          willChange: 'width', // Optimize for performance
+          // Ensure background extends fully
+          boxShadow: 'none',
+          borderRight: 'none',
+          // Ensure full height coverage - use 100vh to cover entire viewport
+          minHeight: '100vh',
+          height: '100vh',
+          // Extend slightly to the right to ensure no gap with FilingSidebar
+          marginRight: '0',
+          paddingRight: '0',
+          // Ensure sidebar covers from top to bottom with no gaps
+          top: '0',
+          bottom: '0',
+          // Higher z-index to ensure it's above map
+          zIndex: className?.includes('z-[150]') ? 150 : 1000
+        }}
+      >
+        {!isCollapsed && (
+          <div className="flex flex-col h-full pt-4 pb-3">
+            {/* User Profile Block - OpenAI style integrated dropdown */}
+            <div className="px-3 mb-1">
+              <div className="relative">
+                <button
+                  ref={brandButtonRef}
+                  onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-left ${
+                    isBrandDropdownOpen 
+                      ? 'bg-white' 
+                      : 'hover:bg-white/60'
+                  }`}
+                  style={{
+                    boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+                  }}
+                  aria-label="Account menu"
+                >
+                  <Avatar className="h-8 w-8 flex-shrink-0 border border-gray-300/50">
+                    <AvatarImage 
+                      src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+                      alt={userName}
+                      className="object-cover"
+                    />
+                    <AvatarFallback className="bg-white">
+                      <img 
+                        src="/default profile icon.png" 
+                        alt="Default profile" 
+                        className="w-full h-full object-cover rounded-full"
+                      />
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-normal text-gray-900 leading-tight">{userName}</p>
+                    <p className="text-[11px] font-normal text-gray-500 leading-tight">{userData?.email || userHandle}</p>
+                  </div>
+                  <ChevronDown 
+                    className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform duration-200 ${
+                      isBrandDropdownOpen ? 'rotate-180' : ''
+                    }`} 
+                    strokeWidth={1.5} 
+                  />
+                </button>
+
+                {/* Integrated Dropdown Menu - OpenAI style */}
+                <AnimatePresence>
+                  {isBrandDropdownOpen && (
+                    <motion.div
+                      ref={brandDropdownRef}
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <div className="mt-1 bg-white rounded-lg border border-gray-200/60 shadow-sm">
+                        {/* Menu Items */}
+                        <div className="py-1">
+                          {/* Profile */}
+                          <button
+                            onClick={() => {
+                              setIsBrandDropdownOpen(false);
+                              onNavigate?.('profile');
+                            }}
+                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                          >
+                            <User className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[13px] text-gray-900 font-normal">Profile</span>
+                          </button>
+
+                          {/* Settings */}
+                          <button
+                            onClick={() => {
+                              setIsBrandDropdownOpen(false);
+                              onNavigate?.('settings');
+                            }}
+                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                          >
+                            <Settings className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[13px] text-gray-900 font-normal">Settings</span>
+                          </button>
+
+                          {/* Send Feedback */}
+                          <button
+                            onClick={() => {
+                              setIsBrandDropdownOpen(false);
+                              console.log('Send feedback clicked');
+                            }}
+                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                          >
+                            <MessageCircle className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[13px] text-gray-900 font-normal">Send feedback</span>
+                          </button>
+
+                          {/* Divider */}
+                          <div className="border-t border-gray-200/60 my-1" />
+
+                          {/* Sign Out */}
+                          <button
+                            onClick={() => {
+                              setIsBrandDropdownOpen(false);
+                              onSignOut?.();
+                            }}
+                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                          >
+                            <LogOut className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[13px] text-gray-900 font-normal">Sign out</span>
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+
+            {/* Quick Actions Label */}
+            <div className="px-4 mt-4 mb-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Quick actions</span>
+                <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘D</span>
+              </div>
+            </div>
+
+            {/* Primary Navigation */}
+            <div className="px-3 space-y-0.5">
+              {primaryNav.map(renderNavItem)}
+            </div>
+
+            {/* Divider */}
+            <div className="mx-4 my-4 h-px bg-gray-200/80" />
+
+            {/* Chat History Button */}
+            <div className="px-3">
+              <button
+                onClick={() => {
+                  // Close filing sidebar when opening chat history
+                  if (isFilingSidebarOpen) {
+                    closeFilingSidebar();
+                  }
+                  onChatToggle?.();
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ${
+                  isChatPanelOpen && !isFilingSidebarOpen
+                    ? 'bg-white text-gray-900' 
+                    : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
+                }`}
+                style={{
+                  boxShadow: isChatPanelOpen && !isFilingSidebarOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+                }}
+              >
+                <MessageSquare 
+                  className="w-[18px] h-[18px] flex-shrink-0" 
+                  strokeWidth={1.75} 
+                />
+                <span className="text-[13px] font-normal">Chat History</span>
+              </button>
+            </div>
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Divider before secondary */}
+            <div className="mx-4 mb-3 h-px bg-gray-200/80" />
+
+            {/* Secondary Navigation */}
+            <div className="px-3 space-y-0.5">
+              {secondaryNav.map(renderNavItem)}
+            </div>
+          </div>
+        )}
+
+        {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
+        {isExpanded && !isCollapsed && (
+          <div className="absolute inset-0 flex flex-col" style={{ background: '#F1F1F1' }}>
+            {/* Header with New Chat button */}
+            <div className="px-3 pt-4 pb-2">
+              <div className="flex items-center justify-between mb-4">
+                <button
+                  onClick={() => {
+                    onExpand?.();
+                    if (isChatPanelOpen) {
+                      onChatToggle?.();
+                    }
+                  }}
+                  className="p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-white/60 transition-colors"
+                  aria-label="Close"
+                >
+                  <ListEnd className="w-4 h-4" strokeWidth={1.75} />
+                </button>
+              </div>
+              
+              {/* New Chat Button - prominent like OpenAI */}
+              <button
+                onClick={onNewChat}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-white hover:bg-gray-50 rounded-lg transition-colors border border-gray-200/60"
+                style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+              >
+                <Plus className="w-4 h-4 text-gray-600" strokeWidth={2} />
+                <span className="text-gray-800 font-normal text-[13px]">New chat</span>
+              </button>
+            </div>
+
+            {/* Chat List - scrollable */}
+            <div className="flex-1 overflow-y-auto px-3">
+              {/* Archive Toggle - subtle */}
+              {archivedChats.length > 0 && (
+                <div className="flex items-center justify-between py-2 mb-1">
+                  <span className="text-[11px] text-gray-400 uppercase tracking-wider font-normal">
+                    {showArchived ? 'Archived' : 'Recent'}
+                  </span>
+                  <button
+                    onClick={() => setShowArchived(!showArchived)}
+                    className={`p-1 rounded transition-colors ${
+                      showArchived
+                        ? 'text-amber-600 hover:bg-amber-50'
+                        : 'text-gray-400 hover:text-gray-600 hover:bg-white/60'
+                    }`}
+                  >
+                    {showArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              )}
+
+              {/* Chat List */}
+              {displayedChats.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 px-4">
+                  <MessageSquare className="w-8 h-8 text-gray-300 mb-3" strokeWidth={1.5} />
+                  <p className="text-gray-400 text-[13px] text-center">
+                    {showArchived ? 'No archived chats' : 'Start a new conversation'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-0.5 pb-3">
+                  {displayedChats.map((chat) => {
+                    const isEditing = editingChatId === chat.id;
+                    return (
+                      <div
+                        key={`chat-${chat.id}`}
+                        onClick={() => handleChatClick(chat.id)}
+                        onMouseEnter={() => setHoveredChat(chat.id)}
+                        onMouseLeave={() => setHoveredChat(null)}
+                        className="group relative px-3 py-2.5 rounded-lg transition-colors cursor-pointer hover:bg-white/70"
+                      >
+                        {isEditing ? (
+                          <input
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveRename(chat.id);
+                              if (e.key === 'Escape') handleCancelRename();
+                            }}
+                            onBlur={() => handleSaveRename(chat.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full px-2 py-1 text-[13px] bg-white border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-300"
+                            autoFocus
+                          />
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[13px] text-gray-700 truncate flex-1 group-hover:text-gray-900">
+                              {chat.title}
+                            </span>
+                            <button
+                              onClick={(e) => handleMenuToggle(e, chat.id)}
+                              className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-gray-100 transition-all flex-shrink-0"
+                            >
+                              <MoreHorizontal className="w-4 h-4 text-gray-400" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Context Menu */}
+                        {openMenuId === chat.id && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg py-1 z-50"
+                            style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)' }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              onClick={(e) => handleRename(e, chat.id, chat.title)}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-gray-700 hover:bg-gray-50"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                              Rename
+                            </button>
+                            <button
+                              onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-gray-700 hover:bg-gray-50"
+                            >
+                              {chat.archived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
+                              {chat.archived ? 'Unarchive' : 'Archive'}
+                            </button>
+                            <div className="h-px bg-gray-100 my-1" />
+                            <button
+                              onClick={(e) => handleDeleteChat(e, chat.id)}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Delete
+                            </button>
+                          </motion.div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
-          </button>
+
+          </div>
         )}
       </div>
 
-      {/* Chat History Section - Only shown when expanded and chat panel is open */}
-      {showChatHistoryInSidebar && (
-        <div className="flex flex-col flex-1 min-h-0 max-h-[calc(100vh-400px)] px-5 mb-4">
-          {/* Chat History Header */}
-          <div className="flex items-center justify-between mb-2">
-            <motion.button 
-              onClick={onNewChat} 
-              className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-            >
-              <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-              <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
-                New chat
-              </span>
-            </motion.button>
-            
-            {archivedChats.length > 0 && (
-              <motion.button
-                onClick={() => setShowArchived(!showArchived)}
-                className={`p-1.5 text-xs rounded-md transition-all duration-200 ${
-                  showArchived 
-                    ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' 
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {showArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
-              </motion.button>
-            )}
-          </div>
-
-          {/* Chat History List - Constrained height */}
-          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-slate-300/50 hover:scrollbar-thumb-slate-400/70">
-            {displayedChats.length === 0 ? (
-              <div className="flex items-center justify-center h-full py-8">
-                <p className="text-slate-400 text-xs text-center">
-                  {showArchived ? 'No archived conversations' : 'No conversations yet'}
-                </p>
-              </div>
-            ) : (
-              <>
-                {displayedChats.map((chat) => {
-                const isEditing = editingChatId === chat.id;
-                return (
-                  <div 
-                    key={`chat-${chat.id}`}
-                    onClick={() => handleChatClick(chat.id)} 
-                    onMouseEnter={() => setHoveredChat(chat.id)}
-                    onMouseLeave={() => setHoveredChat(null)}
-                    className="group relative px-3 py-2 rounded-md transition-all duration-200 cursor-pointer mb-0.5 hover:bg-blue-50/30"
-                  >
-                    {isEditing ? (
-                      <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="text"
-                          value={editingTitle}
-                          onChange={(e) => setEditingTitle(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleSaveRename(chat.id);
-                            if (e.key === 'Escape') handleCancelRename();
-                          }}
-                          onBlur={() => handleSaveRename(chat.id)}
-                          className="flex-1 px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:border-indigo-500"
-                          autoFocus
-                        />
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-normal truncate pr-2 transition-colors duration-200 text-slate-600 group-hover:text-slate-800 group-hover:font-medium">
-                          {chat.title}
-                        </span>
-                        
-                        <div className="relative">
-                          <button
-                            onClick={(e) => handleMenuToggle(e, chat.id)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md transition-all duration-50 transform hover:scale-125 active:scale-95"
-                          >
-                            <MoreVertical className="w-3.5 h-3.5 text-slate-400 transition-all duration-50" />
-                          </button>
-                          
-                          {openMenuId === chat.id && (
-                            <motion.div
-                              initial={{ opacity: 0, scale: 0.9, y: -12 }}
-                              animate={{ opacity: 1, scale: 1, y: 0 }}
-                              exit={{ opacity: 0, scale: 0.9, y: -12 }}
-                              transition={{ duration: 0.08, ease: [0.16, 1, 0.3, 1] }}
-                              className="absolute right-[-8px] top-10 w-48 bg-white/95 backdrop-blur-xl rounded-xl shadow-2xl border border-slate-200/60 py-2 z-50"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <button
-                                onClick={(e) => handleRename(e, chat.id, chat.title)}
-                                className="w-full flex items-center px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 transition-colors duration-[25ms] group/item"
-                              >
-                                <Edit className="w-3.5 h-3.5 mr-2.5 text-slate-500 group-hover/item:text-slate-700 transition-colors duration-[25ms]" />
-                                <span className="font-medium">Rename</span>
-                              </button>
-                              <button
-                                onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                                className="w-full flex items-center px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 transition-colors duration-[25ms] group/item"
-                              >
-                                {chat.archived ? (
-                                  <ArchiveRestore className="w-3.5 h-3.5 mr-2.5 text-slate-500 group-hover/item:text-slate-700 transition-colors duration-[25ms]" />
-                                ) : (
-                                  <Archive className="w-3.5 h-3.5 mr-2.5 text-slate-500 group-hover/item:text-slate-700 transition-colors duration-[25ms]" />
-                                )}
-                                <span className="font-medium">
-                                  {chat.archived ? 'Unarchive' : 'Archive'}
-                                </span>
-                              </button>
-                              <div className="h-px bg-slate-200 mx-2 my-1" />
-                              <button
-                                onClick={(e) => handleDeleteChat(e, chat.id)}
-                                className="w-full flex items-center px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 transition-colors duration-[25ms] group/item"
-                              >
-                                <Trash2 className="w-3.5 h-3.5 mr-2.5 text-red-500 group-hover/item:text-red-600 transition-colors duration-[25ms]" />
-                                <span className="font-medium">Delete</span>
-                              </button>
-            </motion.div>
-          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              </>
-            )}
-          </div>
-
-          {/* Chat History Footer */}
-          <div className="pt-2 border-t border-slate-200/60 mt-2">
-            <p className="text-slate-400 text-xs text-center font-medium">
-              {showArchived 
-                ? `${archivedChats.length} archived conversations` 
-                : `${activeChats.length} active conversations`
-              }
-              {!showArchived && archivedChats.length > 0 && ` • ${archivedChats.length} archived`}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Navigation Items - Shown in middle when chat history is NOT visible, or at bottom when it is */}
-      <div className={`flex flex-col ${isExpanded ? 'space-y-1' : 'space-y-2'} ${showChatHistoryInSidebar ? 'mt-auto' : 'flex-1'} ${isExpanded ? 'items-stretch px-5' : 'items-center'}`}>
-        {sidebarItems.filter(item => !(item.id === 'list' && isExpanded)).map((item, index) => {
-        // Dashboard icon is active only when on search view (not map view)
-        // Database icon is active when FilingSidebar is open
-        const isActive = item.id === 'home' 
-          ? (activeItem === 'search' && !isMapVisible)
-          : item.id === 'database'
-          ? isFilingSidebarOpen
-          : activeItem === item.id;
-        // Always use LibraryBig for home icon
-        // Use ListEnd icon when expanded and item is 'list', TextAlignJustify when not expanded, otherwise use the item's icon
-        const Icon = item.id === 'home' 
-          ? LibraryBig 
-          : (item.id === 'list' && isExpanded) 
-            ? ListEnd 
-            : (item.id === 'list' && !isExpanded)
-              ? TextAlignJustify
-              : item.icon;
-        
-        // Special handling for List icon - it should only expand sidebar, not navigate
-        // Special handling for database icon - it should open FilingSidebar, not navigate
-        const handleListClick = () => {
-          if (item.id === 'list') {
-            // Only toggle expansion, don't navigate
-            onExpand?.();
-          } else if (item.id === 'database') {
-            // Toggle FilingSidebar instead of navigating
-            toggleFilingSidebar();
-          } else if (item.id === 'home') {
-            handleItemClick('home');
-          } else {
-            handleItemClick(item.id);
-          }
-        };
-
-        // Label for list item changes when expanded
-        const displayLabel = (item.id === 'list' && isExpanded) ? 'Close List' : item.label;
-
-        // Use DraftingCompass for analytics icon
-        const AnalyticsIcon = item.id === 'analytics' ? DraftingCompass : Icon;
-
-        return <button 
-          key={item.id} 
-          onClick={handleListClick}
-          className={`${isExpanded ? 'w-full px-4 h-11 lg:h-13 flex items-center gap-2 rounded-lg' : 'w-11 h-11 lg:w-13 lg:h-13 flex items-center justify-center'} group transition-colors duration-150 ${isActive && isExpanded ? 'bg-white border border-gray-200 shadow-sm' : isExpanded ? 'hover:bg-gray-100' : ''}`}
-          aria-label={displayLabel} 
-        >
-              {/* Icon */}
-          <AnalyticsIcon 
-            className={`w-4 h-4 lg:w-5 lg:h-5 drop-shadow-sm flex-shrink-0 -translate-y-[3px]`} 
-            strokeWidth={1.8} 
-            style={{ color: isActive ? '#22c55e' : '#8B8B8B' }} 
-          />
-          {/* Label - only show when expanded */}
-          {isExpanded && (
-            <span className={`text-xs font-medium ${isActive ? 'text-gray-900' : 'text-gray-700'}`}>
-              {displayLabel}
-            </span>
-          )}
-        </button>;
-      })}
-      
-      </div>
-
-      {/* Profile Icon - Bottom of Sidebar */}
-      <div className={`mt-auto mb-6 ${isExpanded ? 'w-full px-5' : ''}`}>
-        <ProfileDropdown 
-          onNavigate={onNavigate}
-          onSignOut={onSignOut}
-        />
-      </div>
-        </>
-      )}
-    </div>
-
-    {/* Sidebar Toggle Rail - full height thin clickable area */}
-    {/* IMPORTANT: This button should ONLY toggle sidebar, NEVER navigate */}
-    <button
-      type="button"
-      onClick={(e) => {
-        // Stop event from bubbling to parent elements (which might have navigation handlers)
-        e.stopPropagation();
-        // CRITICAL: Only call onToggle (which is handleSidebarToggle)
-        // NEVER call onItemClick or handleItemClick
-        // This should ONLY toggle sidebar state, NEVER navigate
-        console.log('🔘 Toggle rail clicked - ONLY toggling sidebar, NOT navigating');
-        onToggle?.();
-      }}
-      aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-      className={`fixed inset-y-0 w-3
-        shadow-lg
-        hover:shadow-xl
-        ${isCollapsed ? 'left-0' : isExpanded ? 'left-80' : isChatPanelOpen ? '' : 'left-10 lg:left-14'}`}
-      style={{ 
-        WebkitTapHighlightColor: 'transparent',
-        zIndex: 9999,
-        // Position toggle rail exactly at the edge of the sidebar (no gap)
-        // Sidebar is w-10 (40px) on mobile, lg:w-14 (56px) on desktop, w-60 (240px) when expanded
-        ...(isChatPanelOpen && !isCollapsed && !isExpanded ? { left: '376px' } : {}),
-        // Make toggle rail white (or transparent when chat panel is open in small sidebar mode to remove grey line)
-        backgroundColor: (isChatPanelOpen && !isCollapsed && !isExpanded) ? 'transparent' : '#FFFFFF',
-        // Add faint borders on left and right sides for visibility against white background
-        borderLeft: '1px solid rgba(229, 231, 235, 0.6)',
-        borderRight: '1px solid rgba(229, 231, 235, 0.6)',
-        pointerEvents: 'auto',
-        transition: 'left 0.2s ease-out, background-color 0.2s ease-out, box-shadow 0.2s ease-out, border-color 0.2s ease-out'
-      }}
-    >
-      {/* Glassmorphism arrow indicator - should point left when expanded, right when collapsed */}
-      <div
-        className={`absolute top-1/2 left-1/2 w-3 h-3 flex items-center justify-center`}
-        style={{ 
-          transform: `translate(-50%, -50%) rotate(${isCollapsed ? 0 : 180}deg)`,
-          transition: 'transform 0.2s ease-out'
+      {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle?.();
+        }}
+        aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+        className="fixed inset-y-0 w-3 group"
+        style={{
+          WebkitTapHighlightColor: 'transparent',
+          zIndex: 100003, // Higher than dropdown backdrop (100001) and dropdown (100002) to ensure it's always clickable
+          // Always position at the right edge of the sidebar itself (not panels)
+          left: isCollapsed ? '0px' : isExpanded ? '320px' : '224px',
+          // Match sidebar background for seamless look
+          background: '#F1F1F1',
+          pointerEvents: 'auto',
+          transition: 'left 0.2s ease-out'
         }}
       >
-        <div className={`w-0 h-0 border-l-[8px] border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent drop-shadow-sm`} style={{ borderLeftColor: '#D3D3D3' }} />
-      </div>
-    </button>
-  </>;
+        {/* Subtle hover indicator */}
+        <div 
+          className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ background: 'rgba(0, 0, 0, 0.04)' }}
+        />
+        {/* Arrow indicator - only show on hover */}
+        <div
+          className="absolute top-1/2 left-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{
+            transform: `translate(-50%, -50%) rotate(${isCollapsed ? 0 : 180}deg)`,
+            transition: 'transform 0.2s ease-out, opacity 0.15s ease-out'
+          }}
+        >
+          <div 
+            className="w-0 h-0 border-l-[5px] border-t-[3px] border-t-transparent border-b-[3px] border-b-transparent" 
+            style={{ borderLeftColor: '#9CA3AF' }} 
+          />
+        </div>
+      </button>
+    </>
+  );
 };

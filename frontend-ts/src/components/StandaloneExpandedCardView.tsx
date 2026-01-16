@@ -910,13 +910,32 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
 
   const isChatPanelOpen = chatPanelWidth > 0;
   
+  // Track previous chatPanelWidth to detect when resizing is happening
+  const prevChatPanelWidthRef = useRef<number>(chatPanelWidth);
+  const [isChatPanelResizing, setIsChatPanelResizing] = useState<boolean>(false);
+  
+  // Detect when chat panel is being resized (width is changing)
+  useEffect(() => {
+    if (prevChatPanelWidthRef.current !== chatPanelWidth && isChatPanelOpen) {
+      setIsChatPanelResizing(true);
+      // Reset after resize completes (typically fast, but allow some buffer)
+      const timeout = setTimeout(() => {
+        setIsChatPanelResizing(false);
+      }, 150);
+      prevChatPanelWidthRef.current = chatPanelWidth;
+      return () => clearTimeout(timeout);
+    } else {
+      prevChatPanelWidthRef.current = chatPanelWidth;
+    }
+  }, [chatPanelWidth, isChatPanelOpen]);
+  
   // Calculate the actual left position for the document preview
   // This must match the logic in MainContent.tsx for SideChatPanel's sidebarWidth calculation
   // When chat panel is open: chatPanelWidth is the width, chat panel's left = calculated sidebarWidth (includes filing sidebar)
   // So document preview left = chatPanelLeft + chatPanelWidth + gap
   // When chat panel is closed: position after sidebar (which may include filing sidebar) + gap
-  // Memoized to prevent recalculation on every render
-  const calculateLeftPosition = useCallback(() => {
+  // Calculate directly on every render (no memoization) to ensure instant updates when sidebar opens/closes
+  const leftPosition = (() => {
     const toggleRailWidth = 12;
     
     // Calculate the actual sidebar width (base + filing sidebar if open)
@@ -934,17 +953,30 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     }
     
     if (isChatPanelOpen) {
-      // Document preview starts immediately after chat panel ends (no gap)
-      // Chat panel's left = actualSidebarWidth, its right = actualSidebarWidth + chatPanelWidth
-      return actualSidebarWidth + chatPanelWidth;
+      // When document preview is open (this component is rendering), calculate chat panel position
+      const chatPanelLeft = Math.max(0, actualSidebarWidth - toggleRailWidth);
+      
+      // Calculate chat panel width directly to match SideChatPanel logic
+      // This ensures instant updates when sidebar opens/closes without waiting for async onChatWidthChange
+      // Priority: Use chatPanelWidth if it's a custom dragged width, otherwise calculate from window
+      let actualChatWidth: number;
+      if (chatPanelWidth > 0 && chatPanelWidth !== window.innerWidth * 0.5) {
+        // Use the actual dragged/resized width from the chat panel (custom width, not default 50vw)
+        // This is the raw pixel width reported by SideChatPanel via onChatWidthChange
+        actualChatWidth = chatPanelWidth;
+      } else {
+        // Calculate directly from window width to match SideChatPanel's default calculation
+        // This ensures instant positioning when sidebar opens/closes
+        // Use exactly 50vw for true 50/50 split (matches SideChatPanel default)
+        actualChatWidth = typeof window !== 'undefined' ? window.innerWidth * 0.5 : 960;
+      }
+      
+      return chatPanelLeft + actualChatWidth;
     } else {
       // Chat panel closed - position immediately after sidebar (which may include filing sidebar)
       return actualSidebarWidth;
     }
-  }, [sidebarWidth, isFilingSidebarOpen, filingSidebarWidth, isChatPanelOpen, chatPanelWidth]);
-  
-  // Memoize the left position to prevent jitter
-  const leftPosition = useMemo(() => calculateLeftPosition(), [calculateLeftPosition]);
+  })();
 
   const content = (
     <motion.div
@@ -979,7 +1011,9 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           flexDirection: 'column',
           pointerEvents: 'auto',
           // No transition for left positioning - updates instantly when chatPanelWidth or filing sidebar changes
-          transition: 'none',
+          // This prevents gaps when sidebar or filing sidebar opens/closes
+          transition: 'none', // Always no transition for instant positioning - prevents gaps
+          transitionProperty: 'none', // Explicitly disable all transitions to prevent gaps
           boxSizing: 'border-box' // Ensure padding/borders are included in width/height
         })
       }}

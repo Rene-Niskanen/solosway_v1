@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, db
+from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, Project, ProjectStatus, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
@@ -3182,8 +3182,11 @@ def proxy_upload():
                 except Exception as rel_error:
                     logger.warning(f"Failed to create document relationship (non-fatal): {rel_error}")
             
-            # Trigger fast processing if property_id is provided
-            if property_id:
+            # Check if processing should be skipped (e.g., during project creation)
+            skip_processing = request.form.get('skip_processing', '').lower() in ('true', '1', 'yes')
+            
+            # Trigger fast processing if property_id is provided AND processing is not skipped
+            if property_id and not skip_processing:
                 try:
                     logger.info(f"⚡ [PROXY-UPLOAD] Property ID provided ({property_id}), queuing fast processing task...")
                     # Queue fast processing task (property_id already known - no extraction needed)
@@ -3198,6 +3201,8 @@ def proxy_upload():
                 except Exception as e:
                     logger.error(f"❌ [PROXY-UPLOAD] Failed to queue fast processing task: {e}", exc_info=True)
                     # Don't fail the upload - document is already created and uploaded
+            elif skip_processing:
+                logger.info(f"⏸️ [PROXY-UPLOAD] Processing skipped (skip_processing flag set) - document {doc_id} will remain in 'UPLOADED' status")
             else:
                 logger.warning(f"⚠️ [PROXY-UPLOAD] No property_id provided - document {doc_id} will remain in 'UPLOADED' status (no processing pipeline activated)")
             
@@ -6438,6 +6443,278 @@ def remove_duplicate_documents():
         
     except Exception as e:
         logger.error(f"❌ [REMOVE-DUPLICATES] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ---------------------------------------------------------------------------
+# Projects API Endpoints
+# ---------------------------------------------------------------------------
+
+@views.route('/api/projects', methods=['GET'])
+@login_required
+def get_projects():
+    """Get all projects for the current user, optionally filtered by status"""
+    try:
+        status_filter = request.args.get('status')
+        
+        query = Project.query.filter_by(user_id=current_user.id)
+        
+        if status_filter:
+            try:
+                status_enum = ProjectStatus(status_filter)
+                query = query.filter_by(status=status_enum)
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid status: {status_filter}. Must be one of: active, negotiating, archived'
+                }), 400
+        
+        projects = query.order_by(Project.updated_at.desc()).all()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'projects': [p.serialize() for p in projects],
+                'total': len(projects)
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [GET-PROJECTS] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/projects/<project_id>', methods=['GET'])
+@login_required
+def get_project(project_id):
+    """Get a single project by ID"""
+    try:
+        project = Project.query.filter_by(
+            id=project_id,
+            user_id=current_user.id
+        ).first()
+        
+        if not project:
+            return jsonify({
+                'success': False,
+                'error': 'Project not found'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'data': project.serialize()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ [GET-PROJECT] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/projects', methods=['POST'])
+@login_required
+def create_project():
+    """Create a new project"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        # Validate required fields
+        if not data.get('title'):
+            return jsonify({
+                'success': False,
+                'error': 'Title is required'
+            }), 400
+        
+        if not data.get('client_name'):
+            return jsonify({
+                'success': False,
+                'error': 'Client name is required'
+            }), 400
+        
+        # Parse status
+        status = ProjectStatus.ACTIVE
+        if data.get('status'):
+            try:
+                status = ProjectStatus(data['status'])
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid status: {data["status"]}'
+                }), 400
+        
+        # Parse due date
+        due_date = None
+        if data.get('due_date'):
+            try:
+                due_date = datetime.fromisoformat(data['due_date'].replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid due_date format. Use ISO format.'
+                }), 400
+        
+        # Create project
+        project = Project(
+            user_id=current_user.id,
+            client_name=data['client_name'],
+            client_logo_url=data.get('client_logo_url'),
+            title=data['title'],
+            description=data.get('description'),
+            status=status,
+            tags=data.get('tags', []),
+            tool=data.get('tool'),
+            budget_min=data.get('budget_min'),
+            budget_max=data.get('budget_max'),
+            due_date=due_date,
+            thumbnail_url=data.get('thumbnail_url'),
+            message_count=data.get('message_count', 0)
+        )
+        
+        db.session.add(project)
+        db.session.commit()
+        
+        logger.info(f"✅ [CREATE-PROJECT] Created project: {project.title} (ID: {project.id})")
+        
+        return jsonify({
+            'success': True,
+            'data': project.serialize()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"❌ [CREATE-PROJECT] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/projects/<project_id>', methods=['PUT'])
+@login_required
+def update_project(project_id):
+    """Update an existing project"""
+    try:
+        project = Project.query.filter_by(
+            id=project_id,
+            user_id=current_user.id
+        ).first()
+        
+        if not project:
+            return jsonify({
+                'success': False,
+                'error': 'Project not found'
+            }), 404
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'No data provided'
+            }), 400
+        
+        # Update fields if provided
+        if 'client_name' in data:
+            project.client_name = data['client_name']
+        if 'client_logo_url' in data:
+            project.client_logo_url = data['client_logo_url']
+        if 'title' in data:
+            project.title = data['title']
+        if 'description' in data:
+            project.description = data['description']
+        if 'status' in data:
+            try:
+                project.status = ProjectStatus(data['status'])
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid status: {data["status"]}'
+                }), 400
+        if 'tags' in data:
+            project.tags = data['tags']
+        if 'tool' in data:
+            project.tool = data['tool']
+        if 'budget_min' in data:
+            project.budget_min = data['budget_min']
+        if 'budget_max' in data:
+            project.budget_max = data['budget_max']
+        if 'due_date' in data:
+            if data['due_date']:
+                try:
+                    project.due_date = datetime.fromisoformat(data['due_date'].replace('Z', '+00:00'))
+                except (ValueError, AttributeError):
+                    return jsonify({
+                        'success': False,
+                        'error': 'Invalid due_date format. Use ISO format.'
+                    }), 400
+            else:
+                project.due_date = None
+        if 'thumbnail_url' in data:
+            project.thumbnail_url = data['thumbnail_url']
+        if 'message_count' in data:
+            project.message_count = data['message_count']
+        
+        db.session.commit()
+        
+        logger.info(f"✅ [UPDATE-PROJECT] Updated project: {project.title} (ID: {project.id})")
+        
+        return jsonify({
+            'success': True,
+            'data': project.serialize()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"❌ [UPDATE-PROJECT] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/projects/<project_id>', methods=['DELETE'])
+@login_required
+def delete_project(project_id):
+    """Delete a project"""
+    try:
+        project = Project.query.filter_by(
+            id=project_id,
+            user_id=current_user.id
+        ).first()
+        
+        if not project:
+            return jsonify({
+                'success': False,
+                'error': 'Project not found'
+            }), 404
+        
+        project_title = project.title
+        db.session.delete(project)
+        db.session.commit()
+        
+        logger.info(f"✅ [DELETE-PROJECT] Deleted project: {project_title} (ID: {project_id})")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Project "{project_title}" deleted successfully'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"❌ [DELETE-PROJECT] Error: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

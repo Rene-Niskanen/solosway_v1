@@ -41,11 +41,11 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
   const updateDropdownPosition = React.useCallback(() => {
     if (buttonRef.current) {
       const buttonRect = buttonRef.current.getBoundingClientRect();
-      // Position dropdown to the right of the button
+      // Position dropdown at the left edge of the screen
       // Bottom position: distance from bottom of viewport (slightly lower)
       const bottom = window.innerHeight - buttonRect.bottom + 8; // 8px = lower position
       setDropdownPosition({
-        left: buttonRect.left + buttonRect.width + 32, // 32px offset to avoid sidebar overlap
+        left: 0, // Position at left edge of screen
         bottom: bottom
       });
     }
@@ -122,16 +122,14 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
       >
         <Avatar className="w-full h-full">
           <AvatarImage 
-            src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+            src={userData?.profile_image || userData?.avatar_url} 
             alt={userName}
             className="object-cover"
           />
-          <AvatarFallback className="bg-white">
-            <img 
-              src="/default profile icon.png" 
-              alt="Default profile" 
-              className="w-full h-full object-cover"
-            />
+          <AvatarFallback className="bg-gray-200 flex items-center justify-center">
+            <span className="text-gray-600 text-xs font-medium">
+              {userName ? userName.charAt(0).toUpperCase() : 'U'}
+            </span>
           </AvatarFallback>
         </Avatar>
       </button>
@@ -174,16 +172,14 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                 <div className="flex items-center gap-3">
                   <Avatar className="w-6 h-6 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
-                      src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
+                      src={userData?.profile_image || userData?.avatar_url} 
                       alt={userName}
                       className="object-cover"
                     />
-                    <AvatarFallback className="bg-white">
-                      <img 
-                        src="/default profile icon.png" 
-                        alt="Default profile" 
-                        className="w-full h-full object-cover rounded-full"
-                      />
+                    <AvatarFallback className="bg-gray-200 flex items-center justify-center">
+                      <span className="text-gray-600 text-[10px] font-medium">
+                        {userName ? userName.charAt(0).toUpperCase() : 'U'}
+                      </span>
                     </AvatarFallback>
                   </Avatar>
                   <span className="text-sm text-gray-700 truncate">

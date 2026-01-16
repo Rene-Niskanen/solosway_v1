@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed, Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -403,8 +403,8 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_SUPERSCRIPT_${numStr}%%`;
       }
-      // During streaming, hide temporarily; after streaming, show raw if data never arrived
-      return isStreaming ? `%%CITATION_PENDING_${numStr}%%` : match;
+      // Always use placeholder for consistent rendering (no visual shift when streaming ends)
+      return `%%CITATION_PENDING_${numStr}%%`;
     });
     
     // Clean up periods that follow citations
@@ -417,18 +417,18 @@ const StreamingResponseText: React.FC<{
       if (citData) {
         return `%%CITATION_BRACKET_${num}%%`;
       }
-      // During streaming, hide temporarily; after streaming, show raw if data never arrived
-      return isStreaming ? `%%CITATION_PENDING_${num}%%` : match;
+      // Always use placeholder for consistent rendering (no visual shift when streaming ends)
+      return `%%CITATION_PENDING_${num}%%`;
     });
     
     return processedText;
   };
   
   // Process citations before markdown parsing - use memoized processedText for consistency
-  // Include isStreaming in dependencies to handle pending citations properly
+  // Citations are always converted to placeholders for consistent rendering
   const textWithCitationPlaceholders = React.useMemo(() => {
     return processCitationsBeforeMarkdown(processedText);
-  }, [processedText, citations, isStreaming]);
+  }, [processedText, citations]);
   
   // Helper to render citation placeholders (no deduplication - show all citations)
   const renderCitationPlaceholder = (placeholder: string, key: string): React.ReactNode => {
@@ -476,11 +476,9 @@ const StreamingResponseText: React.FC<{
         const parts = child.split(/(%%CITATION_(?:SUPERSCRIPT|BRACKET|PENDING)_\d+%%)/g);
         const result: React.ReactNode[] = [];
         parts.forEach((part, idx) => {
-          if (part.startsWith('%%CITATION_PENDING_')) {
-            // Pending citations - hide completely until data arrives
-            // They'll be converted to proper citations on next render when data is available
-            return;
-          } else if (part.startsWith('%%CITATION_')) {
+          if (part.startsWith('%%CITATION_')) {
+            // Render all citations (including pending) via renderCitationPlaceholder
+            // This ensures consistent rendering during and after streaming
             const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
             if (citationNode !== null) {
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
@@ -503,12 +501,12 @@ const StreamingResponseText: React.FC<{
 
   return (
     <div
-      style={{ 
-        color: '#374151', 
-        fontSize: '13px', 
-        lineHeight: '19px', 
-        margin: 0, 
-        padding: '4px 0', 
+      style={{
+        color: '#374151',
+        fontSize: '14px',
+        lineHeight: '20px',
+        margin: 0,
+        padding: '4px 0',
         textAlign: 'left', 
         fontFamily: 'Inter, system-ui, sans-serif', 
         fontWeight: 400,
@@ -527,7 +525,7 @@ const StreamingResponseText: React.FC<{
           p: ({ children }) => {
             return <p style={{ 
               margin: 0, 
-              marginBottom: '8px', 
+              marginBottom: '10px', 
               textAlign: 'left',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
@@ -536,9 +534,9 @@ const StreamingResponseText: React.FC<{
           },
           h1: ({ children }) => {
             return <h1 style={{ 
-              fontSize: '16px', 
+              fontSize: '18px', 
               fontWeight: 600, 
-              margin: '12px 0 8px 0', 
+              margin: '14px 0 10px 0', 
               color: '#111827',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
@@ -548,7 +546,7 @@ const StreamingResponseText: React.FC<{
           h2: () => null, 
           h3: () => null,
           ul: ({ children }) => <ul style={{ 
-            margin: '8px 0', 
+            margin: '10px 0', 
             paddingLeft: 0, 
             listStylePosition: 'inside',
             wordWrap: 'break-word',
@@ -556,7 +554,7 @@ const StreamingResponseText: React.FC<{
             wordBreak: 'break-word'
           }}>{children}</ul>,
           ol: ({ children }) => <ol style={{ 
-            margin: '8px 0', 
+            margin: '10px 0', 
             paddingLeft: 0, 
             listStylePosition: 'inside',
             wordWrap: 'break-word',
@@ -565,7 +563,7 @@ const StreamingResponseText: React.FC<{
           }}>{children}</ol>,
           li: ({ children }) => {
             return <li style={{ 
-              marginBottom: '4px',
+              marginBottom: '6px',
               wordWrap: 'break-word',
               overflowWrap: 'break-word',
               wordBreak: 'break-word'
@@ -589,9 +587,9 @@ const StreamingResponseText: React.FC<{
           },
           code: ({ children }) => <code style={{ 
             backgroundColor: '#f3f4f6', 
-            padding: '2px 4px', 
-            borderRadius: '3px', 
-            fontSize: '12px', 
+            padding: '2px 5px', 
+            borderRadius: '4px', 
+            fontSize: '14px', 
             fontFamily: 'monospace',
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
@@ -750,17 +748,17 @@ const CitationLink: React.FC<{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        marginLeft: '3px',
-        marginRight: '1px',
-        minWidth: '18px',
-        height: '18px',
-        padding: '0 4px',
-        fontSize: '11px',
+        marginLeft: '4px',
+        marginRight: '2px',
+        minWidth: '20px',
+        height: '20px',
+        padding: '0 5px',
+        fontSize: '12px',
         fontWeight: 500,
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
         color: '#6B7280',
         backgroundColor: '#F3F4F6',
-        borderRadius: '3px',
+        borderRadius: '4px',
         border: 'none',
         cursor: 'pointer',
         transition: 'all 0.15s ease',
@@ -814,15 +812,15 @@ const truncateQueryText = (
   measureElement.style.width = containerWidth 
     ? `${containerWidth * (maxWidthPercent / 100)}px`
     : `${maxWidthPercent}%`;
-  measureElement.style.fontSize = '13px';
-  measureElement.style.lineHeight = '19px';
+  measureElement.style.fontSize = '14px';
+  measureElement.style.lineHeight = '20px';
   measureElement.style.fontFamily = 'system-ui, -apple-system, sans-serif';
   measureElement.style.whiteSpace = 'pre-wrap';
   measureElement.style.wordWrap = 'break-word';
   document.body.appendChild(measureElement);
   
   // Calculate max height for 2 lines
-  const lineHeight = 19;
+  const lineHeight = 20;
   const maxHeight = lineHeight * maxLines;
   
   // Try full text first
@@ -1184,14 +1182,14 @@ const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachm
   return (
     <div
       style={{
-        fontSize: '11px',
+        fontSize: '13px',
         color: '#6B7280',
         backgroundColor: '#F3F4F6',
-        padding: '2px 6px',
-        borderRadius: '4px',
+        padding: '3px 8px',
+        borderRadius: '5px',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '4px'
+        gap: '6px'
       }}
     >
       <span>📎</span>
@@ -1491,7 +1489,7 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
         }}
         onClick={onClick}
       >
-        <div style={{ color: '#9ca3af', fontSize: '11px', textAlign: 'center', padding: '8px' }}>
+        <div style={{ color: '#9ca3af', fontSize: '13px', textAlign: 'center', padding: '10px' }}>
           Preview unavailable
         </div>
       </div>
@@ -1514,7 +1512,7 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
         }}
         onClick={onClick}
       >
-        <div style={{ color: '#9ca3af', fontSize: '12px' }}>Loading...</div>
+        <div style={{ color: '#9ca3af', fontSize: '14px' }}>Loading...</div>
       </div>
     );
   }
@@ -1686,6 +1684,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // - open: full sidebar visible
   const isMainSidebarOpen = !isSidebarCollapsed;
 
+  // Use shared preview context (moved early to ensure expandedCardViewDoc is available)
+  const {
+    addPreviewFile,
+    preloadFile,
+    previewFiles,
+    getCachedPdfDocument,
+    preloadPdfPage,
+    setHighlightCitation,
+    openExpandedCardView,
+    closeExpandedCardView,
+    expandedCardViewDoc, // Track when document preview is open/closed
+    setIsAgentOpening,
+    setAgentTaskActive,
+    stopAgentTask,
+    setMapNavigating
+  } = usePreview();
+
   // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
   // This prevents artifacts from showing during streaming
   const cleanResponseText = (text: string): string => {
@@ -1749,6 +1764,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [inputValue, setInputValue] = React.useState<string>("");
   const [isSubmitted, setIsSubmitted] = React.useState<boolean>(false);
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
+  const [hoveredQueryId, setHoveredQueryId] = React.useState<string | null>(null);
+  const [copiedQueryId, setCopiedQueryId] = React.useState<string | null>(null);
+
+  // Copy query text to clipboard
+  const handleCopyQuery = async (queryText: string, messageId: string) => {
+    try {
+      await navigator.clipboard.writeText(queryText);
+      setCopiedQueryId(messageId);
+      setTimeout(() => setCopiedQueryId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
   
   // Bot status overlay state
   const [isBotActive, setIsBotActive] = React.useState<boolean>(false);
@@ -1945,6 +1973,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track if user manually requested fullscreen (should not be cleared by useEffect)
   const isManualFullscreenRef = React.useRef<boolean>(false);
   const [isFullscreenMode, setIsFullscreenMode] = React.useState<boolean>(false);
+  // Track fullscreen state when chat is closed so we can restore it when reopened
+  const wasFullscreenWhenClosedRef = React.useRef<boolean>(false);
   // Track actual rendered width of the panel for responsive design
   const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(450);
   // Track actual input container width for button responsive design
@@ -1967,7 +1997,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const resizeStateRef = React.useRef<{
     startPos: { x: number };
     startWidth: number;
-    hasStartedDragging: boolean; // Track if user has actually started dragging (for fullscreen exit)
+    hasStartedDragging: boolean; // Track if user has actually started dragging
   } | null>(null);
   const rafIdRef = React.useRef<number | null>(null);
   const panelElementRef = React.useRef<HTMLElement | null>(null);
@@ -2054,6 +2084,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       wasFullscreenBeforeCitationRef.current = false; // Also reset citation flag when manually collapsing
     }
   }, [isExpanded]);
+  
+  // Save fullscreen state when chat closes, restore when it reopens
+  const prevIsVisibleRef = React.useRef<boolean>(isVisible);
+  React.useEffect(() => {
+    const wasVisible = prevIsVisibleRef.current;
+    prevIsVisibleRef.current = isVisible;
+    
+    if (wasVisible && !isVisible) {
+      // Chat is closing - save fullscreen state
+      wasFullscreenWhenClosedRef.current = isFullscreenMode || isManualFullscreenRef.current || isFullscreenFromDashboardRef.current;
+      console.log('💾 Chat closing - saving fullscreen state:', wasFullscreenWhenClosedRef.current);
+    } else if (!wasVisible && isVisible) {
+      // Chat is opening - restore fullscreen state if we were in fullscreen before
+      if (wasFullscreenWhenClosedRef.current && !shouldExpand) {
+        console.log('🔄 Chat opening - restoring fullscreen state');
+        setIsFullscreenMode(true);
+        isFullscreenFromDashboardRef.current = true;
+        setIsExpanded(true);
+        setDraggedWidth(null); // Clear any dragged width so fullscreen width takes effect
+        lockedWidthRef.current = null;
+        // Disable transition for instant fullscreen
+        setJustEnteredFullscreen(true);
+        setTimeout(() => {
+          setJustEnteredFullscreen(false);
+        }, 50);
+      }
+    }
+  }, [isVisible, isFullscreenMode, shouldExpand]);
   
   // Calculate QuickStartBar position dynamically based on chat bar position
   React.useLayoutEffect(() => {
@@ -2228,7 +2286,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       return;
     }
 
-    const state = resizeStateRef.current;
     const minWidth = 450;
     // Allow dragging to the edge of the screen (only account for sidebar width)
     const maxWidth = window.innerWidth - sidebarWidth;
@@ -3879,22 +3936,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return () => clearInterval(intervalId);
   }, [hasLoadingMessage]);
   
-  // Use shared preview context (moved before handleQuerySubmit to ensure functions are available)
-  const {
-    addPreviewFile,
-    preloadFile,
-    previewFiles,
-    getCachedPdfDocument, // NEW: Get cached PDF document
-    preloadPdfPage, // NEW: Pre-render PDF pages
-    setHighlightCitation, // NEW: Set highlight for PropertyDetailsPanel
-    openExpandedCardView, // NEW: Open standalone ExpandedCardView
-    closeExpandedCardView, // NEW: Close standalone ExpandedCardView
-    expandedCardViewDoc, // Track when document preview is open/closed
-    setIsAgentOpening, // NEW: Set agent opening state for glow effect
-    setAgentTaskActive, // NEW: Set agent task overlay active
-    stopAgentTask, // NEW: Stop agent task
-    setMapNavigating // NEW: Set map navigation glow effect
-  } = usePreview();
   
   // Track if we were in fullscreen mode before opening a citation
   // This allows us to restore fullscreen when the document preview closes
@@ -3953,6 +3994,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }, 500);
     }
   }, [expandedCardViewDoc]);
+
 
   // Phase 1: Handle citation click - fetch document and open in viewer
   // fromAgentAction: true when called from agent_action handler (backend already emits reasoning step)
@@ -4255,6 +4297,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Use ref to get current fullscreen state (avoids stale closure issues in streaming callbacks)
       const currentFullscreenMode = isFullscreenModeRef.current;
       console.log('🔍 [CITATION] Fullscreen mode check:', { currentFullscreenMode, wasFullscreenBefore: wasFullscreenBeforeCitationRef.current });
+      
       if (currentFullscreenMode || wasFullscreenBeforeCitationRef.current) {
         console.log('🎯 [CITATION] Citation clicked in fullscreen mode - switching to 50% width for 50/50 split');
         // Track that we were in fullscreen mode so we can restore it when document preview closes
@@ -6420,8 +6463,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               if (!selectedDoc) {
                 // Fallback to text display if document not found
                 return (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '11px', color: '#6B7280', marginBottom: '2px' }}>
-                    <FileCheck size={12} style={{ flexShrink: 0, color: '#9CA3AF' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 10px', backgroundColor: 'transparent', borderRadius: '6px', fontSize: '13px', color: '#6B7280', marginBottom: '3px' }}>
+                    <FileCheck size={14} style={{ flexShrink: 0, color: '#9CA3AF' }} />
                     <span style={{ fontWeight: 400 }}>
                       {message.selectedDocumentIds.length === 1 && message.selectedDocumentNames?.length > 0
                         ? message.selectedDocumentNames[0]
@@ -6531,13 +6574,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 </div>
               )}
               {message.text && (
-                <div 
-                  style={{ 
-                    color: '#0D0D0D', 
-                    fontSize: '13px', 
-                    lineHeight: '19px', 
-                    margin: 0, 
-                    padding: 0, 
+                <div
+                  style={{
+                    color: '#0D0D0D',
+                    fontSize: '14px',
+                    lineHeight: '20px',
+                    margin: 0,
+                    padding: 0,
                     textAlign: 'left', 
                     fontFamily: 'system-ui, -apple-system, sans-serif', 
                     width: '100%', 
@@ -6545,41 +6588,94 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     boxSizing: 'border-box', 
                     display: 'flex', 
                     alignItems: 'flex-start', 
-                    gap: '6px',
+                    gap: '8px',
                     cursor: isTruncated ? 'pointer' : 'default',
                     wordWrap: 'break-word',
                     overflowWrap: 'break-word',
-                    minWidth: 0 // Allow flex item to shrink
+                    minWidth: 0, // Allow flex item to shrink
+                    position: 'relative'
                   }}
                   onClick={isTruncated ? handleCitationPreviewClick : undefined}
                   title={isTruncated ? 'Click to view citation' : undefined}
+                  onMouseEnter={() => setHoveredQueryId(finalKey)}
+                  onMouseLeave={() => setHoveredQueryId(null)}
                 >
                   {message.fromCitation && (
-                    <TextCursorInput size={14} style={{ flexShrink: 0, color: '#6B7280', marginTop: '2px' }} />
+                    <TextCursorInput size={16} style={{ flexShrink: 0, color: '#6B7280', marginTop: '3px' }} />
                   )}
                   <div style={{ 
                     textDecoration: isTruncated ? 'underline' : 'none',
                     textDecorationStyle: isTruncated ? ('dotted' as const) : undefined,
-                    textUnderlineOffset: '2px',
+                    textUnderlineOffset: '3px',
                     flex: 1,
                     minWidth: 0, // Allow flex item to shrink and wrap
                     wordWrap: 'break-word',
-                    overflowWrap: 'break-word'
+                    overflowWrap: 'break-word',
+                    position: 'relative',
+                    display: 'inline-block'
                   }}>
                   <ReactMarkdown components={{
                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
-                    h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
-                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
-                    li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
+                    h1: ({ children }) => <h1 style={{ fontSize: '18px', fontWeight: 600, margin: '14px 0 10px 0' }}>{children}</h1>,
+                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '16px', fontWeight: 600, margin: '10px 0 6px 0' }}>{children}</h3>,
+                    ul: ({ children }) => <ul style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ul>,
+                    ol: ({ children }) => <ol style={{ margin: '10px 0', paddingLeft: '22px' }}>{children}</ol>,
+                    li: ({ children }) => <li style={{ marginBottom: '6px' }}>{children}</li>,
                     strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                     em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
-                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
-                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
-                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                    code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 5px', borderRadius: '4px', fontSize: '14px', fontFamily: 'monospace' }}>{children}</code>,
+                    blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '14px', margin: '10px 0', color: '#6b7280' }}>{children}</blockquote>,
+                    hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
                     }}>{truncatedText}</ReactMarkdown>
                   </div>
+                  {/* Hover Copy Button - positioned inline next to text */}
+                  {hoveredQueryId === finalKey && (
+                    <motion.button
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ duration: 0.15 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopyQuery(message.text || '', finalKey);
+                      }}
+                      style={{
+                        marginLeft: '8px',
+                        backgroundColor: '#374151',
+                        color: '#FFFFFF',
+                        border: 'none',
+                        borderRadius: '6px',
+                        padding: '4px 8px',
+                        fontSize: '12px',
+                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontWeight: 400,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        whiteSpace: 'nowrap',
+                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
+                        flexShrink: 0,
+                        alignSelf: 'flex-start',
+                        marginTop: '2px'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#4B5563';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#374151';
+                      }}
+                    >
+                      {copiedQueryId === finalKey ? (
+                        <span>Copied</span>
+                      ) : (
+                        <>
+                          <Copy size={12} style={{ flexShrink: 0 }} />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </motion.button>
+                  )}
                 </div>
               )}
             </div>
@@ -6723,11 +6819,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               opacity: (shouldExpand && !isFullscreenMode) ? 0 : 1,
               transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
               visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible',
-              position: 'relative'
+              position: 'relative',
+              backgroundColor: '#FFFFFF', // Ensure solid background to prevent leaks
+              overflow: 'hidden', // Prevent content from leaking during transitions
+              width: '100%',
+              height: '100%'
             }}
           >
             {/* Header */}
-            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none' }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <button
@@ -7007,7 +7107,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center', // Center content wrapper horizontally
-                position: 'relative' // For BotStatusOverlay positioning
+                position: 'relative', // For BotStatusOverlay positioning
+                overflowX: 'hidden' // Prevent horizontal overflow leaks
               }}
             >
               {/* Centered content wrapper - ChatGPT-like centered layout */}
@@ -7040,12 +7141,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 paddingLeft: '0', // Remove left padding - centering handled by form
                 paddingRight: '0', // Remove right padding - centering handled by form
                 position: 'relative', 
-                overflow: 'visible',
+                overflow: 'visible', // Allow BotStatusOverlay to extend above
                 minWidth: '300px', // Prevent squishing of chat input container
                 flexShrink: 0, // Prevent flex shrinking
                 display: 'flex',
                 justifyContent: 'center', // Center the form
-                width: '100%'
+                width: '100%',
+                zIndex: 5 // Ensure input area is above content area
               }}
                 >
                   {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
@@ -7262,11 +7364,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           placeholder={selectedDocumentIds.size > 0 
                             ? `Searching in ${selectedDocumentIds.size} selected document${selectedDocumentIds.size > 1 ? 's' : ''}...`
                             : "Ask anything..."}
-                          className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
+                          className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
                           style={{
                             height: '24px', // Fixed initial height to prevent layout shift when typing starts
                             minHeight: '24px',
-                            maxHeight: '120px',
+                            maxHeight: '140px',
                             fontSize: '14px',
                             lineHeight: '20px',
                             paddingTop: '0px',
@@ -7346,10 +7448,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ 
                                     fontWeight: 500, 
-                                    fontSize: '13px', 
+                                    fontSize: '14px', 
                                     color: '#111827', 
-                                    marginBottom: '2px',
-                                    lineHeight: '1.3',
+                                    marginBottom: '3px',
+                                    lineHeight: '1.4',
                                     overflow: 'hidden',
                                     textOverflow: 'ellipsis',
                                     whiteSpace: 'nowrap'
@@ -7358,9 +7460,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   </div>
                                   {property.property_type && (
                                     <div style={{ 
-                                      fontSize: '11px', 
+                                      fontSize: '12px', 
                                       color: '#9CA3AF',
-                                      lineHeight: '1.3',
+                                      lineHeight: '1.4',
                                       fontWeight: 400
                                     }}>
                                       {property.property_type}

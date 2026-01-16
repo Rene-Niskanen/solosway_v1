@@ -193,7 +193,7 @@ export const ChatPanel = ({
             }} 
             className={`fixed top-0 h-full w-80 bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.08)] z-[350] ${className || ''}`}
             style={{
-              left: sidebarWidth !== undefined ? `${sidebarWidth}px` : (typeof window !== 'undefined' && window.innerWidth >= 1024 ? '56px' : '40px'),
+              left: sidebarWidth !== undefined ? `${sidebarWidth}px` : '236px', // Fallback: sidebar (224px) + toggle rail (12px)
               transition: 'left 0.2s ease-out',
               // Remove left border when in small sidebar mode to eliminate grey line
               ...(isSmallSidebarMode ? { 

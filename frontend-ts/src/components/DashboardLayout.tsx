@@ -11,7 +11,8 @@ import { ChatHistoryProvider, useChatHistory } from './ChatHistoryContext';
 import { ChatReturnNotification } from './ChatReturnNotification';
 import { ProfileDropdown } from './ProfileDropdown';
 import { backendApi } from '@/services/backendApi';
-import { FilingSidebarProvider } from '../contexts/FilingSidebarContext';
+import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { ProjectsProvider } from '../contexts/ProjectsContext';
 
 export interface DashboardLayoutProps {
   className?: string;
@@ -21,6 +22,7 @@ const DashboardLayoutContent = ({
   className
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
+  const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
   const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
 
   // Load saved background on mount - check for custom uploaded background first
@@ -98,7 +100,7 @@ const DashboardLayoutContent = ({
       setIsChatPanelOpen(false);
     }
     
-    // Special handling for home - reset everything to default state
+    // Special handling for home - reset everything to default state and close all panels
     if (viewId === 'home') {
       setCurrentChatData(null);
       setCurrentChatId(null);
@@ -107,6 +109,9 @@ const DashboardLayoutContent = ({
       setHasPerformedSearch(false);
       setResetTrigger(prev => prev + 1); // Trigger reset in SearchBar
       setHomeClicked(true); // Flag that home was clicked
+      // Close all panels
+      setIsChatPanelOpen(false);
+      closeFilingSidebar(); // Close filing sidebar
       // Set view to search since home displays the search interface
       setCurrentView('search');
       return; // Exit early to prevent setting currentView again
@@ -345,31 +350,22 @@ const DashboardLayoutContent = ({
         onChatSelect={handleChatSelect} 
         onNewChat={handleNewChat}
         showChatHistory={true}
-          isSmallSidebarMode={!isSidebarCollapsed && !isSidebarExpanded}
+          isSmallSidebarMode={false}
           sidebarWidth={(() => {
             // Calculate sidebar width based on state
-            // In small sidebar mode, position chat panel directly against sidebar (no toggle rail gap) to remove grey line
             const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
             let sidebarWidth = 0;
             
             if (isSidebarCollapsed) {
-              sidebarWidth = 8; // w-2 = 8px
+              sidebarWidth = 0; // w-0 when collapsed
             } else if (isSidebarExpanded) {
               sidebarWidth = 320; // w-80 = 320px
             } else {
-              // Normal state (small sidebar): position directly against sidebar to eliminate grey line
-              if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
-                sidebarWidth = 56; // lg:w-14 - no toggle rail gap
-              } else {
-                sidebarWidth = 40; // w-10 - no toggle rail gap
-              }
+              // Normal state: w-56 = 224px (sidebar with labels)
+              sidebarWidth = 224;
             }
             
-            // Only add toggle rail width when NOT in small sidebar mode
-            if (isSidebarCollapsed || isSidebarExpanded) {
-              return sidebarWidth + TOGGLE_RAIL_WIDTH;
-            }
-            return sidebarWidth;
+            return sidebarWidth + TOGGLE_RAIL_WIDTH;
           })()}
         />
       )}
@@ -425,6 +421,7 @@ const DashboardLayoutContent = ({
         onRestoreSidebarState={(shouldBeCollapsed: boolean) => setIsSidebarCollapsed(shouldBeCollapsed)}
         getSidebarState={() => isSidebarCollapsed}
         isSidebarCollapsed={isSidebarCollapsed}
+        isSidebarExpanded={isSidebarExpanded}
         onSidebarToggle={handleSidebarToggle}
         onMapVisibilityChange={setIsMapVisible}
       />
@@ -436,7 +433,9 @@ export const DashboardLayout = (props: DashboardLayoutProps) => {
   return (
     <ChatHistoryProvider>
       <FilingSidebarProvider>
-      <DashboardLayoutContent {...props} />
+        <ProjectsProvider>
+          <DashboardLayoutContent {...props} />
+        </ProjectsProvider>
       </FilingSidebarProvider>
     </ChatHistoryProvider>
   );

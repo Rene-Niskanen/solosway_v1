@@ -1146,107 +1146,101 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     clearSelection();
   };
 
-  if (!isOpen) return null;
-
+  // Always render to prevent gaps - just position off-screen when closed
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{
-          x: -20,
-          opacity: 0,
-          scale: 0.95
-        }}
-        animate={{
-          x: 0,
-          opacity: 1,
-          scale: 1
-        }}
-        exit={{
-          x: -10,
-          opacity: 0,
-          scale: 0.98
-        }}
-        transition={{
-          duration: 0.15,
-          ease: [0.4, 0, 0.2, 1]
-        }}
+    <div
         ref={(el) => { if (el) panelElementRef.current = el; }}
-        className="fixed top-0 h-full bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col z-[10000]"
+        className="fixed top-0 h-full flex flex-col z-[10000]"
         style={{
-          // Position FilingSidebar after the toggle rail (which is 12px wide)
-          // Toggle rail is always 12px wide and positioned at the right edge of the sidebar
-          // When collapsed: sidebar is 8px, toggle rail extends to 12px, so FilingSidebar starts at 12px
-          // When NOT collapsed: sidebar is 40px/56px, toggle rail extends to 52px/68px, so FilingSidebar starts there
-          left: sidebarWidth !== undefined 
-            ? (isSmallSidebarMode 
-              ? `${sidebarWidth + 12}px` // Not collapsed: sidebarWidth is sidebar only, add 12px for toggle rail
-              : '12px') // Collapsed: toggle rail ends at 12px (sidebar is 8px, rail is 12px wide)
-            : (typeof window !== 'undefined' && window.innerWidth >= 1024 
-              ? '68px' // 56px sidebar + 12px toggle rail
-              : '52px'), // 40px sidebar + 12px toggle rail
-          width: draggedWidth !== null ? `${Math.max(draggedWidth, 320)}px` : `${Math.max(contextWidth, 320)}px`, // Use context width as default, ensure minimum 320px
-          transition: isResizing ? 'none' : 'left 0.2s ease-out, width 0.2s ease-out',
-          // Remove left border when in small sidebar mode to eliminate grey line
-          ...(isSmallSidebarMode ? { 
-            borderLeft: 'none'
-          } : {})
+          // Match sidebar grey background for seamless look - always solid
+          background: '#F1F1F1',
+          // Position FilingSidebar at sidebar edge (covers toggle rail for seamless look)
+          // When closed, move off-screen to the left to prevent gaps
+          // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px
+          // When collapsed: FilingSidebar starts at 12px (after toggle rail)
+          // When normal (isSmallSidebarMode): FilingSidebar starts at sidebarWidth (covers toggle rail)
+          left: isOpen 
+            ? (sidebarWidth !== undefined 
+              ? (isSmallSidebarMode 
+                ? `${sidebarWidth}px` // Not collapsed: start exactly at sidebar edge (224px), covering toggle rail
+                : '12px') // Collapsed: after toggle rail (12px)
+              : '224px') // Fallback: sidebar edge (224px)
+            : '-1000px', // Move off-screen when closed to prevent gaps
+          width: isOpen 
+            ? (draggedWidth !== null ? `${Math.max(draggedWidth, 320)}px` : `${Math.max(contextWidth, 320)}px`) // Use context width as default, ensure minimum 320px
+            : '320px', // Keep width when closed to prevent layout shift
+          // Instant transitions to prevent map showing through gaps
+          transition: isResizing ? 'none' : 'left 0s ease-out, width 0s ease-out',
+          willChange: isResizing ? 'left, width' : 'auto', // Optimize for performance
+          // Force GPU acceleration for smoother rendering
+          transform: 'translateZ(0)',
+          backfaceVisibility: 'hidden',
+          // Ensure background extends fully to prevent any gaps
+          boxShadow: 'none',
+          borderRight: 'none',
+          // Extend slightly beyond to ensure full coverage
+          minWidth: '320px',
+          right: 'auto',
+          // Hide pointer events when closed
+          pointerEvents: isOpen ? 'auto' : 'none'
         }}
       >
         {/* Header - Compact and Sleek */}
-        <div className="flex items-center justify-between px-6 py-2.5 border-b border-slate-200/40" style={{ backgroundColor: '#F9F9F9' }}>
+        <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
-            <CloudCheck className="w-4 h-4 text-slate-400" strokeWidth={1.75} />
-            <h2 className="text-sm font-semibold text-slate-500 tracking-tight">Documents</h2>
+            <CloudCheck className="w-4 h-4 text-gray-400" strokeWidth={1.75} />
+            <h2 className="text-[13px] font-semibold text-gray-900">Documents</h2>
           </div>
-          <motion.button
+          <button
             onClick={closeSidebar}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="p-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-all duration-200"
+            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-white/60 rounded-md transition-colors"
             aria-label="Close sidebar"
           >
             <X className="w-4 h-4" strokeWidth={1.5} />
-          </motion.button>
+          </button>
         </div>
 
         {/* Search and Actions - Compact Design */}
-        <div className="px-6 pt-5 pb-4 border-b border-slate-200/40 space-y-5" style={{ backgroundColor: '#F9F9F9' }}>
+        <div className="px-4 pb-3 space-y-3">
           {/* Search Bar */}
           <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
             <input
               ref={searchInputRef}
               type="text"
               placeholder="Search documents..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 border border-slate-200/60 rounded-md text-xs bg-white/50 hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400 transition-all duration-150"
+              className="w-full pl-8 pr-3 py-1.5 bg-white rounded-lg text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none transition-colors"
+              style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
             />
           </div>
 
           {/* Actions Row */}
-          <div className="flex items-center justify-between gap-2 py-1">
-            {/* View Mode Toggle - Sleeker Design */}
-            <div className="flex items-center gap-1 bg-slate-100/60 rounded-md p-1">
+          <div className="flex items-center justify-between gap-2">
+            {/* View Mode Toggle - Matching Sidebar Style */}
+            <div className="flex items-center gap-0.5 bg-gray-200/60 rounded-lg p-0.5">
               <button
                 onClick={() => setViewMode('global')}
-                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
+                className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
                   viewMode === 'global'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white text-gray-900'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
+                style={{ boxShadow: viewMode === 'global' ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
               >
-                Global
+                All Files
               </button>
               <button
                 onClick={() => setViewMode('property')}
-                className={`px-2 py-1 text-xs font-medium rounded transition-all duration-150 ${
+                className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
                   viewMode === 'property'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white text-gray-900'
+                    : 'text-gray-600 hover:text-gray-900'
                 }`}
+                style={{ boxShadow: viewMode === 'property' ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
               >
-                Properties
+                By Property
               </button>
             </div>
 
@@ -1259,42 +1253,40 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     clearSelection();
                   }
                 }}
-                className={`flex items-center justify-center px-2.5 py-1.5 rounded-md border transition-all ${
+                className={`flex items-center justify-center p-1.5 rounded-md transition-all ${
                   isSelectionMode 
-                    ? 'bg-blue-50 border-blue-200 text-blue-600' 
-                    : 'bg-white/70 border-slate-200/60 text-slate-500 hover:bg-slate-50/80 hover:text-slate-700 hover:border-slate-300/80'
+                    ? 'bg-blue-50 text-blue-600' 
+                    : 'text-gray-500 hover:bg-white/60 hover:text-gray-700'
                 }`}
-                title="Select documents to delete"
+                title="Select documents"
               >
-                <SquareMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
+                <SquareMousePointer className="w-4 h-4" strokeWidth={1.5} />
               </button>
 
               <div className="relative" ref={newMenuRef}>
-                <motion.button
+                <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowNewMenu(!showNewMenu);
                   }}
-                  whileHover={{ scale: 1.01 }}
-                  whileTap={{ scale: 0.99 }}
-                  className="flex items-center space-x-1 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-                  title="New document"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-gray-50 rounded-md transition-colors"
+                  style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+                  title="New"
                 >
-                  <Plus className="w-3 h-3 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                  <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
-                    New
-                  </span>
-                </motion.button>
+                  <Plus className="w-3.5 h-3.5 text-gray-600" strokeWidth={1.75} />
+                  <span className="text-gray-700 font-medium text-[12px]">New</span>
+                </button>
 
-              {/* New Menu Popup */}
+              {/* New Menu Popup - Clean style */}
               <AnimatePresence>
                 {showNewMenu && (
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                    initial={{ opacity: 0, scale: 0.95, y: -4 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: -5 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute right-0 top-full mt-1 w-56 bg-white rounded-md shadow-lg border border-slate-200/60 py-1 z-50"
+                    exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute right-0 top-full mt-1.5 w-48 bg-white rounded-lg py-1 z-50"
+                    style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)' }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     {/* Folder Option */}
@@ -1303,24 +1295,18 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setShowNewMenu(false);
                         await handleCreateFolder();
                       }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <div className="flex-shrink-0 relative">
-                        <img 
-                          src="/file.png" 
-                          alt="Folder" 
-                          className="w-5 h-5 object-contain"
-                        />
-                        <Plus className="w-3 h-3 text-slate-700 absolute -top-0.5 -right-0.5" strokeWidth={2} />
-                      </div>
-                      <span className="text-sm font-medium text-slate-700">Folder</span>
+                      <Folder className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
+                      <span className="text-[13px] font-medium text-gray-700">New folder</span>
                     </button>
+
+                    <div className="h-px bg-gray-100 my-1" />
 
                     {/* Upload Option */}
                     <button
                       onClick={() => {
                         setShowNewMenu(false);
-                        // Trigger file input
                         const input = document.createElement('input');
                         input.type = 'file';
                         input.multiple = false;
@@ -1328,18 +1314,14 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         input.onchange = async (e) => {
                           const file = (e.target as HTMLInputElement).files?.[0];
                           if (!file) return;
-                          
                           await handleFileUpload(file);
                         };
                         input.click();
                       }}
-                      className="w-full flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
                     >
-                      <div className="flex items-center gap-3">
-                        <Upload className="w-5 h-5 text-slate-700 flex-shrink-0" strokeWidth={1.5} />
-                        <span className="text-sm font-medium text-slate-700">Upload from computer</span>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                      <Upload className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
+                      <span className="text-[13px] font-medium text-gray-700">Upload file</span>
                     </button>
                   </motion.div>
                 )}
@@ -1351,31 +1333,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
         {/* Breadcrumb Navigation */}
         {breadcrumbs.length > 0 && (
-          <div className="px-6 py-2 border-b border-gray-200 flex items-center gap-2 text-sm">
-            <motion.button
+          <div className="px-4 py-2 flex items-center gap-2">
+            <button
               onClick={handleBack}
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.99 }}
-              className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
-              title="Go back"
+              className="flex items-center gap-1 px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-white/60 rounded-md transition-colors"
             >
-              <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
-                ← Back
-              </span>
-            </motion.button>
+              <ChevronRight className="w-3.5 h-3.5 rotate-180" strokeWidth={1.75} />
+              <span className="text-[12px] font-medium">Back</span>
+            </button>
+            <span className="text-gray-300">/</span>
             {breadcrumbs.map((crumb, idx) => (
               <React.Fragment key={crumb.id}>
-                <span className="text-gray-400">/</span>
-                <span className={idx === breadcrumbs.length - 1 ? 'text-gray-900 font-medium' : 'text-gray-600'}>
+                <span className={`text-[12px] ${idx === breadcrumbs.length - 1 ? 'text-gray-700 font-medium' : 'text-gray-500'}`}>
                   {crumb.name}
                 </span>
+                {idx < breadcrumbs.length - 1 && <span className="text-gray-300">/</span>}
               </React.Fragment>
             ))}
           </div>
         )}
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto" style={{ backgroundColor: '#F9F9F9' }}>
+        {/* Content Area - clean grey background */}
+        <div className="flex-1 overflow-y-auto px-3 pt-2">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-gray-500">Loading...</div>
@@ -1385,13 +1364,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <div className="text-red-500">{error}</div>
             </div>
           ) : filteredItems.folders.length === 0 && filteredItems.documents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-gray-500 px-6">
-              <Folder className="w-16 h-16 text-gray-300 mb-4" />
-              <p className="text-sm font-medium mb-1">No documents found</p>
-              <p className="text-xs text-center">Upload documents or adjust your search.</p>
+            <div className="flex flex-col items-center justify-center h-full text-gray-500 px-4">
+              <FolderOpen className="w-10 h-10 text-gray-300 mb-3" strokeWidth={1.5} />
+              <p className="text-[13px] font-medium text-gray-500 mb-1">No documents</p>
+              <p className="text-[12px] text-gray-400 text-center">Upload files or adjust your search</p>
             </div>
           ) : (
-            <div className="py-2">
+            <div className="space-y-0.5 pb-3">
               {/* Folders */}
               {filteredItems.folders.map((folder) => {
                 const isSelected = selectedItems.has(folder.id);
@@ -1400,10 +1379,10 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   key={folder.id}
                   onMouseEnter={() => setHoveredItemId(folder.id)}
                   onMouseLeave={() => setHoveredItemId(null)}
-                  className={`flex items-center gap-3 px-6 py-2.5 cursor-pointer group transition-colors ${
+                  className={`flex items-center gap-3 px-3 py-2 cursor-pointer group transition-all rounded-lg ${
                     isSelectionMode 
-                      ? (isSelected ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-gray-50')
-                      : 'hover:bg-gray-50'
+                      ? (isSelected ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-white/70')
+                      : 'hover:bg-white/70'
                   }`}
                   onClick={(e) => {
                     if (editingItemId) return;
@@ -1826,19 +1805,20 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Context Menu */}
+        {/* Context Menu - Clean style */}
         <AnimatePresence>
           {openContextMenuId && contextMenuPosition && (
             <motion.div
               ref={contextMenuRef}
-              initial={{ opacity: 0, scale: 0.95, y: -10 }}
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: -10 }}
-              transition={{ duration: 0.15 }}
-              className="fixed bg-white rounded-md shadow-lg border border-gray-200/60 py-0.5 z-[10000] min-w-[120px]"
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.12 }}
+              className="fixed bg-white rounded-lg py-1 z-[10000] min-w-[140px]"
               style={{
                 left: `${contextMenuPosition.x}px`,
                 top: `${contextMenuPosition.y}px`,
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
               }}
             >
               {(() => {
@@ -1856,31 +1836,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           handleRename(openContextMenuId!, itemName || '', isFolder);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
+                      className="w-full px-3 py-1.5 text-left text-[13px] text-gray-700 hover:bg-gray-50 transition-colors"
                     >
                       Rename
                     </button>
                     {!isFolder && (
                       <button
                         onClick={() => {
-                          // TODO: Implement move to folder
                           console.log('Move to folder:', openContextMenuId);
                           setOpenContextMenuId(null);
                           setContextMenuPosition(null);
                         }}
-                        className="w-full px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 transition-colors"
+                        className="w-full px-3 py-1.5 text-left text-[13px] text-gray-700 hover:bg-gray-50 transition-colors"
                       >
                         Move to folder
                       </button>
                     )}
-                    <div className="h-px bg-gray-200/60 my-0.5" />
+                    <div className="h-px bg-gray-100 my-1" />
                     <button
                       onClick={() => {
                         if (item) {
                           handleDeleteClick(openContextMenuId!, isFolder);
                         }
                       }}
-                      className="w-full px-3 py-1.5 text-left text-xs text-red-600 hover:bg-red-50 transition-colors"
+                      className="w-full px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50 transition-colors"
                     >
                       Delete
                     </button>
@@ -1891,30 +1870,33 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           )}
         </AnimatePresence>
         
-        {/* Drag handle for resizing from right edge - same as SideChatPanel */}
+        {/* Drag handle for resizing from right edge - seamless design */}
         <div
           onMouseDown={handleResizeStart}
+          className="group"
           style={{
             position: 'absolute',
-            right: '-2px', // Extend slightly beyond the edge for easier grabbing
+            right: '-6px',
             top: 0,
             bottom: 0,
-            width: '12px', // Wider handle for better visibility and easier grabbing
+            width: '12px',
             cursor: 'ew-resize',
-            zIndex: 50, // High z-index to ensure it's on top
-            backgroundColor: 'transparent', // No background color
+            zIndex: 50,
+            backgroundColor: 'transparent',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            pointerEvents: 'auto', // Ensure it captures mouse events
+            pointerEvents: 'auto',
           }}
         >
-          {/* Very subtle visual indicator - no blue line */}
+          {/* Subtle hover indicator */}
           <div
+            className="opacity-0 group-hover:opacity-100 transition-opacity"
             style={{
-              width: '1px',
+              width: '2px',
               height: '100%',
-              backgroundColor: 'rgba(156, 163, 175, 0.15)', // Very subtle gray line
+              backgroundColor: 'rgba(156, 163, 175, 0.2)',
+              borderRadius: '1px',
             }}
           />
         </div>
@@ -1922,37 +1904,39 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         {/* Blur overlay when delete dialog is open */}
         {deleteConfirmDialog.isOpen && (
           <div 
-            className="absolute inset-0 bg-white/60 backdrop-blur-[2px] z-[10001]"
+            className="absolute inset-0 bg-gray-100/80 backdrop-blur-[1px] z-[10001]"
             style={{ pointerEvents: 'auto' }}
           />
         )}
         
-        {/* Delete Confirmation Dialog - Scoped to FilingSidebar */}
+        {/* Delete Confirmation Dialog - Clean style */}
         {deleteConfirmDialog.isOpen && (
           <div className="absolute inset-0 z-[10002] flex items-center justify-center pointer-events-none px-4">
             <div 
-              className="pointer-events-auto bg-white rounded border border-gray-200/80 shadow-sm p-5 w-full"
+              className="pointer-events-auto bg-white rounded-lg p-4 w-full"
               style={{ 
-                maxWidth: 'min(calc(100% - 2rem), 320px)',
-                minWidth: '200px'
+                maxWidth: 'min(calc(100% - 2rem), 280px)',
+                minWidth: '200px',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
               }}
             >
-              <p className="text-xs text-gray-700 mb-4 leading-relaxed break-all" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                Delete "{deleteConfirmDialog.itemName}"?
-                {deleteConfirmDialog.isFolder && <span className="block mt-1.5 text-gray-500 text-[11px] break-all" style={{ wordBreak: 'break-word' }}>All items inside will be deleted.</span>}
+              <p className="text-[13px] text-gray-900 mb-1 font-medium">Delete this {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?</p>
+              <p className="text-[12px] text-gray-500 mb-4 break-all" style={{ wordBreak: 'break-word' }}>
+                "{deleteConfirmDialog.itemName}"
+                {deleteConfirmDialog.isFolder && <span className="block mt-1 text-gray-400">All contents will be deleted.</span>}
               </p>
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => {
                     setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
                   }}
-                  className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded transition-colors"
+                  className="px-3 py-1.5 text-[13px] text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-md transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleDelete}
-                  className="px-3 py-1.5 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                  className="px-3 py-1.5 text-[13px] font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
                 >
                   Delete
                 </button>
@@ -1960,8 +1944,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             </div>
           </div>
         )}
-      </motion.div>
-    </AnimatePresence>
+    </div>
   );
 };
 

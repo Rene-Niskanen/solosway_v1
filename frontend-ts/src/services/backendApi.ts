@@ -85,6 +85,41 @@ interface PropertyData {
   updated_at?: string;
 }
 
+// Project interfaces
+export interface ProjectData {
+  id: string;
+  user_id: number;
+  client_name: string;
+  client_logo_url?: string;
+  title: string;
+  description?: string;
+  status: 'active' | 'negotiating' | 'archived';
+  tags: string[];
+  tool?: string;
+  budget_min?: number;
+  budget_max?: number;
+  due_date?: string;
+  thumbnail_url?: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectData {
+  client_name: string;
+  client_logo_url?: string;
+  title: string;
+  description?: string;
+  status?: 'active' | 'negotiating' | 'archived';
+  tags?: string[];
+  tool?: string;
+  budget_min?: number;
+  budget_max?: number;
+  due_date?: string;
+  thumbnail_url?: string;
+  message_count?: number;
+}
+
 class BackendApiService {
   private baseUrl: string;
 
@@ -1154,27 +1189,42 @@ class BackendApiService {
    * Upload file via backend proxy (fallback for CORS issues)
    * Supports progress tracking via onProgress callback
    * Used for PROPERTY CARD uploads (fast pipeline with property_id)
+   * 
+   * @param file - The file to upload
+   * @param metadata - Optional metadata including:
+   *   - property_id: Link to a property
+   *   - skip_processing: Don't queue processing task
+   *   - project_upload: Mark as project upload
+   *   - silent: Don't show global progress notification
+   * @param onProgress - Progress callback (0-100)
    */
   async uploadPropertyDocumentViaProxy(
     file: File, 
     metadata?: any,
     onProgress?: (percent: number) => void
   ) {
+    const isSilent = metadata?.silent === true;
+    
     return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
     try {
-      console.log(`🚀 Starting proxy upload for: ${file.name}`);
+      console.log(`🚀 Starting proxy upload for: ${file.name}${isSilent ? ' (silent)' : ''}`);
       
-      // Dispatch upload start event for progress bar
-      window.dispatchEvent(new CustomEvent('upload-start', { 
-        detail: { fileName: file.name } 
-      }));
+      // Dispatch upload start event for progress bar (unless silent)
+      if (!isSilent) {
+        window.dispatchEvent(new CustomEvent('upload-start', { 
+          detail: { fileName: file.name } 
+        }));
+      }
       
       const formData = new FormData();
       formData.append('file', file);
       
       if (metadata) {
         Object.keys(metadata).forEach(key => {
-          formData.append(key, metadata[key]);
+          // Don't pass 'silent' to the backend - it's frontend-only
+          if (key !== 'silent') {
+            formData.append(key, metadata[key]);
+          }
         });
       }
 
@@ -1197,10 +1247,12 @@ class BackendApiService {
               lastReportedProgress = percent;
               // Call progress callback immediately for real-time updates
               if (onProgress) onProgress(percent);
-              // Dispatch progress event for progress bar
-              window.dispatchEvent(new CustomEvent('upload-progress', { 
-                detail: { fileName: file.name, progress: percent } 
-              }));
+              // Dispatch progress event for progress bar (unless silent)
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-progress', { 
+                  detail: { fileName: file.name, progress: percent } 
+                }));
+              }
             } else {
               console.log(`📊 Upload progress skipped (duplicate): ${percent}% (last: ${lastReportedProgress}%)`);
             }
@@ -1214,10 +1266,12 @@ class BackendApiService {
                 console.log(`📊 Estimated progress: ${estimatedPercent}% (${e.loaded} bytes, capped at 90%)`);
                 lastReportedProgress = estimatedPercent;
                 if (onProgress) onProgress(estimatedPercent);
-                // Dispatch progress event for progress bar
-                window.dispatchEvent(new CustomEvent('upload-progress', { 
-                  detail: { fileName: file.name, progress: estimatedPercent } 
-                }));
+                // Dispatch progress event for progress bar (unless silent)
+                if (!isSilent) {
+                  window.dispatchEvent(new CustomEvent('upload-progress', { 
+                    detail: { fileName: file.name, progress: estimatedPercent } 
+                  }));
+                }
               }
             }
           }
@@ -1238,13 +1292,15 @@ class BackendApiService {
       if (response.success) {
         console.log(`✅ Proxy upload successful: ${file.name}`);
                 console.log(`📋 Document ID: ${response.document_id}`);
-                // Dispatch upload complete event for progress bar
-                window.dispatchEvent(new CustomEvent('upload-complete', { 
-                  detail: { 
-                    fileName: file.name, 
-                    documentId: response.document_id || response.data?.document_id 
-                  } 
-                }));
+                // Dispatch upload complete event for progress bar (unless silent)
+                if (!isSilent) {
+                  window.dispatchEvent(new CustomEvent('upload-complete', { 
+                    detail: { 
+                      fileName: file.name, 
+                      documentId: response.document_id || response.data?.document_id 
+                    } 
+                  }));
+                }
                 // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
           success: true,
@@ -1256,10 +1312,12 @@ class BackendApiService {
       } else {
         const errorMsg = response.error || 'Upload failed';
         console.error(`❌ Upload failed: ${errorMsg}`);
-        // Dispatch upload error event for progress bar
-        window.dispatchEvent(new CustomEvent('upload-error', { 
-          detail: { fileName: file.name, error: errorMsg } 
-        }));
+        // Dispatch upload error event for progress bar (unless silent)
+        if (!isSilent) {
+          window.dispatchEvent(new CustomEvent('upload-error', { 
+            detail: { fileName: file.name, error: errorMsg } 
+          }));
+        }
         resolve({
           success: false,
           error: errorMsg
@@ -1267,10 +1325,12 @@ class BackendApiService {
       }
             } catch (parseError) {
               console.error(`❌ Failed to parse response: ${parseError}`);
-              // Dispatch upload error event for progress bar
-              window.dispatchEvent(new CustomEvent('upload-error', { 
-                detail: { fileName: file.name, error: 'Failed to parse server response' } 
-              }));
+              // Dispatch upload error event for progress bar (unless silent)
+              if (!isSilent) {
+                window.dispatchEvent(new CustomEvent('upload-error', { 
+                  detail: { fileName: file.name, error: 'Failed to parse server response' } 
+                }));
+              }
               resolve({
                 success: false,
                 error: 'Failed to parse server response'
@@ -1292,10 +1352,12 @@ class BackendApiService {
               // If response isn't JSON, use status text
               errorMessage = xhr.statusText || errorMessage;
             }
-            // Dispatch upload error event for progress bar
-            window.dispatchEvent(new CustomEvent('upload-error', { 
-              detail: { fileName: file.name, error: errorMessage } 
-            }));
+            // Dispatch upload error event for progress bar (unless silent)
+            if (!isSilent) {
+              window.dispatchEvent(new CustomEvent('upload-error', { 
+                detail: { fileName: file.name, error: errorMessage } 
+              }));
+            }
             resolve({
               success: false,
               error: errorMessage
@@ -1306,10 +1368,12 @@ class BackendApiService {
         // Handle errors
         xhr.onerror = () => {
           console.error(`❌ Proxy upload failed for ${file.name}: Network error`);
-          // Dispatch upload error event for progress bar
-          window.dispatchEvent(new CustomEvent('upload-error', { 
-            detail: { fileName: file.name, error: 'Network error during upload' } 
-          }));
+          // Dispatch upload error event for progress bar (unless silent)
+          if (!isSilent) {
+            window.dispatchEvent(new CustomEvent('upload-error', { 
+              detail: { fileName: file.name, error: 'Network error during upload' } 
+            }));
+          }
           resolve({
             success: false,
             error: 'Network error during upload'
@@ -1319,10 +1383,12 @@ class BackendApiService {
         // Handle abort
         xhr.onabort = () => {
           console.log(`⚠️ Upload aborted for ${file.name}`);
-          // Dispatch upload error event for progress bar
-          window.dispatchEvent(new CustomEvent('upload-error', { 
-            detail: { fileName: file.name, error: 'Upload was aborted' } 
-          }));
+          // Dispatch upload error event for progress bar (unless silent)
+          if (!isSilent) {
+            window.dispatchEvent(new CustomEvent('upload-error', { 
+              detail: { fileName: file.name, error: 'Upload was aborted' } 
+            }));
+          }
           resolve({
             success: false,
             error: 'Upload was aborted'
@@ -1683,6 +1749,58 @@ class BackendApiService {
     return this.fetchApi(`/api/documents/${documentId}/reprocess`, {
       method: 'POST',
       body: JSON.stringify({ mode })
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Projects API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get all projects for the current user
+   * @param status - Optional filter by status: 'active', 'negotiating', 'archived'
+   */
+  async getProjects(status?: 'active' | 'negotiating' | 'archived'): Promise<ApiResponse<{
+    projects: ProjectData[];
+    total: number;
+  }>> {
+    const params = status ? `?status=${status}` : '';
+    return this.fetchApi(`/api/projects${params}`);
+  }
+
+  /**
+   * Get a single project by ID
+   */
+  async getProject(projectId: string): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi(`/api/projects/${projectId}`);
+  }
+
+  /**
+   * Create a new project
+   */
+  async createProject(data: CreateProjectData): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  /**
+   * Update an existing project
+   */
+  async updateProject(projectId: string, data: Partial<CreateProjectData>): Promise<ApiResponse<ProjectData>> {
+    return this.fetchApi(`/api/projects/${projectId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  }
+
+  /**
+   * Delete a project
+   */
+  async deleteProject(projectId: string): Promise<ApiResponse<{ message: string }>> {
+    return this.fetchApi(`/api/projects/${projectId}`, {
+      method: 'DELETE'
     });
   }
 }

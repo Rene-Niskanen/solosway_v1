@@ -30,6 +30,12 @@ class DocumentStatus(enum.Enum):
     COMPLETED = 'completed'
     FAILED = 'failed'
 
+# Enum for project status
+class ProjectStatus(enum.Enum):
+    ACTIVE = 'active'
+    NEGOTIATING = 'negotiating'
+    ARCHIVED = 'archived'
+
 
 class User(db.Model, UserMixin):
     __tablename__ = 'users'
@@ -294,6 +300,69 @@ class PropertyCardCache(db.Model):
             'card_data': self.card_data,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'cache_version': self.cache_version
+        }
+
+
+class Project(db.Model):
+    """Projects for freelance/design work management"""
+    __tablename__ = 'projects'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    
+    # Client information
+    client_name = db.Column(db.String(255), nullable=False)
+    client_logo_url = db.Column(db.String(1024))
+    
+    # Project details
+    title = db.Column(db.String(500), nullable=False)
+    description = db.Column(db.Text)
+    status = db.Column(db.Enum(ProjectStatus), default=ProjectStatus.ACTIVE, nullable=False)
+    tags = db.Column(JSONB, default=list)  # Array of tag strings like ["Web Design", "Branding"]
+    tool = db.Column(db.String(100))  # e.g., "Figma", "Sketch", "Adobe XD"
+    
+    # Budget (stored in cents for precision)
+    budget_min = db.Column(db.Integer)  # Minimum budget in cents
+    budget_max = db.Column(db.Integer)  # Maximum budget in cents
+    
+    # Timeline
+    due_date = db.Column(db.DateTime(timezone=True))
+    
+    # Media
+    thumbnail_url = db.Column(db.String(1024))
+    
+    # Engagement
+    message_count = db.Column(db.Integer, default=0)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    owner = db.relationship('User', backref='projects')
+    
+    def __repr__(self):
+        return f'<Project {self.title}>'
+    
+    def serialize(self):
+        """Convert project to dictionary"""
+        return {
+            'id': str(self.id),
+            'user_id': self.user_id,
+            'client_name': self.client_name,
+            'client_logo_url': self.client_logo_url,
+            'title': self.title,
+            'description': self.description,
+            'status': self.status.value if self.status else None,
+            'tags': self.tags or [],
+            'tool': self.tool,
+            'budget_min': self.budget_min,
+            'budget_max': self.budget_max,
+            'due_date': self.due_date.isoformat() if self.due_date else None,
+            'thumbnail_url': self.thumbnail_url,
+            'message_count': self.message_count or 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
 

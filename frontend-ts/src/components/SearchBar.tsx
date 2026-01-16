@@ -1551,13 +1551,17 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                   
                   {/* Map Toggle Button - Aligned with text start */}
                   {contextConfig.showMapToggle && (
-                    <button 
+                  <button 
                       type="button" 
                       onClick={(e) => {
                         console.log('🗺️ Map button clicked!', { 
                           hasOnMapToggle: !!onMapToggle,
                           currentVisibility: isMapVisible 
                         });
+                        // Always close document preview when toggling views
+                        setIsPreviewOpen(false);
+                        setPreviewFiles([]);
+                        setActivePreviewTabIndex(0);
                         onMapToggle?.();
                       }}
                       className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
@@ -1577,9 +1581,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         e.currentTarget.style.backgroundColor = '#FFFFFF';
                       }}
                       title={isMapVisible ? "Back to search mode" : "Go to map mode"}
+                      aria-label={isMapVisible ? "Dashboard" : "Map mode"}
                     >
                       {isMapVisible ? (
-                        <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        <>
+                          <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          <span className="text-xs font-medium">Dashboard</span>
+                        </>
                       ) : (
                         <>
                           <MapPinHouse className="w-3.5 h-3.5" strokeWidth={1.5} />
