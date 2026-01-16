@@ -13,6 +13,8 @@ import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { CitationActionMenu } from './CitationActionMenu';
+import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
 import * as pdfjs from 'pdfjs-dist';
@@ -154,8 +156,10 @@ const ExpandedCardView: React.FC<{
   onDocumentClick: (doc: Document) => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
-  highlightCitation?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number } } | null;
-}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen, highlightCitation }) => {
+  highlightCitation?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number }; block_content?: string; doc_id?: string; original_filename?: string } | null;
+  onCitationAction?: (action: 'ask_more' | 'add_to_writing', citation: any) => void;
+  propertyId?: string; // Property ID for citation queries
+}> = React.memo(({ selectedDoc, onClose, onDocumentClick, isFullscreen, onToggleFullscreen, highlightCitation, onCitationAction, propertyId }) => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [blobType, setBlobType] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,6 +171,10 @@ const ExpandedCardView: React.FC<{
   const isLoadingRef = useRef(false); // Prevent race conditions
   const currentDocIdRef = useRef<string | null>(null); // Track current document ID
   const previewUrlRef = useRef<string | null>(null); // Track preview URL to prevent unnecessary state updates
+  
+  // Citation action menu state
+  const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<any>(null);
   
   // PDF.js state for canvas-based rendering with precise highlight positioning
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
@@ -615,6 +623,7 @@ const ExpandedCardView: React.FC<{
     }
   }, [highlightCitation, selectedDoc?.id, renderedPages]);
   
+
   const previewContent = (
     <motion.div
       key={`expanded-${selectedDoc.id}`}
@@ -732,7 +741,7 @@ const ExpandedCardView: React.FC<{
                   {renderedPages.size > 0 ? (
                     <div
                       ref={pdfPagesContainerRef}
-                      style={{
+                  style={{
                         display: 'flex',
                         flexDirection: 'column',
                         alignItems: 'center',
@@ -775,24 +784,114 @@ const ExpandedCardView: React.FC<{
                             />
                             
                             {/* BBOX Highlight Overlay - positioned accurately using page dimensions */}
-                            {isHighlightPage && highlightCitation && highlightCitation.bbox && (
-                              <div
-                                style={{
-                                  position: 'absolute',
-                                  left: `${highlightCitation.bbox.left * pageDimensions.width}px`,
-                                  top: `${highlightCitation.bbox.top * pageDimensions.height}px`,
-                                  width: `${highlightCitation.bbox.width * pageDimensions.width}px`,
-                                  height: `${highlightCitation.bbox.height * pageDimensions.height}px`,
-                                  backgroundColor: 'rgba(255, 235, 59, 0.4)',
-                                  border: '2px solid rgba(255, 193, 7, 0.9)',
-                                  borderRadius: '2px',
-                                  pointerEvents: 'none',
-                                  zIndex: 10,
-                                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
-                                  transformOrigin: 'top left'
-                                }}
-                              />
-                            )}
+                            {isHighlightPage && highlightCitation && highlightCitation.bbox && (() => {
+                              // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
+                              const logoHeight = 0.02 * pageDimensions.height - 1;
+                              // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
+                              const logoWidth = logoHeight; // Square logo, adjust if needed
+                              // Calculate BBOX dimensions with centered padding
+                              const padding = 4; // Equal padding on all sides
+                              const originalBboxWidth = highlightCitation.bbox.width * pageDimensions.width;
+                              const originalBboxHeight = highlightCitation.bbox.height * pageDimensions.height;
+                              const originalBboxLeft = highlightCitation.bbox.left * pageDimensions.width;
+                              const originalBboxTop = highlightCitation.bbox.top * pageDimensions.height;
+                              
+                              // Calculate center of original BBOX
+                              const centerX = originalBboxLeft + originalBboxWidth / 2;
+                              const centerY = originalBboxTop + originalBboxHeight / 2;
+                              
+                              // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
+                              const minBboxHeightPx = logoHeight; // Minimum height = logo height
+                              const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+                              
+                              // Calculate final dimensions with equal padding
+                              // If at minimum height, don't add padding to keep it exactly at logo height
+                              const finalBboxWidth = originalBboxWidth + padding * 2;
+                              const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+                                ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
+                                : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
+                              
+                              // Center the BBOX around the original text
+                              const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+                              const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+                              
+                              // Ensure BBOX doesn't go outside page bounds
+                              const constrainedLeft = Math.min(bboxLeft, pageDimensions.width - finalBboxWidth);
+                              const constrainedTop = Math.min(bboxTop, pageDimensions.height - finalBboxHeight);
+                              const finalBboxLeft = Math.max(0, constrainedLeft);
+                              const finalBboxTop = Math.max(0, constrainedTop);
+                              
+                              // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
+                              // Logo's right border edge overlaps with BBOX's left border edge
+                              const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
+                              const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+                              
+                              return (
+                                <>
+                                  {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
+                                  <img
+                                    src={veloraLogo}
+                                    alt="Velora"
+                                    style={{
+                                      position: 'absolute',
+                                      left: `${logoLeft}px`,
+                                      top: `${logoTop}px`,
+                                      width: `${logoWidth}px`,
+                                      height: `${logoHeight}px`,
+                                      objectFit: 'contain',
+                                      pointerEvents: 'none',
+                                      zIndex: 11,
+                                      userSelect: 'none',
+                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      borderRadius: '2px',
+                                      backgroundColor: 'white', // Ensure logo has background for border visibility
+                                      boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
+                                    }}
+                                  />
+                                  {/* BBOX highlight */}
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const pageRect = e.currentTarget.closest('.pdf-page-container')?.getBoundingClientRect();
+                                      if (pageRect) {
+                                        setSelectedCitation(highlightCitation);
+                                        // Position menu at click location (use click X, below citation Y)
+                                        setCitationMenuPosition({
+                                          x: e.clientX, // Use actual click X position
+                                          y: rect.bottom + 8 // Position below with 8px gap
+                                        });
+                                      }
+                                    }}
+                                    style={{
+                                      position: 'absolute',
+                                      left: `${finalBboxLeft}px`,
+                                      top: `${finalBboxTop}px`,
+                                      width: `${Math.min(pageDimensions.width, finalBboxWidth)}px`,
+                                      height: `${Math.min(pageDimensions.height, finalBboxHeight)}px`,
+                                      backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                                      border: '2px solid rgba(255, 193, 7, 0.9)',
+                                      borderRadius: '2px',
+                      pointerEvents: 'auto',
+                                      cursor: 'pointer',
+                                      zIndex: 10,
+                                      boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                                      transformOrigin: 'top left',
+                                      transition: 'none' // No animation when changing between BBOXs
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
+                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                                      e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                                    }}
+                                    title="Click to interact with this citation"
+                                  />
+                                </>
+                              );
+                            })()}
                           </div>
                         );
                       })}
@@ -855,6 +954,29 @@ const ExpandedCardView: React.FC<{
             </div>
           )}
         </div>
+        
+        {/* Citation Action Menu */}
+        {citationMenuPosition && selectedCitation && (
+          <CitationActionMenu
+            citation={selectedCitation}
+            position={citationMenuPosition}
+            propertyId={propertyId}
+            onClose={() => {
+              setCitationMenuPosition(null);
+              setSelectedCitation(null);
+            }}
+            onAskMore={(citation) => {
+              if (onCitationAction) {
+                onCitationAction('ask_more', citation);
+              }
+            }}
+            onAddToWriting={(citation) => {
+              if (onCitationAction) {
+                onCitationAction('add_to_writing', citation);
+              }
+            }}
+          />
+        )}
       </motion.div>
   );
 
@@ -1735,51 +1857,51 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     } else {
       console.warn('⚠️ Document not found in documents, falling back to DocumentPreviewModal');
       // Fallback to old behavior if document not found
-      try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
-        let downloadUrl: string | null = null;
-        
-        if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
-          downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      let downloadUrl: string | null = null;
+      
+      if ((document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url) {
+        downloadUrl = (document as any).url || (document as any).download_url || (document as any).file_url || (document as any).s3_url || null;
         } else if ((document as any).s3_path) {
-          downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
+        downloadUrl = `${backendUrl}/api/files/download?s3_path=${encodeURIComponent((document as any).s3_path)}`;
         } else {
-          const docId = document.id;
-          if (docId) {
-            downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-          }
+        const docId = document.id;
+        if (docId) {
+          downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
         }
-        
-        if (!downloadUrl) {
-          throw new Error('No download URL available');
-        }
-        
-        const response = await fetch(downloadUrl, {
-          credentials: 'include'
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-        }
-        
-        const blob = await response.blob();
-        // @ts-ignore - File constructor is available in modern browsers
-        const file = new File([blob], document.original_filename, { 
-          type: (document as any).file_type || blob.type || 'application/pdf'
-        });
-        
-        const fileData: FileAttachmentData = {
-          id: document.id,
-          file: file,
-          name: document.original_filename,
-          type: (document as any).file_type || blob.type || 'application/pdf',
-          size: (document as any).file_size || blob.size
-        };
-        
-        addPreviewFile(fileData);
-      } catch (err) {
-        console.error('❌ Error opening document:', err);
       }
+      
+      if (!downloadUrl) {
+        throw new Error('No download URL available');
+      }
+      
+      const response = await fetch(downloadUrl, {
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      // @ts-ignore - File constructor is available in modern browsers
+      const file = new File([blob], document.original_filename, { 
+        type: (document as any).file_type || blob.type || 'application/pdf'
+      });
+      
+      const fileData: FileAttachmentData = {
+        id: document.id,
+        file: file,
+        name: document.original_filename,
+        type: (document as any).file_type || blob.type || 'application/pdf',
+        size: (document as any).file_size || blob.size
+      };
+      
+      addPreviewFile(fileData);
+    } catch (err) {
+      console.error('❌ Error opening document:', err);
+    }
     }
   }, [documents, addPreviewFile]);
 
@@ -2198,6 +2320,50 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
     }
   }, [highlightCitation, documents, filteredDocuments, selectedCardIndex, isVisible]);
 
+  // Citation action handler
+  const handleCitationAction = React.useCallback((action: 'ask_more' | 'add_to_writing', citation: any) => {
+    if (action === 'ask_more') {
+      // Generate a query from the citation content
+      const citationText = citation.block_content || citation.cited_text || 'this information';
+      const query = `Tell me more about: ${citationText.substring(0, 200)}${citationText.length > 200 ? '...' : ''}`;
+      
+      // Open chat panel with pre-filled query
+      // We'll use a custom event or callback to communicate with MainContent
+      // For now, we'll use a custom event that MainContent can listen to
+      const event = new CustomEvent('citation-ask-more', {
+        detail: {
+          query,
+          citation,
+          documentId: citation.fileId || citation.doc_id
+        }
+      });
+      window.dispatchEvent(event);
+      
+      console.log('📝 [CITATION] Ask more action triggered:', { query, citation });
+    } else if (action === 'add_to_writing') {
+      // Store citation in curated writing collection (localStorage for now)
+      const curatedKey = 'curated_writing_citations';
+      const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+      const newEntry = {
+        id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        citation,
+        addedAt: new Date().toISOString(),
+        documentName: citation.original_filename || 'Unknown document',
+        content: citation.block_content || citation.cited_text || ''
+      };
+      existing.push(newEntry);
+      localStorage.setItem(curatedKey, JSON.stringify(existing));
+      
+      // Show notification (you can use a toast library here)
+      console.log('📚 [CITATION] Added to curated writing:', newEntry);
+      
+      // Dispatch event for UI updates
+      window.dispatchEvent(new CustomEvent('citation-added-to-writing', {
+        detail: newEntry
+      }));
+    }
+  }, []);
+
   // File upload handler
   const handleFileUpload = async (file: File) => {
     // CRITICAL: Capture property at the start to ensure we use the correct property_id
@@ -2294,16 +2460,24 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             });
         } catch (error) {
           console.error('Error reloading documents:', error);
-          setUploadError('Upload successful but failed to reload file list');
-            setUploading(false);
+          // Don't show error for reload failure, just log it
+          setUploading(false);
         }
       } else {
-        setUploadError(response.error || 'Upload failed');
-          setUploading(false);
+        const errorMessage = response.error || 'Upload failed';
+        window.dispatchEvent(new CustomEvent('upload-error', { 
+          detail: { fileName: file.name, error: errorMessage } 
+        }));
+        setUploadError(null); // Clear local error, let UploadProgressBar handle it
+        setUploading(false);
       }
     } catch (error) {
       console.error('Error uploading file:', error);
-      setUploadError(error instanceof Error ? error.message : 'Upload failed');
+      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+      window.dispatchEvent(new CustomEvent('upload-error', { 
+        detail: { fileName: file.name, error: errorMessage } 
+      }));
+      setUploadError(null); // Clear local error, let UploadProgressBar handle it
       setUploading(false);
     }
   };
@@ -2408,6 +2582,10 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               bottom: isChatPanelOpen ? '0px' : 'auto',
               width: isChatPanelOpen ? 'auto' : '800px',
               height: isChatPanelOpen ? 'auto' : '600px',
+              // Minimum width when chat panel is open: enough for 3 document cards
+              // Each card is 160px, gaps are 24px (gap-6), padding is 24px each side (p-6)
+              // 3 cards: 3 * 160px + 2 * 24px (gaps) + 48px (padding) = 576px, round to 600px
+              minWidth: isChatPanelOpen ? '600px' : 'auto',
               transition: 'none', // No transition for width/position changes - instant like chat
               
               // Normal Mode: Centered with margins
@@ -2420,6 +2598,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               display: 'flex',
               flexDirection: 'column',
               zIndex: 9999,
+              // Add left border in chat mode to create visible divider line
+              borderLeft: isChatPanelOpen ? '1px solid rgba(156, 163, 175, 0.3)' : 'none',
               // Optimize rendering during layout changes
               willChange: selectedCardIndex !== null ? 'auto' : 'transform'
             }}
@@ -3810,12 +3990,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               onChange={handleFileInputChange}
             />
             
-            {uploadError && (
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full shadow-xl flex items-center gap-3 z-50 animate-in fade-in slide-in-from-bottom-4">
-                <X size={18} />
-                <span className="font-medium text-sm">{uploadError}</span>
-              </div>
-            )}
+            {/* Upload errors are now handled by UploadProgressBar component */}
             
              {/* Selection Floating Bar - Updated Style */}
                 {/* Only show when in local selection mode (for deletion), not chat selection mode */}
@@ -4009,6 +4184,8 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                   isFullscreen={isFullscreen}
                   onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
                   highlightCitation={highlightCitation}
+                  onCitationAction={handleCitationAction}
+                  propertyId={property?.id}
                 />
                       </div>
             )}

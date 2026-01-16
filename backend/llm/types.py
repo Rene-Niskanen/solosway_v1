@@ -68,6 +68,14 @@ class MainWorkflowState(TypedDict, total=False):
     document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
     detail_level: Optional[str]  # NEW: "concise" (default) or "detailed" - controls number of chunks/docs processed
     citations: Annotated[list[Citation], operator.add]  # NEW: Accumulate citations in graph state (with bbox coordinates)
+    query_category: Optional[str]  # NEW: "general_query", "text_transformation", "document_search", "hybrid"
+    text_to_transform: Optional[str]  # NEW: Text content to transform
+    transformation_instruction: Optional[str]  # NEW: How to transform (extracted from query)
+    citation_context: Optional[dict]  # NEW: Structured citation metadata (bbox, page, text, doc_id) - hidden from user
+    response_mode: Optional[str]  # NEW: Response mode for file attachments ("fast", "detailed", "full")
+    attachment_context: Optional[dict]  # NEW: Extracted text from attached files (texts, pageTexts, filenames)
+    is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+    agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""
@@ -77,6 +85,7 @@ class DocumentQAState(TypedDict, total=False):
     user_query: str
     answer: str
     detail_level: Optional[str]  # NEW: "concise" or "detailed" - controls prompt instructions
+    citation_context: Optional[dict]  # NEW: Structured citation metadata (bbox, page, text, doc_id) - hidden from user
 
 
 

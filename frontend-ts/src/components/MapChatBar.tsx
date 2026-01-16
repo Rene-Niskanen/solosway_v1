@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "framer-motion";
-import { ArrowUp, Paperclip, Mic, LayoutDashboard, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowUp, Paperclip, Mic, LibraryBig, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, AudioLines } from "lucide-react";
 import { PropertyAttachment } from './PropertyAttachment';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 
@@ -86,13 +86,20 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
     
     // Always stay in multi-line layout, just adjust height
     if (inputRef.current) {
+      // Set height to auto first to get accurate scrollHeight
       inputRef.current.style.height = 'auto';
       const scrollHeight = inputRef.current.scrollHeight;
       const maxHeight = 150; // Larger max height for map view
       const newHeight = Math.min(scrollHeight, maxHeight);
-      inputRef.current.style.height = `${newHeight}px`;
-      inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-      inputRef.current.style.minHeight = '28px';
+      
+      // Use requestAnimationFrame to batch the height update and prevent layout shift
+      requestAnimationFrame(() => {
+        if (inputRef.current) {
+          inputRef.current.style.height = `${newHeight}px`;
+          inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+          inputRef.current.style.minHeight = '28px';
+        }
+      });
       
       if (!isDeletingRef.current && cursorPos !== null) {
         inputRef.current.setSelectionRange(cursorPos, cursorPos);
@@ -225,15 +232,17 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
               className="flex items-start w-full"
               style={{ 
                 minHeight: '28px',
+                height: 'auto', // Ensure height is auto to prevent layout shifts
                 width: '100%',
-                marginBottom: '12px' // Reduced spacing below textarea
+                marginBottom: inputValue.trim().length > 0 ? '16px' : '12px' // More space when there's text to prevent icons from being too close
               }}
             >
               <div className="flex-1 relative flex items-start w-full" style={{ 
                 overflow: 'visible', 
                 minHeight: '28px',
                 width: '100%',
-                minWidth: '0'
+                minWidth: '0',
+                paddingRight: '0px' // Ensure no extra padding on right side
               }}>
                 <textarea 
                   ref={inputRef}
@@ -254,25 +263,27 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                     }
                   }} 
                   placeholder={placeholder}
-                  className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 transition-all duration-200 ease-out"
+                  className="w-full bg-transparent focus:outline-none text-base font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                   style={{
+                    height: '28px', // Fixed initial height to prevent layout shift when typing starts
                     minHeight: '28px',
                     maxHeight: '150px',
                     fontSize: '16px',
                     lineHeight: '22px',
                     paddingTop: '0px',
                     paddingBottom: '0px',
-                    paddingRight: '0px',
+                    paddingRight: '8px', // Match left padding
                     paddingLeft: '8px',
                     scrollbarWidth: 'thin',
                     scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
                     overflow: 'hidden',
                     overflowY: 'auto',
                     wordWrap: 'break-word',
-                    transition: !inputValue.trim() ? 'none' : 'height 0.2s ease-out, overflow 0.2s ease-out',
+                    transition: 'height 0.15s ease-out, overflow 0.15s ease-out', // Smooth transition for height changes
                     resize: 'none',
                     width: '100%',
-                    minWidth: '0'
+                    minWidth: '0',
+                    boxSizing: 'border-box' // Ensure padding is included in height calculation
                   }}
                   autoComplete="off"
                   disabled={isSubmitted}
@@ -294,10 +305,15 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 <button
                   type="button"
                   onClick={onMapToggle}
-                  className="p-1 text-gray-400 hover:text-gray-600 transition-colors ml-1"
+                  className="flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors ml-1"
+                  style={{
+                    padding: '4px',
+                    minHeight: '24px',
+                    height: '24px'
+                  }}
                   title="Back to search mode"
                 >
-                  <LayoutDashboard className="w-5 h-5" strokeWidth={1.5} />
+                  <LibraryBig className="w-5 h-5" strokeWidth={1.5} />
                 </button>
               </div>
 
@@ -306,13 +322,18 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 <button
                   type="button"
                   onClick={toggleSelectionMode}
-                  className={`p-1 transition-colors ${
+                  className={`flex items-center justify-center transition-colors ${
                     propertyAttachments.length > 0
                       ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
                       : isSelectionModeActive 
                         ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
                         : 'text-gray-900 hover:text-gray-700'
                   }`}
+                  style={{
+                    padding: '4px',
+                    minHeight: '24px',
+                    height: '24px'
+                  }}
                   title={
                     propertyAttachments.length > 0
                       ? `${propertyAttachments.length} property${propertyAttachments.length > 1 ? 'ies' : ''} selected`
@@ -331,58 +352,83 @@ export const MapChatBar: React.FC<MapChatBarProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="p-1 text-gray-900 hover:text-gray-700 transition-colors"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    border: '1px solid rgba(0, 0, 0, 0.1)',
+                    transition: 'background-color 0.2s ease',
+                    height: '24px',
+                    minHeight: '24px'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#F5F5F5';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = '#FFFFFF';
+                  }}
                 >
-                  <Paperclip className="w-5 h-5" strokeWidth={1.5} />
+                  <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span className="text-xs font-medium">Attach</span>
                 </button>
                 <button
                   type="button"
-                  className="p-1 text-gray-900 hover:text-gray-700 transition-colors"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                  style={{
+                    backgroundColor: '#ECECEC',
+                    transition: 'background-color 0.2s ease',
+                    height: '24px',
+                    minHeight: '24px'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#E0E0E0';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = '#ECECEC';
+                  }}
                 >
-                  <Mic className="w-5 h-5" strokeWidth={1.5} />
+                  <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span className="text-xs font-medium">Voice</span>
                 </button>
                 
                 {/* Send button */}
-                <motion.button 
-                  type="submit" 
-                  onClick={handleSubmit} 
-                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                  style={{
-                    width: '32px',
-                    height: '32px',
-                    minWidth: '32px',
-                    minHeight: '32px',
-                    borderRadius: '50%'
-                  }}
-                  animate={{
-                    backgroundColor: (inputValue.trim() || propertyAttachments.length > 0) ? '#415C85' : '#F3F4F6'
-                  }}
-                  disabled={isSubmitted || (!inputValue.trim() && propertyAttachments.length === 0)}
-                  whileHover={(!isSubmitted && (inputValue.trim() || propertyAttachments.length > 0)) ? { 
-                    scale: 1.05
-                  } : {}}
-                  whileTap={(!isSubmitted && (inputValue.trim() || propertyAttachments.length > 0)) ? { 
-                    scale: 0.95
-                  } : {}}
-                  transition={{
-                    duration: (!inputValue.trim() && propertyAttachments.length === 0) ? 0 : 0.2,
-                    ease: [0.16, 1, 0.3, 1]
-                  }}
-                >
-                  <motion.div
-                    key="arrow-up"
-                    initial={{ opacity: 1 }}
-                    animate={{ opacity: 1 }}
-                    transition={{
-                      duration: (!inputValue.trim() && propertyAttachments.length === 0) ? 0 : 0.2,
-                      ease: [0.16, 1, 0.3, 1]
-                    }}
-                    className="absolute inset-0 flex items-center justify-center"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: (inputValue.trim() || propertyAttachments.length > 0) ? '#ffffff' : '#4B5563' }} />
-                  </motion.div>
-                </motion.button>
+                <AnimatePresence>
+                  {(inputValue.trim() || propertyAttachments.length > 0) && (
+                    <motion.button 
+                      key="send-button"
+                      type="submit" 
+                      onClick={handleSubmit} 
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        minWidth: '32px',
+                        minHeight: '32px',
+                        borderRadius: '50%'
+                      }}
+                      disabled={isSubmitted}
+                      whileHover={!isSubmitted ? { 
+                        scale: 1.05
+                      } : {}}
+                      whileTap={!isSubmitted ? { 
+                        scale: 0.95
+                      } : {}}
+                    >
+                      <motion.div
+                        key="arrow-up"
+                        initial={{ opacity: 1 }}
+                        animate={{ opacity: 1 }}
+                        className="absolute inset-0 flex items-center justify-center"
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                      </motion.div>
+                    </motion.button>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           </div>

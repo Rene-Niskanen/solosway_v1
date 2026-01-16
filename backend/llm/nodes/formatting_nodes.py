@@ -19,8 +19,8 @@ async def format_response(state: MainWorkflowState) -> MainWorkflowState:
     """
     Format and structure the final response for better readability.
     
-    This node takes the raw LLM response from summarize_results and formats it
-    with better structure, organization, and formatting while preserving all content.
+    This node takes the raw LLM response from summarize_results, general_query, or transform_text
+    and formats it with better structure, organization, and formatting while preserving all content.
     
     Args:
         state: MainWorkflowState with final_summary
@@ -30,26 +30,39 @@ async def format_response(state: MainWorkflowState) -> MainWorkflowState:
     """
     final_summary = state.get("final_summary", "")
     user_query = state.get("user_query", "")
+    query_category = state.get("query_category", "")
+    agent_actions = state.get("agent_actions")
     
     if not final_summary:
         logger.warning("[FORMAT_RESPONSE] No final_summary to format")
         return state
     
+    # Skip formatting for navigation actions - they're already conversational
+    # Navigation responses like "Sure thing!\n\nNavigating to the property now..." don't need reformatting
+    if agent_actions and any(a.get('action') in ['navigate_to_property_by_name', 'show_map_view', 'select_property_pin'] for a in agent_actions if isinstance(a, dict)):
+        logger.info("[FORMAT_RESPONSE] Skipping formatting for navigation action response")
+        return state
+    
+    # For general queries and text transformations, formatting is optional
+    # They might already be well-formatted, but we can still improve structure
+    # For document search, formatting is more important (handles citations, etc.)
+    
     try:
         # Get formatting prompt
         formatting_prompt = get_response_formatting_prompt(final_summary, user_query)
         
-        # Create LLM instance
+        # Create LLM instance (use correct config)
         llm = ChatOpenAI(
-            model=config.OPENAI_MODEL,
-            temperature=config.TEMPERATURE,
+            api_key=config.openai_api_key,
+            model=config.openai_model,  # CORRECT
+            temperature=0,  # CORRECT
             streaming=False
         )
         
-        # Format the response
-        system_prompt = get_system_prompt()
+        # Format the response (use correct system prompt with task parameter)
+        system_prompt = get_system_prompt('format')  # CORRECT - use 'format' task
         messages = [
-            {"role": "system", "content": system_prompt},
+            system_prompt,  # SystemMessage object
             HumanMessage(content=formatting_prompt)
         ]
         

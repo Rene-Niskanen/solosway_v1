@@ -90,15 +90,16 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
         const recentProperties = loadRecent();
         
         if (recentProperties && recentProperties.length > 0) {
+          // IMPORTANT: Set the array BEFORE the state update to avoid race condition
+          // The useMemo reads this array when lastProperty changes
+          (window as any).__recentPropertiesArray = recentProperties;
+          
           // Set the first property as lastProperty for backward compatibility
-          // But we'll use the full array in the projects builder
+          // This triggers the useMemo to rebuild projects
           setLastProperty({
             ...recentProperties[0],
             documentCount: recentProperties[0].documentCount || 0
           });
-          
-          // Store the full array for use in projects builder
-          (window as any).__recentPropertiesArray = recentProperties;
           
           // OPTIMIZATION: Preload card summaries for all recent projects
           // This ensures card data is ready before user clicks
@@ -130,6 +131,27 @@ export const RecentProjectsSection: React.FC<RecentProjectsSectionProps> = ({
                   backendApi.getPropertyCardSummary(property.id, true),
                   backendApi.getPropertyHubDocuments(property.id).catch(() => ({ success: false, data: null }))
                 ]).then(([summaryResponse, documentsResponse]) => {
+                  // Check if property was not found (404) - remove from recent projects
+                  if (!summaryResponse.success && summaryResponse.error?.includes('not found')) {
+                    console.warn(`⚠️ Property ${property.id} not found in backend - removing from recent projects`);
+                    // Remove from localStorage
+                    try {
+                      const stored = localStorage.getItem('recentProperties');
+                      if (stored) {
+                        const recentProps = JSON.parse(stored);
+                        const filtered = recentProps.filter((p: any) => p.id !== property.id);
+                        localStorage.setItem('recentProperties', JSON.stringify(filtered));
+                        // Remove the cache entry too
+                        localStorage.removeItem(cacheKey);
+                        // Trigger a refresh
+                        window.dispatchEvent(new CustomEvent('lastPropertyUpdated'));
+                      }
+                    } catch (e) {
+                      console.error('Failed to remove stale property from localStorage:', e);
+                    }
+                    return;
+                  }
+                  
                   if (summaryResponse.success && summaryResponse.data) {
                     // Calculate document count using same logic as PropertyDetailsPanel
                     let docCount = 0;

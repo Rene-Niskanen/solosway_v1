@@ -7,6 +7,7 @@ import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
 import { useBackendApi } from './BackendApi';
+import { uploadEvents } from './UploadProgressBar';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -987,11 +988,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       setIsLoading(true);
       setError(null);
       
+      // Dispatch upload start event for global progress bar
+      uploadEvents.start(file.name);
+      
       const result = await backendApi.uploadDocument(file, (progress) => {
         console.log(`Upload progress: ${progress}%`);
+        // Dispatch progress event for global progress bar
+        uploadEvents.progress(progress, file.name);
       });
       
       if (result.success) {
+        // Dispatch upload complete event
+        uploadEvents.complete(file.name, result.data?.document_id);
+        
         // Invalidate cache for current view
         const uploadCacheKey = viewMode === 'property' && selectedPropertyId
           ? `property_${selectedPropertyId}`
@@ -1013,6 +1022,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       } else {
         // Check if error is due to duplicate (backend safety net)
         if (result.error && (result.error.includes('already exists') || result.error.includes('duplicate'))) {
+          // Dispatch error event for duplicates
+          uploadEvents.error(file.name, 'Document already exists');
           setDuplicateDialog({
             isOpen: true,
             filename: file.name,
@@ -1022,12 +1033,17 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             isExactDuplicate: true
           });
         } else {
+          // Dispatch error event
+          uploadEvents.error(file.name, result.error || 'Upload failed');
           setError(result.error || 'Upload failed');
         }
       }
     } catch (error) {
       console.error('Upload error:', error);
-      setError(error instanceof Error ? error.message : 'Upload failed');
+      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+      // Dispatch error event
+      uploadEvents.error(file.name, errorMessage);
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -1605,91 +1621,91 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 // Flat list for global view or when inside a folder
                 <div className="pt-4">
                   {filteredItems.documents.map((doc) => {
-                    const isLinked = isDocumentLinked(doc);
-                    const isSelected = selectedItems.has(doc.id);
-                    
-                    return (
-                      <div
-                        key={doc.id}
-                        draggable={!isSelectionMode && !editingItemId}
-                        onDragStart={(e) => {
-                          if (!isSelectionMode && !editingItemId) {
-                            handleDragStart(e, doc);
-                          }
-                        }}
-                        onMouseEnter={() => setHoveredItemId(doc.id)}
-                        onMouseLeave={() => setHoveredItemId(null)}
-                        className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
-                          isSelectionMode 
-                            ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                            : 'bg-white hover:shadow'
-                        }`}
-                        onClick={(e) => {
-                          if (editingItemId) return;
-                          if (isSelectionMode) {
-                            e.stopPropagation();
-                            toggleItemSelection(doc.id);
-                          } else {
-                            handleDocumentClick(doc);
-                          }
-                        }}
-                      >
-                        {isSelectionMode && (
-                          <div className="flex-shrink-0">
-                            {isSelected ? (
-                              <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
-                            ) : (
-                              <Square className="w-3.5 h-3.5 text-gray-400" />
-                            )}
-                          </div>
-                        )}
-                        <div className="flex-shrink-0">{getFileIcon(doc)}</div>
-                        <div className="flex-1 min-w-0">
-                          {editingItemId === doc.id ? (
-                            <input
-                              type="text"
-                              value={editingName}
-                              onChange={(e) => setEditingName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveRename(doc.id, false);
-                                if (e.key === 'Escape') {
-                                  setEditingItemId(null);
-                                  setEditingName('');
-                                }
-                              }}
-                              onBlur={() => handleSaveRename(doc.id, false)}
-                              className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
-                              autoFocus
-                              onClick={(e) => e.stopPropagation()}
-                            />
+                  const isLinked = isDocumentLinked(doc);
+                  const isSelected = selectedItems.has(doc.id);
+                  
+                  return (
+                    <div
+                      key={doc.id}
+                      draggable={!isSelectionMode && !editingItemId}
+                      onDragStart={(e) => {
+                        if (!isSelectionMode && !editingItemId) {
+                          handleDragStart(e, doc);
+                        }
+                      }}
+                      onMouseEnter={() => setHoveredItemId(doc.id)}
+                      onMouseLeave={() => setHoveredItemId(null)}
+                      className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                        isSelectionMode 
+                          ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
+                          : 'bg-white hover:shadow'
+                      }`}
+                      onClick={(e) => {
+                        if (editingItemId) return;
+                        if (isSelectionMode) {
+                          e.stopPropagation();
+                          toggleItemSelection(doc.id);
+                        } else {
+                          handleDocumentClick(doc);
+                        }
+                      }}
+                    >
+                      {isSelectionMode && (
+                        <div className="flex-shrink-0">
+                          {isSelected ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
                           ) : (
-                            <>
-                              <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <span className="text-xs text-gray-500">
-                                  {formatDate(doc.created_at || doc.updated_at)}
-                                </span>
-                                <span className="text-xs text-gray-400">•</span>
-                                <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                  {isLinked ? 'Linked' : 'Unlinked'}
-                                </span>
-                              </div>
-                            </>
+                            <Square className="w-3.5 h-3.5 text-gray-400" />
                           )}
                         </div>
-                        {!editingItemId && hoveredItemId === doc.id && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleContextMenuClick(e, doc.id);
+                      )}
+                      <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                      <div className="flex-1 min-w-0">
+                        {editingItemId === doc.id ? (
+                          <input
+                            type="text"
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveRename(doc.id, false);
+                              if (e.key === 'Escape') {
+                                setEditingItemId(null);
+                                setEditingName('');
+                              }
                             }}
-                            className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
-                          </button>
+                            onBlur={() => handleSaveRename(doc.id, false)}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                            autoFocus
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        ) : (
+                          <>
+                            <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-xs text-gray-500">
+                                {formatDate(doc.created_at || doc.updated_at)}
+                              </span>
+                              <span className="text-xs text-gray-400">•</span>
+                              <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
+                                {isLinked ? 'Linked' : 'Unlinked'}
+                              </span>
+                            </div>
+                          </>
                         )}
                       </div>
-                    );
+                      {!editingItemId && hoveredItemId === doc.id && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleContextMenuClick(e, doc.id);
+                          }}
+                          className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
+                        </button>
+                      )}
+                    </div>
+                  );
                   })}
                 </div>
               )}

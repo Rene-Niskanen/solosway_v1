@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
-import { FileText, File, FileSpreadsheet, Image } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { FileText, File, FileSpreadsheet, Image, ChevronRight } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
 // Vite handles this import and returns the correct URL for the worker
@@ -22,40 +22,14 @@ interface DocumentMetadata {
 interface DocumentPreviewCardProps {
   metadata: DocumentMetadata;
   onClick?: () => void;
+  defaultExpanded?: boolean; // Control initial expanded state
+  autoCollapse?: boolean; // Auto-collapse after loading completes
 }
 
-// Ultra-subtle loading indicator - OpenAI style
-const LoadingIndicator: React.FC = () => (
-  <div
-    style={{
-      width: '8px',
-      height: '8px',
-      borderRadius: '50%',
-      background: '#E4E7EB',
-      flexShrink: 0,
-      position: 'relative',
-      overflow: 'hidden',
-      opacity: 0.6
-    }}
-  >
-    <div
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.8) 50%, transparent 100%)',
-        animation: 'shimmer-sweep 2s ease-in-out infinite'
-      }}
-    />
-  </div>
-);
-
-// Get file icon based on extension or classification type - OpenAI style refined icons
-const getFileIcon = (filename: string | null | undefined, size: number = 13, classificationType?: string) => {
+// Get file icon based on extension or classification type - refined minimal icons
+const getFileIcon = (filename: string | null | undefined, size: number = 14, classificationType?: string) => {
   const ext = filename?.split('.').pop()?.toLowerCase() || '';
-  const style = { color: '#8E94A0', opacity: 0.75, strokeWidth: 1.5 };
+  const style = { color: '#9CA3AF', strokeWidth: 1.75 };
   
   // Check classification type for common document types
   if (classificationType) {
@@ -114,10 +88,15 @@ const renderPdfThumbnail = async (arrayBuffer: ArrayBuffer): Promise<string | nu
 /**
  * DocumentPreviewCard Component
  * 
- * A vertical card with title on top and full-width document preview below.
- * Shows loading animation + filename + actual document preview.
+ * A collapsible document reference with Cursor-style dropdown.
+ * Shows compact filename pill by default, expands to reveal preview.
  */
-export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metadata, onClick }) => {
+export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ 
+  metadata, 
+  onClick, 
+  defaultExpanded = false,
+  autoCollapse = false 
+}) => {
   const { doc_id, original_filename, classification_type, s3_path, download_url } = metadata;
   
   // Build display filename with fallbacks: original_filename -> classification_type label -> "Document"
@@ -126,6 +105,17 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
     : '';
   const displayFilename = original_filename || classificationLabel || 'Document';
   
+  // Truncate filename for display
+  const truncateFilename = (name: string, maxLength: number = 45) => {
+    if (name.length <= maxLength) return name;
+    const ext = name.split('.').pop() || '';
+    const nameWithoutExt = name.slice(0, name.lastIndexOf('.'));
+    const truncatedName = nameWithoutExt.slice(0, maxLength - ext.length - 4) + '...';
+    return ext ? `${truncatedName}.${ext}` : truncatedName;
+  };
+  
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [isHovered, setIsHovered] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pdfThumbnail, setPdfThumbnail] = useState<string | null>(null);
@@ -134,6 +124,16 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
   const fileToCheck = original_filename || download_url || '';
   const isImage = fileToCheck?.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/i);
   const isPDF = fileToCheck?.toLowerCase().endsWith('.pdf') || classification_type === 'valuation_report' || classification_type?.includes('pdf');
+  
+  // Auto-collapse after loading completes
+  useEffect(() => {
+    if (autoCollapse && !loading && isExpanded) {
+      const timer = setTimeout(() => {
+        setIsExpanded(false);
+      }, 1500); // Collapse 1.5s after loading finishes
+      return () => clearTimeout(timer);
+    }
+  }, [autoCollapse, loading, isExpanded]);
   
   // Fetch document and generate preview - optimized to use cache immediately
   useEffect(() => {
@@ -147,21 +147,18 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
     if (cached) {
       // PDF with pre-generated thumbnail - instant display!
       if (cached.thumbnailUrl) {
-        console.log('⚡ [DocumentPreviewCard] Using cached PDF thumbnail (instant):', original_filename);
         setPdfThumbnail(cached.thumbnailUrl);
         setLoading(false);
         return;
       }
       // Image with cached blob URL - instant display!
       if (cached.url && isImage) {
-        console.log('⚡ [DocumentPreviewCard] Using cached image (instant):', original_filename);
         setPreviewUrl(cached.url);
         setLoading(false);
         return;
       }
       // PDF without thumbnail but with blob URL - use it while generating thumbnail
       if (cached.url && isPDF) {
-        console.log('📄 [DocumentPreviewCard] Using cached PDF blob, generating thumbnail:', original_filename);
         // Use cached blob to generate thumbnail faster
         fetch(cached.url)
           .then(res => res.blob())
@@ -197,8 +194,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
           fetchUrl = `${backendUrl}/api/files/download?document_id=${doc_id}`;
         }
         
-        console.log('📥 Fetching document preview:', original_filename, 'Type:', isPDF ? 'PDF' : isImage ? 'Image' : 'Other');
-        
         const response = await fetch(fetchUrl, {
           credentials: 'include'
         });
@@ -212,8 +207,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         
-        console.log('✅ Fetched document blob:', original_filename, 'Size:', blob.size, 'Type:', blob.type);
-        
         // Cache for future use
         if (!(window as any).__preloadedDocumentCovers) {
           (window as any).__preloadedDocumentCovers = {};
@@ -222,12 +215,10 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
         if (isPDF) {
           // Render PDF first page as thumbnail
           try {
-            console.log('🔄 Generating PDF thumbnail for:', original_filename);
             const arrayBuffer = await blob.arrayBuffer();
             const thumbnailUrl = await renderPdfThumbnail(arrayBuffer);
             
             if (thumbnailUrl) {
-              console.log('✅ PDF thumbnail generated successfully:', original_filename);
               setPdfThumbnail(thumbnailUrl);
               
               // Cache the thumbnail
@@ -244,15 +235,12 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
             console.error('❌ Failed to generate PDF thumbnail:', pdfError);
           }
         } else if (isImage) {
-          console.log('🖼️ Setting image preview URL for:', original_filename);
           setPreviewUrl(url);
           (window as any).__preloadedDocumentCovers[doc_id] = {
             url: url,
             type: blob.type,
             timestamp: Date.now()
           };
-        } else {
-          console.log('📄 Non-image/PDF file, showing icon only:', original_filename);
         }
         
         setLoading(false);
@@ -268,101 +256,146 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
   // Determine what to show in the thumbnail
   const thumbnailSrc = pdfThumbnail || (isImage && previewUrl ? previewUrl : null);
   
-  // Debug logging
-  useEffect(() => {
-    if (thumbnailSrc) {
-      console.log('🖼️ Thumbnail source available for:', original_filename, 'Type:', pdfThumbnail ? 'PDF thumbnail' : 'Image URL');
-    } else if (!loading) {
-      console.log('📄 No thumbnail, showing icon for:', original_filename, 'isPDF:', isPDF, 'isImage:', isImage);
+  const handleToggleExpand = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsExpanded(!isExpanded);
+  };
+  
+  const handleOpenDocument = (e: React.MouseEvent) => {
+    if (onClick && e.detail > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      onClick();
     }
-  }, [thumbnailSrc, loading, original_filename, isPDF, isImage, pdfThumbnail]);
+  };
   
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, y: 2 }}
+        initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ 
-          duration: 0.2, 
-          ease: [0.16, 1, 0.3, 1]
-        }}
-        onClick={onClick}
+        transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
         style={{
           display: 'flex',
           flexDirection: 'column',
           marginTop: '6px',
-          marginLeft: '0',
-          backgroundColor: '#FFFFFF',
-          borderRadius: '8px',
-          border: '1px solid rgba(0, 0, 0, 0.08)',
-          cursor: onClick ? 'pointer' : 'default',
           width: '100%',
-          maxWidth: '340px',
-          boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04)',
-          transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-          overflow: 'hidden'
+          maxWidth: '360px',
+          borderRadius: '8px',
+          border: `1px solid ${isHovered || isExpanded ? 'rgba(0, 0, 0, 0.12)' : 'rgba(0, 0, 0, 0.08)'}`,
+          backgroundColor: 'transparent',
+          transition: 'border-color 0.1s ease, box-shadow 0.1s ease',
+          overflow: 'hidden',
+          boxShadow: isHovered || isExpanded ? '0 2px 8px rgba(0, 0, 0, 0.04)' : 'none'
         }}
-        whileHover={onClick ? {
-          borderColor: 'rgba(0, 0, 0, 0.12)',
-          boxShadow: '0 4px 12px 0 rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04)',
-          transform: 'translateY(-1px)'
-        } : undefined}
       >
-        {/* Header with filename and loading indicator */}
+        {/* Collapsible Header Row */}
         <div
+          onClick={handleToggleExpand}
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
-            padding: '10px 12px',
-            borderBottom: '1px solid rgba(0, 0, 0, 0.04)',
-            backgroundColor: '#2D2D2D'
+            padding: '8px 12px',
+            cursor: 'pointer',
+            backgroundColor: isHovered && !isExpanded ? 'rgba(0, 0, 0, 0.015)' : 'transparent',
+            transition: 'background-color 0.1s ease',
+            userSelect: 'none'
           }}
         >
-          {/* Loading spinner */}
-          {loading && (
-            <div
+          {/* Chevron with rotation */}
+          <motion.div
+            animate={{ rotate: isExpanded ? 90 : 0 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
               style={{
-                width: '14px',
-                height: '14px',
-                borderRadius: '50%',
-                border: '2px solid rgba(255, 255, 255, 0.2)',
-                borderTopColor: '#888888',
-                animation: 'doc-spinner 0.8s linear infinite',
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
                 flexShrink: 0
               }}
+          >
+            <ChevronRight 
+              size={14} 
+              style={{ 
+                color: '#9CA3AF',
+                strokeWidth: 2
+              }} 
             />
-          )}
+          </motion.div>
           
-          {/* Document Filename */}
+          {/* File icon */}
+          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+            {getFileIcon(original_filename, 14, classification_type)}
+          </div>
+          
+          {/* Filename */}
           <span
             style={{
-              fontSize: '12px',
-              fontWeight: 500,
-              color: '#B3B3B3',
+              fontSize: '13px',
+              fontWeight: 450,
+              color: '#374151',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               letterSpacing: '-0.01em',
-              lineHeight: '1.4',
-              flex: 1
+              lineHeight: 1.4,
+              flex: 1,
+              fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
             }}
           >
-            {displayFilename}
+            {truncateFilename(displayFilename)}
           </span>
+          
+          {/* Loading indicator */}
+          {loading && (
+            <div
+              style={{
+                width: '12px',
+                height: '12px',
+                borderRadius: '50%',
+                border: '1.5px solid #E5E7EB',
+                borderTopColor: '#9CA3AF',
+                animation: 'doc-spinner 0.7s linear infinite',
+                flexShrink: 0
+              }}
+            />
+          )}
         </div>
         
-        {/* Full-width Document Preview Area */}
+        {/* Expandable Preview Area */}
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+              style={{ overflow: 'hidden' }}
+            >
+              <div
+                onClick={handleOpenDocument}
+                style={{
+                  margin: '0 8px 8px 8px',
+                  borderRadius: '6px',
+                  overflow: 'hidden',
+                  backgroundColor: '#FAFAFA',
+                  cursor: onClick ? 'pointer' : 'default',
+                  boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
+                  border: '1px solid rgba(0, 0, 0, 0.04)'
+                }}
+              >
         <div
           style={{
             width: '100%',
-            height: '100px',
-            overflow: 'hidden',
-            backgroundColor: '#FFFFFF',
+                    height: '120px',
             display: 'flex',
             alignItems: 'flex-start',
             justifyContent: 'center',
-            position: 'relative'
+                    position: 'relative',
+                    overflow: 'hidden'
           }}
         >
           {loading ? (
@@ -385,7 +418,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
                 transform: 'scale(1.02)',
                 transformOrigin: 'top center'
               }}
-              onLoad={() => console.log('✅ Thumbnail image loaded successfully:', original_filename)}
               onError={(e) => {
                 console.error('❌ Failed to load thumbnail image:', original_filename, e);
                 setPdfThumbnail(null);
@@ -400,20 +432,24 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
               justifyContent: 'center',
               height: '100%',
               width: '100%',
-              backgroundColor: '#F9FAFB',
               gap: '8px'
             }}>
-              {getFileIcon(original_filename, 32, classification_type)}
+                      {getFileIcon(original_filename, 28, classification_type)}
               <span style={{
-                fontSize: '10px',
+                        fontSize: '11px',
                 color: '#9CA3AF',
-                fontWeight: 500
+                        fontWeight: 450,
+                        letterSpacing: '-0.01em'
               }}>
-                Preview not available
+                        Click to open document
               </span>
             </div>
           )}
         </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
       
       <style>{`
@@ -424,10 +460,6 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({ metada
         @keyframes doc-spinner {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
-        }
-        @keyframes shimmer-sweep {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(100%); }
         }
       `}</style>
     </>
@@ -480,7 +512,7 @@ export const StackedDocumentPreviews: React.FC<{
         flexDirection: 'column',
         marginTop: '4px',
         width: '100%',
-        maxWidth: '340px',
+        maxWidth: '360px',
         gap: '4px' // Subtle space between stacked cards
       }}
     >
@@ -496,6 +528,15 @@ export const StackedDocumentPreviews: React.FC<{
           ? doc.classification_type.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
           : '';
         const displayFilename = doc.original_filename || classificationLabel || 'Document';
+        
+        // Truncate filename
+        const truncateFilename = (name: string, maxLength: number = 45) => {
+          if (name.length <= maxLength) return name;
+          const ext = name.split('.').pop() || '';
+          const nameWithoutExt = name.slice(0, name.lastIndexOf('.'));
+          const truncatedName = nameWithoutExt.slice(0, maxLength - ext.length - 4) + '...';
+          return ext ? `${truncatedName}.${ext}` : truncatedName;
+        };
         
         return (
           <motion.div
@@ -523,35 +564,36 @@ export const StackedDocumentPreviews: React.FC<{
               alignItems: 'center',
               gap: '8px',
               padding: '8px 12px',
-              backgroundColor: 'transparent', // Match background
-              borderRadius: '6px',
-              border: '1px solid rgba(0, 0, 0, 0.1)', // Subtle outline
+              backgroundColor: 'transparent',
+              borderRadius: '8px',
+              border: '1px solid rgba(0, 0, 0, 0.08)',
               cursor: onDocumentClick ? 'pointer' : 'default',
-              transition: 'all 0.15s ease'
+              transition: 'all 0.1s ease'
             }}
             whileHover={onDocumentClick ? { 
-              backgroundColor: 'rgba(0, 0, 0, 0.03)',
-              borderColor: 'rgba(0, 0, 0, 0.15)'
+              backgroundColor: 'rgba(0, 0, 0, 0.02)',
+              borderColor: 'rgba(0, 0, 0, 0.12)'
             } : undefined}
           >
             {/* File icon */}
-            <div style={{ flexShrink: 0, opacity: 0.5 }}>
+            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
               {getFileIcon(doc.original_filename, 14, doc.classification_type)}
             </div>
             <span
               style={{
-                fontSize: '12px',
-                fontWeight: 400,
-                color: '#6B7280', // Grey text matching other UI
+                fontSize: '13px',
+                fontWeight: 450,
+                color: '#374151',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 letterSpacing: '-0.01em',
-                lineHeight: '1.4',
-                flex: 1
+                lineHeight: 1.4,
+                flex: 1,
+                fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
               }}
             >
-              {displayFilename}
+              {truncateFilename(displayFilename)}
             </span>
           </motion.div>
         );

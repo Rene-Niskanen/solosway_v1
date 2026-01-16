@@ -3,10 +3,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Maximize2, Minimize2, TextCursorInput } from 'lucide-react';
+import { X, Maximize2, Minimize2, TextCursorInput, ZoomIn, ZoomOut } from 'lucide-react';
 import { usePreview } from '../contexts/PreviewContext';
 import { backendApi } from '../services/backendApi';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { CitationActionMenu } from './CitationActionMenu';
+import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering
 import * as pdfjs from 'pdfjs-dist';
@@ -18,7 +20,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 interface StandaloneExpandedCardViewProps {
   docId: string;
   filename: string;
-  highlight?: { fileId: string; bbox: { left: number; top: number; width: number; height: number; page: number } };
+  highlight?: { 
+    fileId: string; 
+    bbox: { left: number; top: number; width: number; height: number; page: number };
+    // Full citation metadata for CitationActionMenu
+    doc_id?: string;
+    block_id?: string;
+    block_content?: string;
+    original_filename?: string;
+  };
   onClose: () => void;
   chatPanelWidth?: number; // Width of the chat panel (0 when closed)
   sidebarWidth?: number; // Width of the sidebar
@@ -45,6 +55,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const [baseScale, setBaseScale] = useState<number>(1.0);
   const [visualScale, setVisualScale] = useState<number>(1.0); // CSS transform scale for immediate visual feedback
   const [totalPages, setTotalPages] = useState<number>(0);
+  const [manualZoom, setManualZoom] = useState<number | null>(null); // Manual zoom level set by user (null = auto)
+  const [isZooming, setIsZooming] = useState<boolean>(false); // Track if zoom is being adjusted
+  const zoomTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout to re-enable BBOX after zoom stops
+  const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout to debounce re-renders during zoom
   const pdfPagesContainerRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
   const hasRenderedRef = useRef<boolean>(false);
@@ -52,6 +66,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const prevScaleRef = useRef<number>(1.0); // Track previous scale for scroll position preservation
   const targetScaleRef = useRef<number>(1.0); // Track target scale for smooth transitions
   const firstPageCacheRef = useRef<{ page: any; viewport: any } | null>(null); // Cache first page for instant scale calculation
+  const wasFullscreenRef = useRef<boolean>(false); // Track previous fullscreen state for zoom reset
+  
+  // Citation action menu state
+  const [citationMenuPosition, setCitationMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<any>(null);
 
   // Build a stable key for the current highlight target (doc + page + bbox coords).
   // Used to coordinate one-time "jump to bbox" with resize scroll-preservation logic.
@@ -61,7 +80,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     return `${docId}:${b.page}:${b.left.toFixed(4)}:${b.top.toFixed(4)}:${b.width.toFixed(4)}:${b.height.toFixed(4)}`;
   }, [highlight, docId]);
   
-  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage } = usePreview();
+  const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening } = usePreview();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
 
   // Try to get filename from cached file data if not provided
@@ -84,6 +103,18 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       setDisplayFilename(filename);
     }
   }, [docId, filename, previewFiles]);
+
+  // AGENT GLOW: Turn off glow effect when document finishes loading
+  useEffect(() => {
+    if (!loading && isAgentOpening) {
+      // Small delay to ensure the document is visually rendered before removing glow
+      const timer = setTimeout(() => {
+        setIsAgentOpening(false);
+      }, 500); // 500ms delay for smooth visual transition
+      
+      return () => clearTimeout(timer);
+    }
+  }, [loading, isAgentOpening, setIsAgentOpening]);
 
   // Load document
   useEffect(() => {
@@ -233,6 +264,11 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   const calculateTargetScale = useCallback((containerWidth: number) => {
     if (!pdfDocument || containerWidth <= 50) return null;
     
+    // If user has set manual zoom, use that instead of auto-calculating
+    if (manualZoom !== null) {
+      return manualZoom;
+    }
+    
     try {
       // Use cached first page if available for instant calculation
       let pageWidth: number;
@@ -245,25 +281,223 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       }
       
       const availableWidth = containerWidth - 32; // Account for padding
-      const fitScale = (availableWidth / pageWidth) * 0.98;
       
-      if (fitScale >= 0.3 && fitScale <= 2.5) {
-        return fitScale;
-      } else if (fitScale < 0.3) {
-        return Math.max(0.25, fitScale);
+      // In fullscreen mode, use fixed 140% (1.4x) zoom as starting level
+      if (isFullscreen) {
+        return 1.4; // 140% starting zoom for fullscreen mode
       } else {
-        return 2.5;
+        // Normal mode: use existing logic
+        const fitScale = (availableWidth / pageWidth) * 0.98;
+        if (fitScale >= 0.3 && fitScale <= 2.5) {
+          return fitScale;
+        } else if (fitScale < 0.3) {
+          return Math.max(0.25, fitScale);
+        } else {
+          return 2.5;
+        }
       }
     } catch (error) {
       console.error('Failed to calculate target scale:', error);
       return null;
     }
-  }, [pdfDocument]);
+  }, [pdfDocument, isFullscreen, manualZoom]);
+
+  // Helper to manage zoom state and BBOX visibility
+  const handleZoomStart = useCallback(() => {
+    setIsZooming(true);
+    // Clear any existing timeout
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+    }
+  }, []);
+
+  const handleZoomEnd = useCallback(() => {
+    // Set timeout to re-enable BBOX after 1 second of no zoom activity
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+    }
+    zoomTimeoutRef.current = setTimeout(() => {
+      setIsZooming(false);
+      zoomTimeoutRef.current = null;
+    }, 1000);
+  }, []);
+
+  // Zoom handlers - use PDF.js native zoom by directly updating scale in getViewport
+  const handleZoomIn = useCallback(() => {
+    handleZoomStart();
+    const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+    const increment = currentScale * 0.15; // 15% increase
+    const newZoom = Math.min(3.0, currentScale + increment);
+    setManualZoom(newZoom);
+    // Trigger re-render with new scale - PDF.js will use it in getViewport({ scale: newZoom })
+    setBaseScale(1.0); // Reset trigger to force recalculation
+    hasRenderedRef.current = false;
+    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+      zoomTimeoutRef.current = null;
+    }
+    setIsZooming(false);
+  }, [manualZoom, baseScale, handleZoomStart]);
+
+  const handleZoomOut = useCallback(() => {
+    handleZoomStart();
+    const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+    const decrement = currentScale * 0.15; // 15% decrease
+    const newZoom = Math.max(0.25, currentScale - decrement);
+    setManualZoom(newZoom);
+    // Trigger re-render with new scale - PDF.js will use it in getViewport({ scale: newZoom })
+    setBaseScale(1.0); // Reset trigger to force recalculation
+    hasRenderedRef.current = false;
+    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+      zoomTimeoutRef.current = null;
+    }
+    setIsZooming(false);
+  }, [manualZoom, baseScale, handleZoomStart]);
+
+  const handleZoomReset = useCallback(() => {
+    handleZoomStart();
+    setManualZoom(null); // Reset to auto-zoom
+    setBaseScale(1.0); // Trigger recalculation
+    hasRenderedRef.current = false;
+    // Re-enable BBOX instantly for button clicks (not trackpad zoom)
+    if (zoomTimeoutRef.current) {
+      clearTimeout(zoomTimeoutRef.current);
+      zoomTimeoutRef.current = null;
+    }
+    setIsZooming(false);
+  }, [handleZoomStart]);
+
+  // Trackpad/mouse wheel zoom support with improved sensitivity and smoother handling
+  useEffect(() => {
+    if (!isFullscreen || !pdfWrapperRef.current) return;
+
+    let rafId: number | null = null;
+    let accumulatedDelta = 0;
+    let lastUpdateTime = 0;
+    let renderTimeoutId: NodeJS.Timeout | null = null;
+
+    const applyZoomUpdate = () => {
+      if (accumulatedDelta === 0) {
+        rafId = null;
+        return;
+      }
+
+      // Mark that zoom is active
+      setIsZooming(true);
+      // Clear any existing timeouts
+      if (zoomTimeoutRef.current) {
+        clearTimeout(zoomTimeoutRef.current);
+      }
+      if (renderTimeoutId) {
+        clearTimeout(renderTimeoutId);
+      }
+
+      const currentScale = manualZoom !== null ? manualZoom : (baseScale || 1.0);
+      
+      // Use percentage-based zoom for natural feel
+      const zoomChangePercent = accumulatedDelta * 0.001; // Convert to percentage
+      const zoomChange = currentScale * zoomChangePercent;
+      const newZoom = Math.max(0.25, Math.min(3.0, currentScale + zoomChange));
+      
+      // Update manualZoom - PDF.js will use this in getViewport({ scale: newZoom })
+      setManualZoom(newZoom);
+      setVisualScale(newZoom); // For immediate visual feedback
+      
+      // Clear accumulated delta
+      accumulatedDelta = 0;
+      rafId = null;
+
+      // Debounce the expensive re-render during continuous zooming for smoother performance
+      // But make it faster for more responsive feel
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current);
+      }
+      renderTimeoutRef.current = setTimeout(() => {
+        // Trigger re-render with new scale - PDF.js native zoom via getViewport({ scale })
+        setBaseScale(1.0);
+        hasRenderedRef.current = false;
+        renderTimeoutRef.current = null;
+      }, 100); // Reduced from 200ms to 100ms for more responsive zoom
+
+      // Schedule re-enabling BBOX after 1 second of no zoom activity
+      zoomTimeoutRef.current = setTimeout(() => {
+        setIsZooming(false);
+        zoomTimeoutRef.current = null;
+      }, 1000);
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      // Only handle zoom with Cmd/Ctrl key (standard gesture)
+      // Don't auto-detect pinch gestures as it conflicts with two-finger scrolling
+      const isModifierZoom = e.metaKey || e.ctrlKey;
+      
+      if (isModifierZoom) {
+        e.preventDefault();
+        
+        // Accumulate delta for smoother zooming
+        // Invert: scroll down (positive deltaY) = zoom out (negative change)
+        accumulatedDelta -= e.deltaY;
+        
+        // Throttle updates to ~60fps for smooth performance
+        const now = Date.now();
+        if (now - lastUpdateTime >= 16) {
+          if (rafId === null) {
+            rafId = requestAnimationFrame(applyZoomUpdate);
+          }
+          lastUpdateTime = now;
+        } else {
+          // Schedule update if not already scheduled
+          if (rafId === null) {
+            rafId = requestAnimationFrame(() => {
+              applyZoomUpdate();
+            });
+          }
+        }
+      }
+      // If no modifier key, allow normal scrolling (don't prevent default)
+    };
+
+    const container = pdfWrapperRef.current;
+    container.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      if (zoomTimeoutRef.current) {
+        clearTimeout(zoomTimeoutRef.current);
+      }
+      if (renderTimeoutId) {
+        clearTimeout(renderTimeoutId);
+      }
+    };
+  }, [isFullscreen, manualZoom, baseScale]);
+
+  // Reset manual zoom only when exiting fullscreen (not when entering)
+  // Don't reset when entering fullscreen - preserve user's zoom preference
+  useEffect(() => {
+    // Only reset when transitioning from fullscreen to non-fullscreen
+    if (wasFullscreenRef.current && !isFullscreen) {
+      // Exiting fullscreen - reset manual zoom
+      setManualZoom(null);
+    }
+    wasFullscreenRef.current = isFullscreen;
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    setManualZoom(null); // Reset when document changes
+  }, [docId]);
 
   // Force recalculation when positioning changes (filing sidebar, chat panel)
   // This ensures zoom updates even when container width doesn't change but available space does
+  // BUT: Skip recalculation if user has set manual zoom (don't override user's choice)
   useEffect(() => {
-    if (pdfDocument && totalPages > 0) {
+    if (pdfDocument && totalPages > 0 && manualZoom === null) {
+      // Only recalculate if manual zoom is not set
       // Immediate synchronous update - no RAF delay
       if (pdfWrapperRef.current) {
         const currentWidth = pdfWrapperRef.current.clientWidth;
@@ -289,7 +523,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       
       // No cleanup needed - synchronous updates
     }
-  }, [isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, pdfDocument, totalPages, calculateTargetScale]);
+  }, [isFilingSidebarOpen, filingSidebarWidth, chatPanelWidth, pdfDocument, totalPages, calculateTargetScale, manualZoom]);
 
   // Watch for container width changes using ResizeObserver - ultra-fast real-time updates
   useEffect(() => {
@@ -298,11 +532,29 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     // Minimal batching - update visual scale immediately, only batch the heavy re-render
     const rafIdRef = { current: 0 as number };
     const pendingWidthRef = { current: 0 as number };
+    // Use ref to access current manualZoom value in closures
+    const manualZoomRef = { current: manualZoom };
+    
+    // Update ref whenever manualZoom changes
+    manualZoomRef.current = manualZoom;
 
     const flushResize = (force = false) => {
       rafIdRef.current = 0;
       const newWidth = pendingWidthRef.current;
       if (newWidth <= 50) return;
+
+      // Don't recalculate zoom if user has set manual zoom - respect their choice
+      // Only update container width tracking, but don't trigger zoom recalculation
+      if (manualZoomRef.current !== null) {
+        prevContainerWidthRef.current = newWidth;
+        setContainerWidth(newWidth);
+        // Still update visual scale to match manual zoom
+        if (manualZoomRef.current > 0) {
+          setVisualScale(manualZoomRef.current);
+          targetScaleRef.current = manualZoomRef.current;
+        }
+        return;
+      }
 
       // Minimal threshold - only skip truly identical widths
       const prev = prevContainerWidthRef.current;
@@ -348,11 +600,21 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         pendingWidthRef.current = newWidth;
         
         // Update visual scale IMMEDIATELY (synchronous) for instant visual feedback
+        // But only if manual zoom is not set - if manual zoom is set, use that instead
         if (newWidth > 50) {
-          const targetScale = calculateTargetScale(newWidth);
-          if (targetScale !== null) {
-            setVisualScale(targetScale);
-            targetScaleRef.current = targetScale;
+          // Update ref to current value
+          manualZoomRef.current = manualZoom;
+          if (manualZoomRef.current !== null) {
+            // Use manual zoom instead of recalculating
+            setVisualScale(manualZoomRef.current);
+            targetScaleRef.current = manualZoomRef.current;
+          } else {
+            // Auto-calculate zoom only when manual zoom is not set
+            const targetScale = calculateTargetScale(newWidth);
+            if (targetScale !== null) {
+              setVisualScale(targetScale);
+              targetScaleRef.current = targetScale;
+            }
           }
         }
         
@@ -388,17 +650,31 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       document.removeEventListener('mouseup', handleResizeEnd);
       document.removeEventListener('touchend', handleResizeEnd);
     };
-  }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey]);
+  }, [pdfDocument, totalPages, calculateTargetScale, getHighlightKey, manualZoom]);
 
-  // Render PDF pages with responsive zoom - real-time updates
+  // Render PDF pages with PDF.js native zoom - use manualZoom directly as scale
   useEffect(() => {
     if (!pdfDocument || totalPages === 0) return;
     
-    // Always recalculate if baseScale is 1.0 (reset trigger) or if we haven't rendered this doc yet
-    // Don't skip if baseScale is 1.0 - that means we need to recalculate
+    // Check if we need to re-render:
+    // 1. Haven't rendered this doc yet
+    // 2. baseScale is 1.0 (reset trigger)
+    // 3. manualZoom changed (user zoomed)
+    const currentScale = manualZoom !== null ? manualZoom : 
+        (isFullscreen ? 1.4 : // 140% starting zoom for fullscreen mode
+          (firstPageCacheRef.current && pdfWrapperRef.current ? 
+            (() => {
+              const pageWidth = firstPageCacheRef.current!.viewport.width;
+              const containerWidth = pdfWrapperRef.current!.clientWidth;
+              const availableWidth = containerWidth - 32;
+              const zoomFactor = 0.98;
+              return (availableWidth / pageWidth) * zoomFactor;
+            })() : 1.0));
+    
     const shouldSkip = hasRenderedRef.current && 
                        currentDocIdRefForPdf.current === docId && 
-                       baseScale !== 1.0;
+                       baseScale !== 1.0 &&
+                       Math.abs(prevScaleRef.current - currentScale) < 0.01;
     
     if (shouldSkip) {
       return;
@@ -422,9 +698,12 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         
         // Always recalculate scale when baseScale is 1.0 (initial load or after width change)
         if (baseScale === 1.0) {
-          // Use the target scale that was already calculated for visual feedback
-          // This ensures consistency between visual and rendered scale
-          if (targetScaleRef.current > 0) {
+          // If manualZoom is set, use it directly (highest priority)
+          if (manualZoom !== null) {
+            scale = manualZoom;
+            targetScaleRef.current = manualZoom; // Sync target scale
+          } else if (targetScaleRef.current > 0) {
+            // Use the target scale that was already calculated for visual feedback
             scale = targetScaleRef.current;
           } else {
             // Fallback: calculate scale if target wasn't set yet
@@ -452,15 +731,22 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             }
             
             if (currentContainerWidth > 50) {
-              const availableWidth = currentContainerWidth - 32;
-              const fitScale = (availableWidth / pageWidth) * 0.98;
-              
-              if (fitScale >= 0.3 && fitScale <= 2.5) {
-                scale = fitScale;
-              } else if (fitScale < 0.3) {
-                scale = Math.max(0.25, fitScale);
+              // Calculate auto-zoom (manualZoom already checked above)
+              // In fullscreen mode, use fixed 140% (1.4x) zoom as starting level
+              if (isFullscreen) {
+                scale = 1.4; // 140% starting zoom for fullscreen mode
               } else {
-                scale = 2.5;
+                const availableWidth = currentContainerWidth - 32;
+                const zoomFactor = 0.98;
+                const fitScale = (availableWidth / pageWidth) * zoomFactor;
+                
+                if (fitScale >= 0.3 && fitScale <= 2.5) {
+                  scale = fitScale;
+                } else if (fitScale < 0.3) {
+                  scale = Math.max(0.25, fitScale);
+                } else {
+                  scale = 2.5;
+                }
               }
             } else {
               const typicalPageWidth = 595;
@@ -569,7 +855,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       cancelled = true;
       isRecalculatingRef.current = false;
     };
-  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey]);
+  }, [pdfDocument, docId, totalPages, baseScale, containerWidth, getCachedRenderedPage, setCachedRenderedPage, getHighlightKey, manualZoom, isFullscreen]);
+
 
   // Auto-scroll to highlight - center BBOX vertically in viewport
   const didAutoScrollToHighlightRef = useRef<string | null>(null);
@@ -663,8 +950,8 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
     <motion.div
       initial={{ opacity: 0, scale: 0.98 }}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.98 }}
-      transition={{ duration: 0.2 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: isFullscreen ? 0 : 0.1 }} // Instant close when in fullscreen mode, faster for split view
       className={isFullscreen ? "fixed inset-0 bg-white flex flex-col z-[10000]" : "bg-white flex flex-col z-[9999]"}
       style={{
         ...(isFullscreen ? {
@@ -702,29 +989,190 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
         }
       }}
     >
+      {/* Agent Glow Border Effect - Pulsing gradient when agent opens document */}
+      {isAgentOpening && (
+        <div 
+          className="agent-glow-overlay"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 10000,
+            borderRadius: isFullscreen ? 0 : 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Top edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            height: '20px',
+            background: 'linear-gradient(to bottom, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Bottom edge glow */}
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: '20px',
+            background: 'linear-gradient(to top, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Left edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: '20px',
+            background: 'linear-gradient(to right, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Right edge glow */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            right: 0,
+            width: '20px',
+            background: 'linear-gradient(to left, rgba(217, 119, 8, 0.6), rgba(217, 119, 8, 0))',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* Corner glow overlays for smoother corners */}
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at top left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at top right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at bottom left, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          <div style={{
+            position: 'absolute',
+            bottom: 0,
+            right: 0,
+            width: '40px',
+            height: '40px',
+            background: 'radial-gradient(ellipse at bottom right, rgba(217, 119, 8, 0.5), rgba(217, 119, 8, 0) 70%)',
+            animation: 'agentGlowPulse 1.5s ease-in-out infinite',
+          }} />
+          {/* CSS Keyframes injected via style tag */}
+          <style>{`
+            @keyframes agentGlowPulse {
+              0%, 100% {
+                opacity: 1;
+              }
+              50% {
+                opacity: 0.4;
+              }
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="h-14 px-4 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative">
+      <div className="pr-4 pl-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative" style={{ minHeight: '56px', paddingTop: '16px', paddingBottom: '16px' }}>
+        <div className="flex items-center gap-2" style={{ marginTop: '2px' }}>
+          <motion.button
+            onClick={onClose}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+            title="Close"
+          >
+            <X className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
+            <span className="text-slate-600 text-xs">
+              Close
+            </span>
+          </motion.button>
+          <motion.button
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.99 }}
+            className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+            title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
+                <span className="text-slate-600 text-xs">
+                  Exit fullscreen
+                </span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5 text-slate-800 group-hover:text-slate-900" strokeWidth={1.5} />
+                <span className="text-slate-600 text-xs">
+                  Fullscreen
+                </span>
+              </>
+            )}
+          </motion.button>
+        </div>
         <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
           <TextCursorInput className="w-4 h-4 text-gray-600 flex-shrink-0" />
           <span className="text-sm font-medium text-gray-900">
             Reference Agent
           </span>
         </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <button
-            onClick={() => setIsFullscreen(!isFullscreen)}
-            className="p-2 hover:bg-gray-100 rounded transition-colors"
-            title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        {/* Zoom controls - only show in fullscreen mode */}
+        {isFullscreen && (
+          <div className="flex items-center gap-2 absolute top-4 right-4 z-50">
+            <motion.button
+              onClick={handleZoomOut}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center justify-center p-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
+              title="Zoom out"
+            >
+              <ZoomOut className="w-4 h-4 text-slate-700" strokeWidth={1.5} />
+            </motion.button>
+            <motion.button
+              onClick={handleZoomReset}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center justify-center px-3 py-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
+              title="Reset zoom"
+            >
+              <span className="text-xs text-slate-700 font-medium">
+                {manualZoom !== null ? `${Math.round((manualZoom || 1.0) * 100)}%` : 'Fit'}
+              </span>
+            </motion.button>
+            <motion.button
+              onClick={handleZoomIn}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="flex items-center justify-center p-2 border border-slate-200/60 hover:border-slate-300/80 bg-white/90 hover:bg-slate-50/90 rounded-md transition-all duration-200 shadow-sm"
+              title="Zoom in"
+            >
+              <ZoomIn className="w-4 h-4 text-slate-700" strokeWidth={1.5} />
+            </motion.button>
+          </div>
+        )}
+        <div className="w-24"></div> {/* Spacer to balance the layout */}
       </div>
 
       {/* Content */}
@@ -755,13 +1203,10 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                   flexDirection: 'column',
                   alignItems: 'center',
                   padding: '16px',
-                  // Apply CSS transform only when visualScale differs from baseScale (during transition)
-                  // This provides smooth visual feedback while re-rendering in background
-                  // Once baseScale matches visualScale, remove transform so BBOX highlights align correctly
-                  transform: Math.abs(visualScale - baseScale) > 0.01 && baseScale > 0 ? `scale(${visualScale / baseScale})` : 'scale(1)',
-                  transformOrigin: 'top center',
-                  transition: Math.abs(visualScale - baseScale) > 0.01 && baseScale > 0 ? 'transform 0.1s ease-out' : 'none',
-                  willChange: Math.abs(visualScale - baseScale) > 0.01 && baseScale > 0 ? 'transform' : 'auto'
+                  // PDF.js handles zoom natively via getViewport({ scale })
+                  // No CSS transforms needed - the pages are rendered at the correct scale
+                  transform: 'none',
+                  transformOrigin: 'top center'
                 }}
               >
                 {Array.from(renderedPages.entries()).map(([pageNum, { canvas, dimensions }]) => (
@@ -789,21 +1234,120 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
                       },
                       style: { display: 'block', width: '100%', height: '100%' }
                     })}
-                    {highlight && highlight.fileId === docId && highlight.bbox.page === pageNum && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: `${Math.max(0, highlight.bbox.left * dimensions.width - 4)}px`,
-                          top: `${Math.max(0, highlight.bbox.top * dimensions.height - 4)}px`,
-                          width: `${Math.min(dimensions.width, highlight.bbox.width * dimensions.width + 8)}px`,
-                          height: `${Math.min(dimensions.height, highlight.bbox.height * dimensions.height + 8)}px`,
-                          backgroundColor: 'rgba(255, 255, 0, 0.3)',
-                          borderRadius: '2px',
-                          pointerEvents: 'none',
-                          zIndex: 10
-                        }}
-                      />
-                    )}
+                    {highlight && highlight.fileId === docId && highlight.bbox.page === pageNum && !isZooming && (() => {
+                      // Calculate logo size: fixed height = slightly larger to better match small BBOX highlights (2.0% of page height, minus 1px for bottom alignment)
+                      const logoHeight = 0.02 * dimensions.height - 1;
+                      // Assume logo is roughly square or slightly wider (adjust aspect ratio as needed)
+                      // If logo is 1000x800, ratio is 1.25, so width = height * 1.25
+                      // For now, using 1:1 ratio (square) - adjust if needed based on actual logo dimensions
+                      const logoWidth = logoHeight; // Square logo, adjust if needed
+                      // Calculate BBOX dimensions with centered padding
+                      const padding = 4; // Equal padding on all sides
+                      const originalBboxWidth = highlight.bbox.width * dimensions.width;
+                      const originalBboxHeight = highlight.bbox.height * dimensions.height;
+                      const originalBboxLeft = highlight.bbox.left * dimensions.width;
+                      const originalBboxTop = highlight.bbox.top * dimensions.height;
+                      
+                      // Calculate center of original BBOX
+                      const centerX = originalBboxLeft + originalBboxWidth / 2;
+                      const centerY = originalBboxTop + originalBboxHeight / 2;
+                      
+                      // Calculate minimum BBOX height to match logo height (prevents staggered appearance)
+                      const minBboxHeightPx = logoHeight; // Minimum height = logo height (exact match)
+                      const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+                      
+                      // Calculate final dimensions with equal padding
+                      // If at minimum height, don't add padding to keep it exactly at logo height
+                      const finalBboxWidth = originalBboxWidth + padding * 2;
+                      const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+                        ? minBboxHeightPx // Exactly logo height when at minimum (no padding)
+                        : baseBboxHeight + padding * 2; // Add padding only when BBOX is naturally larger
+                      
+                      // Center the BBOX around the original text
+                      const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+                      const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+                      
+                      // Ensure BBOX doesn't go outside page bounds
+                      const constrainedLeft = Math.min(bboxLeft, dimensions.width - finalBboxWidth);
+                      const constrainedTop = Math.min(bboxTop, dimensions.height - finalBboxHeight);
+                      const finalBboxLeft = Math.max(0, constrainedLeft);
+                      const finalBboxTop = Math.max(0, constrainedTop);
+                      
+                      // Position logo: Logo's top-right corner aligns with BBOX's top-left corner
+                      // Logo's right border edge overlaps with BBOX's left border edge
+                      const logoLeft = finalBboxLeft - logoWidth + 2; // Move 2px right so borders overlap
+                      const logoTop = finalBboxTop; // Logo's top = BBOX's top (perfectly aligned)
+                      
+                      return (
+                        <>
+                          {/* Velora logo - positioned so top-right aligns with BBOX top-left */}
+                          <img
+                            src={veloraLogo}
+                            alt="Velora"
+                            style={{
+                              position: 'absolute',
+                              left: `${logoLeft}px`,
+                              top: `${logoTop}px`,
+                              width: `${logoWidth}px`,
+                              height: `${logoHeight}px`,
+                              objectFit: 'contain',
+                              pointerEvents: 'none',
+                              zIndex: 11,
+                              userSelect: 'none',
+                              border: '2px solid rgba(255, 193, 7, 0.9)',
+                              borderRadius: '2px',
+                              backgroundColor: 'white', // Ensure logo has background for border visibility
+                              boxSizing: 'border-box' // Ensure border is included in width/height for proper overlap
+                            }}
+                          />
+                          {/* BBOX highlight */}
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              // Build full citation object for CitationActionMenu
+                              setSelectedCitation({
+                                fileId: highlight.fileId,
+                                doc_id: highlight.doc_id || docId,
+                                bbox: highlight.bbox,
+                                block_content: highlight.block_content || '',
+                                original_filename: highlight.original_filename || filename,
+                                block_id: highlight.block_id || ''
+                              });
+                              // Position menu at click location (use click X, below citation Y)
+                              setCitationMenuPosition({
+                                x: e.clientX, // Use actual click X position
+                                y: rect.bottom + 8 // Position below with 8px gap
+                              });
+                            }}
+                            style={{
+                              position: 'absolute',
+                              left: `${finalBboxLeft}px`,
+                              top: `${finalBboxTop}px`,
+                              width: `${Math.min(dimensions.width, finalBboxWidth)}px`,
+                              height: `${Math.min(dimensions.height, finalBboxHeight)}px`,
+                              backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                              border: '2px solid rgba(255, 193, 7, 0.9)',
+                              borderRadius: '2px',
+                              pointerEvents: 'auto',
+                              cursor: 'pointer',
+                              zIndex: 10,
+                              boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)',
+                              transition: 'none' // No animation when changing between BBOXs
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.6)';
+                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 1)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                              e.currentTarget.style.borderColor = 'rgba(255, 193, 7, 0.9)';
+                            }}
+                            title="Click to interact with this citation"
+                          />
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>
@@ -834,6 +1378,41 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           </>
         )}
       </div>
+      
+      {/* Citation Action Menu */}
+      {citationMenuPosition && selectedCitation && (
+        <CitationActionMenu
+          citation={selectedCitation}
+          position={citationMenuPosition}
+          onClose={() => {
+            setCitationMenuPosition(null);
+            setSelectedCitation(null);
+          }}
+          onAskMore={(citation) => {
+            const citationText = citation.block_content || 'this information';
+            const query = `Tell me more about: ${citationText.substring(0, 200)}${citationText.length > 200 ? '...' : ''}`;
+            const event = new CustomEvent('citation-ask-more', {
+              detail: { query, citation, documentId: citation.fileId || citation.doc_id }
+            });
+            window.dispatchEvent(event);
+          }}
+          onAddToWriting={(citation) => {
+            const curatedKey = 'curated_writing_citations';
+            const existing = JSON.parse(localStorage.getItem(curatedKey) || '[]');
+            const newEntry = {
+              id: `citation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              citation,
+              addedAt: new Date().toISOString(),
+              documentName: citation.original_filename || 'Unknown document',
+              content: citation.block_content || ''
+            };
+            existing.push(newEntry);
+            localStorage.setItem(curatedKey, JSON.stringify(existing));
+            window.dispatchEvent(new CustomEvent('citation-added-to-writing', { detail: newEntry }));
+          }}
+        />
+      )}
+
     </motion.div>
   );
 

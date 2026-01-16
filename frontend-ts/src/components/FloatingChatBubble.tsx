@@ -7,91 +7,24 @@ import ReactMarkdown from "react-markdown";
 import { FileAttachmentData } from './FileAttachment';
 import { PropertyAttachmentData } from './PropertyAttachment';
 import { usePreview } from '../contexts/PreviewContext';
+import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
 
-// True 3D Globe component using CSS 3D transforms (scaled for bubble)
-const Globe3D: React.FC = () => {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const rotationRef = React.useRef({ x: 0, y: 0 });
-  const animationFrameRef = React.useRef<number>();
-  const lastTimeRef = React.useRef<number>(performance.now());
-
-  React.useEffect(() => {
-    const animate = (currentTime: number) => {
-      const deltaTime = currentTime - lastTimeRef.current;
-      lastTimeRef.current = currentTime;
-      
-      // Smooth rotation based on time delta for consistent speed
-      rotationRef.current.y += (deltaTime / 16) * 0.5; // ~30 degrees per second
-      rotationRef.current.x += (deltaTime / 16) * 0.25; // ~15 degrees per second
-      
-      if (containerRef.current) {
-        containerRef.current.style.transform = 
-          `rotateX(${rotationRef.current.x}deg) rotateY(${rotationRef.current.y}deg)`;
-      }
-      
-      animationFrameRef.current = requestAnimationFrame(animate);
-    };
-
-    animationFrameRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, []);
-
-  const radius = 3.5; // Scaled down from 5 for smaller bubble
-  const rings = 12; // Reduced for better performance
-
-  return (
-    <div
-      ref={containerRef}
-      style={{
-        position: 'absolute',
-        top: '50%',
-        left: '50%',
-        marginTop: '-3.5px',
-        marginLeft: '-3.5px',
-        width: '7px',
-        height: '7px',
-        transformStyle: 'preserve-3d',
-        willChange: 'transform',
-        zIndex: 1
-      }}
-    >
-      {/* Create solid sphere using multiple filled rings in 3D space */}
-      {Array.from({ length: rings }).map((_, ringIndex) => {
-        const phi = (Math.PI * ringIndex) / (rings - 1); // Latitude angle (0 to π)
-        const ringRadius = Math.abs(Math.sin(phi)) * radius;
-        const z = Math.cos(phi) * radius; // Z position in 3D space
-        
-        return (
-          <div
-            key={`ring-${ringIndex}`}
-            style={{
-              position: 'absolute',
-              width: `${ringRadius * 2}px`,
-              height: `${ringRadius * 2}px`,
-              top: '50%',
-              left: '50%',
-              marginTop: `${-ringRadius}px`,
-              marginLeft: `${-ringRadius}px`,
-              borderRadius: '50%',
-              backgroundColor: 'rgba(229, 231, 235, 0.75)',
-              border: 'none',
-              transform: `translateZ(${z}px)`,
-              transformStyle: 'preserve-3d',
-              backfaceVisibility: 'visible',
-              WebkitBackfaceVisibility: 'visible',
-              willChange: 'transform'
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-};
+interface CitationDataType {
+  doc_id: string;
+  original_filename?: string | null;
+  page?: number;
+  page_number?: number;
+  block_id?: string;
+  bbox?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    page?: number;
+  };
+  classification_type?: string;
+  [key: string]: any;
+}
 
 interface ChatMessage {
   id: string;
@@ -102,6 +35,8 @@ interface ChatMessage {
   selectedDocumentIds?: string[];
   selectedDocumentNames?: string[];
   isLoading?: boolean;
+  reasoningSteps?: ReasoningStep[];
+  citations?: Record<string, CitationDataType>;
 }
 
 interface FloatingChatBubbleProps {
@@ -109,6 +44,59 @@ interface FloatingChatBubbleProps {
   onOpenChat: () => void;
   onClose: () => void;
 }
+
+// CitationLink component (scaled down version)
+const CitationLink: React.FC<{
+  citationNumber: string;
+  citationData: CitationDataType;
+  onClick: (data: CitationDataType) => void;
+}> = ({ citationNumber, citationData, onClick }) => {
+  const displayName = citationData.original_filename || 
+    (citationData.classification_type ? citationData.classification_type.replace(/_/g, ' ') : 'Document');
+  
+  return (
+    <button
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick(citationData);
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginLeft: '2px',
+        marginRight: '1px',
+        minWidth: '14px',
+        height: '14px',
+        padding: '0 3px',
+        fontSize: '9px',
+        fontWeight: 500,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        color: '#6B7280',
+        backgroundColor: '#F3F4F6',
+        borderRadius: '2px',
+        border: 'none',
+        cursor: 'pointer',
+        transition: 'all 0.15s ease',
+        verticalAlign: 'baseline',
+        lineHeight: 1,
+        flexShrink: 0
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = '#E5E7EB';
+        e.currentTarget.style.color = '#374151';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = '#F3F4F6';
+        e.currentTarget.style.color = '#6B7280';
+      }}
+      title={`Source: ${displayName}`}
+    >
+      {citationNumber}
+    </button>
+  );
+};
 
 // Component for displaying attachment in query bubble (same as SideChatPanel)
 const QueryAttachment: React.FC<{ attachment: FileAttachmentData }> = ({ attachment }) => {
@@ -288,6 +276,121 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
 }) => {
   // Ref for messages container to enable auto-scroll
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
+  const { openExpandedCardView } = usePreview();
+  
+  // Check if bubble should be visible: only when query sent, user left, and response is loading
+  const shouldShowBubble = React.useMemo(() => {
+    // Check if there's at least one query message
+    const hasQuery = chatMessages.some(msg => msg.type === 'query');
+    // Check if there's a loading response
+    const hasLoadingResponse = chatMessages.some(msg => msg.type === 'response' && msg.isLoading);
+    // Only show if query exists and response is loading
+    return hasQuery && hasLoadingResponse;
+  }, [chatMessages]);
+  
+  // Helper function to render text with clickable citation links (scaled down version)
+  const renderTextWithCitations = React.useCallback((
+    text: string, 
+    citations: Record<string, CitationDataType> | undefined,
+    onCitationClick: (data: CitationDataType) => void,
+    seenCitationNums?: Set<string>
+  ): React.ReactNode => {
+    if (!citations || Object.keys(citations).length === 0) {
+      return text;
+    }
+    
+    const superscriptMap: Record<string, string> = {
+      '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+      '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+    };
+    
+    const superscriptPattern = /[¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?/g;
+    const bracketPattern = /\[(\d+)\]/g;
+    
+    let processedText = text;
+    interface CitationPlaceholder {
+      num: string;
+      data: CitationDataType;
+      original: string;
+    }
+    const citationPlaceholders: Record<string, CitationPlaceholder> = {};
+    let placeholderIndex = 0;
+    const seen = seenCitationNums ?? new Set<string>();
+    
+    processedText = processedText.replace(superscriptPattern, (match) => {
+      let numStr = '';
+      for (const char of match) {
+        numStr += superscriptMap[char] || (/\d/.test(char) ? char : '');
+      }
+      const citData = citations[numStr];
+      if (citData) {
+        if (seen.has(numStr)) {
+          return '';
+        }
+        const placeholder = `__CITATION_SUPERSCRIPT_${placeholderIndex}__`;
+        citationPlaceholders[placeholder] = { num: numStr, data: citData, original: match };
+        placeholderIndex++;
+        seen.add(numStr);
+        return placeholder;
+      }
+      return match;
+    });
+    
+    processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
+    processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+    
+    processedText = processedText.replace(bracketPattern, (match, num) => {
+      const citData = citations[num];
+      if (citData) {
+        if (seen.has(num)) {
+          return '';
+        }
+        const placeholder = `__CITATION_BRACKET_${placeholderIndex}__`;
+        citationPlaceholders[placeholder] = { num, data: citData, original: match };
+        placeholderIndex++;
+        seen.add(num);
+        return placeholder;
+      }
+      return match;
+    });
+    
+    const parts = processedText.split(/(__CITATION_(?:SUPERSCRIPT|BRACKET)_\d+__)/g);
+    
+    return parts.map((part, idx) => {
+      const placeholder = citationPlaceholders[part];
+      if (placeholder) {
+        return (
+          <CitationLink 
+            key={`cit-${idx}-${placeholder.num}`} 
+            citationNumber={placeholder.num} 
+            citationData={placeholder.data} 
+            onClick={onCitationClick} 
+          />
+        );
+      }
+      return <span key={`text-${idx}`}>{part}</span>;
+    });
+  }, []);
+  
+  // Handle citation click
+  const handleCitationClick = React.useCallback((citationData: CitationDataType) => {
+    if (citationData.doc_id) {
+      const page = citationData.page || citationData.page_number || citationData.bbox?.page || 1;
+      const highlightData = citationData.bbox ? {
+        fileId: citationData.doc_id,
+        bbox: {
+          ...citationData.bbox,
+          page: page
+        },
+        page: page
+      } : undefined;
+      openExpandedCardView(
+        citationData.doc_id,
+        citationData.original_filename || 'document.pdf',
+        highlightData
+      );
+    }
+  }, [openExpandedCardView]);
   
   // Get latest messages (queries and responses) - show last 3-5 pairs in correct order
   const getLatestMessages = () => {
@@ -323,28 +426,14 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
     }
   }, [latestMessages, chatMessages]);
 
+  // Don't render if bubble shouldn't be visible
+  if (!shouldShowBubble) {
+    return null;
+  }
+  
   return (
     <>
       <style>{`
-        @keyframes rotateRing {
-          0% {
-            transform: rotateX(45deg) rotateY(-45deg) rotateZ(0deg);
-          }
-          50% {
-            transform: rotateX(45deg) rotateY(-45deg) rotateZ(180deg);
-          }
-          100% {
-            transform: rotateX(45deg) rotateY(-45deg) rotateZ(360deg);
-          }
-        }
-        @keyframes rotateAtom {
-          from {
-            transform: rotateY(0deg);
-          }
-          to {
-            transform: rotateY(360deg);
-          }
-        }
         /* Hide scrollbar for FloatingChatBubble */
         .floating-chat-bubble-messages::-webkit-scrollbar {
           display: none;
@@ -360,12 +449,12 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
           position: 'fixed',
           top: '20px',
           left: '20px',
-          width: '300px',
-          height: '300px',
+          width: '260px',
+          height: '280px',
           backgroundColor: 'rgba(255, 255, 255, 0.7)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
-          borderRadius: '12px',
+          borderRadius: '10px',
           boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05)',
           zIndex: 1000,
           display: 'flex',
@@ -429,10 +518,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
           style={{
             flex: 1,
             overflowY: 'auto',
-            padding: '10px 12px',
+            padding: '8px 10px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '13px', // Scaled from 16px (SideChatPanel) relative to 11px/13px font ratio
+            gap: '10px', // Smaller gap for compact bubble
             scrollbarWidth: 'none', // Hide scrollbar for Firefox
             msOverflowStyle: 'none', // Hide scrollbar for IE and Edge
           }}
@@ -577,116 +666,123 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
                   </div>
                 </div>
               ) : (
-                // Response message - same styling as SideChatPanel
+                // Response message - same styling as SideChatPanel (scaled down)
                 <div
                   key={message.id}
                   style={{
                     width: '100%',
                     padding: '0',
                     margin: '0',
-                    marginTop: '8px',
+                    marginTop: '6px',
                     marginBottom: '0',
-                    wordWrap: 'break-word'
+                    wordWrap: 'break-word',
+                    position: 'relative',
+                    contain: 'layout style'
                   }}
                 >
-                  {/* Display loading state for responses - Globe with rotating ring (atom-like) */}
-                  {message.isLoading && (
-                    <div style={{ 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'flex-start',
-                      padding: '3px 0',
-                      position: 'relative',
-                      width: '20px', // Scaled from 28px
-                      height: '20px', // Scaled from 28px
-                      perspective: '110px', // Scaled from 150px
-                      perspectiveOrigin: 'center center',
-                      overflow: 'visible',
-                      marginLeft: '12px' // Align with query bubbles and response text padding
-                    }}>
-                      {/* Atom container - rotates globe and ring together */}
-                      <div style={{
-                        position: 'absolute',
-                        width: '20px',
-                        height: '20px',
-                        top: '50%',
-                        left: '50%',
-                        marginTop: '-10px',
-                        marginLeft: '-10px',
-                        animation: 'rotateAtom 0.65s linear infinite',
-                        transformOrigin: 'center center',
-                        transformStyle: 'preserve-3d',
-                        overflow: 'visible'
-                      }}>
-                        {/* Tilted ring - diagonal spiral */}
-                        <div style={{
-                          position: 'absolute',
-                          width: '11px', // Scaled from 16px
-                          height: '11px', // Scaled from 16px
-                          top: '50%',
-                          left: '50%',
-                          marginTop: '-5.5px',
-                          marginLeft: '-5.5px',
-                          borderRadius: '50%',
-                          border: '1px solid rgba(212, 175, 55, 0.5)',
-                          borderTopColor: 'rgba(212, 175, 55, 0.9)',
-                          borderRightColor: 'rgba(212, 175, 55, 0.7)',
-                          boxShadow: '0 0 4px rgba(212, 175, 55, 0.4), 0 0 2px rgba(212, 175, 55, 0.2)',
-                          animation: 'rotateRing 1.5s linear infinite',
-                          transformOrigin: 'center center',
-                          transformStyle: 'preserve-3d',
-                          willChange: 'transform',
-                          backfaceVisibility: 'visible',
-                          WebkitBackfaceVisibility: 'visible'
-                        }} />
-                        {/* Central globe - True 3D sphere using canvas */}
-                        <Globe3D />
+                  <div style={{ 
+                    position: 'relative',
+                    minHeight: '1px'
+                  }}>
+                    {/* Reasoning Steps - scaled down version */}
+                    {message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || message.text) && (
+                      <div style={{ transform: 'scale(0.85)', transformOrigin: 'top left', marginBottom: '4px' }}>
+                        <ReasoningSteps 
+                          key={`reasoning-${message.id}`} 
+                          steps={message.reasoningSteps} 
+                          isLoading={message.isLoading} 
+                          onDocumentClick={() => {}} 
+                          hasResponseText={!!message.text} 
+                        />
                       </div>
-                    </div>
-                  )}
-                  
-                  {/* Display response text - rendered markdown */}
-                  {message.text && (
-                    <div style={{
-                      color: '#374151',
-                      fontSize: '11px',
-                      lineHeight: '16px', // Scaled from 19px (13px font) to 16px (11px font)
-                      margin: 0,
-                      padding: '3px 12px',
-                      textAlign: 'left',
-                      fontFamily: 'system-ui, -apple-system, sans-serif',
-                      fontWeight: 400
-                    }}>
+                    )}
+                    
+                    
+                    {/* Display response text with citations - rendered markdown */}
+                    {message.text && (
+                      <div style={{
+                        color: '#374151',
+                        fontSize: '10px',
+                        lineHeight: '14px',
+                        margin: 0,
+                        padding: '2px 10px',
+                        textAlign: 'left',
+                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontWeight: 400
+                      }}>
                         <ReactMarkdown
+                          skipHtml={true}
                           components={{
-                            p: ({ children }) => <p style={{ margin: 0, marginBottom: '6px', textAlign: 'left', paddingLeft: 0, paddingRight: 0, textIndent: 0 }}>{children}</p>,
-                          h1: ({ children }) => <h1 style={{ fontSize: '12px', fontWeight: 600, margin: '8px 0 6px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
-                          h2: () => null,
-                          h3: () => null,
-                          ul: ({ children }) => <ul style={{ margin: '6px 0', paddingLeft: '0', listStylePosition: 'inside', textAlign: 'left' }}>{children}</ul>,
-                          ol: ({ children }) => <ol style={{ margin: '6px 0', paddingLeft: '0', listStylePosition: 'inside', textAlign: 'left' }}>{children}</ol>,
-                          li: ({ children }) => <li style={{ marginBottom: '3px', textAlign: 'left' }}>{children}</li>,
-                          strong: ({ children }) => <strong style={{ fontWeight: 600, textAlign: 'left' }}>{children}</strong>,
-                          em: ({ children }) => <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{children}</em>,
-                          code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 3px', borderRadius: '2px', fontSize: '10px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
-                          blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
-                          hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
-                          table: ({ children }) => (
-                            <div style={{ overflowX: 'auto', margin: '12px 0' }}>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>{children}</table>
-                            </div>
-                          ),
-                          thead: ({ children }) => <thead style={{ backgroundColor: '#f9fafb' }}>{children}</thead>,
-                          tbody: ({ children }) => <tbody>{children}</tbody>,
-                          tr: ({ children }) => <tr style={{ borderBottom: '1px solid #e5e7eb' }}>{children}</tr>,
-                          th: ({ children }) => <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#111827', borderBottom: '2px solid #d1d5db' }}>{children}</th>,
-                          td: ({ children }) => <td style={{ padding: '8px 12px', textAlign: 'left', color: '#374151' }}>{children}</td>,
-                        }}
-                      >
-                        {message.text}
-                      </ReactMarkdown>
-                    </div>
-                  )}
+                            p: ({ children }) => {
+                              const citationSeen = new Set<string>();
+                              const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+                                return React.Children.map(nodes, child => {
+                                  if (typeof child === 'string' && message.citations) {
+                                    return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
+                                  }
+                                  if (React.isValidElement(child)) {
+                                    const childChildren = (child.props as any)?.children;
+                                    if (childChildren !== undefined) {
+                                      return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                                    }
+                                  }
+                                  return child;
+                                });
+                              };
+                              return <p style={{ margin: 0, marginBottom: '4px', textAlign: 'left' }}>{processChildren(children)}</p>;
+                            },
+                            h1: ({ children }) => <h1 style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 4px 0', color: '#111827', textAlign: 'left' }}>{children}</h1>,
+                            h2: () => null,
+                            h3: ({ children }) => <h3 style={{ fontSize: '10px', fontWeight: 600, margin: '4px 0 2px 0', textAlign: 'left' }}>{children}</h3>,
+                            ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ul>,
+                            ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: '14px', textAlign: 'left' }}>{children}</ol>,
+                            li: ({ children }) => <li style={{ marginBottom: '2px', textAlign: 'left' }}>{children}</li>,
+                            strong: ({ children }) => {
+                              const citationSeen = new Set<string>();
+                              const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+                                return React.Children.map(nodes, child => {
+                                  if (typeof child === 'string' && message.citations) {
+                                    return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
+                                  }
+                                  if (React.isValidElement(child)) {
+                                    const childChildren = (child.props as any)?.children;
+                                    if (childChildren !== undefined) {
+                                      return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                                    }
+                                  }
+                                  return child;
+                                });
+                              };
+                              return <strong style={{ fontWeight: 600, textAlign: 'left' }}>{processChildren(children)}</strong>;
+                            },
+                            em: ({ children }) => {
+                              const citationSeen = new Set<string>();
+                              const processChildren = (nodes: React.ReactNode): React.ReactNode => {
+                                return React.Children.map(nodes, child => {
+                                  if (typeof child === 'string' && message.citations) {
+                                    return renderTextWithCitations(child, message.citations, handleCitationClick, citationSeen);
+                                  }
+                                  if (React.isValidElement(child)) {
+                                    const childChildren = (child.props as any)?.children;
+                                    if (childChildren !== undefined) {
+                                      return React.cloneElement(child, { ...child.props, children: processChildren(childChildren) } as any);
+                                    }
+                                  }
+                                  return child;
+                                });
+                              };
+                              return <em style={{ fontStyle: 'italic', textAlign: 'left' }}>{processChildren(children)}</em>;
+                            },
+                            code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '1px 2px', borderRadius: '2px', fontSize: '9px', fontFamily: 'monospace', textAlign: 'left' }}>{children}</code>,
+                            blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid #d1d5db', paddingLeft: '10px', margin: '4px 0', color: '#6b7280', textAlign: 'left' }}>{children}</blockquote>,
+                            hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '8px 0' }} />,
+                          }}
+                        >
+                          {message.text}
+                        </ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })

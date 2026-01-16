@@ -413,12 +413,7 @@
               onChange={handleFileInputChange}
             />
             
-            {uploadError && (
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-500 text-white rounded-full shadow-xl flex items-center gap-3 z-50 animate-in fade-in slide-in-from-bottom-4">
-                <X size={18} />
-                <span className="font-medium text-sm">{uploadError}</span>
-              </div>
-            )}
+            {/* Upload errors are now handled by UploadProgressBar component */}
             
              {/* Selection Floating Bar */}
              <AnimatePresence>

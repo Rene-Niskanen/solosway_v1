@@ -1176,11 +1176,15 @@ def check_cached_documents(state: MainWorkflowState) -> MainWorkflowState:
     For follow-up questions about the same property, reuse previously retrieved documents
     instead of performing a new search. This dramatically speeds up follow-up queries.
     
+    CRITICAL: Only use cache for document search queries. General queries and text transformations
+    should NOT use cached documents, even if they exist.
+    
     Logic:
-    1. Check if there are cached documents from previous conversation turns (via checkpointer)
-    2. Extract property context from current query and conversation history
-    3. If property context matches, reuse cached documents
-    4. If property context differs or no cache exists, clear cache and proceed with normal retrieval
+    1. Quick check: Is this a general query or text transformation? If yes, skip cache
+    2. Check if there are cached documents from previous conversation turns (via checkpointer)
+    3. Extract property context from current query and conversation history
+    4. If property context matches, reuse cached documents
+    5. If property context differs or no cache exists, clear cache and proceed with normal retrieval
     
     Args:
         state: MainWorkflowState with user_query, conversation_history, and potentially cached relevant_documents
@@ -1189,7 +1193,36 @@ def check_cached_documents(state: MainWorkflowState) -> MainWorkflowState:
         Updated state with cached documents if applicable, or empty dict to proceed with normal retrieval
     """
     conversation_history = state.get('conversation_history', []) or []
-    user_query = state.get('user_query', '')
+    user_query = state.get('user_query', '').strip()
+    document_ids = state.get('document_ids', [])
+    property_id = state.get('property_id')
+    
+    # CRITICAL: Quick check - is this clearly a general query or text transformation?
+    # If yes, skip cache and proceed to classification
+    user_query_lower = user_query.lower()
+    
+    # Check for general query indicators (date/time, general knowledge)
+    general_indicators = [
+        'what is the date', 'what is today', 'current date', 'current time',
+        'explain', 'what is', 'how does', 'tell me about',
+        'capital of', 'who is', 'when was', 'where is'
+    ]
+    has_general = any(indicator in user_query_lower for indicator in general_indicators)
+    
+    # Check for text transformation indicators
+    transformation_verbs = ['make', 'reorganize', 'rewrite', 'improve', 'sharpen', 'concise', 'rephrase']
+    transformation_refs = ['this', 'that', 'the above', 'previous response', 'pasted text']
+    has_transformation = any(verb in user_query_lower for verb in transformation_verbs)
+    has_transformation_ref = any(ref in user_query_lower for ref in transformation_refs)
+    
+    # If it's clearly a general query or text transformation, skip cache
+    if has_general and not document_ids and not property_id:
+        logger.info("[CHECK_CACHED_DOCS] Query appears to be general query - skipping cache, proceeding to classification")
+        return {}  # Skip cache, proceed to classification
+    
+    if has_transformation and (has_transformation_ref or len(user_query) > 200):
+        logger.info("[CHECK_CACHED_DOCS] Query appears to be text transformation - skipping cache, proceeding to classification")
+        return {}  # Skip cache, proceed to classification
     
     # Check if there are cached documents from previous state (loaded from checkpointer)
     cached_docs = state.get('relevant_documents', [])
@@ -1376,7 +1409,7 @@ def _documents_match_property(documents: List[RetrievedDocument], property_conte
     return False
 
 
-def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
+async def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Query Rewriting with Conversation Context
     
@@ -1462,9 +1495,9 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
     )
     
     try:
-        # Use LangGraph message format
+        # Use LangGraph message format - ASYNC for better performance
         messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         rewritten = response.content.strip().strip('"').strip("'")  # Clean quotes
         
         # Only use rewritten if it's different and not too long
@@ -1481,7 +1514,7 @@ def rewrite_query_with_context(state: MainWorkflowState) -> MainWorkflowState:
         return {}  # Keep original query on error
 
 
-def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
+async def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Query Expansion for Better Recall
     
@@ -1526,9 +1559,9 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
     human_content = get_query_expansion_human_content(original_query=original_query)
     
     try:
-        # Use LangGraph message format
+        # Use LangGraph message format - ASYNC for better performance
         messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         variations = [v.strip() for v in response.content.strip().split('\n') if v.strip()]
         
         # Limit to 2 variations
@@ -1548,7 +1581,7 @@ def expand_query_for_retrieval(state: MainWorkflowState) -> MainWorkflowState:
         return {"query_variations": [original_query]}
 
 
-def route_query(state: MainWorkflowState) -> MainWorkflowState:
+async def route_query(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Route/Classify Query Intent 
 
@@ -1600,9 +1633,9 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
         conversation_history=history_context
     )
     
-    # Use LangGraph message format
+    # Use LangGraph message format - ASYNC for better performance
     messages = [system_msg, HumanMessage(content=human_content)]
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
     intent = response.content.lower().strip()
 
     if intent not in {"semantic", "structured", "hybrid"}:
@@ -1613,7 +1646,7 @@ def route_query(state: MainWorkflowState) -> MainWorkflowState:
     return {"query_intent": intent}
 
 
-def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
+async def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Hybrid Search (BM25 + Vector) with Lazy Embedding Support + Structured Query Fallback
 
@@ -1643,10 +1676,22 @@ def query_vector_documents(state: MainWorkflowState) -> MainWorkflowState:
     node_start = time.time()
     user_query = state.get('user_query', '')
     document_ids = state.get('document_ids')
+    business_id = state.get("business_id")
+    
+    # CRITICAL: Log business_id to diagnose filtering issues
     logger.info(
         f"[QUERY_VECTOR_DOCUMENTS] Starting retrieval for query: '{user_query[:50]}...'"
         f"{' (filtered to ' + str(len(document_ids)) + ' selected documents)' if document_ids and len(document_ids) > 0 else ''}"
+        f" | business_id: {business_id[:8] if business_id else 'MISSING'}..."
     )
+    
+    # CRITICAL: Validate business_id is present
+    if not business_id:
+        logger.error("[QUERY_VECTOR_DOCUMENTS] ❌ business_id is MISSING from state! This will cause 0 results.")
+        logger.error(f"[QUERY_VECTOR_DOCUMENTS] State keys: {list(state.keys())}")
+        # Don't return empty - try to continue but log the issue
+    else:
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] ✅ business_id present: {business_id}")
 
     try:
         # STEP 1: Check if query is property-specific (bedrooms, bathrooms, price, etc.)
@@ -2065,6 +2110,11 @@ This information has been verified and extracted from the property database, inc
             complexity = characteristics['complexity_score']
             needs_comprehensive = characteristics['needs_comprehensive']
             
+            # CRITICAL: Get business_id from state (closure variable might not be accessible in all cases)
+            query_business_id = state.get("business_id") or business_id
+            if not query_business_id:
+                logger.error(f"[QUERY_VECTOR_DOCUMENTS] ❌ business_id MISSING in process_single_query! Query: '{query[:50]}...'")
+            
             if needs_comprehensive:
                 # For comprehensive queries, fetch significantly more chunks
                 top_k = int(os.getenv("INITIAL_RETRIEVAL_TOP_K_VALUATION", "100"))
@@ -2137,7 +2187,7 @@ This information has been verified and extracted from the property database, inc
                         header_results = bm25_retriever.query_documents(
                             query_text=header_query,
                             top_k=int(os.getenv("MAX_HEADER_MATCHES", "20")),  # Limit header matches
-                            business_id=business_id,
+                            business_id=query_business_id,  # Use query_business_id from closure
                             property_id=state.get("property_id"),
                             classification_type=document_type
                         )
@@ -2161,16 +2211,23 @@ This information has been verified and extracted from the property database, inc
             
             # Standard Hybrid Search (Pass 2)
             # Pass document_ids to hybrid retriever for early filtering
-            results = retriever.query_documents(
-                user_query=query,
-                top_k=top_k,  # Adjusted based on detail_level
-                business_id=business_id,
-                property_id=state.get("property_id"),
-                classification_type=state.get("classification_type"),
-                document_ids=document_ids,  # NEW: Pass document_ids for filtering
-                trigger_lazy_embedding=False  # Disabled: all chunks embedded upfront
-                # TODO: Add section_headers parameter once hybrid retriever supports it
-            )
+            # CRITICAL: Validate business_id before calling retriever
+            if not query_business_id:
+                logger.error(f"[QUERY_VECTOR_DOCUMENTS] ❌ business_id is MISSING - cannot perform search! Query: '{query[:50]}...'")
+                results = []  # Return empty results if business_id is missing
+            else:
+                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Calling hybrid retriever with business_id: {query_business_id[:8]}...")
+                results = retriever.query_documents(
+                    user_query=query,
+                    top_k=top_k,  # Adjusted based on detail_level
+                    business_id=query_business_id,  # Use query_business_id from closure
+                    property_id=state.get("property_id"),
+                    classification_type=state.get("classification_type"),
+                    document_ids=document_ids,  # NEW: Pass document_ids for filtering
+                    trigger_lazy_embedding=False  # Disabled: all chunks embedded upfront
+                    # TODO: Add section_headers parameter once hybrid retriever supports it
+                )
+                logger.info(f"[QUERY_VECTOR_DOCUMENTS] Hybrid retriever returned {len(results)} results for query: '{query[:50]}...'")
             
             # Runtime Section Header Detection (Phase 1): Detect headers in standard results
             from backend.llm.utils.section_header_detector import detect_section_header, _normalize_header
@@ -2287,6 +2344,16 @@ This information has been verified and extracted from the property database, inc
                 f"[QUERY_HYBRID] Retrieved {len(merged_results)} documents via hybrid search"
             )
         
+        # CRITICAL: Log if merged_results is empty
+        if len(merged_results) == 0:
+            logger.error(
+                f"[QUERY_HYBRID] ❌ Hybrid search returned 0 results! "
+                f"Query: '{user_query[:50]}...', "
+                f"business_id: {business_id[:8] if business_id else 'MISSING'}..., "
+                f"all_results count: {len(all_results)}, "
+                f"all_results lengths: {[len(r) for r in all_results]}"
+            )
+        
         # STEP 3: LLM-Driven SQL Query with Tool (if structured query found nothing or needs refinement)
         # Let LLM agent use the SQL query tool directly to find properties
         llm_sql_results = []
@@ -2315,11 +2382,11 @@ This information has been verified and extracted from the property database, inc
                 # Get human message content
                 human_content_sql = get_llm_sql_query_human_content(user_query=state['user_query'])
                 
-                # Use LangGraph message format
+                # Use LangGraph message format - ASYNC for better performance
                 messages_sql = [system_msg_sql, HumanMessage(content=human_content_sql)]
                 prompt = messages_sql  # Keep variable name for compatibility
                 
-                response = llm.invoke(prompt)
+                response = await llm.ainvoke(prompt)
                 import json
                 import re
                 
@@ -2549,13 +2616,19 @@ This information has been verified and extracted from the property database, inc
         
         # 3. Add hybrid results (semantic matches, lower priority, avoid duplicates)
         # FILTER: Only add if in selected document_ids
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Processing {len(merged_results)} hybrid results, document_ids_set: {document_ids_set is not None}")
+        hybrid_added = 0
+        hybrid_skipped = 0
         for doc in merged_results:
             if not is_document_selected(doc):
+                hybrid_skipped += 1
                 continue  # Skip documents not in selection
             doc_id = doc.get('doc_id') or doc.get('document_id')
             if doc_id and doc_id not in seen_doc_ids:
                 final_results.append(doc)
                 seen_doc_ids.add(doc_id)
+                hybrid_added += 1
+        logger.info(f"[QUERY_VECTOR_DOCUMENTS] Hybrid results: {hybrid_added} added, {hybrid_skipped} skipped (filtered)")
         
         # Log filtering results
         if document_ids_set:
@@ -2568,12 +2641,30 @@ This information has been verified and extracted from the property database, inc
             )
         
         node_time = time.time() - node_start
+        
+        # CRITICAL: Log final results before returning
+        final_count = len(final_results)
+        top_k_limit = config.vector_top_k
+        final_returned = final_results[:top_k_limit] if final_count > 0 else []
+        
         logger.info(
             f"[QUERY_VECTOR_DOCUMENTS] Completed in {node_time:.2f}s: "
             f"Structured: {len(structured_results)}, LLM SQL: {len(llm_sql_results)}, "
-            f"Hybrid: {len(merged_results)}, Final: {len(final_results)}"
+            f"Hybrid: {len(merged_results)}, Final: {final_count}, Returning: {len(final_returned)} (limit: {top_k_limit})"
         )
-        return {"relevant_documents": final_results[:config.vector_top_k]}
+        
+        # CRITICAL: Warn if no results found
+        if final_count == 0:
+            logger.error(
+                f"[QUERY_VECTOR_DOCUMENTS] ❌ NO RESULTS FOUND! "
+                f"Query: '{user_query[:50]}...', "
+                f"business_id: {business_id[:8] if business_id else 'MISSING'}..., "
+                f"Structured: {len(structured_results)}, Hybrid: {len(merged_results)}"
+            )
+        else:
+            logger.info(f"[QUERY_VECTOR_DOCUMENTS] ✅ Returning {len(final_returned)} documents")
+        
+        return {"relevant_documents": final_returned}
 
     except Exception as exc:  # pylint: disable=broad-except
         node_time = time.time() - node_start
@@ -2666,7 +2757,7 @@ def combine_and_deduplicate(state: MainWorkflowState) -> MainWorkflowState:
     return {"relevant_documents": deduplicated}
 
 
-def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
+async def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
     """
     Node: Clarify/Re-rank Documents
     
@@ -2869,14 +2960,14 @@ def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
     except ImportError:
         logger.warning("[CLARIFY] Cohere reranker not available, falling back to LLM")
         # Fallback to LLM reranking if Cohere not available
-        return _llm_rerank_fallback(state, merged_docs)
+        return await _llm_rerank_fallback(state, merged_docs)
     except Exception as exc:
         logger.error("[CLARIFY] Cohere reranker failed: %s", exc)
         logger.warning("[CLARIFY] Falling back to original order")
         return {"relevant_documents": merged_docs}
 
 
-def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> MainWorkflowState:
+async def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> MainWorkflowState:
     """Fallback LLM reranking if Cohere fails."""
     llm = ChatOpenAI(
         api_key=config.openai_api_key,
@@ -2907,9 +2998,9 @@ def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> M
     )
     
     try:
-        # Use LangGraph message format
+        # Use LangGraph message format - ASYNC for better performance
         messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         ranked_ids = json.loads(response.content)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning("[CLARIFY] Failed to parse ranking; returning original order: %s", exc)

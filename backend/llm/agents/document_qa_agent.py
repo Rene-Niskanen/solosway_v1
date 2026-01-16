@@ -14,7 +14,7 @@ from backend.llm.prompts import get_document_qa_human_content
 logger = logging.getLogger(__name__)
 
 
-def answer_question(state: DocumentQAState) -> DocumentQAState:
+async def answer_question(state: DocumentQAState) -> DocumentQAState:
     """Answer the user query using only the supplied document content.
       Input:
     {
@@ -43,7 +43,7 @@ def answer_question(state: DocumentQAState) -> DocumentQAState:
                    No structural damage detected. Recommend monitoring."
     }
     
-    Latency: ~1-2 seconds (LLM reasoning)
+    Latency: ~1-2 seconds (LLM reasoning) - NOW PARALLEL!
     """
 
     llm = ChatOpenAI(
@@ -57,17 +57,21 @@ def answer_question(state: DocumentQAState) -> DocumentQAState:
     
     # Get human message content
     detail_level = state.get('detail_level', 'concise')
+    citation_context = state.get('citation_context')
     logger.info(f"[DOCUMENT_QA] Detail level from state: {detail_level} (type: {type(detail_level).__name__})")
+    if citation_context:
+        logger.info(f"[DOCUMENT_QA] Citation context provided: doc={citation_context.get('document_id', 'unknown')}, page={citation_context.get('page_number', 'unknown')}")
     human_content = get_document_qa_human_content(
         user_query=state['user_query'],
         doc_content=state['doc_content'],
-        detail_level=detail_level
+        detail_level=detail_level,
+        citation_context=citation_context
     )
     
     try:
-        # Use LangGraph message format
+        # Use LangGraph message format - ASYNC for true parallelism!
         messages = [system_msg, HumanMessage(content=human_content)]
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
         answer = response.content.strip()
         logger.info(
             "[DOCUMENT_QA] Generated answer for doc %s", state.get("doc_id", "")[:8]

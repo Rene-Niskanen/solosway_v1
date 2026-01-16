@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useRef, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useCallback } from "react";
 import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Map, ArrowUp, LayoutDashboard, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageSquareShare } from "lucide-react";
+import { ChevronRight, Map, ArrowUp, LibraryBig, Mic, PanelRightOpen, SquareDashedMousePointer, Scan, Fullscreen, X, Brain, MoveDiagonal, Workflow, MapPinHouse, MessageCircle, Upload, Paperclip, AudioLines } from "lucide-react";
 import { ImageUploadButton } from './ImageUploadButton';
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment } from './PropertyAttachment';
@@ -12,6 +12,9 @@ import { toast } from "@/hooks/use-toast";
 import { usePreview } from '../contexts/PreviewContext';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
+import { backendApi } from '../services/backendApi';
+import { QuickStartBar } from './QuickStartBar';
+import { ModeSelector } from './ModeSelector';
 
 export interface SearchBarProps {
   className?: string;
@@ -59,13 +62,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   onQuickStartToggle,
   isQuickStartBarVisible = false
 }, ref) => {
-  console.log('🎯 SearchBar component rendering/mounting', {
-    initialValue,
-    isMapVisible,
-    currentView
-  });
   // Track if we're restoring a value (to set cursor position)
   const isRestoringValueRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Track if we've initialized attachments from prop to avoid resetting on remounts
   // Reset this on unmount to allow re-initialization on remount
   const hasInitializedAttachmentsRef = useRef(false);
@@ -227,7 +226,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 const newHeight = Math.min(scrollHeight, maxHeight);
                 inputRef.current.style.height = `${newHeight}px`;
                 inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-                inputRef.current.style.minHeight = '28.1px';
+                inputRef.current.style.minHeight = '28px';
               }
             });
           });
@@ -272,6 +271,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialScrollHeightRef = useRef<number | null>(null);
   const isDeletingRef = useRef(false);
+  
+  // QuickStartBar positioning refs and state (for map view)
+  const searchFormRef = useRef<HTMLFormElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const quickStartBarWrapperRef = useRef<HTMLDivElement>(null);
+  const [quickStartBarBottom, setQuickStartBarBottom] = useState<string>('calc(100% + 12px)');
   
   // Track viewport size to adjust font size and padding on very small screens
   const [viewportWidth, setViewportWidth] = useState(() => {
@@ -477,14 +482,16 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     };
   }, []);
 
-  // Auto-focus on mount and reset height
-  useEffect(() => {
+  // Auto-focus on mount and set initial height
+  // Use useLayoutEffect to run synchronously before paint, preventing visible jump
+  useLayoutEffect(() => {
     if (inputRef.current) {
+      // Set a stable initial height without the auto->measure->set pattern that causes reflows
+      // Use a fixed initial height that matches CSS minHeight
+      const INITIAL_HEIGHT = 28; // Match CSS minHeight to prevent jump
+      initialScrollHeightRef.current = INITIAL_HEIGHT;
+      inputRef.current.style.height = `${INITIAL_HEIGHT}px`;
       inputRef.current.focus();
-      inputRef.current.style.height = 'auto';
-      const initialHeight = inputRef.current.scrollHeight;
-      initialScrollHeightRef.current = initialHeight; // Store initial height for accurate reset
-      inputRef.current.style.height = `${initialHeight}px`;
     }
   }, []);
 
@@ -664,7 +671,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           // Always allow scrolling when content exceeds maxHeight
           inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28.1px';
+          inputRef.current.style.minHeight = '28px';
           
           // Restore cursor position to end (where user was typing)
           if (cursorPos !== null) {
@@ -725,21 +732,28 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         }, 50); // Reduced from 100ms
       } else if (shouldBeMultiLine && isMultiLine) {
         // Already in multi-line: update height as text grows
-        // Use direct synchronous update for better performance during deletion
+        // OPTIMIZED: Only recalculate when content grows to avoid unnecessary reflows
         if (inputRef.current) {
-          inputRef.current.style.height = 'auto';
+          const currentHeight = parseFloat(inputRef.current.style.height) || 28;
           const scrollHeight = inputRef.current.scrollHeight;
+          
           // Calculate viewport-aware maxHeight to prevent overflow
           // Constrain to viewport height minus safe margins (container padding, icons, spacing)
           const maxHeight = isDashboardView
             ? 160
             : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 260 : 350);
-          const newHeight = Math.min(scrollHeight, maxHeight);
-          inputRef.current.style.height = `${newHeight}px`;
+          
+          // Only update height if content has grown OR if we need to shrink (deletion)
+          // This avoids the expensive height:auto -> measure -> set pattern
+          if (scrollHeight > currentHeight || (isDeletingRef.current && scrollHeight < currentHeight)) {
+            const newHeight = Math.min(scrollHeight, maxHeight);
+            inputRef.current.style.height = `${newHeight}px`;
+          }
+          
           // Always allow scrolling when content exceeds maxHeight
           inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
           // Ensure the textarea doesn't collapse
-          inputRef.current.style.minHeight = '28.1px';
+          inputRef.current.style.minHeight = '28px';
         }
       }
       
@@ -811,12 +825,25 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       return;
     }
     
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Check if file type supports quick extraction
+    const isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isDOCX = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
+                   file.type === 'application/msword' ||
+                   file.name.toLowerCase().endsWith('.docx') || 
+                   file.name.toLowerCase().endsWith('.doc');
+    const isTXT = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
+    const supportsExtraction = isPDF || isDOCX || isTXT;
+    
     const fileData: FileAttachmentData = {
-      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: fileId,
       file,
       name: file.name,
       type: file.type,
-      size: file.size
+      size: file.size,
+      // Set initial extraction status for supported file types
+      extractionStatus: supportsExtraction ? 'pending' : undefined
     };
     
     // Preload blob URL immediately (Instagram-style preloading)
@@ -830,9 +857,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         if (!(window as any).__preloadedAttachmentBlobs) {
           (window as any).__preloadedAttachmentBlobs = {};
         }
-        (window as any).__preloadedAttachmentBlobs[fileData.id] = blobUrl;
+        (window as any).__preloadedAttachmentBlobs[fileId] = blobUrl;
         
-        console.log(`✅ Preloaded blob URL for attachment ${fileData.id}`);
+        console.log(`✅ Preloaded blob URL for attachment ${fileId}`);
       } catch (error) {
         console.error('❌ Error preloading blob URL:', error);
         // Don't throw - preloading failure shouldn't block file attachment
@@ -845,13 +872,74 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     setAttachedFiles(prev => {
       const updated = [...prev, fileData];
       attachedFilesRef.current = updated; // Update ref immediately
-      // CRITICAL: Notify parent immediately when file is added (before state update completes)
-      if (onAttachmentsChange) {
-        onAttachmentsChange(updated);
-      }
       return updated;
     });
+    // Notify parent after state update (useEffect will also handle this, but this ensures immediate notification)
+    queueMicrotask(() => {
+      if (onAttachmentsChange) {
+        onAttachmentsChange(attachedFilesRef.current);
+      }
+    });
     console.log('✅ SearchBar: File attached:', fileData, `(${attachedFiles.length + 1}/${MAX_FILES})`);
+    
+    // Trigger quick text extraction for supported file types
+    if (supportsExtraction) {
+      console.log('🔍 Starting quick extraction for:', file.name);
+      
+      // Update status to extracting
+      setAttachedFiles(prev => prev.map(f => 
+        f.id === fileId ? { ...f, extractionStatus: 'extracting' as const } : f
+      ));
+      
+      // Call backend extraction API
+      backendApi.quickExtractText(file, true)
+        .then(result => {
+          if (result.success) {
+            console.log(`✅ Quick extraction complete for ${file.name}: ${result.pageCount} pages, ${result.charCount} chars`);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'complete' as const,
+                    extractedText: result.text,
+                    pageTexts: result.pageTexts,
+                    pageCount: result.pageCount,
+                    tempFileId: result.tempFileId
+                  } 
+                : f
+            ));
+            // Update ref and notify parent
+            queueMicrotask(() => {
+              if (onAttachmentsChange) {
+                onAttachmentsChange(attachedFilesRef.current);
+              }
+            });
+          } else {
+            console.error(`❌ Quick extraction failed for ${file.name}:`, result.error);
+            setAttachedFiles(prev => prev.map(f => 
+              f.id === fileId 
+                ? { 
+                    ...f, 
+                    extractionStatus: 'error' as const,
+                    extractionError: result.error
+                  } 
+                : f
+            ));
+          }
+        })
+        .catch(error => {
+          console.error(`❌ Quick extraction error for ${file.name}:`, error);
+          setAttachedFiles(prev => prev.map(f => 
+            f.id === fileId 
+              ? { 
+                  ...f, 
+                  extractionStatus: 'error' as const,
+                  extractionError: error instanceof Error ? error.message : 'Unknown error'
+                } 
+              : f
+          ));
+        });
+    }
     // Also call onFileDrop prop if provided (for drag-and-drop from parent)
     onFileDrop?.(file);
   }, [onFileDrop, attachedFiles.length]);
@@ -889,11 +977,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     setAttachedFiles(prev => {
       const updated = prev.filter(file => file.id !== id);
       attachedFilesRef.current = updated; // Update ref immediately
-      // CRITICAL: Notify parent immediately when file is removed (before state update completes)
-      if (onAttachmentsChange) {
-        onAttachmentsChange(updated);
-      }
       return updated;
+    });
+    // Notify parent after state update
+    queueMicrotask(() => {
+      if (onAttachmentsChange) {
+        onAttachmentsChange(attachedFilesRef.current);
+      }
     });
     // Remove from preview tabs if it was open
     setPreviewFiles(prev => {
@@ -940,10 +1030,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
           setAttachedFiles(prev => {
             const updated = [...prev, optimisticFileData];
             attachedFilesRef.current = updated;
-            if (onAttachmentsChange) {
-              onAttachmentsChange(updated);
-            }
             return updated;
+          });
+          // Notify parent after state update
+          queueMicrotask(() => {
+            if (onAttachmentsChange) {
+              onAttachmentsChange(attachedFilesRef.current);
+            }
           });
           
           // Fetch the actual file in the background
@@ -976,10 +1069,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                     : att
                 );
                 attachedFilesRef.current = updated;
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(updated);
-                }
                 return updated;
+              });
+              // Notify parent after state update
+              queueMicrotask(() => {
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(attachedFilesRef.current);
+                }
               });
               
               // Preload blob URL for preview
@@ -1000,10 +1096,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               setAttachedFiles(prev => {
                 const updated = prev.filter(att => att.id !== attachmentId);
                 attachedFilesRef.current = updated;
-                if (onAttachmentsChange) {
-                  onAttachmentsChange(updated);
-                }
                 return updated;
+              });
+              // Notify parent after state update
+              queueMicrotask(() => {
+                if (onAttachmentsChange) {
+                  onAttachmentsChange(attachedFilesRef.current);
+                }
               });
               toast({
                 description: 'Failed to load document. Please try again.',
@@ -1089,6 +1188,75 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
   };
   
+  // Calculate QuickStartBar position dynamically based on search bar position (for map view)
+  useLayoutEffect(() => {
+    if (!isMapVisible || !isQuickStartBarVisible || !searchFormRef.current || !searchContainerRef.current || !quickStartBarWrapperRef.current) {
+      return;
+    }
+
+    const calculatePosition = () => {
+      const searchForm = searchFormRef.current;
+      const container = searchContainerRef.current;
+      const quickStartWrapper = quickStartBarWrapperRef.current;
+      
+      if (!searchForm || !container || !quickStartWrapper) {
+        return;
+      }
+
+      // Get the form's inner div (the white search bar container with the actual width)
+      const formInnerDiv = searchForm.querySelector('div') as HTMLElement;
+      if (!formInnerDiv) {
+        return;
+      }
+
+      // Get positions - use offsetTop for more reliable relative positioning
+      const containerHeight = container.offsetHeight;
+      const formTopRelative = formInnerDiv.offsetTop;
+      
+      // Calculate spacing (negative value to bring QuickStartBar down closer to search bar)
+      // Less negative = more gap between QuickStartBar and search bar
+      const spacing = -35;
+      
+      // Position QuickStartBar above the form with spacing
+      // bottom = container height - (form top relative to container) + spacing
+      const bottomPosition = containerHeight - formTopRelative + spacing;
+      
+      // Set the bottom position
+      setQuickStartBarBottom(`${bottomPosition}px`);
+      
+      // QuickStartBar is now centered, so we just need to set maxWidth to match search bar
+      quickStartWrapper.style.width = 'fit-content';
+      // QuickStartBar should match search bar width for alignment
+      quickStartWrapper.style.maxWidth = '680px'; // Match content wrapper maxWidth
+    };
+
+    // Initial calculation with a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(calculatePosition, 0);
+
+    // Use ResizeObserver to recalculate when dimensions change
+    const resizeObserver = new ResizeObserver(() => {
+      // Debounce resize updates
+      setTimeout(calculatePosition, 10);
+    });
+
+    // Observe the container, form, and form's inner div
+    if (searchContainerRef.current) {
+      resizeObserver.observe(searchContainerRef.current);
+    }
+    if (searchFormRef.current) {
+      resizeObserver.observe(searchFormRef.current);
+      const formInnerDiv = searchFormRef.current.querySelector('div');
+      if (formInnerDiv) {
+        resizeObserver.observe(formInnerDiv);
+      }
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      resizeObserver.disconnect();
+    };
+  }, [isMapVisible, isQuickStartBarVisible]); // Recalculate when visibility or map view changes
+  
   return (
     <div 
       className={`${className || ''} ${
@@ -1125,17 +1293,52 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className={isMapVisible ? "w-full" : "w-full mx-auto"} style={{ 
-        maxWidth: isMapVisible 
-          ? '100%' // In map view, use 100% width - parent container handles max width
-          : (isVerySmallScreen && !isMapVisible 
-            ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
-            : contextConfig.maxWidth),
-        minWidth: '0', // Allow flexibility on very small screens - parent container handles spacing
-        width: '100%', // Always 100% width - let parent container handle constraints
-        boxSizing: 'border-box' // Ensure padding is included in width calculation
-      }}>
+      <div 
+        ref={searchContainerRef}
+        className={isMapVisible ? "w-full" : "w-full mx-auto"} 
+        style={{ 
+          maxWidth: isMapVisible 
+            ? '100%' // In map view, use 100% width - parent container handles max width
+            : (isVerySmallScreen && !isMapVisible 
+              ? `min(${contextConfig.maxWidth}, calc(100vw - 32px))` // On very small screens, ensure it fits viewport
+              : contextConfig.maxWidth),
+          minWidth: '0', // Allow flexibility on very small screens - parent container handles spacing
+          width: '100%', // Always 100% width - let parent container handle constraints
+          boxSizing: 'border-box', // Ensure padding is included in width calculation
+          position: isMapVisible ? 'relative' : 'relative' // Enable absolute positioning for QuickStartBar in map view
+        }}
+      >
+        {/* QuickStartBar - appears above search bar in map view when button is clicked */}
+        {isMapVisible && isQuickStartBarVisible && (
+          <div
+            ref={quickStartBarWrapperRef}
+            style={{
+              position: 'absolute',
+              bottom: quickStartBarBottom, // Dynamically calculated position
+              left: '50%',
+              transform: 'translateX(-50%)', // Center the QuickStartBar
+              zIndex: 10000,
+              width: 'fit-content', // Let content determine width naturally
+              maxWidth: '680px', // Fixed maxWidth to match search bar - QuickStartBar should align with search bar
+              display: 'flex',
+              justifyContent: 'center'
+            }}
+          >
+            <QuickStartBar
+              onDocumentLinked={(propertyId, documentId) => {
+                console.log('Document linked:', { propertyId, documentId });
+                // Optionally close QuickStartBar after successful link
+                if (onQuickStartToggle) {
+                  onQuickStartToggle();
+                }
+              }}
+              onPopupVisibilityChange={() => {}}
+              isInChatPanel={false}
+            />
+          </div>
+        )}
         <form 
+          ref={searchFormRef}
           onSubmit={handleSubmit} 
           className="relative" 
           style={{ overflow: 'visible', height: 'auto', width: '100%' }}
@@ -1146,10 +1349,12 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
             <div 
             className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
               style={{
-                // Glassmorphism by default; keep strong affordances during drag-over.
-                background: isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)',
-                backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
-                WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                // White background in map view, glassmorphism otherwise; keep strong affordances during drag-over.
+                background: isMapVisible 
+                  ? (isDragOver ? '#F0F9FF' : '#FFFFFF')
+                  : (isDragOver ? '#F0F9FF' : 'rgba(255, 255, 255, 0.72)'),
+                backdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                WebkitBackdropFilter: isMapVisible || isDragOver ? 'none' : 'blur(16px) saturate(160%)',
                 border: isDragOver
                   ? '2px dashed rgb(36, 41, 50)'
                   // Keep the outline consistently thin (no focus-thickening).
@@ -1169,7 +1374,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 height: 'auto',
                 // Set a fixed minHeight to prevent container from growing when textarea expands slightly
                 // This prevents the "jump" when typing - container stays stable, only textarea scrolls internally
-                minHeight: '60px', // Minimum height to accommodate textarea + padding + icons
+                minHeight: isMapVisible ? 'fit-content' : '60px', // Match SideChatPanel in map view, keep 60px for dashboard
                 // In map mode this component is bottom-fixed by parent; ensure it never grows off-screen.
                 // In dashboard mode, cap height so it doesn't expand into the Recent Projects section.
                 maxHeight: isMapVisible ? 'calc(100vh - 96px)' : (isDashboardView ? '220px' : undefined),
@@ -1241,7 +1446,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 minHeight: '24px',
                 width: '100%',
                 minWidth: '0', // Prevent width constraints
-                gap: '12px' // Use gap instead of marginBottom for consistent spacing
+                gap: isMapVisible ? '0' : '12px' // Match SideChatPanel: no gap in map view, use gap in dashboard
               }}
             >
               {/* Textarea always above icons */}
@@ -1250,8 +1455,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 style={{ 
                   minHeight: '24px',
                   width: '100%',
-                  marginTop: '0px', // Fixed at 0 - no conditional changes to prevent shifts
-                  marginBottom: '0px', // Use parent gap instead
+                  marginTop: isMapVisible ? '4px' : '0px', // Match SideChatPanel: 4px top margin in map view
+                  marginBottom: isMapVisible ? '12px' : '0px', // Match SideChatPanel: 12px bottom margin in map view
                   paddingTop: '0px',
                   paddingBottom: '0px'
                 }}
@@ -1295,16 +1500,19 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       placeholder={contextConfig.placeholder}
                       className="w-full bg-transparent focus:outline-none text-sm font-normal text-gray-900 placeholder:text-gray-500 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70"
                       style={{
-                        minHeight: '24px',
+                        // CRITICAL: Set stable initial height to prevent jump on first keystroke
+                        // Height matches minHeight to ensure no reflow when JS initializes
+                        height: '28px',
+                        minHeight: '28px',
                         maxHeight: contextConfig.position === "bottom" && !isMapVisible 
                           ? 'calc(100vh - 200px)' // Viewport-aware: account for container padding, icons, and spacing
                           : (isMapVisible 
-                              ? 'min(350px, calc(100vh - 260px))' // Map: prevent growing off-screen
+                              ? '120px' // Match SideChatPanel maxHeight in map view
                               : (isDashboardView ? '160px' : '350px')), // Dashboard: stop before Recent Projects; others: fixed cap
                         fontSize: '14px',
                         lineHeight: '20px',
-                        paddingTop: '0px',
-                        paddingBottom: '0px',
+                        paddingTop: '4px', // Add vertical padding for proper text centering
+                        paddingBottom: '4px',
                         paddingRight: '0px',
                         paddingLeft: '8px',
                         scrollbarWidth: 'thin',
@@ -1312,7 +1520,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         overflow: 'hidden',
                         overflowY: 'auto',
                         wordWrap: 'break-word',
-                        transition: 'none',
+                        transition: 'none', // Remove transition to prevent jump - height changes should be instant
                         resize: 'none',
                         width: '100%',
                         minWidth: '0',
@@ -1332,11 +1540,55 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 style={{
                   width: '100%',
                   minWidth: '0',
+                  minHeight: '32px', // Match SideChatPanel
                   flexShrink: 0 // Prevent shrinking
                 }}
               >
-                {/* Left group: Panel toggle and Map toggle */}
-                <div className="flex items-center flex-shrink-0">
+                {/* Left group: Mode selector, Map toggle and Panel toggle */}
+                <div className="flex items-center flex-shrink-0 gap-1">
+                  {/* Mode Selector Dropdown */}
+                  <ModeSelector compact={isMapVisible} />
+                  
+                  {/* Map Toggle Button - Aligned with text start */}
+                  {contextConfig.showMapToggle && (
+                    <button 
+                      type="button" 
+                      onClick={(e) => {
+                        console.log('🗺️ Map button clicked!', { 
+                          hasOnMapToggle: !!onMapToggle,
+                          currentVisibility: isMapVisible 
+                        });
+                        onMapToggle?.();
+                      }}
+                      className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid rgba(229, 231, 235, 0.6)',
+                        borderRadius: '12px',
+                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                        marginLeft: '4px',
+                        height: '24px',
+                        minHeight: '24px'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#F5F5F5';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#FFFFFF';
+                      }}
+                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
+                    >
+                      {isMapVisible ? (
+                        <LibraryBig className="w-3.5 h-3.5" strokeWidth={1.5} />
+                      ) : (
+                        <>
+                          <MapPinHouse className="w-3.5 h-3.5" strokeWidth={1.5} />
+                          <span className="text-xs font-medium">Map</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                  
                   {/* Panel Toggle Button - Always show "Expand chat" when onPanelToggle is available, or "Analyse" when property details is open */}
                   {onPanelToggle && (
                     isPropertyDetailsOpen ? (
@@ -1359,8 +1611,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                           transition: 'background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
                           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
                           whiteSpace: 'nowrap',
-                          marginLeft: '4px',
-                          animation: 'none'
+                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
+                          animation: 'none',
+                          height: '24px',
+                          minHeight: '24px'
                         }}
                         title="Open analyse mode"
                         onMouseEnter={(e) => {
@@ -1381,163 +1635,227 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       <button
                         type="button"
                         onClick={onPanelToggle}
-                        className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 focus:outline-none outline-none"
+                        className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
-                          marginLeft: '4px'
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid rgba(229, 231, 235, 0.6)',
+                          borderRadius: '12px',
+                          transition: 'background-color 0.2s ease',
+                          marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px',
+                          height: '24px',
+                          minHeight: '24px'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = '#F5F5F5';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = '#FFFFFF';
                         }}
                         title="Expand chat"
                       >
-                        <MessageSquareShare className="w-3.5 h-3.5 scale-x-[-1] text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.8} />
+                        <MessageCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        <span className="text-xs font-medium">Chat</span>
                       </button>
                     )
-                  )}
-                  
-                  {/* Map Toggle Button - Aligned with text start */}
-                  {contextConfig.showMapToggle && (
-                    <button 
-                      type="button" 
-                      onClick={(e) => {
-                        console.log('🗺️ Map button clicked!', { 
-                          hasOnMapToggle: !!onMapToggle,
-                          currentVisibility: isMapVisible 
-                        });
-                        onMapToggle?.();
-                      }}
-                      className={`flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group focus:outline-none outline-none ${
-                        !isMapVisible
-                          ? 'border-emerald-200/70 hover:border-emerald-300/80 bg-emerald-50/80 hover:bg-emerald-50 text-emerald-700'
-                          : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'
-                      }`}
-                      style={{
-                        // Match "Expand chat" button shape (square/rounded-rect)
-                        marginLeft: hasPreviousSession && isMapVisible ? '8px' : '4px'
-                      }}
-                      title={isMapVisible ? "Back to search mode" : "Go to map mode"}
-                    >
-                        {isMapVisible ? (
-                          <LayoutDashboard className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
-                        ) : (
-                          <MapPinHouse className="w-3.5 h-3.5 text-emerald-700 group-hover:text-emerald-800 transition-colors" strokeWidth={2} />
-                        )}
-                    </button>
                   )}
                 </div>
               
                 {/* Other icons - on the right */}
                 <div className="flex items-center space-x-3 flex-shrink-0" style={{ 
                   minWidth: '0',
-                  flexShrink: 0
+                  flexShrink: 0,
+                  marginRight: '4px'
                 }}>
-                {/* Document Selection Toggle Button (works like SideChatPanel) */}
-                <div className="relative flex items-center">
-                  <button
-                    type="button"
-                      onClick={() => {
-                        console.log('🔘 SearchBar: Document selection button clicked, current mode:', isDocumentSelectionMode);
-                        toggleDocumentSelectionMode();
-                        console.log('🔘 SearchBar: After toggle, new mode should be:', !isDocumentSelectionMode);
-                      }}
-                      className={`p-1 transition-colors relative ${
-                        selectedDocumentIds.size > 0
-                        ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
-                          : isDocumentSelectionMode
-                          ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
-                          : 'text-slate-600 hover:text-green-500'
-                    }`}
-                    title={
-                        selectedDocumentIds.size > 0
-                          ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
-                          : isDocumentSelectionMode
-                            ? "Document selection mode active - Click document cards to select"
-                            : "Select documents to search within"
-                    }
-                  >
-                      {selectedDocumentIds.size > 0 ? (
+                {/* Document Selection Toggle Button - Only show when property details panel is open */}
+                {isPropertyDetailsOpen && (
+                  <div className="relative flex items-center">
+                    <button
+                      type="button"
+                        onClick={() => {
+                          console.log('🔘 SearchBar: Document selection button clicked, current mode:', isDocumentSelectionMode);
+                          toggleDocumentSelectionMode();
+                          console.log('🔘 SearchBar: After toggle, new mode should be:', !isDocumentSelectionMode);
+                        }}
+                        className={`p-1 transition-colors relative ${
+                          selectedDocumentIds.size > 0
+                          ? 'text-green-500 hover:text-green-600 bg-green-50 rounded'
+                            : isDocumentSelectionMode
+                            ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
+                            : 'text-slate-600 hover:text-green-500'
+                      }`}
+                      title={
+                          selectedDocumentIds.size > 0
+                            ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
+                            : isDocumentSelectionMode
+                              ? "Document selection mode active - Click document cards to select"
+                              : "Select documents to search within"
+                      }
+                    >
+                        {selectedDocumentIds.size > 0 ? (
+                          <Scan className="w-5 h-5" strokeWidth={1.5} />
+                        ) : isDocumentSelectionMode ? (
                         <Scan className="w-5 h-5" strokeWidth={1.5} />
-                      ) : isDocumentSelectionMode ? (
-                      <Scan className="w-5 h-5" strokeWidth={1.5} />
-                    ) : (
-                      <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
-                    )}
+                      ) : (
+                        <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                      )}
                       {selectedDocumentIds.size > 0 && (
                         <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
                           {selectedDocumentIds.size}
                         </span>
                       )}
                     </button>
-                    {selectedDocumentIds.size > 0 && (
+                        {selectedDocumentIds.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              clearSelectedDocuments();
+                              setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                            }}
+                            className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                            title="Clear document selection"
+                          >
+                            <X className="w-3.5 h-3.5" strokeWidth={2} />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                
+                {/* Link and Attach buttons grouped together with smaller gap */}
+                <div className="flex items-center gap-1.5">
+                  {onQuickStartToggle && (
+                    <button
+                      type="button"
+                      onClick={onQuickStartToggle}
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      style={{
+                        backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
+                        border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
+                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                        height: '24px',
+                        minHeight: '24px'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isQuickStartBarVisible) {
+                          e.currentTarget.style.backgroundColor = '#F5F5F5';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isQuickStartBarVisible) {
+                          e.currentTarget.style.backgroundColor = '#FFFFFF';
+                        }
+                      }}
+                      title="Link document to property"
+                    >
+                      <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
+                      <span className="text-xs font-medium">Link</span>
+                    </button>
+                  )}
+                  
+                  {contextConfig.showMic && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || []);
+                          files.forEach(file => handleFileUpload(file));
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                          }
+                        }}
+                        className="hidden"
+                        accept="image/*,.pdf,.doc,.docx"
+                      />
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          clearSelectedDocuments();
-                          setDocumentSelectionMode(false); // Exit selection mode and return to default state
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                        style={{
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid rgba(229, 231, 235, 0.6)',
+                          transition: 'background-color 0.2s ease',
+                          height: '24px',
+                          minHeight: '24px'
                         }}
-                        className="ml-1 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
-                        title="Clear document selection"
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = '#F5F5F5';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = '#FFFFFF';
+                        }}
                       >
-                        <X className="w-3.5 h-3.5" strokeWidth={2} />
-                  </button>
-                )}
-                  </div>
-                
-                {onQuickStartToggle && (
-                  <button
-                    type="button"
-                    onClick={onQuickStartToggle}
-                    className={`flex items-center justify-center w-7 h-7 transition-colors focus:outline-none outline-none ${
-                      isQuickStartBarVisible 
-                        ? 'text-green-500 bg-green-50 rounded' 
-                        : 'text-slate-600 hover:text-green-500'
-                    }`}
-                    title="Link document to property"
-                  >
-                    <Workflow className="w-5 h-5" strokeWidth={1.5} />
-                  </button>
-                )}
-                
-                {contextConfig.showMic && (
-                  <ImageUploadButton
-                    onImageUpload={(query) => {
-                      setSearchValue(query);
-                      onSearch?.(query);
-                    }}
-                      onFileUpload={handleFileUpload}
-                    size="md"
-                  />
-                )}
+                        <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        <span className="text-xs font-medium">Attach</span>
+                      </button>
+                    </>
+                  )}
+                </div>
                   
                   {contextConfig.showMic && (
                     <button
                       type="button"
                       onClick={() => {}}
-                      className="flex items-center justify-center w-7 h-7 text-slate-600 hover:text-green-500 transition-colors focus:outline-none outline-none"
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      style={{
+                        backgroundColor: '#ECECEC',
+                        transition: 'background-color 0.2s ease',
+                        height: '24px',
+                        minHeight: '24px'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#E0E0E0';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#ECECEC';
+                      }}
                     >
-                      <Mic className="w-5 h-5" strokeWidth={1.5} />
+                      <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                      <span className="text-xs font-medium">Voice</span>
                     </button>
                   )}
                 
-                <button 
-                  type="submit" 
-                  onClick={handleSubmit} 
-                  className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
-                  style={{
-                    width: '32px',
-                    height: '32px',
-                    minWidth: '32px',
-                    minHeight: '32px',
-                    borderRadius: '50%',
-                    backgroundColor: (searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? '#415C85' : (isMapVisible ? '#F3F4F6' : 'transparent')
-                  }}
-                    disabled={isSubmitted || (!searchValue.trim() && attachedFiles.length === 0 && propertyAttachments.length === 0)}
-                >
-                  {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) ? (
-                    <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
-                  ) : (
-                    <ChevronRight className="w-6 h-6" strokeWidth={1.5} style={{ color: '#6B7280' }} />
+                <AnimatePresence>
+                  {(searchValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                    <motion.button 
+                      key="send-button"
+                      type="submit" 
+                      onClick={handleSubmit} 
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1, backgroundColor: '#415C85' }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        minWidth: '32px',
+                        minHeight: '32px',
+                        borderRadius: '50%',
+                        flexShrink: 0
+                      }}
+                      disabled={isSubmitted}
+                      whileHover={!isSubmitted ? { 
+                        scale: 1.05
+                      } : {}}
+                      whileTap={!isSubmitted ? { 
+                        scale: 0.95
+                      } : {}}
+                    >
+                      <motion.div
+                        key="arrow-up"
+                        initial={{ opacity: 1 }}
+                        animate={{ opacity: 1 }}
+                        className="absolute inset-0 flex items-center justify-center"
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                      </motion.div>
+                    </motion.button>
                   )}
-                </button>
+                </AnimatePresence>
                 </div>
               </div>
             </div>

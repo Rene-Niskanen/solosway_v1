@@ -19,13 +19,14 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LayoutDashboard, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
+import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
 import { SideChatPanel } from './SideChatPanel';
@@ -33,6 +34,7 @@ import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { FilingSidebar } from './FilingSidebar';
+import { UploadProgressBar } from './UploadProgressBar';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1572,6 +1574,7 @@ export const MainContent = ({
   const [minimizedChatMessages, setMinimizedChatMessages] = React.useState<any[]>([]); // Store chat messages when minimized
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
   const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
+  const [isRecentProjectsVisible, setIsRecentProjectsVisible] = React.useState<boolean>(false); // Track Recent Projects visibility
   
   // Hide QuickStartBar when switching away from map view
   React.useEffect(() => {
@@ -1579,6 +1582,82 @@ export const MainContent = ({
       setIsQuickStartBarVisible(false);
     }
   }, [isMapVisible, isQuickStartBarVisible]);
+  
+  // Store citation context for queries (hidden from user, passed to backend)
+  const [citationContext, setCitationContext] = React.useState<any>(null);
+
+  // PRE-BUILD: Listen for citation context preparation (when user clicks "Ask a question")
+  // This prepares the context BEFORE the user types their query
+  React.useEffect(() => {
+    const handleCitationContextPrepare = (event: CustomEvent) => {
+      const { citationContext: context } = event.detail;
+      console.log('⚡ [CITATION] Pre-storing citation context (user clicked Ask):', context);
+      setCitationContext(context);
+    };
+    
+    // CLEANUP: Listen for citation context clear (when user backs out or closes without submitting)
+    const handleCitationContextClear = () => {
+      console.log('🧹 [CITATION] Clearing pre-stored citation context (user backed out)');
+      setCitationContext(null);
+    };
+    
+    window.addEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+    window.addEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    return () => {
+      window.removeEventListener('citation-context-prepare', handleCitationContextPrepare as EventListener);
+      window.removeEventListener('citation-context-clear', handleCitationContextClear as EventListener);
+    };
+  }, []);
+
+  // Listen for citation query submissions
+  React.useEffect(() => {
+    const handleCitationQuerySubmit = (event: CustomEvent) => {
+      const { query, citationContext: context, propertyId, documentIds } = event.detail;
+      
+      console.log('📝 [CITATION] Received citation query submit:', { 
+        query, 
+        citationContext: context, 
+        propertyId, 
+        documentIds 
+      });
+      
+      // Use pre-stored context if available, otherwise use the one from the event
+      // (context should already be set from citation-context-prepare event)
+      if (!citationContext && context) {
+        setCitationContext(context);
+      }
+      
+      // Open chat panel if not already open
+      if (!isMapVisible) {
+        setIsMapVisible(true);
+      }
+      setHasPerformedSearch(true);
+      
+      // If property details is open, expand chat
+      if (isPropertyDetailsOpen) {
+        setShouldExpandChat(true);
+      }
+      
+      // Set the query - SideChatPanel will auto-submit it
+      setMapSearchQuery(query);
+      
+      // Clear citation context after a short delay (once the query has been submitted)
+      // This ensures subsequent manual queries don't reuse the citation context
+      setTimeout(() => {
+        setCitationContext(null);
+      }, 2000); // 2 second delay - enough time for query to be submitted
+    };
+    
+    window.addEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
+    return () => window.removeEventListener('citation-query-submit', handleCitationQuerySubmit as EventListener);
+  }, [isMapVisible, isPropertyDetailsOpen, citationContext]);
+
+  // Clear citation context when chat is closed or new chat starts
+  React.useEffect(() => {
+    if (!hasPerformedSearch) {
+      setCitationContext(null);
+    }
+  }, [hasPerformedSearch]);
   
   // Reset chat panel width when map view is closed or chat is hidden
   React.useEffect(() => {
@@ -1607,12 +1686,14 @@ export const MainContent = ({
   }, [isMapVisible, currentView, isChatBubbleVisible]);
   
   // Reset shouldExpandChat flag after chat has been opened and expanded
+  // Increased delay to 500ms to ensure SideChatPanel has time to process shouldExpand=true
   React.useEffect(() => {
     if (shouldExpandChat && hasPerformedSearch && isMapVisible) {
-      // Chat is now open, reset the flag after a short delay to allow expansion
+      // Chat is now open, reset the flag after a delay to allow expansion
+      // SideChatPanel will persist fullscreen mode even after shouldExpand becomes false
       const timer = setTimeout(() => {
         setShouldExpandChat(false);
-      }, 100);
+      }, 500); // Increased from 100ms to 500ms to ensure fullscreen mode is set
       return () => clearTimeout(timer);
     }
   }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
@@ -1720,7 +1801,11 @@ export const MainContent = ({
     addPreviewFile,
     MAX_PREVIEW_TABS,
     expandedCardViewDoc,
-    closeExpandedCardView
+    closeExpandedCardView,
+    isAgentTaskActive,
+    agentTaskMessage,
+    stopAgentTask,
+    isMapNavigating
   } = usePreview();
   
   // Use the prop value for chat mode
@@ -1911,6 +1996,11 @@ export const MainContent = ({
                     cacheVersion: (response as any).cache_version || 1
                   }));
                   console.log('✅ Preloaded card summary on dashboard mount:', property.address);
+                } else if (response.error && response.error.includes('Property not found')) {
+                  // Property no longer exists - clean up localStorage
+                  localStorage.removeItem('lastInteractedProperty');
+                  localStorage.removeItem(cacheKey);
+                  // Silently handle - property was deleted or user lost access
                 }
               }
             }
@@ -2174,9 +2264,8 @@ export const MainContent = ({
     }
   };
 
-  const handleQueryStart = (query: string) => {
-    console.log('MainContent: Query started with:', query);
-    
+  // Memoize to prevent SearchBar re-renders on parent state changes
+  const handleQueryStart = React.useCallback((query: string) => {
     // Track search activity but DON'T create chat history yet
     addActivity({
       action: `User initiated search: "${query}"`,
@@ -2186,7 +2275,7 @@ export const MainContent = ({
     });
     
     // Don't create chat history until query is actually submitted
-  };
+  }, [addActivity]);
 
   const handleLocationUpdate = (location: { lat: number; lng: number; address: string }) => {
     console.log('Location updated:', location);
@@ -2246,10 +2335,20 @@ export const MainContent = ({
     }
     
     // Store attachments for SideChatPanel BEFORE clearing
+    // CRITICAL: Update both ref (for immediate access) and state (to trigger re-render)
     if (dashboardAttachments.length > 0) {
       pendingSideChatAttachmentsRef.current = dashboardAttachments;
+      // Use flushSync to ensure state update happens before query is processed
       setPendingSideChatAttachments(dashboardAttachments);
-      console.log('📎 MainContent: Stored attachments for SideChatPanel:', dashboardAttachments.length);
+      console.log('📎 MainContent: Stored attachments for SideChatPanel:', {
+        count: dashboardAttachments.length,
+        names: dashboardAttachments.map(a => a.name),
+        hasExtractedText: dashboardAttachments.some(a => a.extractedText)
+      });
+    } else {
+      // Clear attachments if none provided
+      pendingSideChatAttachmentsRef.current = [];
+      setPendingSideChatAttachments([]);
     }
     
     // Clear stored attachments when search is submitted (after capturing)
@@ -2267,8 +2366,9 @@ export const MainContent = ({
     // Always update map search query
     setMapSearchQuery(query);
     
-    // If map is visible, only search on the map, don't enter chat
-    if (isMapVisible) {
+    // If map is visible and there are no attachments, only search on the map, don't enter chat
+    // BUT if there are attachments, we need to show SideChatPanel to handle file choice
+    if (isMapVisible && dashboardAttachments.length === 0) {
       console.log('Map search only - not entering chat mode');
       
       // Collapse sidebar on first query in map view for cleaner UI
@@ -2278,16 +2378,39 @@ export const MainContent = ({
         onCloseSidebar();
       }
       
+      // Query from map chat bar - don't expand
+      setShouldExpandChat(false);
+      
       // Mark that user has performed a search in map mode
       setHasPerformedSearch(true);
       return;
     }
     
+    // If map is visible but there are attachments, ensure SideChatPanel is shown
+    if (isMapVisible && dashboardAttachments.length > 0) {
+      console.log('Map visible with attachments - showing SideChatPanel for file choice', {
+        attachmentCount: dashboardAttachments.length,
+        storedInRef: pendingSideChatAttachmentsRef.current.length,
+        storedInState: pendingSideChatAttachments.length
+      });
+      
+      // Query from map chat bar - don't expand
+      setShouldExpandChat(false);
+      
+      setHasPerformedSearch(true);
+      // Attachments are already stored in pendingSideChatAttachmentsRef above
+      // Query is already set via setMapSearchQuery above
+      // SideChatPanel will receive both via props
+      return;
+    }
+    
     // Dashboard view: Route query to SideChatPanel
     // Open map view and show SideChatPanel
-    console.log('Dashboard search - opening SideChatPanel');
     setIsMapVisible(true);
     setHasPerformedSearch(true);
+    
+    // Query from dashboard - expand to fullscreen view
+    setShouldExpandChat(true);
     
     // Collapse sidebar for cleaner UI when opening SideChatPanel
     if (onCloseSidebar) {
@@ -2535,7 +2658,8 @@ export const MainContent = ({
             height: '100%', 
             minHeight: '100%',
             backgroundColor: 'transparent', // Ensure transparent to show background
-            background: 'transparent' // Ensure transparent to show background
+            background: 'transparent', // Ensure transparent to show background
+            justifyContent: 'flex-start' // Start from top, don't center everything
           }}>
                 {/* Interactive Dot Grid Background */}
                 {/* No background needed here as it's handled globally */}
@@ -2592,7 +2716,8 @@ export const MainContent = ({
                         alignItems: 'center',
                         position: 'relative',
                         transform: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'translateY(-20px)' : 'none', // Move content up slightly for better visual centering
-                        zIndex: 2
+                        zIndex: 2,
+                        overflow: 'visible' // Ensure QuickStartBar is not clipped
                       }}
                     >
                 {/* VELORA Branding Section */}
@@ -2602,19 +2727,19 @@ export const MainContent = ({
                         position: 'relative',
                         zIndex: 10 // Above background image
                       }}>
-                        {/* VELORA Logo - Always visible, fixed minimum size to prevent shrinking */}
+                        {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
                           src="/%28DASH%20VELORA%29%20Logo%20-%20NB.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
-                            width: '180px', // Fixed width - don't shrink on small screens
-                            minWidth: '180px', // Ensure it never gets smaller
-                            maxWidth: '280px', // Can grow on larger screens
+                            width: 'clamp(250px, 22vw, 380px)', // Slightly smaller than before
+                            minWidth: '250px', // Ensure it never gets smaller
+                            maxWidth: '380px', // Can grow on larger screens
                             height: 'auto',
-                            minHeight: '60px', // Fixed minimum height
-                            maxHeight: '120px', // Can grow on larger screens
-                            marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(1rem, 3vh, 1.5rem)' : '0', // Balanced spacing between logo and welcome message
+                            minHeight: '80px', // Slightly reduced minimum height
+                            maxHeight: '150px', // Slightly reduced maximum height
+                            marginBottom: (!isVerySmall && !shouldHideProjectsForSearchBar) ? 'clamp(2rem, 4vh, 3rem)' : '0', // Spacing between logo and search bar
                             objectFit: 'contain' // Maintain aspect ratio
                           }}
                     onLoad={() => {
@@ -2624,154 +2749,8 @@ export const MainContent = ({
                       console.error('❌ VELORA logo failed to load:', e.currentTarget.src);
                     }}
                   />
-                  
-                        {/* Dynamic Welcome Message - Hide when very small OR when search bar needs space */}
-                        {!isVerySmall && !shouldHideProjectsForSearchBar && (() => {
-                    const getUserName = () => {
-                      if (userData?.first_name) {
-                        return userData.first_name;
-                      }
-                      if (userData?.email) {
-                        // Extract name from email (e.g., "user@example.com" → "user")
-                        const emailPrefix = userData.email.split('@')[0];
-                        // Capitalize first letter
-                        return emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-                      }
-                      return '';
-                    };
-                    const userName = getUserName();
-                    return userName ? (
-                            <div style={{
-                              position: 'relative',
-                              display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
-                              transition: 'filter 0.2s ease'
-                            } as React.CSSProperties}>
-                              <p
-                                className="mb-0 text-center tracking-wide leading-relaxed"
-                                style={{
-                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                  color: '#111827', // Single, sleeker ink tone
-                                  fontWeight: 400,
-                                  opacity: 0.9
-                                } as React.CSSProperties}
-                              >
-                                {`Welcome back${userName ? ` ${userName}` : ''}, your workspace is synced and ready for your next move`}
-                              </p>
-                            </div>
-                    ) : (
-                            <div style={{
-                              position: 'relative',
-                              display: 'inline-block',
-                              maxWidth: 'clamp(280px, 80vw, 42rem)',
-                              filter: isQuickStartPopupVisible ? 'blur(2px)' : 'none',
-                              transition: 'filter 0.2s ease'
-                            } as React.CSSProperties}>
-                              <p
-                                className="mb-0 text-center tracking-wide leading-relaxed"
-                                style={{
-                                  fontSize: 'clamp(0.75rem, 1.5vw, 1rem)',
-                                  color: '#111827',
-                                  fontWeight: 400,
-                                  opacity: 0.9
-                                } as React.CSSProperties}
-                              >
-                                Welcome back, your workspace is synced and ready for your next move
-                              </p>
-                            </div>
-                    );
-                  })()}
                 </div>
                 
-                {/* Quick Start Bar - between welcome message and recent projects */}
-                {!isVerySmall && !shouldHideProjectsForSearchBar && !isQuickStartBarVisible && (
-                  <QuickStartBar
-                    onDocumentLinked={(propertyId, documentId) => {
-                      console.log('Document linked:', { propertyId, documentId });
-                      // Optionally refresh recent projects or show success
-                    }}
-                    onPopupVisibilityChange={setIsQuickStartPopupVisible}
-                  />
-                )}
-                
-                      {/* Recent Projects Section - Hide when very small OR when search bar needs space */}
-                      {!isVerySmall && !shouldHideProjectsForSearchBar && (
-                        <div className="w-full" style={{ marginTop: '0', marginBottom: 'clamp(2rem, 5vh, 3rem)' }}>
-                          <RecentProjectsSection 
-                            onNewProjectClick={() => {
-                              setShowNewPropertyWorkflow(true);
-                            }}
-                            onOpenProperty={(address, coordinates, propertyId) => {
-                              console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
-                              // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
-                              // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-                              
-                              // OPTIMIZATION: Check cache FIRST for instant display (<1s)
-                              let instantDisplay = false;
-                              if (propertyId) {
-                                try {
-                                  const cacheKey = `propertyCardCache_${propertyId}`;
-                                  const cached = localStorage.getItem(cacheKey);
-                                  if (cached) {
-                                    const cacheData = JSON.parse(cached);
-                                    const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
-                                    const cacheAge = Date.now() - cacheData.timestamp;
-                                    
-                                    if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
-                                      // We have cached data - show card INSTANTLY
-                                      console.log('🚀 INSTANT: Using cached property data - showing card immediately');
-                                      instantDisplay = true;
-                                      
-                                      // Open map and select property immediately
-                                      setIsMapVisible(true);
-                                      
-                                      // Store selection for map with property pin location coordinates
-                                      (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                      
-                                      // Select property immediately if map is ready, using property pin location coordinates
-                                      if (mapRef.current) {
-                                        mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                      }
-                                    }
-                                  }
-                                } catch (e) {
-                                  console.warn('Failed to check cache:', e);
-                                }
-                              }
-                              
-                              // If we didn't show instantly from cache, use normal flow
-                              if (!instantDisplay) {
-                              // Open map mode
-                              setIsMapVisible(true);
-                              
-                              // Skip address search when we have a propertyId to avoid geocoding conflicts
-                              if (!propertyId) {
-                                setMapSearchQuery(address);
-                                setHasPerformedSearch(true);
-                              }
-                              
-                              // Store selection for when map is ready, with property pin location coordinates
-                              (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                              
-                                // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
-                                if (mapRef.current) {
-                                  console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
-                                  mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                } else {
-                                  // Map not ready - try again very soon
-                              setTimeout(() => {
-                                if (mapRef.current) {
-                                  console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
-                                  mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
-                                }
-                                  }, 10); // Minimal delay - check every 10ms
-                                }
-                              }
-                            }}
-                          />
-                        </div>
-                      )}
                       
                       {/* Unified Search Bar - adapts based on context, always visible */}
                       {/* Ensure search bar is never cut off with overflow protection */}
@@ -2830,7 +2809,7 @@ export const MainContent = ({
                             paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
                             overflow: 'visible', // Ensure content is never clipped
                             position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                            bottom: isMapVisible ? '20px' : (shouldPositionAtBottom ? '0' : 'auto'),
+                            bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
                             left: isMapVisible ? '50%' : (shouldPositionAtBottom ? '0' : 'auto'),
                             right: shouldPositionAtBottom ? '0' : 'auto',
                             transform: isMapVisible ? 'translateX(-50%)' : 'none',
@@ -2862,6 +2841,8 @@ export const MainContent = ({
                     }
                   } : undefined}
                   hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
+                  onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
+                  isQuickStartBarVisible={isQuickStartBarVisible}
                   initialValue={(() => {
                     const value = isMapVisible && !hasPerformedSearch 
                       ? (pendingMapQueryRef.current || pendingMapQuery) 
@@ -2880,10 +2861,197 @@ export const MainContent = ({
                           </div>
                         );
                       })()}
+                      
+                      {/* Upload and Recent Projects Buttons - positioned below search bar */}
+                      {!isMapVisible && !isInChatMode && (
+                        <div className="w-full" style={{ 
+                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)', // Reduced from 1rem-1.5rem to move closer
+                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)', // Reduced padding
+                          paddingLeft: 'clamp(16px, 4vw, 32px)',
+                          paddingRight: 'clamp(16px, 4vw, 32px)',
+                          position: 'relative', // Keep relative so absolute children position relative to this
+                          zIndex: 100,
+                          width: '100%',
+                          maxWidth: 'clamp(400px, 85vw, 650px)',
+                          marginLeft: 'auto',
+                          marginRight: 'auto',
+                          visibility: 'visible'
+                        }}>
+                          <div className="flex items-center justify-center gap-3">
+                            {/* Recent Projects Button */}
+                            <button
+                              onClick={() => setIsRecentProjectsVisible(!isRecentProjectsVisible)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors focus:outline-none outline-none"
+                              style={{
+                                backgroundColor: '#FFFFFF',
+                                color: '#374151',
+                                border: '1px solid rgba(229, 231, 235, 0.6)',
+                                fontSize: '12px', // Reduced from 14px
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                                height: '32px', // Reduced from 40px
+                                transition: 'all 0.15s ease',
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = '#F9FAFB';
+                                e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                              }}
+                            >
+                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} /> {/* Reduced from w-4 h-4 */}
+                              <span>Recent Projects</span>
+                            </button>
+                          </div>
+                          
+                          {/* Recent Projects Section - appears below button when expanded, doesn't affect other elements */}
+                          {isRecentProjectsVisible && (
+                            <motion.div
+                              initial={{ opacity: 0, y: -10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -10 }}
+                              transition={{ duration: 0.2, ease: 'easeOut' }}
+                              className="w-full"
+                              style={{ 
+                                marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                                marginBottom: 'clamp(2rem, 5vh, 3rem)',
+                                position: 'absolute', // Use absolute positioning to not affect layout
+                                top: '100%', // Position below the button
+                                left: 0,
+                                right: 0,
+                                zIndex: 99,
+                                width: '100%',
+                                maxWidth: 'clamp(400px, 85vw, 650px)',
+                                marginLeft: 'auto',
+                                marginRight: 'auto',
+                                paddingLeft: 'clamp(16px, 4vw, 32px)',
+                                paddingRight: 'clamp(16px, 4vw, 32px)'
+                              }}
+                            >
+                              <RecentProjectsSection 
+                                onNewProjectClick={() => {
+                                  setShowNewPropertyWorkflow(true);
+                                }}
+                                onOpenProperty={(address, coordinates, propertyId) => {
+                                  console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
+                                  // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
+                                  // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
+                                  
+                                  // OPTIMIZATION: Check cache FIRST for instant display (<1s)
+                                  let instantDisplay = false;
+                                  if (propertyId) {
+                                    try {
+                                      const cacheKey = `propertyCardCache_${propertyId}`;
+                                      const cached = localStorage.getItem(cacheKey);
+                                      if (cached) {
+                                        const cacheData = JSON.parse(cached);
+                                        const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+                                        const cacheAge = Date.now() - cacheData.timestamp;
+                                        
+                                        if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
+                                          // We have cached data - show card INSTANTLY
+                                          console.log('🚀 INSTANT: Using cached property data - showing card immediately');
+                                          instantDisplay = true;
+                                          
+                                          // Open map and select property immediately
+                                          setIsMapVisible(true);
+                                          
+                                          // Store selection for map with property pin location coordinates
+                                          (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+                                          
+                                          // Select property immediately if map is ready, using property pin location coordinates
+                                          if (mapRef.current) {
+                                            mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                          }
+                                        }
+                                      }
+                                    } catch (e) {
+                                      console.warn('Failed to check cache:', e);
+                                    }
+                                  }
+                                  
+                                  // If we didn't show instantly from cache, use normal flow
+                                  if (!instantDisplay) {
+                                    // Open map mode
+                                    setIsMapVisible(true);
+                                    
+                                    // Skip address search when we have a propertyId to avoid geocoding conflicts
+                                    if (!propertyId) {
+                                      setMapSearchQuery(address);
+                                      setHasPerformedSearch(true);
+                                    }
+                                    
+                                    // Store selection for when map is ready, with property pin location coordinates
+                                    (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
+                                    
+                                    // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
+                                    if (mapRef.current) {
+                                      console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
+                                      mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                    } else {
+                                      // Map not ready - try again very soon
+                                      setTimeout(() => {
+                                        if (mapRef.current) {
+                                          console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
+                                          mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
+                                        }
+                                      }, 10); // Minimal delay - check every 10ms
+                                    }
+                                  }
+                                }}
+                              />
+                            </motion.div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* QuickStartBar beside Search Bar - show when Link button is clicked */}
+                      {!isMapVisible && !isInChatMode && isQuickStartBarVisible && (() => {
+                        // Calculate padding to match search bar
+                        const MIN_PADDING = 16;
+                        const MAX_PADDING = 32;
+                        const availableWidth = viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
+                        const quickStartPadding = availableWidth < 350 
+                          ? 8 
+                          : Math.max(
+                              MIN_PADDING,
+                              Math.min(MAX_PADDING, Math.floor(availableWidth * 0.04))
+                            );
+                        
+                        return (
+                          <motion.div
+                            initial={{ opacity: 0, x: -20, scale: 0.95 }}
+                            animate={{ opacity: 1, x: 0, scale: 1 }}
+                            exit={{ opacity: 0, x: -20, scale: 0.95 }}
+                            transition={{ duration: 0.2, ease: 'easeOut' }}
+                            style={{
+                              position: 'relative',
+                              zIndex: 1000, // Higher z-index to ensure it's visible
+                              width: '100%',
+                              maxWidth: 'clamp(400px, 85vw, 650px)',
+                              marginLeft: 'auto',
+                              marginRight: 'auto',
+                              marginTop: 'clamp(1rem, 2vh, 1.5rem)',
+                              paddingLeft: `${quickStartPadding}px`,
+                              paddingRight: `${quickStartPadding}px`,
+                            }}
+                          >
+                            <QuickStartBar
+                              onDocumentLinked={(propertyId, documentId) => {
+                                console.log('Document linked:', { propertyId, documentId });
+                                setIsQuickStartBarVisible(false);
+                              }}
+                              onPopupVisibilityChange={setIsQuickStartPopupVisible}
+                            />
+                          </motion.div>
+                        );
+                      })()}
+                      
                     </div>
                   );
                 })() : null}
-                
                 
                 {/* MapChatBar and SideChatPanel are now rendered outside content container for proper visibility */}
                 
@@ -2940,6 +3108,8 @@ export const MainContent = ({
                 pendingDashboardAttachmentsRef.current = attachments;
                 setPendingDashboardAttachments(attachments);
               } : undefined}
+              onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
+              isQuickStartBarVisible={isQuickStartBarVisible}
               onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
                 if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
@@ -3383,6 +3553,9 @@ export const MainContent = ({
     onDragLeave={handleDragLeave}
     onDrop={handleDrop}
   >
+      {/* Global Upload Progress Bar */}
+      <UploadProgressBar />
+      
       {/* Background Map - Always rendered but only visible/interactive when map view is active */}
       {(currentView === 'search' || currentView === 'home') && (
         <div 
@@ -3433,6 +3606,34 @@ export const MainContent = ({
             }}
             chatPanelWidth={chatPanelWidth}
             sidebarWidth={sidebarWidthValue}
+          />
+        </div>
+      )}
+      
+      {/* Map navigation glow overlay - at root level for proper z-index stacking */}
+      {isMapNavigating && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: chatPanelWidth + sidebarWidthValue, // Start after chat panel and sidebar
+            right: 0,
+            bottom: 0,
+            pointerEvents: 'none',
+            zIndex: 900, // Above map but below agent task overlay
+            border: '4px solid rgba(217, 119, 8, 0.6)',
+            boxShadow: 'inset 0 0 150px 60px rgba(217, 119, 8, 0.15), inset 0 0 80px 30px rgba(217, 119, 8, 0.2)',
+            animation: 'mapGlowPulse 2s ease-in-out infinite'
+          }}
+        />
+      )}
+      
+      {/* Agent Task Overlay - Rendered at root level with high z-index to appear above chat */}
+      {isAgentTaskActive && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1000, pointerEvents: 'none' }}>
+          <AgentTaskOverlay
+            message={agentTaskMessage}
+            onStop={stopAgentTask}
           />
         </div>
       )}
@@ -3588,6 +3789,7 @@ export const MainContent = ({
           ref={sideChatPanelRef}
           isVisible={isMapVisible && hasPerformedSearch}
           query={mapSearchQuery}
+          citationContext={citationContext}
           isSidebarCollapsed={isSidebarCollapsed}
           sidebarWidth={(() => {
             // Base sidebar width
@@ -3619,10 +3821,14 @@ export const MainContent = ({
             const attachments = pendingSideChatAttachmentsRef.current.length > 0 
               ? pendingSideChatAttachmentsRef.current 
               : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
+            if (attachments && attachments.length > 0) {
+              console.log('📎 MainContent: Passing attachments to SideChatPanel:', attachments.length, attachments.map(a => a.name));
+            }
             return attachments;
           })()}
           isPropertyDetailsOpen={isPropertyDetailsOpen}
           shouldExpand={shouldExpandChat}
+          isMapVisible={isMapVisible}
           onQuickStartToggle={() => {
             setIsQuickStartBarVisible(!isQuickStartBarVisible);
           }}
@@ -3631,13 +3837,15 @@ export const MainContent = ({
             // Handle new query from panel
             setMapSearchQuery(newQuery);
             // Keep hasPerformedSearch true
+            // Query from within SideChatPanel - don't expand (keep current state or collapse)
+            setShouldExpandChat(false);
           }}
           onMinimize={(chatMessages) => {
             // Show bubble and hide full panel
             setMinimizedChatMessages(chatMessages);
             // Only show bubble in map flow (never on dashboard/other views)
             if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
-              setIsChatBubbleVisible(true);
+            setIsChatBubbleVisible(true);
             } else {
               setIsChatBubbleVisible(false);
             }
@@ -3675,8 +3883,8 @@ export const MainContent = ({
             // Update chat panel width for map resizing
             setChatPanelWidth(width);
           }}
-          onOpenProperty={(address, coordinates, propertyId) => {
-            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId });
+          onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
+            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
             
             // Ensure map is visible
             if (!isMapVisible) {
@@ -3687,21 +3895,22 @@ export const MainContent = ({
             const propertyIdStr = propertyId ? String(propertyId) : undefined;
             
             // Select property on map
+            // Pass navigationOnly to control whether to show full panel or just title card
             if (mapRef.current && coordinates) {
-              mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+              mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
             } else if (mapRef.current) {
               // Try to select even without coordinates
-              mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+              mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
             } else {
               // Map not ready - store for later
-              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr };
+              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
               // Try again soon
               setTimeout(() => {
                 if (mapRef.current) {
                   if (coordinates) {
-                    mapRef.current.selectPropertyByAddress(address, coordinates, propertyIdStr);
+                    mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
                   } else {
-                    mapRef.current.selectPropertyByAddress(address, undefined, propertyIdStr);
+                    mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
                   }
                 }
               }, 100);
@@ -3729,17 +3938,21 @@ export const MainContent = ({
         />
       )}
 
-      {/* QuickStartBar as Island above Search Bar - only show when chat panel is NOT open */}
-      {isQuickStartBarVisible && !hasPerformedSearch && (
-        <div
+      {/* QuickStartBar beside Search Bar - only show when chat panel is NOT open */}
+      {isQuickStartBarVisible && !hasPerformedSearch && !isMapVisible && (
+        <motion.div
+          initial={{ opacity: 0, x: -20, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: -20, scale: 0.95 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
           style={{
             position: 'fixed',
-            bottom: '80px', // Position slightly lower, closer to search bar
+            bottom: '80px', // Match search bar bottom position
             left: '50%',
-            transform: 'translateX(-50%)',
+            transform: 'translateX(calc(-50% + clamp(350px, 42.5vw, 650px) / 2 + 20px))', // Position to the right of search bar with spacing
             zIndex: 10001,
             width: 'fit-content',
-            maxWidth: 'clamp(400px, 85vw, 650px)' // Match search bar width
+            maxWidth: 'clamp(300px, 30vw, 400px)'
           }}
         >
             <QuickStartBar
@@ -3750,7 +3963,7 @@ export const MainContent = ({
               }}
               onPopupVisibilityChange={setIsQuickStartPopupVisible}
             />
-        </div>
+        </motion.div>
       )}
 
       {/* Content container - transparent to show map background */}

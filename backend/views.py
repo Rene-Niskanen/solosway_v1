@@ -16,6 +16,7 @@ import boto3
 import time
 import re
 import math
+import queue
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
@@ -110,6 +111,116 @@ class _Timing:
             prev_name, prev_t = name, t
         out["total_ms"] = _perf_ms(self._t0, time.perf_counter())
         return out
+
+
+# ---------------------------------------------------------------------------
+# SINGLE SOURCE OF TRUTH: Citation Selection Based on User Intent
+# ---------------------------------------------------------------------------
+def select_best_citation_for_query(query: str, citations_map: dict, preferred_citation_key: str = None) -> tuple[str, dict]:
+    """
+    Select the best citation that matches the user's query intent.
+    
+    Args:
+        query: The user's query text
+        citations_map: Dict of citation_key -> citation_data
+        preferred_citation_key: Optional preferred citation (from LLM), will verify it matches intent
+    
+    Returns:
+        Tuple of (selected_key, selected_citation) or (None, None) if no citations
+    """
+    if not citations_map:
+        return None, None
+    
+    query_lower = query.lower() if query else ''
+    
+    # Detect query intent
+    is_phone_query = any(kw in query_lower for kw in ['phone', 'telephone', 'call', 'contact number', 'tel'])
+    is_email_query = any(kw in query_lower for kw in ['email', 'e-mail', 'mail address'])
+    is_address_query = any(kw in query_lower for kw in ['address', 'location', 'where is', 'office'])
+    
+    # If we have a preferred citation and it matches intent, use it
+    if preferred_citation_key and preferred_citation_key in citations_map:
+        preferred_cit = citations_map[preferred_citation_key]
+        cit_text = preferred_cit.get('cited_text', '').lower()
+        
+        # Check if preferred citation matches query intent
+        matches_intent = True
+        if is_phone_query:
+            has_phone = bool(re.search(r'\+?\d[\d\s\-\(\)]{8,}', cit_text)) or 'phone' in cit_text or 'tel' in cit_text
+            if not has_phone:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match phone intent")
+        elif is_email_query:
+            has_email = bool(re.search(r'[\w\.-]+@[\w\.-]+\.\w+', cit_text)) or 'email' in cit_text
+            if not has_email:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match email intent")
+        elif is_address_query:
+            has_address = bool(re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court)', cit_text, re.IGNORECASE)) or 'address' in cit_text
+            if not has_address:
+                matches_intent = False
+                logger.info(f"🎯 [CITATION_SELECT] Preferred [{preferred_citation_key}] doesn't match address intent")
+        
+        if matches_intent:
+            logger.info(f"🎯 [CITATION_SELECT] Using preferred citation [{preferred_citation_key}]")
+            return preferred_citation_key, preferred_cit
+    
+    # Need to find a better citation - score all citations
+    best_key = None
+    best_score = -1
+    best_cit = None
+    
+    for cit_key, cit in citations_map.items():
+        cit_text = cit.get('cited_text', '').lower()
+        cit_page = cit.get('page', 0)
+        cit_method = cit.get('method', '')
+        score = 0
+        
+        # Score based on content match with query intent
+        if is_phone_query:
+            if re.search(r'\+?\d[\d\s\-\(\)]{8,}', cit_text):
+                score += 100  # Has phone number pattern
+            if 'phone' in cit_text or 'tel' in cit_text:
+                score += 50  # Has phone keyword
+        elif is_email_query:
+            if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', cit_text):
+                score += 100  # Has email pattern
+            if 'email' in cit_text:
+                score += 50  # Has email keyword
+        elif is_address_query:
+            if re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court)', cit_text, re.IGNORECASE):
+                score += 100  # Has address pattern
+            if 'address' in cit_text:
+                score += 50  # Has address keyword
+        else:
+            # No specific intent - prefer higher-numbered citations (usually more specific)
+            score = 10
+        
+        # Penalize page 0 (cover pages)
+        if cit_page == 0:
+            score -= 50
+        
+        # Penalize orphan citations (less reliable)
+        if 'orphan' in cit_method.lower():
+            score -= 20
+        
+        # Boost for later pages (more likely to be actual content)
+        if cit_page >= 2:
+            score += 10
+        
+        if score > best_score:
+            best_score = score
+            best_key = cit_key
+            best_cit = cit
+    
+    if best_key:
+        logger.info(f"🎯 [CITATION_SELECT] Selected citation [{best_key}] with score {best_score}")
+        return best_key, best_cit
+    
+    # Fallback to first available
+    first_key = next(iter(citations_map.keys()), None)
+    logger.info(f"🎯 [CITATION_SELECT] Fallback to first citation [{first_key}]")
+    return first_key, citations_map.get(first_key) if first_key else None
 
 # ============================================================================
 # HEALTH & STATUS ENDPOINTS
@@ -348,6 +459,18 @@ def query_documents_stream():
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
         session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
+        response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
+        attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
+        is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
+        
+        # CRITICAL: Normalize undefined/null/empty values to None for Python
+        # Frontend sends undefined which becomes null in JSON, but we want None in Python
+        # Also handle empty strings and empty dicts
+        if not response_mode or response_mode == 'null' or response_mode == '':
+            response_mode = None
+        if not attachment_context or attachment_context == 'null' or attachment_context == {} or (isinstance(attachment_context, dict) and not attachment_context.get('texts')):
+            attachment_context = None
         
         # Handle documentIds as comma-separated string, array, or single value
         if isinstance(document_ids, str):
@@ -361,11 +484,22 @@ def query_documents_stream():
         else:
             document_ids = []
         
+        # CRITICAL: Log routing parameters for debugging
+        attachment_info = "None"
+        if attachment_context:
+            if isinstance(attachment_context, dict):
+                texts = attachment_context.get('texts', [])
+                attachment_info = f"Present (texts: {len(texts)}, has_content: {any(len(str(t).strip()) > 0 for t in texts)})"
+            else:
+                attachment_info = f"Present (type: {type(attachment_context).__name__})"
+        
         logger.info(
             f"🔵 [STREAM] Query: '{query[:50]}...', "
             f"Property ID: {property_id}, "
             f"Document IDs: {document_ids} (count: {len(document_ids)}), "
-            f"Session: {session_id}"
+            f"Session: {session_id}, "
+            f"Response Mode: {response_mode or 'None'}, "
+            f"Attachment Context: {attachment_info}"
         )
         
         if not query:
@@ -430,7 +564,12 @@ def query_documents_stream():
                     "business_id": business_id,
                     "session_id": session_id,
                     "property_id": property_id,
-                    "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
+                    "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+                    "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
+                    "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
+                    "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
+                    "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
                 try:
@@ -537,34 +676,164 @@ def query_documents_stream():
                     else:
                         return f"Searching for {target_str}"
                 
-                intent_message = extract_query_intent(query)
-                timing.mark("intent_extracted")
+                def detect_action_intent(q: str) -> dict:
+                    """
+                    Detect if user wants agent to perform UI actions.
+                    
+                    Agent-native principle: "Whatever the user can do through the UI, 
+                    the agent should be able to achieve through tools."
+                    
+                    Returns dict with:
+                        - wants_action: bool - whether user wants agent to perform UI action
+                        - action_type: str - type of action ('show', 'save', 'navigate', None)
+                        - target: str - what they want to see/save/navigate to
+                    """
+                    q_lower = q.lower().strip()
+                    
+                    # Patterns that indicate user wants agent to PERFORM an action
+                    show_patterns = [
+                        'show me', 'display', 'open the', 'let me see', 'view the',
+                        'show the', 'pull up', 'bring up', 'show me the', 'can you show',
+                        'could you show', 'please show', 'i want to see', 'show citations',
+                        'show where', 'show evidence', 'open citation', 'open document'
+                    ]
+                    save_patterns = [
+                        'save', 'add to', 'remember', 'keep this', 'store',
+                        'add citation', 'save citation', 'save this', 'bookmark'
+                    ]
+                    navigate_patterns = [
+                        'go to', 'navigate to', 'take me to', 'open property',
+                        'show property', 'go to property'
+                    ]
+                    
+                    # Check for action patterns
+                    for pattern in show_patterns:
+                        if pattern in q_lower:
+                            # Try to extract what they want to see
+                            target = 'citation'  # Default
+                            if 'citation' in q_lower or 'source' in q_lower:
+                                target = 'citation'
+                            elif 'document' in q_lower or 'report' in q_lower or 'epc' in q_lower:
+                                target = 'document'
+                            elif 'property' in q_lower:
+                                target = 'property'
+                            return {'wants_action': True, 'action_type': 'show', 'target': target}
+                    
+                    for pattern in save_patterns:
+                        if pattern in q_lower:
+                            return {'wants_action': True, 'action_type': 'save', 'target': 'citation'}
+                    
+                    for pattern in navigate_patterns:
+                        if pattern in q_lower:
+                            return {'wants_action': True, 'action_type': 'navigate', 'target': 'property'}
+                    
+                    # No action intent detected
+                    return {'wants_action': False, 'action_type': None, 'target': None}
                 
-                # Emit initial reasoning step with extracted intent
-                initial_reasoning = {
-                    'type': 'reasoning_step',
-                    'step': 'initial',
-                    'action_type': 'searching',
-                    'message': intent_message,
-                    'details': {'original_query': query}
-                }
-                initial_reasoning_json = json.dumps(initial_reasoning)
-                yield f"data: {initial_reasoning_json}\n\n"
-                logger.info(f"🟡 [REASONING] Emitted initial reasoning step: {initial_reasoning_json}")
+                # ULTRA-FAST PATH: Only citation queries skip reasoning steps 
+                # This allows follow-up queries to still show agentic reasoning
+                # (Previously follow-ups skipped reasoning, but users want to see the agent "thinking")
+                is_citation_query = citation_context and citation_context.get('cited_text')
+                
+                # NOTE: is_likely_followup detection removed from fast path
+                # Follow-up queries should still show reasoning steps for an agentic experience
+                # The keywords were too broad ('why', 'how', 'can you') and matched most questions
+                
+                # Skip reasoning steps ONLY for citation queries (user clicked on citation text)
+                is_fast_path = is_citation_query
+                
+                if is_fast_path:
+                    # Skip initial reasoning step - go straight to LLM (citation queries only)
+                    logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
+                    timing.mark("intent_extracted")
+                else:
+                    # Detect if this is a navigation query (similar to should_route logic)
+                    query_lower = query.lower().strip()
+                    # is_agent_mode is already defined at the top level (line 354)
+                    is_navigation_query = False
+                    
+                    if is_agent_mode:
+                        navigation_patterns = [
+                            "take me to the", "take me to ", "go to the map", "navigate to the",
+                            "show me on the map", "show on map", "find on map", "open the map",
+                            "go to map", "click on the", "select the pin", "click the pin"
+                        ]
+                        pin_patterns = [" pin", "property pin", "map pin"]
+                        info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
+                                       "inspection", "document", "tell me about", "what is", "how much",
+                                       "summary", "details", "information", "data"]
+                        
+                        is_info_query = any(keyword in query_lower for keyword in info_keywords)
+                        
+                        if not is_info_query:
+                            has_navigation_intent = any(pattern in query_lower for pattern in navigation_patterns)
+                            has_pin_intent = any(pattern in query_lower for pattern in pin_patterns)
+                            is_navigation_query = has_navigation_intent or has_pin_intent
+                    
+                    timing.mark("intent_extracted")
+                    
+                    # Always emit "Planning next moves" first
+                    planning_reasoning = {
+                        'type': 'reasoning_step',
+                        'step': 'initial',
+                        'action_type': 'planning',
+                        'message': 'Planning next moves',
+                        'timestamp': time.time(),
+                        'details': {'original_query': query}
+                    }
+                    planning_reasoning_json = json.dumps(planning_reasoning)
+                    yield f"data: {planning_reasoning_json}\n\n"
+                    logger.info(f"🟡 [REASONING] Emitted planning reasoning step: {planning_reasoning_json}")
+                    
+                    # If it's a data query (not navigation), switch to "Searching for information"
+                    if not is_navigation_query:
+                        intent_message = extract_query_intent(query)
+                        searching_reasoning = {
+                            'type': 'reasoning_step',
+                            'step': 'searching',
+                        'action_type': 'searching',
+                        'message': intent_message,
+                            'timestamp': time.time() + 0.001,  # Slightly after planning step
+                        'details': {'original_query': query}
+                    }
+                        searching_reasoning_json = json.dumps(searching_reasoning)
+                        yield f"data: {searching_reasoning_json}\n\n"
+                        logger.info(f"🟡 [REASONING] Emitted searching reasoning step: {searching_reasoning_json}")
+                
+                # Detect if user wants agent to perform UI actions (show me, save, navigate)
+                action_intent = detect_action_intent(query)
+                if action_intent['wants_action']:
+                    logger.info(f"🎯 [ACTION_INTENT] Detected action intent: {action_intent}")
                 
                 async def run_and_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
                         
-                        # Use persistent GraphRunner graph (compiled once on startup).
-                        # Falls back to legacy behavior if runner isn't available.
+                        # Create a new checkpointer and graph for current event loop.
+                        # This avoids "Lock bound to different event loop" errors.
+                        # All checkpointers use the same database, so conversation_history is still shared.
                         graph = None
                         checkpointer = None
                         try:
                             from backend.llm.runtime.graph_runner import graph_runner
-                            graph = graph_runner.get_graph()
-                            checkpointer = graph_runner.get_checkpointer()
+                            # Check if GraphRunner has a checkpointer (to know if checkpointing is available)
+                            has_checkpointer = graph_runner.get_checkpointer() is not None
+                            if has_checkpointer:
+                                # Create a new checkpointer for this event loop (shares same DB, different instance)
+                                from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
+                                checkpointer = await create_checkpointer_for_current_loop()
+                                if checkpointer:
+                                    graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                                    logger.info("🟡 [STREAM] Created new checkpointer for current loop (shares DB with GraphRunner)")
+                                else:
+                                    graph, _ = await build_main_graph(use_checkpointer=False)
+                                    logger.info("🟡 [STREAM] Failed to create checkpointer, using stateless graph")
+                            else:
+                                # No checkpointer available, create stateless graph
+                                from backend.llm.graphs.main_graph import build_main_graph
+                                graph, _ = await build_main_graph(use_checkpointer=False)
+                                logger.info("🟡 [STREAM] GraphRunner has no checkpointer, using stateless graph")
                             timing.mark("checkpointer_created")
                             timing.mark("graph_built")
                         except Exception as runner_err:
@@ -572,17 +841,19 @@ def query_documents_stream():
                             from backend.llm.graphs.main_graph import build_main_graph, create_checkpointer_for_current_loop
                             checkpointer = await create_checkpointer_for_current_loop()
                             timing.mark("checkpointer_created")
-                            if checkpointer:
-                                graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
-                            else:
-                                graph, _ = await build_main_graph(use_checkpointer=False)
+                        if checkpointer:
+                            graph, _ = await build_main_graph(use_checkpointer=True, checkpointer_instance=checkpointer)
+                        else:
+                            graph, _ = await build_main_graph(use_checkpointer=False)
                             timing.mark("graph_built")
+                            logger.info("🟡 [STREAM] Using per-request graph and checkpointer")
                         
                         config_dict = {"configurable": {"thread_id": session_id}}
                         
                         # Check for existing session state (follow-up detection)
                         is_followup = False
                         existing_doc_count = 0
+                        loaded_conversation_history = []
                         try:
                             if checkpointer:
                                 existing_state = await graph.aget_state(config_dict)
@@ -591,16 +862,30 @@ def query_documents_stream():
                                     prev_docs = existing_state.values.get('relevant_documents', [])
                                     if conv_history and len(conv_history) > 0:
                                         is_followup = True
+                                        loaded_conversation_history = conv_history
                                     if prev_docs:
                                         existing_doc_count = len(prev_docs)
                         except Exception as state_err:
                             logger.warning(f"Could not check existing state: {state_err}")
+                        
+                        # WORKAROUND: If checkpointer unavailable, try to use messageHistory from request
+                        # This is a temporary solution until checkpointer is properly configured
+                        if not loaded_conversation_history and not checkpointer and message_history:
+                            logger.info(f"🟡 [STREAM] Checkpointer unavailable, but messageHistory provided ({len(message_history)} messages)")
+                            # Note: messageHistory format is different from conversation_history format
+                            # We can't fully reconstruct block_ids from messageHistory, but we can at least
+                            # pass it through so the query classifier can see there was a previous query
+                            # For now, we'll rely on the checkpointer being enabled for full functionality
                         
                         # Use astream_events to capture node execution and emit reasoning steps
                         logger.info("🟡 [STREAM] Starting graph execution with event streaming...")
                         
                         # Track which nodes have been processed to avoid duplicate reasoning steps
                         processed_nodes = set()
+                        
+                        # Track reading timestamp - set when documents are first seen (before summarizing)
+                        # This ensures reading steps appear before summarizing in the UI
+                        reading_timestamp = None
                         
                         # Track if this is a follow-up for dynamic step generation
                         followup_context = {
@@ -614,7 +899,7 @@ def query_documents_stream():
                         node_messages = {
                             # Only emit for clarify_relevant_docs start (brief step before detailed Found X)
                             'clarify_relevant_docs': {
-                                'action_type': 'analyzing',
+                                'action_type': 'analysing',
                                 'message': 'Ranking results',
                                 'details': {}
                             },
@@ -628,24 +913,39 @@ def query_documents_stream():
                         # Stream events from graph execution and track state
                         # IMPORTANT: astream_events executes the graph and emits events as nodes run
                         # We MUST emit reasoning steps immediately when nodes start
-                        logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
+                        # EXCEPTION: Citation queries skip reasoning steps for ultra-fast response
+                        if is_fast_path:
+                            logger.info("⚡ [CITATION_QUERY] Skipping reasoning step emissions - ultra-fast path")
+                        else:
+                            logger.info("🟡 [REASONING] Starting to stream events and emit reasoning steps...")
                         final_result = None
+                        summary_already_streamed = False  # Track if we've already streamed the summary
+                        streamed_summary = None  # Store the exact summary that was streamed to ensure consistency
                         
                         # Execute graph with error handling for connection timeouts during execution
+                        # Since we create a new graph for the current loop, we can use astream_events directly
+                        timing.mark("graph_execution_start")
+                        node_timings = {}  # Track timing per node
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
                                 event_type = event.get('event')
                                 node_name = event.get("name", "")
                                 
-                                # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                # Track node start times for performance analysis
                                 if event_type == "on_chain_start":
+                                    node_timings[node_name] = time.perf_counter()
+                                    timing.mark(f"node_{node_name}_start")
+                                
+                                # Capture node start events for reasoning steps - EMIT IMMEDIATELY
+                                # SKIP for citation queries - ultra-fast path, no reasoning steps
+                                if event_type == "on_chain_start" and not is_fast_path:
                                     if node_name in node_messages and node_name not in processed_nodes:
                                         processed_nodes.add(node_name)
                                         reasoning_data = {
                                             'type': 'reasoning_step',
                                             'step': node_name,
-                                            'action_type': node_messages[node_name].get('action_type', 'analyzing'),
+                                            'action_type': node_messages[node_name].get('action_type', 'analysing'),
                                             'message': node_messages[node_name]['message'],
                                             'details': node_messages[node_name]['details']
                                         }
@@ -658,13 +958,23 @@ def query_documents_stream():
                                 elif event.get("event") == "on_chain_end":
                                     node_name = event.get("name", "")
                                     
+                                    # Track node end times and log duration
+                                    if node_name in node_timings:
+                                        node_duration = time.perf_counter() - node_timings[node_name]
+                                        timing.mark(f"node_{node_name}_end")
+                                        # Log slow nodes (>1s) for performance analysis
+                                        if node_duration > 1.0:
+                                            logger.info(f"⏱️ [PERF] Node '{node_name}' took {node_duration:.2f}s")
+                                    
                                     # Try to extract state from the event
                                     event_data = event.get("data", {})
                                     state_update = event_data.get("data", {})  # Full state update
                                     output = event_data.get("output", {})  # Node output only
                                     
                                     # Update details based on node output
-                                    if node_name == "query_vector_documents":
+                                    # SKIP reasoning step emissions for citation queries (ultra-fast path)
+                                    # but still capture state updates for final result
+                                    if node_name == "query_vector_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         relevant_docs = state_data.get("relevant_documents", [])
                                         doc_count = len(relevant_docs)
@@ -707,15 +1017,26 @@ def query_documents_stream():
                                                     names_str = ', '.join(doc_names[:3])  # Show fewer names for cleaner display
                                                     message = f'Using documents: {names_str}'
                                                 else:
-                                                    message = f'Using {doc_count} existing documents'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Using {doc_count} existing {doc_word}'
                                                 followup_context['docs_already_shown'] = True
                                             else:
                                                 # First query - show full "Found X documents" message
                                                 if doc_names:
                                                     names_str = ', '.join(doc_names)
-                                                    message = f'Found {doc_count} documents: {names_str}'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Found {doc_count} {doc_word}: {names_str}'
                                                 else:
-                                                    message = f'Found {doc_count} documents'
+                                                    # Fix grammar: "1 document" vs "X documents"
+                                                    doc_word = "document" if doc_count == 1 else "documents"
+                                                    message = f'Found {doc_count} {doc_word}'
+                                            
+                                            # Set reading timestamp when documents are first found (before analyzing/summarizing)
+                                            # This ensures reading steps appear in correct order (after found, before summarizing)
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
                                             
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
@@ -723,6 +1044,7 @@ def query_documents_stream():
                                                 'action_type': 'exploring',
                                                 'message': message,
                                                 'count': doc_count,
+                                                'timestamp': time.time(),  # Ensure proper ordering
                                                 'details': {
                                                     'documents_found': doc_count, 
                                                     'document_names': doc_names,
@@ -730,12 +1052,44 @@ def query_documents_stream():
                                                 }
                                             }
                                             yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                            
+                                            # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
+                                            # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
+                                            if not followup_context.get('is_followup'):
+                                                doc_word_analyzing = "document" if doc_count == 1 else "documents"
+                                                analyzing_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'analyzing_documents',
+                                                    'action_type': 'analysing',
+                                                    'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
+                                                    'timestamp': time.time(),  # Ensure proper ordering
+                                                    'details': {'documents_to_analyze': doc_count}
+                                                }
+                                                yield f"data: {json.dumps(analyzing_data)}\n\n"
                                     
-                                    elif node_name == "process_documents":
+                                            # EARLY DOCUMENT PREPARATION: In agent mode, emit prepare_document action
+                                            # This allows frontend to start loading the document BEFORE answer generation
+                                            if is_agent_mode and doc_previews:
+                                                first_doc = doc_previews[0]
+                                                prepare_action = {
+                                                    'type': 'prepare_document',
+                                                    'doc_id': first_doc.get('doc_id'),
+                                                    'filename': first_doc.get('original_filename', ''),
+                                                    'download_url': first_doc.get('download_url', '')
+                                                }
+                                                yield f"data: {json.dumps(prepare_action)}\n\n"
+                                                logger.info(f"📂 [EARLY_PREP] Emitted prepare_document for {first_doc.get('doc_id', '')[:8]}...")
+                                    
+                                    elif node_name == "process_documents" and not is_fast_path:
                                         state_data = state_update if state_update else output
                                         doc_outputs = state_data.get("document_outputs", [])
                                         doc_outputs_count = len(doc_outputs)
                                         if doc_outputs_count > 0:
+                                            # Use reading timestamp set when documents were found (before analyzing/summarizing)
+                                            # Fallback if not set (shouldn't happen, but safety check)
+                                            if reading_timestamp is None:
+                                                reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
+                                            
                                             # Get relevant_documents from state to match doc_ids
                                             relevant_docs = state_data.get("relevant_documents", [])
                                             
@@ -746,8 +1100,9 @@ def query_documents_stream():
                                                 reasoning_data = {
                                                     'type': 'reasoning_step',
                                                     'step': 'analyzing_for_followup',
-                                                    'action_type': 'analyzing',
-                                                    'message': f'Analyzing {doc_outputs_count} documents for your question',
+                                                    'action_type': 'analysing',
+                                                    'message': f'Analysing {doc_outputs_count} documents for your question',
+                                                    'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {'documents_analyzed': doc_outputs_count}
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
@@ -779,11 +1134,16 @@ def query_documents_stream():
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
+                                                    # Use reading_timestamp to ensure reading steps appear before summarizing
+                                                    # Increment slightly for each document to maintain order
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
                                                         'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
@@ -792,8 +1152,28 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                     
+                                    # Handle citation query completion (ULTRA-FAST path)
+                                    if node_name == "handle_citation_query":
+                                        state_data = state_update if state_update else output
+                                        
+                                        # Initialize final_result if needed
+                                        if final_result is None:
+                                            final_result = {}
+                                        
+                                        # Capture final_summary from citation query handler
+                                        final_summary_from_citation = state_data.get('final_summary', '')
+                                        if final_summary_from_citation:
+                                            final_result['final_summary'] = final_summary_from_citation
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured final_summary ({len(final_summary_from_citation)} chars)")
+                                        
+                                        # Capture citations
+                                        citations_from_citation = state_data.get('citations', [])
+                                        if citations_from_citation:
+                                            final_result['citations'] = citations_from_citation
+                                            logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                    
                                     # Handle summarize_results node completion - citations already have bbox coordinates
-                                    if node_name == "summarize_results":
+                                    elif node_name == "summarize_results":
                                         state_data = state_update if state_update else output
                                         
                                         # Initialize final_result if needed
@@ -840,10 +1220,16 @@ def query_documents_stream():
                                                     citation_bbox = citation.get('bbox')
                                                     citation_page = citation.get('page_number') or (citation_bbox.get('page') if citation_bbox and isinstance(citation_bbox, dict) else None) or 0
                                                     
+                                                    # CRITICAL: Ensure bbox page matches citation page_number
+                                                    # This prevents mismatches where bbox has page 0 but citation has page 1
+                                                    if citation_bbox and isinstance(citation_bbox, dict):
+                                                        citation_bbox = citation_bbox.copy()  # Don't modify original
+                                                        citation_bbox['page'] = citation_page  # Update bbox page to match citation page
+                                                    
                                                     citation_data = {
                                                         'doc_id': citation.get('doc_id'),
                                                         'page': citation_page,
-                                                        'bbox': citation_bbox,  # Should already have bbox from CitationTool
+                                                        'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
                                                         'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
@@ -914,6 +1300,52 @@ def query_documents_stream():
                                             f"relevant_docs={len(final_result.get('relevant_documents', []))}, "
                                             f"citations={len(citations_from_state)}"
                                         )
+                                        
+                                        # 🚀 IMMEDIATE STREAMING: Stream the summary NOW, don't wait for checkpointer!
+                                        # This eliminates the 20+ second delay caused by checkpointer saving
+                                        if final_summary_from_state and not summary_already_streamed:
+                                            logger.info("🚀 [STREAM] IMMEDIATE: Streaming summary directly from summarize_results (skipping checkpointer wait)")
+                                            
+                                            # Send document count
+                                            doc_count = len(doc_outputs_from_state) if doc_outputs_from_state else len(relevant_docs_from_state)
+                                            yield f"data: {json.dumps({'type': 'documents_found', 'count': doc_count})}\n\n"
+                                            
+                                            # Emit "Summarizing content" reasoning step (like Cursor's wand sparkles)
+                                            # Use timestamp to ensure it comes after all reading steps
+                                            summarize_timestamp = time.time()
+                                            summarizing_data = {
+                                                'type': 'reasoning_step',
+                                                'step': 'summarizing_content',
+                                                'action_type': 'summarising',
+                                                'message': 'Summarising content',
+                                                'timestamp': summarize_timestamp,  # After reading steps
+                                                'details': {'documents_processed': doc_count}
+                                            }
+                                            yield f"data: {json.dumps(summarizing_data)}\n\n"
+                                            logger.info("✨ [STREAM] Emitted 'Summarizing content' reasoning step")
+                                            
+                                            # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
+                                            # This ensures "Opening citation view" appears when document actually opens, not before
+                                            # (Reasoning steps for agent actions removed - they'll be added by frontend on actual execution)
+                                            
+                                            # Stream status
+                                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                                            
+                                            # Stream the final response text directly - preserve all formatting
+                                            # Stream character-by-character to maintain exact formatting (markdown, newlines, spaces)
+                                            streamed_summary = final_summary_from_state
+                                            logger.info("🚀 [STREAM] Streaming final response directly (preserving formatting)")
+                                            
+                                            # Stream in chunks to maintain formatting while still providing smooth streaming
+                                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
+                                            for i in range(0, len(final_summary_from_state), chunk_size):
+                                                if i == 0:
+                                                    logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
+                                                chunk = final_summary_from_state[i:i + chunk_size]
+                                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                            
+                                            summary_already_streamed = True
+                                            logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
                                     if state_update:
@@ -941,7 +1373,7 @@ def query_documents_stream():
                                             reasoning_data = {
                                                 'type': 'reasoning_step',
                                                 'step': node_name,
-                                                'action_type': node_messages[node_name].get('action_type', 'analyzing'),
+                                                'action_type': node_messages[node_name].get('action_type', 'analysing'),
                                                 'message': node_messages[node_name]['message'],
                                                 'details': node_messages[node_name]['details']
                                             }
@@ -990,6 +1422,11 @@ def query_documents_stream():
                                                     }
                                                     doc_previews.append(doc_preview)
                                                 
+                                                # Set reading timestamp when documents are first found (before analyzing/summarizing)
+                                                # This ensures reading steps appear in correct order (after found, before summarizing)
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() + 0.1  # Slightly after "Found documents", before "Analyzing"
+                                                
                                                 # Create found_documents step with exploring action_type
                                                 message = f'Found {doc_count} document{"s" if doc_count > 1 else ""}'
                                                 if doc_names:
@@ -1003,6 +1440,7 @@ def query_documents_stream():
                                                     'action_type': 'exploring',
                                                     'message': message,
                                                     'count': doc_count,
+                                                    'timestamp': time.time(),  # Ensure proper ordering
                                                     'details': {
                                                         'documents_found': doc_count,
                                                         'document_names': doc_names,
@@ -1010,12 +1448,31 @@ def query_documents_stream():
                                                     }
                                                 }
                                                 yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                
+                                                # IMMEDIATELY emit "Analyzing" step after found_documents for faster UI feedback
+                                                # Only for non-follow-ups (follow-ups get their own "Analyzing" step during process_documents)
+                                                if not followup_context.get('is_followup'):
+                                                    doc_word_analyzing = "document" if doc_count == 1 else "documents"
+                                                    analyzing_data = {
+                                                        'type': 'reasoning_step',
+                                                        'step': 'analyzing_documents',
+                                                        'action_type': 'analysing',
+                                                        'message': f'Analysing {doc_count} {doc_word_analyzing} for your question',
+                                                        'timestamp': time.time(),  # Ensure proper ordering
+                                                        'details': {'documents_to_analyze': doc_count}
+                                                    }
+                                                    yield f"data: {json.dumps(analyzing_data)}\n\n"
                                         
                                         elif node_name == "process_documents":
                                             state_data = state_update if state_update else event_data.get("output", {})
                                             doc_outputs = state_data.get("document_outputs", [])
                                             doc_outputs_count = len(doc_outputs)
                                             if doc_outputs_count > 0:
+                                                # Use reading timestamp set when documents were found (before analyzing/summarizing)
+                                                # Fallback if not set (shouldn't happen, but safety check)
+                                                if reading_timestamp is None:
+                                                    reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
+                                                
                                                 # Create individual reading steps for each document (for preview cards)
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
@@ -1043,18 +1500,23 @@ def query_documents_stream():
                                                         'download_url': f"/api/files/download?document_id={doc_id_for_meta}" if doc_id_for_meta else ''
                                                     }
                                                     
-                                                reasoning_data = {
-                                                    'type': 'reasoning_step',
+                                                    # Use reading_timestamp to ensure reading steps appear before summarizing
+                                                    # Increment slightly for each document to maintain order
+                                                    reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
+                                                    
+                                                    reasoning_data = {
+                                                        'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
                                                         'message': f'Read {display_filename}',
+                                                        'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
                                                             'doc_metadata': doc_metadata
                                                         }
-                                                }
-                                                yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                                    }
+                                                    yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
                                         # Store the state from the last event
                                         if state_update:
@@ -1123,7 +1585,9 @@ def query_documents_stream():
                         logger.info(f"🟡 [STREAM] Final state: {len(doc_outputs)} doc outputs, {len(relevant_docs)} relevant docs")
                         
                         # Get the summary that was already generated by summarize_results node
-                        full_summary = final_result.get('final_summary', '')
+                        # CRITICAL: Use streamed_summary if available (the exact text we streamed) to ensure consistency
+                        # Otherwise use final_summary from result
+                        full_summary = streamed_summary if streamed_summary else final_result.get('final_summary', '')
                         
                         # Check if we have a summary (even if doc_outputs is empty, summary means we processed documents)
                         if not full_summary:
@@ -1147,18 +1611,25 @@ def query_documents_stream():
                         
                         logger.info(f"🟡 [STREAM] Using existing summary from summarize_results node ({len(full_summary)} chars)")
                         
-                        # Stream the existing summary token by token (simulate streaming for UX)
-                        logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
-                        yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
-                        
-                        # Split summary into words and stream them (no delay needed - already fast)
-                        words = full_summary.split()
-                        for i, word in enumerate(words):
-                            if i == 0:
-                                logger.info("🟡 [STREAM] First token streamed from existing summary")
-                            # Add space after word (except last word)
-                            token = word + (' ' if i < len(words) - 1 else '')
-                            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                        # Check if summary was already streamed immediately from summarize_results
+                        if summary_already_streamed:
+                            logger.info("🟡 [STREAM] Summary already streamed immediately - skipping duplicate streaming")
+                        else:
+                            # Stream the existing summary token by token (simulate streaming for UX)
+                            logger.info("🟡 [STREAM] Streaming existing summary (no redundant LLM call)")
+                            yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
+                            
+                            # Stream the final response text directly - preserve all formatting
+                            # Stream character-by-character in chunks to maintain exact formatting (markdown, newlines, spaces)
+                            logger.info("🟡 [STREAM] Streaming final response directly (preserving formatting)")
+                            
+                            # Stream in chunks to maintain formatting while still providing smooth streaming
+                            chunk_size = 10  # Stream 10 characters at a time for smooth UX
+                            for i in range(0, len(full_summary), chunk_size):
+                                if i == 0:
+                                    logger.info("🟡 [STREAM] First chunk streamed from existing summary")
+                                chunk = full_summary[i:i + chunk_size]
+                                yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
                         
                         # Check if we have processed citations from block IDs (new approach)
                         processed_citations = final_result.get('processed_citations', {})
@@ -1222,18 +1693,372 @@ def query_documents_stream():
                                                 
                                 # Build citation map entry for frontend
                                 citations_map_for_frontend[citation_num] = {
-                                    'doc_id': doc_id,
+                                                        'doc_id': doc_id,
                                     'page': page,
                                     'bbox': bbox,
                                     'method': citation_data.get('method', 'block-id-lookup'),
-                                    'block_id': block_id  # Include block_id for debugging
+                                    'block_id': block_id,  # Include block_id for debugging
+                                    'cited_text': citation_data.get('cited_text', '')  # Include for smart citation selection
                                 }
                         else:
-                            logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
+                            # FALLBACK: Check for citations list format (used by citation_query handler)
+                            citations_list = final_result.get('citations', [])
+                            if citations_list:
+                                logger.info(f"🟢 [CITATIONS] Using citations list ({len(citations_list)} citations) - likely from citation_query")
+                                for cit in citations_list:
+                                    citation_num = str(cit.get('citation_number', 1))
+                                    doc_id = cit.get('doc_id', '')
+                                    page = cit.get('page_number', 0)
+                                    bbox = cit.get('bbox', {})
+                                    
+                                    citations_map_for_frontend[citation_num] = {
+                                        'doc_id': doc_id,
+                                        'page': page,
+                                        'bbox': bbox,
+                                        'method': 'citation-query',
+                                        'block_id': cit.get('block_id', 'citation_source')
+                                    }
+                                    structured_citations.append({
+                                        'id': int(citation_num),
+                                        'document_id': doc_id,
+                                        'page': page,
+                                        'bbox': bbox
+                                    })
+                                    logger.info(f"🟢 [CITATIONS] Citation {citation_num}: doc={doc_id[:8] if doc_id else 'UNKNOWN'}, page={page}")
+                            else:
+                                logger.info("🟡 [CITATIONS] No block ID citations found - citations will be empty")
                                 
                         logger.info(f"🟡 [CITATIONS] Final citation count: {len(structured_citations)} structured, {len(citations_map_for_frontend)} map entries")
                         
                         timing.mark("prepare_complete")
+                        
+                        # AGENT-NATIVE (TOOL-BASED): Process LLM tool-called agent actions
+                        # The LLM autonomously decides when to call open_document, navigate_to_property, etc.
+                        # based on query context and available citations
+                        agent_actions = final_result.get('agent_actions', [])
+                        
+                        # DEBUG: Log agent_actions and is_agent_mode
+                        logger.info(f"🎯 [AGENT_DEBUG] agent_actions from final_result: {agent_actions}")
+                        logger.info(f"🎯 [AGENT_DEBUG] is_agent_mode: {is_agent_mode}")
+                        logger.info(f"🎯 [AGENT_DEBUG] final_result keys: {list(final_result.keys()) if final_result else 'None'}")
+                        
+                        if agent_actions and is_agent_mode:
+                            logger.info(f"🎯 [AGENT_TOOLS] Processing {len(agent_actions)} LLM-requested agent actions")
+                            
+                            for action in agent_actions:
+                                action_type = action.get('action')
+                                
+                                if action_type == 'open_document':
+                                    # LLM requested to open a specific citation
+                                    llm_citation_number = action.get('citation_number')
+                                    reason = action.get('reason', '')
+                                    
+                                    # Use SINGLE SOURCE OF TRUTH for citation selection
+                                    # This ensures the best citation is selected based on user intent
+                                    preferred_key = str(llm_citation_number) if llm_citation_number else None
+                                    citation_key, citation = select_best_citation_for_query(
+                                        query, 
+                                        citations_map_for_frontend, 
+                                        preferred_key
+                                    )
+                                    
+                                    if citation_key and citation:
+                                        citation_number = int(citation_key)
+                                        citation_page = citation.get('page', 1)
+                                        bbox = citation.get('bbox')
+                                        
+                                        # Ensure bbox page matches citation page
+                                        if bbox and isinstance(bbox, dict):
+                                            bbox = bbox.copy()
+                                            bbox['page'] = citation_page
+                                        
+                                        # Emit reasoning step
+                                        opening_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_open_document',
+                                            'action_type': 'opening',
+                                            'message': 'Opening citation view & Highlighting content',
+                                            'details': {'citation_number': citation_number, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(opening_step)}\n\n"
+                                        
+                                        # Emit open_document action
+                                        open_doc_action = {
+                                            'type': 'agent_action',
+                                            'action': 'open_document',
+                                            'params': {
+                                                'doc_id': citation.get('doc_id'),
+                                                'page': citation_page,
+                                                'filename': citation.get('original_filename', ''),
+                                                'bbox': bbox if bbox and isinstance(bbox, dict) else None,
+                                                'reason': reason
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted open_document for citation [{citation_number}]: {reason}")
+                                    else:
+                                        logger.warning(f"🎯 [AGENT_TOOLS] No citations available to open")
+                                
+                                elif action_type == 'navigate_to_property':
+                                    # LLM requested to navigate to a property
+                                    target_property_id = action.get('property_id') or property_id
+                                    reason = action.get('reason', '')
+                                    
+                                    if target_property_id:
+                                        # Emit reasoning step for navigation
+                                        nav_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_navigate',
+                                            'action_type': 'navigating',
+                                            'message': 'Navigating to property',
+                                            'details': {'property_id': target_property_id, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(nav_step)}\n\n"
+                                        
+                                        nav_action = {
+                                            'type': 'agent_action',
+                                            'action': 'navigate_to_property',
+                                            'params': {
+                                                'property_id': target_property_id,
+                                                'center_map': True,
+                                                'reason': reason
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(nav_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted navigate_to_property: {reason}")
+                                
+                                elif action_type == 'search_property':
+                                    # LLM requested to search for a property by name
+                                    search_query = action.get('query', '')
+                                    
+                                    if search_query:
+                                        # Emit reasoning step for search
+                                        search_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_search_property',
+                                            'action_type': 'searching',
+                                            'message': f'Searching for property: {search_query}',
+                                            'details': {'query': search_query}
+                                        }
+                                        yield f"data: {json.dumps(search_step)}\n\n"
+                                        
+                                        # Perform property search
+                                        from backend.services.property_search_service import PropertySearchService
+                                        property_service = PropertySearchService()
+                                        search_results = property_service.search_properties(
+                                            business_id=business_id or '',
+                                            query=search_query
+                                        )
+                                        
+                                        if search_results:
+                                            found_property = search_results[0]  # Take top result
+                                            found_property_id = found_property.get('id') or found_property.get('property_id')
+                                            found_address = found_property.get('formatted_address', 'Unknown')
+                                            found_lat = found_property.get('latitude')
+                                            found_lng = found_property.get('longitude')
+                                            
+                                            search_action = {
+                                                'type': 'agent_action',
+                                                'action': 'search_property_result',
+                                                'params': {
+                                                    'property_id': found_property_id,
+                                                    'formatted_address': found_address,
+                                                    'latitude': found_lat,
+                                                    'longitude': found_lng,
+                                                    'query': search_query
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(search_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Property search found: {found_address} ({found_property_id})")
+                                        else:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] No property found for query: {search_query}")
+                                
+                                elif action_type == 'show_map_view':
+                                    # LLM requested to show the map view
+                                    reason = action.get('reason', 'Opening map view')
+                                    
+                                    # Emit reasoning step for opening map
+                                    map_step = {
+                                        'type': 'reasoning_step',
+                                        'step': 'agent_show_map',
+                                        'action_type': 'opening_map',
+                                        'message': 'Opening map view',
+                                        'details': {'reason': reason}
+                                    }
+                                    yield f"data: {json.dumps(map_step)}\n\n"
+                                    
+                                    show_map_action = {
+                                        'type': 'agent_action',
+                                        'action': 'show_map_view',
+                                        'params': {
+                                            'reason': reason
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(show_map_action)}\n\n"
+                                    logger.info(f"🎯 [AGENT_TOOLS] Emitted show_map_view: {reason}")
+                                
+                                elif action_type == 'select_property_pin':
+                                    # LLM requested to select a property pin on the map
+                                    target_property_id = action.get('property_id')
+                                    reason = action.get('reason', '')
+                                    
+                                    if target_property_id:
+                                        # Emit reasoning step for pin selection
+                                        pin_step = {
+                                            'type': 'reasoning_step',
+                                            'step': 'agent_select_pin',
+                                            'action_type': 'selecting_pin',
+                                            'message': 'Selecting property pin',
+                                            'details': {'property_id': target_property_id, 'reason': reason}
+                                        }
+                                        yield f"data: {json.dumps(pin_step)}\n\n"
+                                        
+                                        # Get property coordinates if available
+                                        property_lat = None
+                                        property_lng = None
+                                        property_address = None
+                                        
+                                        # Try to get property details for coordinates
+                                        try:
+                                            from backend.services.property_search_service import PropertySearchService
+                                            property_service = PropertySearchService()
+                                            # Search by property_id
+                                            search_results = property_service.search_properties(
+                                                business_id=business_id or '',
+                                                query=target_property_id
+                                            )
+                                            if search_results:
+                                                prop = search_results[0]
+                                                property_lat = prop.get('latitude')
+                                                property_lng = prop.get('longitude')
+                                                property_address = prop.get('formatted_address')
+                                        except Exception as e:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] Could not fetch property details: {e}")
+                                        
+                                        select_pin_action = {
+                                            'type': 'agent_action',
+                                            'action': 'select_property_pin',
+                                            'params': {
+                                                'property_id': target_property_id,
+                                                'latitude': property_lat,
+                                                'longitude': property_lng,
+                                                'address': property_address,
+                                                'reason': reason
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(select_pin_action)}\n\n"
+                                        logger.info(f"🎯 [AGENT_TOOLS] Emitted select_property_pin: {target_property_id}")
+                                
+                                elif action_type == 'navigate_to_property_by_name':
+                                    # Combined navigation tool: search + show map + select pin
+                                    property_name = action.get('property_name', '')
+                                    reason = action.get('reason', '')
+                                    
+                                    if property_name:
+                                        logger.info(f"🎯 [AGENT_TOOLS] navigate_to_property_by_name: searching for '{property_name}'")
+                                        
+                                        # Step 1: Search for the property
+                                        from backend.services.property_search_service import PropertySearchService
+                                        property_service = PropertySearchService()
+                                        search_results = property_service.search_properties(
+                                            business_id=business_id or '',
+                                            query=property_name
+                                        )
+                                        
+                                        if search_results:
+                                            found_property = search_results[0]
+                                            found_property_id = found_property.get('id') or found_property.get('property_id')
+                                            found_address = found_property.get('formatted_address', property_name)
+                                            found_lat = found_property.get('latitude')
+                                            found_lng = found_property.get('longitude')
+                                            
+                                            logger.info(f"🎯 [AGENT_TOOLS] Found property: {found_address} (ID: {found_property_id})")
+                                            
+                                            # Emit combined reasoning step
+                                            nav_step = {
+                                                'type': 'reasoning_step',
+                                                'step': 'agent_navigate_to_property',
+                                                'action_type': 'navigating',
+                                                'message': f'Navigating to {found_address}',
+                                                'details': {'property_name': property_name, 'property_id': found_property_id, 'reason': reason}
+                                            }
+                                            yield f"data: {json.dumps(nav_step)}\n\n"
+                                            
+                                            # Step 2: Emit show_map_view action
+                                            show_map_action = {
+                                                'type': 'agent_action',
+                                                'action': 'show_map_view',
+                                                'params': {
+                                                    'reason': f'Opening map to navigate to {found_address}'
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(show_map_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted show_map_view for navigation")
+                                            
+                                            # Step 3: Emit select_property_pin action
+                                            select_pin_action = {
+                                                'type': 'agent_action',
+                                                'action': 'select_property_pin',
+                                                'params': {
+                                                    'property_id': found_property_id,
+                                                    'latitude': found_lat,
+                                                    'longitude': found_lng,
+                                                    'address': found_address,
+                                                    'reason': reason
+                                                }
+                                            }
+                                            yield f"data: {json.dumps(select_pin_action)}\n\n"
+                                            logger.info(f"🎯 [AGENT_TOOLS] Emitted select_property_pin: {found_property_id}")
+                                        else:
+                                            logger.warning(f"🎯 [AGENT_TOOLS] No property found for: '{property_name}'")
+                        
+                        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically open
+                        # This ensures citations always open without relying on keywords or LLM tool calls
+                        has_open_doc = any(a.get('action') == 'open_document' for a in (agent_actions or []))
+                        if is_agent_mode and citations_map_for_frontend and not has_open_doc:
+                            logger.info(f"🎯 [AUTO_OPEN] Citations present but no open_document action - automatically opening")
+                            
+                            # Use SINGLE SOURCE OF TRUTH for citation selection
+                            selected_citation_key, selected_citation = select_best_citation_for_query(
+                                query, 
+                                citations_map_for_frontend,
+                                None  # No preferred citation from LLM
+                            )
+                            
+                            if selected_citation_key and selected_citation:
+                                citation_page = selected_citation.get('page', 1)
+                                bbox = selected_citation.get('bbox')
+                                
+                                # Ensure bbox page matches citation page
+                                if bbox and isinstance(bbox, dict):
+                                    bbox = bbox.copy()
+                                    bbox['page'] = citation_page
+                                
+                                # Emit reasoning step BEFORE agent action
+                                opening_step = {
+                                    'type': 'reasoning_step',
+                                    'step': 'agent_open_document',
+                                    'action_type': 'opening',
+                                    'message': 'Opening citation view & Highlighting content',
+                                    'details': {'citation_number': selected_citation_key, 'reason': 'Automatically opening citation for information query'}
+                                }
+                                yield f"data: {json.dumps(opening_step)}\n\n"
+                                
+                                open_doc_action = {
+                                    'type': 'agent_action',
+                                    'action': 'open_document',
+                                    'params': {
+                                        'doc_id': selected_citation.get('doc_id'),
+                                        'page': citation_page,
+                                        'filename': selected_citation.get('original_filename', ''),
+                                        'bbox': bbox if bbox and isinstance(bbox, dict) else None
+                                    }
+                                }
+                                yield f"data: {json.dumps(open_doc_action)}\n\n"
+                                logger.info(f"🎯 [AUTO_OPEN] Automatically opened citation={selected_citation_key}, doc_id={selected_citation.get('doc_id')}")
+                            else:
+                                logger.warning(f"🎯 [AUTO_OPEN] No suitable citation found to auto-open")
+                        
                         # Send complete message with metadata
                         complete_data = {
                             'type': 'complete',
@@ -1324,20 +2149,40 @@ def query_documents_stream():
                         if chunk is None:  # Completion signal
                             break
                         yield chunk
-                    except:
-                        # Timeout or error - check if thread is still alive
+                    except (BrokenPipeError, ConnectionResetError):
+                        # Client disconnected (e.g., aborted request, navigated away)
+                        # This is expected behavior - gracefully stop streaming
+                        logger.info("🔴 [STREAM] Client disconnected (broken pipe), stopping stream")
+                        break
+                    except queue.Empty:
+                        # Timeout - check if thread is still alive
                         if not thread.is_alive():
                             if error_occurred.is_set():
-                                yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                                try:
+                                    yield f"data: {json.dumps({'type': 'error', 'message': error_message[0] or 'Unknown error'})}\n\n"
+                                except (BrokenPipeError, ConnectionResetError):
+                                    logger.info("🔴 [STREAM] Client disconnected while sending error")
+                            break
+                        continue
+                    except Exception as queue_err:
+                        # Other queue errors - check thread status
+                        logger.warning(f"⚠️ [STREAM] Queue error: {queue_err}")
+                        if not thread.is_alive():
                             break
                         continue
                         
+            except (BrokenPipeError, ConnectionResetError):
+                # Client disconnected at outer level - this is expected
+                logger.info("🔴 [STREAM] Client disconnected (broken pipe), stream ended")
             except Exception as e:
                 # Handle any errors in the main generate_stream logic
                 logger.error(f"❌ [STREAM] Error in generate_stream: {e}")
                 import traceback
                 logger.error(f"❌ [STREAM] Traceback: {traceback.format_exc()}")
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                try:
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.info("🔴 [STREAM] Client disconnected while sending error")
         
         # Return SSE response with proper CORS headers
         # Note: generate_stream() already has internal error handling that yields error messages
@@ -1429,6 +2274,9 @@ def query_documents():
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
     session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
+    response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
+    attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
     
     # Handle documentIds as comma-separated string, array, or single value
     if isinstance(document_ids, str):
@@ -1486,7 +2334,10 @@ def query_documents():
             "business_id": business_id,
             "session_id": session_id,
             "property_id": property_id,
-            "document_ids": document_ids if document_ids else None  # NEW: Pass document IDs for fast path
+            "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
+            "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
+            "response_mode": response_mode if response_mode else None,  # NEW: Response mode for attachments (fast/detailed/full) - ensure None not empty string
+            "attachment_context": attachment_context if attachment_context else None  # NEW: Extracted text from attached files - ensure None not empty dict
         }
         
         async def run_query():
@@ -1568,7 +2419,7 @@ def query_documents():
             "doc_ids_count": len(document_ids) if document_ids else 0,
             "timing": timing.to_ms()
         }))
-
+        
         return jsonify({
             'success': True,
             'data': response_data
@@ -2448,6 +3299,230 @@ def check_duplicate_document():
         logger.error(f"Error checking for duplicate document: {e}", exc_info=True)
         return jsonify({'error': f'Failed to check for duplicates: {str(e)}'}), 500
 
+
+@views.route('/api/documents/quick-extract', methods=['POST', 'OPTIONS'])
+@login_required
+def quick_extract_document():
+    """
+    Quick text extraction endpoint for chat file attachments.
+    
+    Extracts text from PDF/DOCX files without full processing pipeline.
+    Used for immediate AI responses when users attach files to chat.
+    
+    Optionally stores file in S3 for later full processing if user chooses
+    to add the document to a project.
+    
+    Returns:
+        - success: bool
+        - text: Full extracted text
+        - page_texts: List of text per page
+        - page_count: Number of pages
+        - temp_file_id: UUID for later full processing (if store_temp=true)
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"🔍 [QUICK-EXTRACT] Request received from {current_user.email}")
+    
+    try:
+        if 'file' not in request.files:
+            logger.error("No 'file' key in request.files")
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            logger.error("Empty filename")
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+        
+        # Read file bytes
+        file_bytes = file.read()
+        filename = secure_filename(file.filename)
+        
+        # Check if we should store temp file
+        store_temp = request.form.get('store_temp', 'true').lower() == 'true'
+        
+        logger.info(f"🔍 [QUICK-EXTRACT] Processing {filename} ({len(file_bytes)} bytes, store_temp={store_temp})")
+        
+        # Import and use quick extract service
+        from .services.quick_extract_service import quick_extract, store_temp_file
+        
+        # Extract text
+        result = quick_extract(file_bytes, filename, store_temp=store_temp)
+        
+        if not result['success']:
+            logger.error(f"❌ [QUICK-EXTRACT] Extraction failed: {result.get('error')}")
+            return jsonify(result), 400
+        
+        # Store temp file in S3 if requested and extraction succeeded
+        if store_temp and result.get('temp_file_id'):
+            temp_result = store_temp_file(file_bytes, filename, result['temp_file_id'])
+            if temp_result['success']:
+                logger.info(f"✅ [QUICK-EXTRACT] Stored temp file: {result['temp_file_id']}")
+            else:
+                # Non-fatal - extraction still succeeded, just temp storage failed
+                logger.warning(f"⚠️ [QUICK-EXTRACT] Temp storage failed: {temp_result.get('error')}")
+                result['temp_file_id'] = None
+        
+        logger.info(f"✅ [QUICK-EXTRACT] Success: {result.get('page_count')} pages, {result.get('char_count')} chars")
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"❌ [QUICK-EXTRACT] Error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': f'Quick extraction failed: {str(e)}'
+        }), 500
+
+
+@views.route('/api/documents/process-temp-files', methods=['POST', 'OPTIONS'])
+@login_required
+def process_temp_files():
+    """
+    Process temp files that were uploaded via quick-extract.
+    
+    Links them to a property and queues full document processing pipeline.
+    Used when user selects "Add to Project" after quick text extraction.
+    
+    Request body:
+        - tempFileIds: List of temp file IDs from quick-extract
+        - propertyId: Property ID to link documents to
+        
+    Returns:
+        - success: bool
+        - documentIds: List of created document IDs
+        - error: Error message if failed
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    logger.info(f"🔄 [PROCESS-TEMP] Request received from {current_user.email}")
+    
+    try:
+        data = request.get_json()
+        temp_file_ids = data.get('tempFileIds', [])
+        property_id = data.get('propertyId')
+        
+        if not temp_file_ids:
+            return jsonify({'success': False, 'error': 'No temp file IDs provided'}), 400
+        
+        if not property_id:
+            return jsonify({'success': False, 'error': 'Property ID is required'}), 400
+        
+        logger.info(f"🔄 [PROCESS-TEMP] Processing {len(temp_file_ids)} files for property {property_id}")
+        
+        # Get business UUID
+        business_uuid_str = _ensure_business_uuid()
+        if not business_uuid_str:
+            return jsonify({'success': False, 'error': 'User is not associated with a business'}), 400
+        
+        # Import required services
+        from .services.quick_extract_service import get_temp_file, delete_temp_file
+        from .services.supabase_document_service import SupabaseDocumentService
+        from backend.tasks import process_document_fast_task
+        
+        doc_service = SupabaseDocumentService()
+        document_ids = []
+        
+        for temp_file_id in temp_file_ids:
+            try:
+                # Get file from S3 temp storage
+                file_bytes, filename = get_temp_file(temp_file_id)
+                
+                if not file_bytes:
+                    logger.warning(f"⚠️ [PROCESS-TEMP] Temp file not found: {temp_file_id}")
+                    continue
+                
+                # Generate S3 key for permanent storage
+                s3_key = f"{current_user.company_name}/{uuid.uuid4()}/{filename}"
+                
+                # Upload to permanent S3 location
+                import boto3
+                s3_client = boto3.client('s3')
+                bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
+                
+                s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=s3_key,
+                    Body=file_bytes,
+                    ContentType='application/octet-stream'
+                )
+                
+                # Create document record in Supabase
+                file_type = filename.lower().split('.')[-1] if '.' in filename else 'unknown'
+                
+                document_data = {
+                    'original_filename': filename,
+                    'file_type': file_type,
+                    'file_size': len(file_bytes),
+                    's3_path': s3_key,
+                    'business_id': current_user.company_name,
+                    'business_uuid': business_uuid_str,
+                    'created_by': current_user.email,
+                    'processing_status': 'UPLOADED',
+                    'property_id': property_id
+                }
+                
+                result = doc_service.create_document(document_data)
+                
+                if result.get('success') and result.get('data'):
+                    document_id = result['data'].get('id')
+                    document_ids.append(document_id)
+                    
+                    # Queue full processing
+                    process_document_fast_task.delay(
+                        document_id=document_id,
+                        s3_key=s3_key,
+                        original_filename=filename,
+                        business_uuid=business_uuid_str,
+                        property_id=property_id
+                    )
+                    
+                    logger.info(f"✅ [PROCESS-TEMP] Created document {document_id} and queued processing")
+                    
+                    # Clean up temp file
+                    delete_temp_file(temp_file_id)
+                else:
+                    logger.error(f"❌ [PROCESS-TEMP] Failed to create document: {result.get('error')}")
+                    
+            except Exception as file_error:
+                logger.error(f"❌ [PROCESS-TEMP] Error processing {temp_file_id}: {str(file_error)}")
+                continue
+        
+        if document_ids:
+            return jsonify({
+                'success': True,
+                'document_ids': document_ids,
+                'message': f'Successfully queued {len(document_ids)} documents for processing'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No documents could be processed'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ [PROCESS-TEMP] Error: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': f'Failed to process temp files: {str(e)}'
+        }), 500
+
+
 @views.route('/api/documents/upload', methods=['POST', 'OPTIONS'])
 @login_required
 def upload_document():
@@ -2959,7 +4034,22 @@ def get_document_status(document_id):
         if not document:
             return jsonify({'error': 'Document not found'}), 404
         
-        if str(document.get('business_id')) != str(current_user.business_id):
+        # Check authorization - document can have business_id (varchar) or business_uuid (uuid)
+        # Compare against both current_user.business_id and company_name
+        doc_business_id = document.get('business_id')
+        doc_business_uuid = document.get('business_uuid')
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        
+        # Allow access if any of these match
+        is_authorized = (
+            (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+            (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+            (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+        )
+        
+        if not is_authorized:
+            logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
             return jsonify({'error': 'Unauthorized'}), 403
         
         # Get processing history (still from PostgreSQL for now)
@@ -3219,10 +4309,20 @@ def root():
     return redirect('http://localhost:8080')
 
 
-@views.route('/api/dashboard', methods=['GET'])
+@views.route('/api/dashboard', methods=['GET', 'OPTIONS'])
 @login_required
 def api_dashboard():
     """Get dashboard data with documents and properties from Supabase"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
     try:
         business_uuid_str = _ensure_business_uuid()
         if not business_uuid_str:
@@ -3665,10 +4765,20 @@ def get_property_hub(property_id):
             'error': str(e)
         }), 500
 
-@views.route('/api/property-hub', methods=['GET'])
+@views.route('/api/property-hub', methods=['GET', 'OPTIONS'])
 @login_required
 def get_all_property_hubs():
     """Get all property hubs for current business"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
     try:
         from .services.supabase_property_hub_service import SupabasePropertyHubService
         from .services.response_formatter import APIResponseFormatter

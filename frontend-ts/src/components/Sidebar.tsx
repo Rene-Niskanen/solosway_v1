@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { motion } from "framer-motion";
-import { BarChart3, Home, MessageSquareDot, LayoutDashboard, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
+import { BarChart3, Home, MessageSquareDot, LibraryBig, List, ListEnd, TextAlignJustify, Plus, MoreVertical, Edit, Archive, Trash2, ArchiveRestore, FolderOpen, DraftingCompass } from "lucide-react";
 import { ProfileDropdown } from "./ProfileDropdown";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -412,10 +412,10 @@ export const Sidebar = ({
           : item.id === 'database'
           ? isFilingSidebarOpen
           : activeItem === item.id;
-        // Always use LayoutDashboard for home icon
+        // Always use LibraryBig for home icon
         // Use ListEnd icon when expanded and item is 'list', TextAlignJustify when not expanded, otherwise use the item's icon
         const Icon = item.id === 'home' 
-          ? LayoutDashboard 
+          ? LibraryBig 
           : (item.id === 'list' && isExpanded) 
             ? ListEnd 
             : (item.id === 'list' && !isExpanded)
@@ -504,8 +504,11 @@ export const Sidebar = ({
         ...(isChatPanelOpen && !isCollapsed && !isExpanded ? { left: '376px' } : {}),
         // Make toggle rail white (or transparent when chat panel is open in small sidebar mode to remove grey line)
         backgroundColor: (isChatPanelOpen && !isCollapsed && !isExpanded) ? 'transparent' : '#FFFFFF',
+        // Add faint borders on left and right sides for visibility against white background
+        borderLeft: '1px solid rgba(229, 231, 235, 0.6)',
+        borderRight: '1px solid rgba(229, 231, 235, 0.6)',
         pointerEvents: 'auto',
-        transition: 'left 0.2s ease-out, background-color 0.2s ease-out, box-shadow 0.2s ease-out'
+        transition: 'left 0.2s ease-out, background-color 0.2s ease-out, box-shadow 0.2s ease-out, border-color 0.2s ease-out'
       }}
     >
       {/* Glassmorphism arrow indicator - should point left when expanded, right when collapsed */}

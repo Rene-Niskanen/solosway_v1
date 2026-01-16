@@ -218,7 +218,25 @@ class BackendApiService {
     documentIds?: string[],
     onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string; count?: number }) => void,
     onReasoningContext?: (context: { message: string; moment: string }) => void,
-    onCitation?: (citation: { citation_number: string; data: any }) => void
+    onCitation?: (citation: { citation_number: string; data: any }) => void,
+    citationContext?: { // Structured citation metadata (hidden from user, for LLM)
+      document_id: string;
+      page_number: number;
+      bbox: { left: number; top: number; width: number; height: number };
+      cited_text: string;
+      original_filename: string;
+    } | null,
+    responseMode?: 'fast' | 'detailed' | 'full', // NEW: Response mode for file attachments
+    attachmentContext?: { // NEW: Context from attached files (extracted text)
+      texts: string[];
+      pageTexts: string[][];
+      filenames: string[];
+      tempFileIds: string[];
+    } | null,
+    // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
+    onAgentAction?: (action: { action: string; params: any }) => void,
+    // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
+    isAgentMode?: boolean
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -228,7 +246,11 @@ class BackendApiService {
       propertyId,
       messageHistory,
       sessionId: sessionId || `session_${Date.now()}`,
-      documentIds: documentIds || undefined
+      documentIds: documentIds || undefined,
+      citationContext: citationContext || undefined, // Pass citation context to backend
+      responseMode: responseMode || undefined, // NEW: Pass response mode for attachment queries
+      attachmentContext: attachmentContext || undefined, // NEW: Pass extracted text from attachments
+      isAgentMode: isAgentMode ?? false // AGENT MODE: Pass to backend for tool binding
     };
     
     if (import.meta.env.DEV) {
@@ -286,10 +308,6 @@ class BackendApiService {
           if (line.startsWith('data: ')) {
             try {
               const jsonStr = line.slice(6).trim();
-              // Log all data events for debugging
-              if (jsonStr.includes('reasoning_step') || jsonStr.includes('reasoning')) {
-                console.log('🔍 BackendApi: Raw SSE line with reasoning:', line);
-              }
               const data = JSON.parse(jsonStr);
               
               switch (data.type) {
@@ -297,22 +315,17 @@ class BackendApiService {
                   onStatus?.(data.message);
                   break;
                 case 'reasoning_step':
-                  console.log('📊 BackendApi: Received reasoning_step event:', data);
-                  console.log('📊 BackendApi: Calling onReasoningStep callback');
                   if (onReasoningStep) {
                     onReasoningStep({
                       step: data.step,
-                      action_type: data.action_type || 'analyzing',
+                      action_type: data.action_type || 'analysing',
                       message: data.message,
                       count: data.count,
                       details: data.details || {}
                     });
-                  } else {
-                    console.warn('⚠️ BackendApi: onReasoningStep callback is not defined!');
                   }
                   break;
                 case 'reasoning_context':
-                  console.log('📊 BackendApi: Received reasoning_context event:', data);
                   if (onReasoningContext) {
                     onReasoningContext({
                       message: data.message,
@@ -321,7 +334,6 @@ class BackendApiService {
                   }
                   break;
                 case 'citation':
-                  console.log('📚 BackendApi: Received citation event:', data);
                   if (onCitation) {
                     onCitation({
                       citation_number: String(data.citation_number),
@@ -335,6 +347,29 @@ class BackendApiService {
                   break;
                 case 'documents_found':
                   onStatus?.(`Found ${data.count} relevant document(s)`);
+                  break;
+                case 'agent_action':
+                  // AGENT-NATIVE: Handle agent actions (open_document, highlight_bbox, navigate_to_property, save_to_writing)
+                  if (onAgentAction) {
+                    onAgentAction({
+                      action: data.action,
+                      params: data.params || {}
+                    });
+                  }
+                  break;
+                case 'prepare_document':
+                  // EARLY DOCUMENT PREPARATION: Start loading document before answer is generated
+                  // This allows faster document display when open_document action comes later
+                  if (onAgentAction) {
+                    onAgentAction({
+                      action: 'prepare_document',
+                      params: {
+                        doc_id: data.doc_id,
+                        filename: data.filename,
+                        download_url: data.download_url
+                      }
+                    });
+                  }
                   break;
                 case 'complete':
                   onComplete(data.data);
@@ -381,6 +416,46 @@ class BackendApiService {
     return this.fetchApi<any[]>('/api/property-hub', {
       method: 'GET',
     });
+  }
+
+  /**
+   * Process temp files that were uploaded via quick-extract.
+   * Links them to a property and queues full document processing pipeline.
+   */
+  async processTempFiles(
+    tempFileIds: string[],
+    propertyId: string
+  ): Promise<{ success: boolean; documentIds?: string[]; error?: string }> {
+    try {
+      console.log(`🔄 Processing ${tempFileIds.length} temp files for property ${propertyId}`);
+      
+      const response = await this.fetchApi<any>('/api/documents/process-temp-files', {
+        method: 'POST',
+        body: JSON.stringify({
+          tempFileIds,
+          propertyId
+        })
+      });
+      
+      if (response.success) {
+        console.log(`✅ Temp files processing queued:`, response.data);
+        return {
+          success: true,
+          documentIds: response.data?.documentIds || response.data?.document_ids
+        };
+      } else {
+        return {
+          success: false,
+          error: response.error || 'Failed to process temp files'
+        };
+      }
+    } catch (error) {
+      console.error('❌ processTempFiles error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
   }
 
   async getPropertyHub(propertyId: string): Promise<ApiResponse<any>> {
@@ -913,11 +988,15 @@ class BackendApiService {
       if (response.success) {
         console.log(`✅ General document upload successful: ${file.name}`);
                 console.log(`🔄 Full processing pipeline queued (classification → extraction → embedding)`);
+                console.log(`📋 Document ID: ${response.document_id}`);
                 // Don't set to 100% here - let frontend handle it when file appears in UI
                 // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
           success: true,
-          data: response.data || response // Use response.data if exists, otherwise use response itself
+          data: {
+            document_id: response.document_id,
+            ...response // Include all other fields
+          }
                 });
       } else {
         throw new Error(response.error || 'Upload failed');
@@ -994,6 +1073,84 @@ class BackendApiService {
   }
 
   /**
+   * Quick text extraction from file without full document processing.
+   * Used for immediate AI responses when users attach files to chat.
+   * 
+   * Returns extracted text that can be used directly in LLM prompts,
+   * plus a temp_file_id that can be used later for full processing
+   * if the user decides to add the file to a project.
+   */
+  async quickExtractText(
+    file: File,
+    storeTempFile: boolean = true
+  ): Promise<{
+    success: boolean;
+    text?: string;
+    pageTexts?: string[];
+    pageCount?: number;
+    extractedPages?: number;
+    truncated?: boolean;
+    charCount?: number;
+    wordCount?: number;
+    tempFileId?: string;
+    fileType?: string;
+    filename?: string;
+    error?: string;
+  }> {
+    try {
+      console.log(`🔍 Starting quick text extraction for: ${file.name}`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('store_temp', storeTempFile.toString());
+
+      const response = await fetch(`${this.baseUrl}/api/documents/quick-extract`, {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+        headers: {
+          // Don't set Content-Type - browser will set it with boundary for FormData
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error(`❌ Quick extraction failed: ${response.status}`, errorData);
+        return {
+          success: false,
+          error: errorData.error || `HTTP ${response.status}`
+        };
+      }
+
+      const result = await response.json();
+      
+      console.log(`✅ Quick extraction complete: ${result.page_count} pages, ${result.char_count} chars`);
+      
+      return {
+        success: result.success,
+        text: result.text,
+        pageTexts: result.page_texts,
+        pageCount: result.page_count,
+        extractedPages: result.extracted_pages,
+        truncated: result.truncated,
+        charCount: result.char_count,
+        wordCount: result.word_count,
+        tempFileId: result.temp_file_id,
+        fileType: result.file_type,
+        filename: result.filename,
+        error: result.error
+      };
+
+    } catch (error) {
+      console.error(`❌ Quick extraction error for ${file.name}:`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  /**
    * Upload file via backend proxy (fallback for CORS issues)
    * Supports progress tracking via onProgress callback
    * Used for PROPERTY CARD uploads (fast pipeline with property_id)
@@ -1006,6 +1163,11 @@ class BackendApiService {
     return new Promise<{ success: boolean; data?: any; error?: string }>((resolve) => {
     try {
       console.log(`🚀 Starting proxy upload for: ${file.name}`);
+      
+      // Dispatch upload start event for progress bar
+      window.dispatchEvent(new CustomEvent('upload-start', { 
+        detail: { fileName: file.name } 
+      }));
       
       const formData = new FormData();
       formData.append('file', file);
@@ -1034,20 +1196,28 @@ class BackendApiService {
               console.log(`📊 Upload progress: ${percent}% (${e.loaded}/${e.total} bytes, raw: ${rawPercent.toFixed(2)}%, capped at 90%)`);
               lastReportedProgress = percent;
               // Call progress callback immediately for real-time updates
-              onProgress(percent);
+              if (onProgress) onProgress(percent);
+              // Dispatch progress event for progress bar
+              window.dispatchEvent(new CustomEvent('upload-progress', { 
+                detail: { fileName: file.name, progress: percent } 
+              }));
             } else {
               console.log(`📊 Upload progress skipped (duplicate): ${percent}% (last: ${lastReportedProgress}%)`);
             }
           } else {
             console.log(`📊 Upload progress event: lengthComputable=${e.lengthComputable}, onProgress=${!!onProgress}, total=${e.total}, loaded=${e.loaded}`);
             // If length not computable, try to estimate progress
-            if (onProgress && e.loaded > 0) {
+            if (e.loaded > 0) {
               // Estimate based on loaded bytes (rough estimate), cap at 90%
               const estimatedPercent = Math.min(Math.round((e.loaded / (e.loaded * 10)) * 100), 90);
               if (estimatedPercent > lastReportedProgress) {
                 console.log(`📊 Estimated progress: ${estimatedPercent}% (${e.loaded} bytes, capped at 90%)`);
                 lastReportedProgress = estimatedPercent;
-                onProgress(estimatedPercent);
+                if (onProgress) onProgress(estimatedPercent);
+                // Dispatch progress event for progress bar
+                window.dispatchEvent(new CustomEvent('upload-progress', { 
+                  detail: { fileName: file.name, progress: estimatedPercent } 
+                }));
               }
             }
           }
@@ -1056,10 +1226,8 @@ class BackendApiService {
         // Track onloadstart to ensure we start at 0%
         xhr.upload.onloadstart = () => {
           console.log('📊 Upload started - setting progress to 0%');
-          if (onProgress) {
             lastReportedProgress = 0;
-            onProgress(0);
-          }
+          if (onProgress) onProgress(0);
         };
 
         // Handle completion
@@ -1069,17 +1237,40 @@ class BackendApiService {
               const response = JSON.parse(xhr.responseText);
       if (response.success) {
         console.log(`✅ Proxy upload successful: ${file.name}`);
-                // Don't set to 100% here - let frontend handle it when file appears in UI
+                console.log(`📋 Document ID: ${response.document_id}`);
+                // Dispatch upload complete event for progress bar
+                window.dispatchEvent(new CustomEvent('upload-complete', { 
+                  detail: { 
+                    fileName: file.name, 
+                    documentId: response.document_id || response.data?.document_id 
+                  } 
+                }));
                 // Backend returns {success: true, document_id: ...} directly, not wrapped in data
                 resolve({
           success: true,
-          data: response.data || response // Use response.data if exists, otherwise use response itself
+          data: {
+            document_id: response.document_id,
+            ...response
+          }
                 });
       } else {
-        throw new Error(response.error || 'Upload failed');
+        const errorMsg = response.error || 'Upload failed';
+        console.error(`❌ Upload failed: ${errorMsg}`);
+        // Dispatch upload error event for progress bar
+        window.dispatchEvent(new CustomEvent('upload-error', { 
+          detail: { fileName: file.name, error: errorMsg } 
+        }));
+        resolve({
+          success: false,
+          error: errorMsg
+        });
       }
             } catch (parseError) {
               console.error(`❌ Failed to parse response: ${parseError}`);
+              // Dispatch upload error event for progress bar
+              window.dispatchEvent(new CustomEvent('upload-error', { 
+                detail: { fileName: file.name, error: 'Failed to parse server response' } 
+              }));
               resolve({
                 success: false,
                 error: 'Failed to parse server response'
@@ -1101,6 +1292,10 @@ class BackendApiService {
               // If response isn't JSON, use status text
               errorMessage = xhr.statusText || errorMessage;
             }
+            // Dispatch upload error event for progress bar
+            window.dispatchEvent(new CustomEvent('upload-error', { 
+              detail: { fileName: file.name, error: errorMessage } 
+            }));
             resolve({
               success: false,
               error: errorMessage
@@ -1111,6 +1306,10 @@ class BackendApiService {
         // Handle errors
         xhr.onerror = () => {
           console.error(`❌ Proxy upload failed for ${file.name}: Network error`);
+          // Dispatch upload error event for progress bar
+          window.dispatchEvent(new CustomEvent('upload-error', { 
+            detail: { fileName: file.name, error: 'Network error during upload' } 
+          }));
           resolve({
             success: false,
             error: 'Network error during upload'
@@ -1120,6 +1319,10 @@ class BackendApiService {
         // Handle abort
         xhr.onabort = () => {
           console.log(`⚠️ Upload aborted for ${file.name}`);
+          // Dispatch upload error event for progress bar
+          window.dispatchEvent(new CustomEvent('upload-error', { 
+            detail: { fileName: file.name, error: 'Upload was aborted' } 
+          }));
           resolve({
             success: false,
             error: 'Upload was aborted'

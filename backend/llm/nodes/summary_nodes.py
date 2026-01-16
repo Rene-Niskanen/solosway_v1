@@ -4,7 +4,7 @@ Summarization code - create final unified answer from all document outputs.
 
 import logging
 import os
-import os
+import re
 from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
@@ -17,6 +17,7 @@ from backend.llm.utils.system_prompts import get_system_prompt
 from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
+from backend.llm.tools.agent_actions import create_agent_action_tools
 from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
 
 logger = logging.getLogger(__name__)
@@ -415,6 +416,145 @@ def _renumber_citations_by_appearance(
         logger.debug("[RENUMBER_CITATIONS] No valid citation numbers extracted")
         return summary, citations
     
+    # FALLBACK 1: Detect when the same citation number is used for DIFFERENT facts
+    # This happens when the LLM incorrectly reuses [4] for multiple different facts
+    # We need to detect this and assign unique citation numbers to each occurrence
+    citation_occurrences = {}  # Map citation_num -> list of (match_index, context_before)
+    for idx, match in enumerate(matches):
+        citation_num = int(match.group(1))
+        # Extract context before this citation (the fact being cited)
+        context_start = max(0, match.start() - 100)
+        context_before = summary[context_start:match.start()].strip()
+        # Extract the key fact (after last colon or line break)
+        fact_start = max(
+            context_before.rfind(':') + 1,
+            context_before.rfind('\n') + 1,
+            0
+        )
+        fact_text = context_before[fact_start:].strip()[:50]  # First 50 chars of fact
+        
+        if citation_num not in citation_occurrences:
+            citation_occurrences[citation_num] = []
+        citation_occurrences[citation_num].append((idx, fact_text))
+    
+    # Check for citation numbers used for multiple different facts
+    citations_to_split = {}  # Map citation_num -> list of unique facts
+    for cit_num, occurrences in citation_occurrences.items():
+        if len(occurrences) > 1:
+            # Check if the facts are actually different
+            unique_facts = set()
+            for _, fact_text in occurrences:
+                # Normalize: lowercase, remove punctuation, take key terms
+                normalized = re.sub(r'[^\w\s]', '', fact_text.lower()).strip()
+                if len(normalized) > 5:  # Only count meaningful facts
+                    unique_facts.add(normalized)
+            
+            if len(unique_facts) > 1:
+                # Same citation number used for different facts - needs splitting
+                citations_to_split[cit_num] = occurrences
+                logger.warning(
+                    f"[RENUMBER_CITATIONS] ⚠️ Citation [{cit_num}] used for {len(unique_facts)} different facts: "
+                    f"{list(unique_facts)[:3]}..."
+                )
+    
+    # If we found citations that need splitting, renumber them
+    if citations_to_split:
+        logger.warning(
+            f"[RENUMBER_CITATIONS] ⚠️ SPLIT FALLBACK: {len(citations_to_split)} citation numbers "
+            f"used for multiple different facts. Assigning unique numbers."
+        )
+        
+        # Find the next available citation number
+        max_citation_num = max(all_citation_nums_in_text) if all_citation_nums_in_text else 0
+        next_citation_num = max_citation_num + 1
+        
+        # Process the summary from end to start to preserve positions
+        new_summary = summary
+        all_match_positions = [(m.start(), m.end(), int(m.group(1))) for m in matches]
+        all_match_positions.sort(reverse=True)  # Process from end to start
+        
+        processed_first_occurrence = set()  # Track which citation numbers we've seen first occurrence of
+        
+        for start, end, cit_num in all_match_positions:
+            if cit_num in citations_to_split:
+                if cit_num not in processed_first_occurrence:
+                    # Keep the first occurrence with original number
+                    processed_first_occurrence.add(cit_num)
+                else:
+                    # Replace subsequent occurrences with new unique numbers
+                    new_summary = new_summary[:start] + f'[{next_citation_num}]' + new_summary[end:]
+                    logger.info(
+                        f"[RENUMBER_CITATIONS] 🔄 Split citation [{cit_num}] → [{next_citation_num}] for different fact"
+                    )
+                    next_citation_num += 1
+        
+        summary = new_summary
+        
+        # Re-detect citation numbers after splitting
+        matches = list(re.finditer(citation_pattern, summary))
+        all_citation_nums_in_text = [int(m.group(1)) for m in matches]
+        appearance_order = []
+        seen_citation_nums = set()
+        for match in matches:
+            citation_num = int(match.group(1))
+            if citation_num not in seen_citation_nums:
+                appearance_order.append(citation_num)
+                seen_citation_nums.add(citation_num)
+        
+        logger.info(
+            f"[RENUMBER_CITATIONS] After split: {len(all_citation_nums_in_text)} markers, "
+            f"unique numbers: {appearance_order}"
+        )
+    
+    # FALLBACK 2: Detect when all citations have the same number (LLM didn't follow sequential numbering)
+    # This happens when the LLM outputs [1] for all facts instead of [1], [2], [3], etc.
+    if len(appearance_order) == 1 and len(all_citation_nums_in_text) > 1:
+        logger.warning(
+            f"[RENUMBER_CITATIONS] ⚠️ FALLBACK TRIGGERED: All {len(all_citation_nums_in_text)} citations "
+            f"use the same number [{appearance_order[0]}]. Forcing sequential renumbering by position."
+        )
+        
+        # Force sequential renumbering: replace [1] with [1], [2], [3] based on position
+        single_num = appearance_order[0]
+        new_summary = summary
+        citation_positions = []
+        
+        # Find all positions of the single citation number
+        for match in re.finditer(rf'\[{single_num}\]', summary):
+            citation_positions.append(match.start())
+        
+        # Replace from the end to preserve positions
+        for i, pos in enumerate(reversed(citation_positions)):
+            new_num = len(citation_positions) - i
+            # Replace this specific occurrence
+            new_summary = new_summary[:pos] + f'[{new_num}]' + new_summary[pos + len(f'[{single_num}]'):]
+        
+        summary = new_summary
+        
+        # Re-detect citation numbers after forced renumbering
+        matches = list(re.finditer(citation_pattern, summary))
+        all_citation_nums_in_text = [int(m.group(1)) for m in matches]
+        appearance_order = []
+        seen_citation_nums = set()
+        for match in matches:
+            citation_num = int(match.group(1))
+            if citation_num not in seen_citation_nums:
+                appearance_order.append(citation_num)
+                seen_citation_nums.add(citation_num)
+        
+        logger.info(
+            f"[RENUMBER_CITATIONS] After fallback renumbering: unique citations {appearance_order}"
+        )
+        
+        # CRITICAL: Also fix the citations list to have sequential numbers
+        # When all citations had the same number, we need to assign new sequential numbers
+        if len(citations) >= len(appearance_order):
+            for i, cit in enumerate(citations[:len(appearance_order)]):
+                cit['citation_number'] = i + 1
+            logger.info(
+                f"[RENUMBER_CITATIONS] Updated {min(len(citations), len(appearance_order))} citation objects with sequential numbers"
+            )
+    
     # Renumber citations list
     # Create lookup: old citation_number -> citation dict
     citations_by_old_num = {cit.get('citation_number', 0): cit for cit in citations}
@@ -434,32 +574,32 @@ def _renumber_citations_by_appearance(
         )
     
     # Deduplicate citations before renumbering - merge citations that refer to the same fact
-    # This catches duplicates that might have slipped through Phase 1
-    from backend.llm.tools.citation_mapping import CitationTool
-    # Create a temporary CitationTool instance to use its normalization method
-    temp_tool = CitationTool({})
-    seen_normalized_facts = {}
+    # CRITICAL: Use (block_id, cited_text) as unique identifier to preserve distinct facts
+    # This ensures each distinct fact gets its own citation, even if they're from the same block
+    seen_citation_keys = {}  # Map (block_id, cited_text) -> old_num
     deduplicated_citations_by_old_num = {}
     duplicate_mappings = {}  # Map duplicate old_num -> original old_num
     
     for old_num, old_cit in citations_by_old_num.items():
+        block_id = old_cit.get('block_id', '')
         cited_text = old_cit.get('cited_text', '')
-        normalized = temp_tool._normalize_cited_text(cited_text)
+        # Use (block_id, cited_text) as unique key to preserve distinct facts
+        citation_key = (block_id, cited_text)
         
-        # Check if we've seen this normalized fact before
-        if normalized in seen_normalized_facts:
-            # This is a duplicate - use the first citation number we saw for this fact
-            existing_old_num = seen_normalized_facts[normalized]
+        # Check if we've seen this exact (block_id, cited_text) combination before
+        if citation_key in seen_citation_keys:
+            # This is a duplicate - use the first citation number we saw for this exact fact
+            existing_old_num = seen_citation_keys[citation_key]
             logger.info(
                 f"[RENUMBER_CITATIONS] 🔍 Deduplicating: citation {old_num} is duplicate of {existing_old_num} "
-                f"(normalized: '{normalized}')"
+                f"(block_id: {block_id[:20]}..., cited_text: '{cited_text[:50]}...')"
             )
             # Map this old_num to the existing one
             deduplicated_citations_by_old_num[old_num] = deduplicated_citations_by_old_num[existing_old_num]
             duplicate_mappings[old_num] = existing_old_num
         else:
-            # First time seeing this fact
-            seen_normalized_facts[normalized] = old_num
+            # First time seeing this exact fact
+            seen_citation_keys[citation_key] = old_num
             deduplicated_citations_by_old_num[old_num] = old_cit
     
     # Update citations_by_old_num to use deduplicated version
@@ -531,12 +671,43 @@ def _renumber_citations_by_appearance(
             citation_matches = list(re.finditer(rf'\[{old_num}\]', summary))
             if citation_matches:
                 first_match = citation_matches[0]
-                # Extract 100 chars before citation to get the fact
-                context_start = max(0, first_match.start() - 100)
+                # Extract more context (200 chars) to better capture the fact being cited
+                context_start = max(0, first_match.start() - 200)
                 context_before = summary[context_start:first_match.start()].strip()
-                # Extract the fact (last sentence or phrase before citation)
-                sentence_start = context_before.rfind('.') + 1
-                fact_from_phase2_text = context_before[sentence_start:].strip() if sentence_start > 0 else context_before[-50:].strip()
+                
+                # Try to extract the complete phrase/sentence containing the citation
+                # Look for the start of the sentence or a label (e.g., "**Label:**")
+                sentence_start = max(
+                    context_before.rfind('.') + 1,  # Last sentence
+                    context_before.rfind(':') + 1,  # Last label (e.g., "**Label:**")
+                    context_before.rfind('\n') + 1,  # Last line break
+                    len(context_before) - 100  # Fallback: last 100 chars
+                )
+                fact_from_phase2_text = context_before[sentence_start:].strip()
+                
+                # Clean up: remove markdown formatting and extra whitespace
+                fact_from_phase2_text = re.sub(r'\*\*([^*]+)\*\*:', r'\1:', fact_from_phase2_text)  # Remove bold from labels
+                fact_from_phase2_text = re.sub(r'\s+', ' ', fact_from_phase2_text).strip()  # Normalize whitespace
+                
+                # CRITICAL: If the fact contains a label (e.g., "Recent Planning History: No recent planning history"),
+                # extract just the fact part after the colon
+                if ':' in fact_from_phase2_text:
+                    # Split on colon and take the part after it (the actual fact)
+                    parts = fact_from_phase2_text.split(':', 1)
+                    if len(parts) == 2:
+                        fact_part = parts[1].strip()
+                        # Only use the fact part if it's meaningful (not too short)
+                        if len(fact_part) >= 10:
+                            fact_from_phase2_text = fact_part
+                
+                # If the fact is very short, try to get more context
+                if len(fact_from_phase2_text) < 20:
+                    fact_from_phase2_text = context_before[-100:].strip()
+                    # Try to extract fact part again if it has a colon
+                    if ':' in fact_from_phase2_text:
+                        parts = fact_from_phase2_text.split(':', 1)
+                        if len(parts) == 2 and len(parts[1].strip()) >= 10:
+                            fact_from_phase2_text = parts[1].strip()
                 
                 # Verify that the fact in Phase 2 text matches the ACTUAL BLOCK CONTENT from Phase 1
                 # CRITICAL: We must verify against the block content, not just the cited_text
@@ -703,6 +874,32 @@ def _renumber_citations_by_appearance(
                             is_valuation_query = any(term in fact_lower for term in valuation_terms)
                             is_market_activity_query = any(term in fact_lower for term in market_activity_terms)
                             
+                            # Extract key terms from fact for strict matching (for ALL descriptive citations)
+                            import re
+                            fact_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', fact_lower)]
+                            # Check if this is a descriptive fact (no numbers, has multiple terms)
+                            has_numbers = bool(re.search(r'\d', fact_from_phase2_text))
+                            is_descriptive = not has_numbers and len(fact_terms) >= 2
+                            is_short_descriptive = is_descriptive and len(fact_terms) <= 4
+                            
+                            # Filter out common/stop words for better matching
+                            common_words = {'the', 'and', 'or', 'but', 'with', 'for', 'from', 'that', 'this', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must', 'shall'}
+                            key_fact_terms = [term for term in fact_terms if term not in common_words]
+                            if len(key_fact_terms) == 0:
+                                key_fact_terms = fact_terms  # Fallback if all terms were common words
+                            
+                            # Check if this is a negative statement (e.g., "no recent planning history")
+                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
+                            is_negative_statement = any(indicator in fact_lower for indicator in negative_indicators)
+                            
+                            # For negative statements, extract the core concept (without the negative indicator)
+                            core_concept_terms = []
+                            if is_negative_statement:
+                                core_concept = fact_lower
+                                for indicator in negative_indicators:
+                                    core_concept = core_concept.replace(indicator, '').strip()
+                                core_concept_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', core_concept)]  # Only significant terms (4+ chars)
+                            
                             for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
                                 for search_block_id, search_block_meta in search_metadata_table.items():
                                     search_block_content = search_block_meta.get('content', '')
@@ -714,6 +911,64 @@ def _renumber_citations_by_appearance(
                                     # Verify match
                                     search_verification = verify_citation_match(fact_from_phase2_text, search_block_content)
                                     score = 0
+                                    
+                                    # CRITICAL: Check for exact phrase match FIRST (highest priority for all citations)
+                                    fact_lower = fact_from_phase2_text.lower().strip()
+                                    block_lower = search_block_content.lower()
+                                    
+                                    # Try exact phrase match
+                                    exact_phrase_match = fact_lower in block_lower
+                                    if not exact_phrase_match:
+                                        # Try with normalized whitespace
+                                        fact_normalized = re.sub(r'\s+', ' ', fact_lower)
+                                        block_normalized = re.sub(r'\s+', ' ', block_lower)
+                                        exact_phrase_match = fact_normalized in block_normalized
+                                    
+                                    # CRITICAL: For ALL descriptive citations, require strict term matching
+                                    # Short descriptive (2-4 terms): require ALL key terms
+                                    # Longer descriptive (5+ terms): require 80%+ of key terms
+                                    if is_descriptive and not exact_phrase_match:
+                                        block_terms = [word.lower() for word in re.findall(r'\b\w{3,}\b', search_block_content.lower())]
+                                        
+                                        if is_short_descriptive:
+                                            # Short descriptive: ALL key terms must be present
+                                            all_key_terms_present = all(term in block_terms for term in key_fact_terms)
+                                            if not all_key_terms_present:
+                                                # Skip this block - it doesn't contain all required terms
+                                                continue
+                                        else:
+                                            # Longer descriptive: require 80%+ of key terms
+                                            matched_key_terms = [term for term in key_fact_terms if term in block_terms]
+                                            match_ratio = len(matched_key_terms) / len(key_fact_terms) if len(key_fact_terms) > 0 else 0
+                                            if match_ratio < 0.8:
+                                                # Skip this block - it doesn't contain enough key terms
+                                                continue
+                                    
+                                    # CRITICAL: For negative statements, require core semantic concept match
+                                    # This prevents "no recent planning history" from matching blocks about something else
+                                    if is_negative_statement and not exact_phrase_match:
+                                        # Check if core concept terms are present in the block
+                                        if core_concept_terms:
+                                            block_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', block_lower)]
+                                            core_concept_present = all(term in block_terms for term in core_concept_terms)
+                                            
+                                            # Also check if block contains a negative indicator (for semantic accuracy)
+                                            negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
+                                            block_has_negative = any(indicator in block_lower for indicator in negative_indicators)
+                                            
+                                            # Require both: core concept AND negative indicator (for accurate semantic matching)
+                                            if core_concept_present and block_has_negative:
+                                                exact_phrase_match = True
+                                            elif not core_concept_present:
+                                                # Skip this block - it doesn't contain the core concept
+                                                continue
+                                        else:
+                                            # No core concept terms extracted - skip
+                                            continue
+                                    
+                                    # Boost score significantly for exact phrase matches (highest priority)
+                                    if exact_phrase_match:
+                                        score += 300  # Very high priority for exact phrase matches
                                     
                                     # Base score from verification
                                     if search_verification['confidence'] == 'high':
@@ -881,17 +1136,203 @@ def _renumber_citations_by_appearance(
             # Only append if we haven't already appended a corrected citation above
             if not citation_appended:
                 cit = old_cit.copy()
-                cit['citation_number'] = new_num
-                renumbered_citations.append(cit)
-                logger.debug(
-                    f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
-                    f"→ new number {new_num}"
-                )
-        else:
-            logger.error(
-                f"[RENUMBER_CITATIONS] ❌ Citation {old_num} appears in text but NOT in Phase 1 citations! "
-                f"Available: {list(citations_by_old_num.keys())}"
+            cit['citation_number'] = new_num
+            renumbered_citations.append(cit)
+            logger.debug(
+                f"[RENUMBER_CITATIONS] ✅ Mapped citation {old_num} (block_id: {cit.get('block_id', 'UNKNOWN')}) "
+                f"→ new number {new_num}"
             )
+        else:
+            # ORPHAN CITATION: Citation number appears in text but wasn't captured in Phase 1
+            # Try to find the correct block using semantic search on the context around the citation
+            logger.warning(
+                f"[RENUMBER_CITATIONS] ⚠️ Citation [{old_num}] appears in text but NOT in Phase 1 citations! "
+                f"Available: {list(citations_by_old_num.keys())}. Attempting semantic search..."
+            )
+            
+            # Extract context around the orphan citation
+            orphan_matches = list(re.finditer(rf'\[{old_num}\]', summary))
+            if orphan_matches and metadata_lookup_tables:
+                first_match = orphan_matches[0]
+                context_start = max(0, first_match.start() - 200)
+                context_before = summary[context_start:first_match.start()].strip()
+                
+                # Extract the fact being cited
+                sentence_start = max(
+                    context_before.rfind('.') + 1,
+                    context_before.rfind(':') + 1,
+                    context_before.rfind('\n') + 1,
+                    len(context_before) - 100
+                )
+                orphan_fact = context_before[sentence_start:].strip()
+                orphan_fact = re.sub(r'\*\*([^*]+)\*\*:', r'\1:', orphan_fact)
+                orphan_fact = re.sub(r'\s+', ' ', orphan_fact).strip()
+                
+                if orphan_fact:
+                    # Semantic search for matching block
+                    # Track best matches separately for page 0 and pages 1+
+                    best_page0_match = None
+                    best_page0_score = 0
+                    best_page1plus_match = None
+                    best_page1plus_score = 0
+                    
+                    # Patterns that indicate title/header blocks (should be avoided)
+                    title_patterns = [
+                        r'^valuation\s+report',
+                        r'^report\s*$',
+                        r'^valuation\s*$',
+                        r'^property\s+valuation',
+                        r'^company\s+name\s*$',
+                        r'^logo\s*$',
+                        r'^header\s*$',
+                        r'^title\s*$'
+                    ]
+                    
+                    # Extract phone numbers, emails, addresses from orphan fact for exact matching
+                    orphan_phone_match = re.search(r'\+?\d[\d\s\-\(\)]{8,}', orphan_fact)
+                    orphan_email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', orphan_fact)
+                    orphan_address_match = re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court|gardens|park)', orphan_fact, re.IGNORECASE)
+                    
+                    for search_doc_id, search_metadata_table in metadata_lookup_tables.items():
+                        for search_block_id, search_block_meta in search_metadata_table.items():
+                            search_block_content = search_block_meta.get('content', '')
+                            if not search_block_content:
+                                continue
+                            
+                            block_lower = search_block_content.lower().strip()
+                            fact_lower = orphan_fact.lower()
+                            block_page = search_block_meta.get('page_number', 0)
+                            
+                            # Skip title/header blocks - they rarely contain actual information
+                            is_title_block = False
+                            for pattern in title_patterns:
+                                if re.match(pattern, block_lower):
+                                    is_title_block = True
+                                    break
+                            
+                            # Also skip very short blocks (likely headers/titles)
+                            if len(block_lower.split()) <= 3 and not any(char.isdigit() for char in block_lower):
+                                is_title_block = True
+                            
+                            if is_title_block:
+                                continue
+                            
+                            # Check for phrase match
+                            score = 0
+                            if fact_lower in block_lower:
+                                score = 300  # Exact phrase match
+                            else:
+                                # Check key terms
+                                fact_terms = set(re.findall(r'\b\w{4,}\b', fact_lower))
+                                block_terms = set(re.findall(r'\b\w{4,}\b', block_lower))
+                                matched_terms = fact_terms & block_terms
+                                if len(matched_terms) >= 3:
+                                    score = len(matched_terms) * 20
+                            
+                            # CRITICAL: Heavy boost if block contains the EXACT phone number/email/address from orphan fact
+                            if orphan_phone_match:
+                                phone_in_fact = orphan_phone_match.group(0)
+                                if phone_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact phone match
+                            if orphan_email_match:
+                                email_in_fact = orphan_email_match.group(0).lower()
+                                if email_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact email match
+                            if orphan_address_match:
+                                address_in_fact = orphan_address_match.group(0).lower()
+                                if address_in_fact in block_lower:
+                                    score += 200  # Very high boost for exact address match
+                            
+                            # Boost score if block contains phone numbers, emails, or addresses (actual contact info)
+                            if re.search(r'\+?\d[\d\s\-\(\)]{8,}', block_lower):  # Phone number pattern
+                                score += 50
+                            if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', block_lower):  # Email pattern
+                                score += 50
+                            if re.search(r'\d+\s+[\w\s]+(?:street|road|avenue|place|lane|drive|way|close|court|gardens|park)', block_lower, re.IGNORECASE):  # Address pattern
+                                score += 50
+                            
+                            # Track best matches separately by page
+                            match_data = {
+                                'doc_id': search_doc_id,
+                                'block_id': search_block_id,
+                                'metadata': search_block_meta,
+                                'score': score
+                            }
+                            
+                            if block_page == 0:
+                                if score > best_page0_score:
+                                    best_page0_score = score
+                                    best_page0_match = match_data
+                            else:
+                                if score > best_page1plus_score:
+                                    best_page1plus_score = score
+                                    best_page1plus_match = match_data
+                    
+                    # PREFER pages 1+ over page 0
+                    # Use page 1+ match if score >= 40, otherwise fall back to page 0
+                    best_orphan_match = None
+                    best_orphan_score = 0
+                    
+                    if best_page1plus_match and best_page1plus_score >= 40:
+                        # Use page 1+ match (preferred)
+                        best_orphan_match = best_page1plus_match
+                        best_orphan_score = best_page1plus_score
+                        logger.info(
+                            f"[RENUMBER_CITATIONS] Using page 1+ match (score: {best_page1plus_score}) "
+                            f"over page 0 match (score: {best_page0_score})"
+                        )
+                    elif best_page0_match and best_page0_score >= 60:
+                        # Fall back to page 0 if no good page 1+ match
+                        best_orphan_match = best_page0_match
+                        best_orphan_score = best_page0_score
+                        logger.warning(
+                            f"[RENUMBER_CITATIONS] Using page 0 match as fallback (score: {best_page0_score}, "
+                            f"no page 1+ match >= 40)"
+                        )
+                    
+                    if best_orphan_match and best_orphan_score >= 40:
+                        # Found a good match - create citation entry
+                        orphan_block_meta = best_orphan_match['metadata']
+                        orphan_page = orphan_block_meta.get('page_number', 0)
+                        
+                        bbox = {
+                            'left': orphan_block_meta.get('bbox_left', 0),
+                            'top': orphan_block_meta.get('bbox_top', 0),
+                            'width': orphan_block_meta.get('bbox_width', 1),
+                            'height': orphan_block_meta.get('bbox_height', 0.05),
+                            'page': orphan_page
+                        }
+                        
+                        orphan_cit = {
+                            'citation_number': new_num,
+                            'block_id': best_orphan_match['block_id'],
+                            'doc_id': best_orphan_match['doc_id'],
+                            'page_number': orphan_page,
+                            'bbox': bbox,
+                            'cited_text': orphan_fact[:200],
+                            'method': 'orphan-semantic-search'
+                        }
+                        renumbered_citations.append(orphan_cit)
+                        logger.info(
+                            f"[RENUMBER_CITATIONS] ✅ RESCUED orphan citation [{old_num}] → [{new_num}] "
+                            f"via semantic search (score: {best_orphan_score}, block: {best_orphan_match['block_id']}, "
+                            f"page: {orphan_page}, "
+                            f"fact: '{orphan_fact[:100]}...')"
+                        )
+                    else:
+                        # Couldn't find a match - remove the citation from text
+                        logger.warning(
+                            f"[RENUMBER_CITATIONS] ❌ Could not rescue orphan citation [{old_num}] "
+                            f"(best score: {best_orphan_score}). Removing from text."
+                        )
+                        renumbered_summary = re.sub(rf'\[{new_num}\]', '', renumbered_summary)
+            else:
+                # No metadata tables or no matches - remove orphan citation from text
+                logger.warning(
+                    f"[RENUMBER_CITATIONS] ❌ Cannot rescue orphan citation [{old_num}] - "
+                    f"no metadata_lookup_tables available. Removing from text."
+                )
+                renumbered_summary = re.sub(rf'\[{new_num}\]', '', renumbered_summary)
     
     # Add any citations that weren't found in the text (shouldn't happen, but safety)
     for cit in citations:
@@ -1259,30 +1700,34 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     # Get system prompt for summarize task
     system_msg = get_system_prompt('summarize')
     
-    # Create citation tool instance (needed for Phase 1 and Phase 2)
+    # Create citation tool instance
     citation_tool, citation_tool_instance = create_citation_tool(metadata_lookup_tables)
     
     # ============================================================
-    # PHASE 1: CITATION EXTRACTION (MANDATORY TOOL CALLS)
+    # 2-PHASE APPROACH (Reliable - Ensures citations work correctly)
     # ============================================================
-    # Extract citations first by having LLM identify all factual claims
-    # This ensures we have citations before generating the answer
+    # Phase 1: Extract citations using tool calls
+    # Phase 2: Generate answer text with citation markers
     # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations from document extracts")
+    # NOTE: Combined approach doesn't work reliably because OpenAI's tool calling API
+    # often returns tool calls without text content, or text without citation markers.
+    # The 2-phase approach ensures we always get both citations and text with markers.
+    # ============================================================
+    logger.info("[SUMMARIZE_RESULTS] Using 2-phase approach for reliable citations")
     
-    # Create LLM with tool binding for Phase 1 (mandatory tool calls)
-    # Use "auto" instead of "required" to allow LLM to return text if needed
-    # "required" can cause issues if LLM fails to call tools
-    phase1_llm = ChatOpenAI(
+    import time
+    phase1_start = time.time()
+    
+    # PHASE 1: Citation Extraction (with tools)
+    citation_llm = ChatOpenAI(
         api_key=config.openai_api_key,
         model=config.openai_model,
         temperature=0,
     ).bind_tools(
         [citation_tool],
-        tool_choice="auto"  # Auto - LLM will call tools but can also return text
+        tool_choice="auto"
     )
     
-    # Get citation extraction prompt
     citation_prompt = get_citation_extraction_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
@@ -1291,32 +1736,31 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         metadata_lookup_tables=metadata_lookup_tables
     )
     
-    phase1_messages = [system_msg, HumanMessage(content=citation_prompt)]
-    
-    # Process tool calls from Phase 1
-    phase1_citations = []
-    phase1_response = None
+    citation_messages = [system_msg, HumanMessage(content=citation_prompt)]
     
     try:
-        logger.info("[SUMMARIZE_RESULTS] Phase 1: Invoking LLM for citation extraction...")
-        phase1_response = await phase1_llm.ainvoke(phase1_messages)
-        logger.info(f"[SUMMARIZE_RESULTS] Phase 1: LLM call completed successfully")
-    except Exception as phase1_error:
-        error_msg = str(phase1_error).lower()
+        logger.info("[SUMMARIZE_RESULTS] Phase 1: Extracting citations...")
+        citation_response = await citation_llm.ainvoke(citation_messages)
+        logger.info("[SUMMARIZE_RESULTS] Phase 1 complete")
+    except Exception as llm_error:
+        error_msg = str(llm_error).lower()
         if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
-            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Event loop error - {phase1_error}")
-            # Re-raise event loop errors - they indicate a serious problem
+            logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
             raise
         else:
-            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error during LLM call: {phase1_error}", exc_info=True)
-            # Fallback: continue without Phase 1 citations for other errors
-            logger.warning("[SUMMARIZE_RESULTS] Phase 1: Continuing to Phase 2 without citations due to error")
-            phase1_response = None
+            logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
+            return {
+                "final_summary": "I encountered an error while processing your query. Please try again.",
+                "citations": [],
+                "document_outputs": doc_outputs,
+                "relevant_documents": state.get('relevant_documents', [])
+            }
     
-    if phase1_response:
-        if hasattr(phase1_response, 'tool_calls') and phase1_response.tool_calls:
-            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Processing {len(phase1_response.tool_calls)} citation tool calls...")
-            for tool_call in phase1_response.tool_calls:
+    # Process tool calls (citations) from Phase 1
+    citations_from_state = []
+    if hasattr(citation_response, 'tool_calls') and citation_response.tool_calls:
+        logger.info(f"[SUMMARIZE_RESULTS] Processing {len(citation_response.tool_calls)} citation tool calls...")
+        for tool_call in citation_response.tool_calls:
                 tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
                 if tool_name == 'cite_source':
                     tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
@@ -1327,122 +1771,304 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
                                 block_id=tool_args.get('block_id', ''),
                                 citation_number=tool_args.get('citation_number', 0)
                             )
-                            logger.debug(
-                                f"[SUMMARIZE_RESULTS] Phase 1: ✅ Citation {tool_args.get('citation_number')} extracted: "
-                                f"block_id={tool_args.get('block_id')}"
-                            )
                         except Exception as tool_error:
-                            logger.error(f"[SUMMARIZE_RESULTS] Phase 1: Error processing citation tool call: {tool_error}", exc_info=True)
-            
-            # Get citations from tool instance
-            phase1_citations = citation_tool_instance.citations
-            logger.info(f"[SUMMARIZE_RESULTS] Phase 1: Extracted {len(phase1_citations)} citations")
-        else:
-            logger.warning("[SUMMARIZE_RESULTS] Phase 1: No citation tool calls in response")
-            # With tool_choice="auto", the LLM might return text instead of tool calls
-            # Check if there's text content that might indicate the LLM didn't understand the task
-            if hasattr(phase1_response, 'content') and phase1_response.content:
-                logger.warning(f"[SUMMARIZE_RESULTS] Phase 1: LLM returned text instead of tool calls: {str(phase1_response.content)[:200]}...")
-            phase1_citations = []
+                            logger.error(f"[SUMMARIZE_RESULTS] Error processing citation: {tool_error}")
+        
+        citations_from_state = citation_tool_instance.citations
+        logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(citations_from_state)} citations")
+    
+    phase1_end = time.time()
+    logger.info(f"[SUMMARIZE_RESULTS] Phase 1 took {phase1_end - phase1_start:.2f}s")
+    
+    # PHASE 2: Generate Answer (with agent tools in Agent mode)
+    phase2_start = time.time()
+    
+    # AGENT MODE: Check if we should bind agent action tools
+    is_agent_mode = state.get('is_agent_mode', False)
+    agent_action_instance = None
+    
+    if is_agent_mode:
+        # Create agent action tools for proactive document display
+        agent_tools, agent_action_instance = create_agent_action_tools()
+        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools")
+        answer_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
+        ).bind_tools(agent_tools, tool_choice="auto")
     else:
-        logger.warning("[SUMMARIZE_RESULTS] Phase 1: No response received, continuing without citations")
-        phase1_citations = []
-    
-    # ============================================================
-    # PHASE 2: GENERATE ANSWER WITH CITATIONS
-    # ============================================================
-    # Generate final answer using citations extracted in Phase 1
-    # ============================================================
-    logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating final answer with citations")
-    
-    import time
-    llm_call_start_time = time.time()
-    
-    # Generate answer WITHOUT tool binding (citations already extracted in Phase 1)
-    final_llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
-    logger.info("[SUMMARIZE_RESULTS] Phase 2: Generating answer (citations from Phase 1)")
-    
-    # Log Phase 1 citations being passed to Phase 2
-    logger.info(
-        f"[SUMMARIZE_RESULTS] Phase 2: Passing {len(phase1_citations)} citations to LLM for answer generation"
-    )
-    for i, cit in enumerate(phase1_citations[:10], 1):  # Log first 10
-        block_id = cit.get('block_id', 'UNKNOWN')
-        doc_id = cit.get('doc_id', 'UNKNOWN')[:8] if cit.get('doc_id') else 'UNKNOWN'
-        page = cit.get('page_number', 0)
-        cited_text = cit.get('cited_text', '')[:50] if cit.get('cited_text') else 'N/A'
-        logger.debug(
-            f"[SUMMARIZE_RESULTS] Phase 1 citation {cit.get('citation_number', i)}: "
-            f"block_id={block_id}, doc={doc_id}, page={page}, text='{cited_text}...'"
+        # Reader mode: No agent tools
+        answer_llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=config.openai_model,
+            temperature=0,
         )
     
-    final_prompt = get_final_answer_prompt(
+    # Check if this is a citation query (user clicked on a citation)
+    citation_context = state.get("citation_context")
+    is_citation_query = bool(citation_context and citation_context.get("cited_text"))
+    
+    answer_prompt = get_final_answer_prompt(
         user_query=state['user_query'],
         conversation_history=history_context,
         formatted_outputs=formatted_outputs_str,
-        citations=phase1_citations  # Use citations extracted in Phase 1
+        citations=citations_from_state,
+        is_citation_query=is_citation_query,  # Pass flag to adjust prompt
+        is_agent_mode=is_agent_mode  # Pass agent mode to enable tool instructions in prompt
     )
     
-    final_messages = [system_msg, HumanMessage(content=final_prompt)]
+    answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
     
-    llm_invoke_start_time = time.time()
-    final_response = await final_llm.ainvoke(final_messages)
-    llm_call_end_time = time.time()
-    llm_call_duration = llm_call_end_time - llm_invoke_start_time
-    
-    # Extract summary from answer generation
-    summary = ''
-    if hasattr(final_response, 'content'):
-        summary = str(final_response.content).strip() if final_response.content else ''
-    elif isinstance(final_response, str):
-        summary = final_response.strip()
-    
-    # #region agent log
-    # Log what citation numbers appear next to what facts in Phase 2 response
-    import re
-    import json
     try:
-        citation_pattern = r'\[(\d+)\]'
-        citation_matches = list(re.finditer(citation_pattern, summary))
-        for match in citation_matches:
-            citation_num = match.group(1)
-            context_start = max(0, match.start() - 50)
-            context_end = min(len(summary), match.end() + 50)
-            context = summary[context_start:context_end].replace('\n', ' ')
-            with open(_DEBUG_LOG_PATH, 'a') as f:
-                f.write(json.dumps({
-                    'sessionId': 'debug-session',
-                    'runId': 'run1',
-                    'hypothesisId': 'B',
-                    'location': 'summary_nodes.py:919',
-                    'message': 'Phase 2 citation in response text',
-                    'data': {
-                        'citation_number_in_text': citation_num,
-                        'context_around_citation': context,
-                        'fact_before_citation': summary[max(0, match.start() - 30):match.start()].strip()
-                    },
-                    'timestamp': int(__import__('time').time() * 1000)
-                }) + '\n')
-    except: pass
-    # #endregion
+        logger.info(f"[SUMMARIZE_RESULTS] Phase 2: Generating answer... (agent_mode={is_agent_mode})")
+        answer_response = await answer_llm.ainvoke(answer_messages)
+        logger.info("[SUMMARIZE_RESULTS] Phase 2 complete")
+    except Exception as llm_error:
+        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {llm_error}", exc_info=True)
+        return {
+            "final_summary": "I encountered an error generating the response. Please try again.",
+            "citations": citations_from_state,
+            "document_outputs": doc_outputs,
+            "relevant_documents": state.get('relevant_documents', [])
+        }
     
+    # Extract answer text
+    summary = ''
+    if hasattr(answer_response, 'content'):
+        summary = str(answer_response.content).strip() if answer_response.content else ''
+    elif isinstance(answer_response, str):
+        summary = answer_response.strip()
     
-    # Use citations from Phase 1 (already extracted)
-    citations_from_state = phase1_citations
-    logger.info(f"[SUMMARIZE_RESULTS] Phase 2: Using {len(citations_from_state)} citations from Phase 1")
+    # AGENT MODE: Process agent action tool calls (open_document, navigate_to_property)
+    agent_actions = []
+    if is_agent_mode and agent_action_instance:
+        # First, try to get actual tool calls from the response
+        if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] Processing {len(answer_response.tool_calls)} agent tool calls...")
+            for tool_call in answer_response.tool_calls:
+                tool_name = tool_call.get('name') if isinstance(tool_call, dict) else getattr(tool_call, 'name', None)
+                tool_args = tool_call.get('args', {}) if isinstance(tool_call, dict) else getattr(tool_call, 'args', {})
+                
+                if tool_name == 'open_document':
+                    citation_number = tool_args.get('citation_number')
+                    if citation_number is None:
+                        logger.warning(f"[SUMMARIZE_RESULTS] LLM called open_document without citation_number - this should not happen!")
+                        citation_number = 1  # Fallback only if truly missing
+                    elif citation_number == 1:
+                        logger.warning(f"[SUMMARIZE_RESULTS] LLM used citation_number=1 - verify this matches user's query!")
+                    reason = tool_args.get('reason', '')
+                    agent_action_instance.open_document(citation_number, reason)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested open_document: citation={citation_number}, reason={reason}")
+                elif tool_name == 'navigate_to_property':
+                    property_id = tool_args.get('property_id', '')
+                    reason = tool_args.get('reason', '')
+                    agent_action_instance.navigate_to_property(property_id, reason)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested navigate_to_property: property_id={property_id}, reason={reason}")
+                elif tool_name == 'search_property':
+                    query = tool_args.get('query', '')
+                    agent_action_instance.search_property(query)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested search_property: query={query}")
+                elif tool_name == 'show_map_view':
+                    reason = tool_args.get('reason', '')
+                    agent_action_instance.show_map_view(reason)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested show_map_view: reason={reason}")
+                elif tool_name == 'select_property_pin':
+                    property_id = tool_args.get('property_id', '')
+                    reason = tool_args.get('reason', '')
+                    agent_action_instance.select_property_pin(property_id, reason)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested select_property_pin: property_id={property_id}, reason={reason}")
+                elif tool_name == 'navigate_to_property_by_name':
+                    property_name = tool_args.get('property_name', '')
+                    reason = tool_args.get('reason', '')
+                    agent_action_instance.navigate_to_property_by_name(property_name, reason)
+                    logger.info(f"[SUMMARIZE_RESULTS] Agent requested navigate_to_property_by_name: property_name={property_name}, reason={reason}")
+        
+        # FALLBACK: Parse tool calls written as text (LLM sometimes writes them as text instead of calling)
+        if not agent_action_instance.get_actions() and summary:
+            import re
+            # Look for open_document written as text
+            open_doc_match = re.search(
+                r'open_document\s*\(\s*citation_number\s*=\s*(\d+)\s*,\s*reason\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if open_doc_match:
+                citation_number = int(open_doc_match.group(1))
+                reason = open_doc_match.group(2)
+                agent_action_instance.open_document(citation_number, reason)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed open_document from text: citation={citation_number}, reason={reason}")
+            
+            # FALLBACK: Detect prose indicating intent to open document (LLM wrote prose instead of calling tool)
+            # Examples: "I will now open the document", "I'll open the document", "Let me open the document"
+            if not agent_action_instance.get_actions():
+                prose_open_patterns = [
+                    r"(?:i will|i'll|let me|i'm going to|i am going to)\s+(?:now\s+)?open\s+(?:the\s+)?document",
+                    r"opening\s+(?:the\s+)?(?:citation|document)\s+(?:view|panel)",
+                    r"(?:i will|i'll)\s+(?:now\s+)?(?:show|display)\s+(?:you\s+)?(?:the\s+)?(?:source|document)",
+                    r"to\s+provide\s+you\s+with\s+the\s+source",
+                ]
+                for pattern in prose_open_patterns:
+                    if re.search(pattern, summary, re.IGNORECASE):
+                        # Extract first citation number from response to use
+                        citation_match = re.search(r'\[(\d+)\]', summary)
+                        citation_number = int(citation_match.group(1)) if citation_match else 1
+                        reason = "Showing source document based on user query"
+                        agent_action_instance.open_document(citation_number, reason)
+                        logger.info(f"[SUMMARIZE_RESULTS] Detected prose open_document intent: citation={citation_number}")
+                        break
+            
+            # Look for navigate_to_property written as text
+            nav_match = re.search(
+                r'navigate_to_property\s*\(\s*property_id\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if nav_match:
+                property_id = nav_match.group(1)
+                reason_match = re.search(r'reason\s*=\s*["\']([^"\']*)["\']', summary[nav_match.start():])
+                reason = reason_match.group(1) if reason_match else ''
+                agent_action_instance.navigate_to_property(property_id, reason)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed navigate_to_property from text: property_id={property_id}, reason={reason}")
+            
+            # Look for search_property written as text
+            search_match = re.search(
+                r'search_property\s*\(\s*query\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if search_match:
+                query = search_match.group(1)
+                agent_action_instance.search_property(query)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed search_property from text: query={query}")
+            
+            # Look for show_map_view written as text
+            show_map_match = re.search(
+                r'show_map_view\s*\(\s*reason\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if show_map_match:
+                reason = show_map_match.group(1)
+                agent_action_instance.show_map_view(reason)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed show_map_view from text: reason={reason}")
+            
+            # Look for select_property_pin written as text
+            select_pin_match = re.search(
+                r'select_property_pin\s*\(\s*property_id\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if select_pin_match:
+                property_id = select_pin_match.group(1)
+                reason_match = re.search(r'reason\s*=\s*["\']([^"\']*)["\']', summary[select_pin_match.start():])
+                reason = reason_match.group(1) if reason_match else ''
+                agent_action_instance.select_property_pin(property_id, reason)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed select_property_pin from text: property_id={property_id}, reason={reason}")
+            
+            # Look for navigate_to_property_by_name written as text
+            nav_by_name_match = re.search(
+                r'navigate_to_property_by_name\s*\(\s*property_name\s*=\s*["\']([^"\']*)["\']',
+                summary,
+                re.IGNORECASE
+            )
+            if nav_by_name_match:
+                property_name = nav_by_name_match.group(1)
+                reason_match = re.search(r'reason\s*=\s*["\']([^"\']*)["\']', summary[nav_by_name_match.start():])
+                reason = reason_match.group(1) if reason_match else ''
+                agent_action_instance.navigate_to_property_by_name(property_name, reason)
+                logger.info(f"[SUMMARIZE_RESULTS] Parsed navigate_to_property_by_name from text: property_name={property_name}, reason={reason}")
+        
+        # AUTOMATIC CITATION OPENING: If we have citations but no open_document action, automatically trigger it
+        # This ensures citations always open without relying on LLM tool calls or keyword detection
+        agent_actions = agent_action_instance.get_actions()
+        has_open_document = any(action.get('action') == 'open_document' for action in agent_actions)
+        
+        if not has_open_document and citations_from_state:
+            # Automatically open the first citation (or best citation based on query)
+            # The citation selection logic in views.py will refine this based on user intent
+            first_citation = citations_from_state[0]
+            citation_number = first_citation.get('citation_number', 1)
+            reason = "Showing source document for the information provided"
+            agent_action_instance.open_document(citation_number, reason)
+            logger.info(f"[SUMMARIZE_RESULTS] AUTO-TRIGGERED open_document: citation={citation_number} (citations present but no tool call)")
+            agent_actions = agent_action_instance.get_actions()  # Refresh actions list
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Collected {len(agent_actions)} agent actions")
     
-    # Clean up any unwanted text
+    phase2_end = time.time()
+    logger.info(f"[SUMMARIZE_RESULTS] Phase 2 took {phase2_end - phase2_start:.2f}s")
+    
+    # Clean up any unwanted text and tool call artifacts
     import re
+    
+    # Remove phrases about proceeding/calling tools
     summary = re.sub(
         r'(?i)(I will now proceed.*?\.|I will call.*?\.|Now calling.*?\.)',
         '',
         summary
     )
+    
+    # CRITICAL: Remove tool call text that LLM sometimes writes as text instead of calling
+    # Matches patterns like: open_document(citation_number=4, reason="...")
+    summary = re.sub(
+        r'open_document\s*\(\s*citation_number\s*=\s*\d+\s*,\s*reason\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Also remove navigate_to_property text artifacts
+    summary = re.sub(
+        r'navigate_to_property\s*\(\s*property_id\s*=\s*["\'][^"\']*["\']\s*,\s*reason\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Remove search_property text artifacts
+    summary = re.sub(
+        r'search_property\s*\(\s*query\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Remove show_map_view text artifacts
+    summary = re.sub(
+        r'show_map_view\s*\(\s*reason\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Remove select_property_pin text artifacts
+    summary = re.sub(
+        r'select_property_pin\s*\(\s*property_id\s*=\s*["\'][^"\']*["\']\s*,\s*reason\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Remove navigate_to_property_by_name text artifacts
+    summary = re.sub(
+        r'navigate_to_property_by_name\s*\(\s*property_name\s*=\s*["\'][^"\']*["\']\s*,\s*reason\s*=\s*["\'][^"\']*["\']\s*\)',
+        '',
+        summary,
+        flags=re.IGNORECASE
+    )
+    
+    # Clean up citation formatting issues (e.g., "[9] ." -> "[9].")
+    summary = re.sub(r'\[(\d+)\]\s+\.', r'[\1].', summary)  # Fix "[9] ." -> "[9]."
+    summary = re.sub(r'\[(\d+)\]\s+,', r'[\1],', summary)  # Fix "[9] ," -> "[9],"
+    summary = re.sub(r'\[(\d+)\]\s+;', r'[\1];', summary)  # Fix "[9] ;" -> "[9];"
+    
+    # Clean up any leftover empty lines or trailing whitespace
+    summary = re.sub(r'\n\s*\n\s*\n', '\n\n', summary)  # Collapse multiple blank lines
     summary = summary.strip()
+    
+    llm_call_end_time = time.time()
+    llm_call_duration = llm_call_end_time - phase1_start
+    logger.info(f"[SUMMARIZE_RESULTS] Total 2-phase time: {llm_call_duration:.2f}s")
     
     # Renumber citations based on order of appearance in response
     # This ensures citations are sequential (1, 2, 3...) based on when they appear in text
@@ -1451,12 +2077,56 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         summary, citations_from_state = _renumber_citations_by_appearance(summary, citations_from_state, metadata_lookup_tables)
     
     summary_complete_time = time.time()
-    total_duration = summary_complete_time - llm_call_start_time
+    total_duration = summary_complete_time - phase1_start
     
     logger.info(
         f"[SUMMARIZE_RESULTS] Generated answer with {len(citations_from_state)} citations from blocks used "
         f"({len(summary)} chars) - Total time: {round(total_duration, 2)}s"
     )
+    
+    # Extract block IDs and create minimal metadata summary
+    block_ids = []
+    block_metadata_summary = {}
+    block_positions = []  # List of (doc_id, chunk_index, page) for each block
+    doc_ids_used = set()
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Extracting block IDs from {len(citations_from_state)} citations")
+    
+    # Extract from citations
+    for cit in citations_from_state:
+        block_id = cit.get('block_id')
+        if block_id:
+            block_ids.append(block_id)
+            doc_id = cit.get('doc_id')
+            page = cit.get('page_number', 0)
+            
+            # Get chunk_index from metadata_lookup_tables if available
+            chunk_index = 0
+            if metadata_lookup_tables and doc_id in metadata_lookup_tables:
+                block_meta = metadata_lookup_tables[doc_id].get(block_id, {})
+                chunk_index = block_meta.get('chunk_index', 0)
+            
+            # Store minimal metadata (not full lookup table - too large)
+            block_metadata_summary[block_id] = {
+                'doc_id': doc_id,
+                'page': page,
+                'chunk_index': chunk_index
+            }
+            
+            # Store block position for fast retrieval
+            block_positions.append({
+                'doc_id': doc_id,
+                'chunk_index': chunk_index,
+                'page': page,
+                'block_id': block_id  # Keep for reference
+            })
+            
+            if doc_id:
+                doc_ids_used.add(doc_id)
+        else:
+            logger.warning(f"[SUMMARIZE_RESULTS] Citation missing block_id: {cit.get('citation_number', 'unknown')}")
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Extracted {len(block_ids)} block IDs, {len(block_positions)} block positions, {len(doc_ids_used)} doc IDs")
     
     # Add current exchange to conversation history
     # Include timestamp for checkpoint persistence (as per LangGraph documentation)
@@ -1464,8 +2134,18 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         "query": state['user_query'],
         "summary": summary,
         "timestamp": datetime.now().isoformat(),  # Add timestamp like LangGraph docs
-        "document_ids": [output['doc_id'] for output in doc_outputs[:10]]  # Track which docs were used
+        "document_ids": list(doc_ids_used) if doc_ids_used else [output['doc_id'] for output in doc_outputs[:10]],  # Store doc IDs that were used
+        "block_ids": block_ids,  # NEW: Store all block IDs used in response
+        "block_positions": block_positions,  # NEW: Store positions for fast retrieval
+        "block_metadata_summary": block_metadata_summary,  # NEW: Minimal metadata for fast lookup
+        "query_category": "document_search",  # NEW: Store query type
+        "citations": citations_from_state  # Store citations for reference
     }
+    
+    logger.info(
+        f"[SUMMARIZE_RESULTS] Storing conversation entry with {len(block_ids)} block_ids, "
+        f"{len(block_positions)} block_positions, {len(doc_ids_used)} document_ids"
+    )
     
     # Preserve document_outputs and relevant_documents in state (LangGraph merges, but be explicit)
     state_update = {
@@ -1474,7 +2154,8 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         "conversation_history": [conversation_entry],  # operator.add will append to existing history
         # Preserve existing state fields (LangGraph merges by default, but ensure they're not lost)
         "document_outputs": doc_outputs,  # Preserve document outputs for views.py
-        "relevant_documents": state.get('relevant_documents', [])  # Preserve relevant docs
+        "relevant_documents": state.get('relevant_documents', []),  # Preserve relevant docs
+        "agent_actions": agent_actions if agent_actions else None  # AGENT MODE: Actions requested by LLM
     }
     
     

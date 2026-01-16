@@ -331,6 +331,186 @@ def _get_citation_instructions() -> str:
    - Optionally mention page numbers or section headings if relevant to provide context."""
 
 
+def _get_entity_normalization_instructions() -> str:
+    """
+    Shared instructions for entity normalization and duplication removal.
+    Used across all response generation (summarize, format, general_query, etc.)
+    Formats responses for end-user display with clean label-value layout.
+    NOTE: Citation handling is separate - this function focuses on structure and normalization.
+    """
+    return """
+**PRESENTATION FORMAT STRUCTURE**
+
+**(CRITICAL — Apply to ALL responses)**
+
+1. **Normalize Data into Unique Fields** (MUST):
+   - Identify all entities (companies, people, properties, values, dates, etc.)
+   - **CRITICAL**: Each piece of data must appear once and only once
+   - Merge duplicate entities into a single, normalized representation
+   - Use consistent naming across the response (choose the most appropriate label)
+   - **Example**: "Company: X" and "Valuation Company: X" → ONE entity section
+
+2. **Clear Section Headers with Logical Hierarchy** (MUST):
+   - Use H1 (#) for the main title (e.g., "Property Valuation Summary")
+   - Use H2 (##) for major sections (e.g., "Market Value", "Valuers")
+   - Group related information under the appropriate section header
+   - **Required structure**: Section Header → Primary value(s) → Secondary notes (if applicable)
+
+3. **Clean Label–Value Layout for Immediate Clarity** (MUST):
+   - **CRITICAL**: Values must be immediately visible and scannable
+   - **CRITICAL - All Values Must Have Labels**: Every value, figure, amount, date, and name MUST have a clear label/title
+   - Each data point must use a vertical label–value layout
+   - **Required format**:
+     ```
+     **Label:**
+     Value[1]
+     ```
+     (Label is bold, value is regular text)
+   - **MUST**: Include labels for ALL values including:
+     - Monetary values: "**Market Value:**", "**90-Day Value:**", "**Market Rent:**"
+     - Dates: "**Valuation Date:**", "**Completion Date:**"
+     - Names: "**Valuers:**", "**Property Owner:**", "**Agent:**"
+     - Other data: "**Property Type:**", "**Address:**", etc.
+   - **CRITICAL - Smart Bolding**: Only bold labels (e.g., **Market Value:**), NOT the actual values (e.g., £2,300,000[1] should be regular text)
+   - **DO NOT** show values without labels - this is misleading and unclear
+   - **DO NOT** use inline formats such as "Label: Value"
+   - **DO NOT** embed assumptions or explanations inline with values
+   - Labels must be bold and placed on their own line
+   - Values must appear on a separate line directly below the label
+   - Use blank lines between sections to improve visual separation
+   - **CRITICAL - Use Bullet Points for Lists**: When a label has multiple items (e.g., amenities, features, structures), use bullet points:
+     ```
+     **Additional Structures:**
+     - One-bedroom Coach House
+     - Triple Carport
+     - Store
+     - Gym
+     - Pond
+     - Tennis Court
+     - Outdoor Swimming Pool
+     ```
+   - **DO NOT** list multiple items on one line separated by commas
+   - **DO NOT** list multiple items as plain text lines without bullets
+
+4. **Assumptions and Explanatory Notes as Secondary Text** (MUST):
+   - Place assumptions or explanatory notes below the primary value
+   - Use italic formatting for all secondary text
+   - **Required format**:
+     ```
+     **Label:**
+     Primary Value
+     *Assumption or explanatory note*
+     ```
+   - **DO NOT** combine values and explanations on the same line
+
+5. **Citation Markers** (MUST):
+   - **CRITICAL**: Include citation markers (e.g., [1], [2], [3]) in the text immediately after each fact
+   - Citation markers are REQUIRED in the text - the frontend automatically converts them to clickable citation buttons
+   - **IMPORTANT**: The markers will NOT appear as raw text "[1]" to users - they will be rendered as styled clickable buttons by the frontend
+   - Place citations directly after the fact: "£2,300,000[1]" not "£2,300,000 [1]"
+   - **DO NOT** remove citation markers - they are essential for proper citation rendering
+   - **DO NOT** place citations at the end of sentences or paragraphs - they must be inline with the fact
+
+6. **Remove Unnecessary Metadata and Descriptive Noise** (MUST):
+   - Remove phrases such as "The firm responsible for…", "The phone number for…"
+   - Eliminate redundant descriptions that do not add direct user value
+   - Retain only information necessary for understanding and decision-making
+
+7. **Example — Correct Format** (Follow Exactly - ALL values must have labels):
+   ```
+   # Property Valuation Summary
+   
+   ## Market Value
+   **Market Value:**
+   **£2,300,000[1]**
+   *Market value with vacant possession, normal marketing period*
+   
+   ## 90-Day Value
+   **90-Day Value:**
+   **£1,950,000[2]**
+   *Assumes a sale within 90 days, reflecting a 15% discount*
+   
+   ## 180-Day Value
+   **180-Day Value:**
+   **£2,050,000[3]**
+   *Assumes a sale within 180 days, reflecting a 10% discount*
+   
+   ## Market Rent
+   **Market Rent:**
+   **£6,000[4]** per calendar month
+   
+   ## Valuation Date
+   **Valuation Date:**
+   **12th February 2024[5]**
+   
+   ## Valuers
+   **Valuers:**
+   **Sukhbir Tiwana[6]** MRICS
+   **Graham Finegold[7]** MRICS
+   *Registered valuers, MJ Group International*
+   ```
+
+8. **Example — Flood Risk Format**:
+   ```
+   # Flood Risk for Highlands Property: Medium Risk
+   
+   The property located at Highlands, Berden Road, Berden, Bishop's Stortford, CM23 1AB is classified as being in a medium risk area for flooding.
+   
+   ## Flood Risk Classification
+   Zone 2
+   *Land probability of river flooding between 1 in 100 and 1 in 1,000 annually*
+   
+   ## Surface Water Flooding
+   Low risk
+   
+   ## Assessment Source
+   Environment Agency
+   *Uses multiple environmental risk factors*
+   ```
+
+10. **Example — Amenities with Bullet Points**:
+   ```
+   # Amenities for Highlands Property
+   
+   ## Property Type
+   Five-bedroom detached house
+   
+   ## Additional Structures
+   - One-bedroom Coach House
+   - Triple Carport
+   - Store
+   - Gym
+   - Pond
+   - Tennis Court
+   - Outdoor Swimming Pool
+   
+   ## Parking
+   Ample parking for multiple cars at the front of the main house
+   
+   ## Security
+   CCTV coverage throughout the external areas of the property
+   
+   ## Landscaping
+   Well-maintained gardens with defined boundaries of timber fencing and mature hedging
+   ```
+
+9. **Example — Incorrect Format** (DO NOT USE):
+   ```
+   ❌ Market Value: £2,300,000 – inline value
+   ❌ 90-Day Value: £1,950,000 – inline explanation
+   ❌ Company: MJ Group International, Phone: +44...
+   ❌ Valuation Company: MJ Group International – duplicate entity
+   ```
+
+**CRITICAL REQUIREMENT**:
+The final output must be a clean, normalized, presentation-layer response optimized for:
+- Readability
+- Scanability
+- UI and document rendering
+
+It must not resemble an intermediate, raw, or internal data representation.
+"""
+
 def _get_no_unsolicited_content_instructions() -> str:
     """Get instructions for avoiding unsolicited content while being comprehensive."""
     return """8. **Comprehensive but Focused Response**  
@@ -508,6 +688,58 @@ Variations:"""
 # QUERY ROUTING PROMPTS
 # ============================================================================
 
+def get_query_classification_prompt(user_query: str, conversation_history: str = "") -> str:
+    """
+    Prompt for classifying query intent.
+    Returns classification prompt with examples.
+    Pattern: Follow get_query_routing_human_content() structure
+    """
+    history_section = f"\n\nConversation History:\n{conversation_history}" if conversation_history else ""
+    return f"""Here is the context:  
+{history_section}
+
+**Current User Query:**  
+"{user_query}"
+
+**CLASSIFY** the intent as exactly one of the following — and return only that word:  
+- `general_query`  
+- `text_transformation`  
+- `document_search`
+- `follow_up_document_search`  # NEW
+- `hybrid`
+
+Use the definitions below:
+
+- **general_query**: General knowledge questions not requiring document search
+  Examples: "What is the date today?", "Explain quantum computing", "What is the capital of France?"
+  
+- **text_transformation**: Requests to modify/reorganize EXISTING TEXT
+  Examples: "Make this text sharper", "Reorganize the previous response", "Make this more concise"
+  Key: Transforms text that is already provided (pasted or from previous response)
+  
+- **document_search**: Queries requiring document search (existing functionality)
+  Examples: "What is the market value?", "Find properties with 3 bedrooms"
+  
+- **follow_up_document_search**: Asking for more detail on specific topic from previous document search
+  Examples: "make it more detailed on the assumptions", "tell me more about the 90-day value",
+            "what are the assumptions for each value"
+  Key: Previous response had citations/block_ids AND query asks for more detail on specific topic
+  
+- **hybrid**: Queries needing both general knowledge and document search
+  Examples: "Compare today's date with the valuation date in the documents"
+
+**Important:**  
+- Focus on the **core intent** of the user's question.  
+- If the query asks to transform text (make sharper, reorganize, etc.), it's text_transformation
+- If the query asks general knowledge questions with no document/property context, it's general_query
+- If the query asks about properties, documents, or requires searching, it's document_search
+- If the query asks for MORE DETAIL on a topic from a previous document search response, it's follow_up_document_search
+- If the query combines general knowledge with document search, it's hybrid
+- Do not produce any extra text: return *only* one of the four labels.
+
+**Answer:**"""
+
+
 def get_query_routing_human_content(user_query: str, conversation_history: str = "") -> str:
     """
     Human message content for classifying query intent.
@@ -598,7 +830,7 @@ def get_llm_sql_query_human_content(user_query: str) -> str:
 # DOCUMENT QA AGENT PROMPTS
 # ============================================================================
 
-def get_document_qa_human_content(user_query: str, doc_content: str, detail_level: str = 'concise') -> str:
+def get_document_qa_human_content(user_query: str, doc_content: str, detail_level: str = 'concise', citation_context: dict = None) -> str:
     """
     Human message content for per-document question answering.
     System prompt is handled separately via get_system_prompt('analyze').
@@ -611,8 +843,28 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
     query_characteristics = detect_query_characteristics(user_query)
     is_valuation_query = query_characteristics.get('query_type') == 'assessment'
     
+    # Build citation context section if available
+    citation_context_section = ""
+    if citation_context:
+        page_info = f" (page {citation_context.get('page_number', 'unknown')})" if citation_context.get('page_number') else ""
+        doc_name = citation_context.get('original_filename', 'the document')
+        cited_text = citation_context.get('cited_text', '')
+        citation_context_section = f"""
+**CITATION CONTEXT (for reference - user is asking about this specific location):**
+- Document: {doc_name}{page_info}
+- Cited text: "{cited_text[:200]}{'...' if len(cited_text) > 200 else ''}"
+- User's question relates to this specific citation location in the document.
+
+**IMPORTANT:** Use this citation context to:
+1. Focus your search on information related to or near this cited text
+2. Look for additional details, explanations, or related information around this citation
+3. Provide context that expands on or clarifies what the user is asking about regarding this specific citation
+"""
+    
     return f"""Here is the document excerpt:  
 ```\n{doc_content}\n```
+
+{citation_context_section}
 
 **USER QUESTION:**  
 {user_query}
@@ -630,12 +882,15 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
 {_get_names_search_instructions("excerpt")}
 
 2. **Use Only Provided Context**  
-   - Answer **only** using information in the excerpt above.  
+   - **CRITICAL**: Answer **ONLY** using information in the excerpt above
+   - **CRITICAL**: DO NOT use general knowledge, common sense, or assumptions about what "properties typically have" or "common risks"
+   - **CRITICAL**: If the excerpt doesn't mention something, DO NOT make it up or use generic examples
+   - **CRITICAL**: DO NOT generate generic lists (e.g., "common risks that properties might face") - ONLY list what the excerpt actually says
    - **Before saying "not found"**: Re-read the excerpt carefully, looking for:
      - Any mention of the requested information
      - Synonyms or related terms
      - Different phrasings or formats
-   - If the excerpt lacks enough evidence after thorough search, respond: **"I do not have complete information in this excerpt."**
+   - If the excerpt lacks enough evidence after thorough search, respond: **"This information is not mentioned in the document excerpt."**
 
 {_get_comprehensive_search_instructions("excerpt", query_characteristics)}
 
@@ -667,8 +922,11 @@ def get_document_qa_human_content(user_query: str, doc_content: str, detail_leve
 {_get_citation_instructions()}
 
 6. **Guard Against Hallucination**  
-   - Do **not** guess or invent details not present in the excerpt.  
-   - Avoid speculation or external recommendations (websites, agents, market data).
+   - **CRITICAL**: Do **NOT** guess, invent, or use general knowledge for details not present in the excerpt
+   - **CRITICAL**: Do **NOT** generate generic lists or examples (e.g., "common risks that properties might face") - ONLY use what's in the excerpt
+   - **CRITICAL**: If asked about risks, features, or issues, ONLY mention what the excerpt explicitly states - do NOT add generic examples
+   - Avoid speculation or external recommendations (websites, agents, market data)
+   - If information is not in the excerpt, explicitly state: "This is not mentioned in the document excerpt"
 
 7. **Professional and Clear Tone**  
    - Use a professional, comprehensive, and factual writing style.  
@@ -776,23 +1034,34 @@ def get_summary_human_content(
 
 {_get_information_type_distinction_instructions()}
 
-4. **Structure & Clarity**  
+4. **Structure & Clarity - Maximum Readability**  
    - **Start directly with the final answer** - do not show your internal reasoning process
    - Provide a **comprehensive, detailed answer with all relevant information** following professional standards
    - Include all valuation perspectives, assumptions, professional qualifications, dates, names, and any other relevant details found
-   - Organize information clearly and logically - use paragraphs, lists, or structured format as appropriate
-   - Present information in a way that a real estate professional can thoroughly understand and use
-   - Do NOT include:
-     - "Relevant document:" sections
-     - "Searched the extract" descriptions  
-     - "Extracted facts:" breakdowns
-     - Step-by-step reasoning processes
-     - Internal chain-of-thought explanations
-     - Technical field names like "KEY_VALUES", "PARTY_NAMES", or any other internal metadata field names
-     - Technical section identifiers or field labels
-     - Document filenames or document names (e.g., "Found in: [document name]")
-     - References to specific document files or identifiers
-   - Simply state the answer clearly and naturally, using only natural language
+   - **CRITICAL**: Make values immediately clear and scannable
+   - **CRITICAL**: Use clear section headers (##) for major topics, then place values on their own lines below
+   - **Format for clarity**:
+     - Use H1 (#) for main title/answer
+     - Use H2 (##) for major sections (e.g., "Market Value", "Flood Risk Classification")
+     - Place key values on their own line below section headers for immediate visibility
+     - Use italic (*text*) for assumptions/explanatory notes beneath values
+     - Use blank lines between sections for visual separation
+   - **DO NOT**:
+     - Use inline format like "Label: Value" - this makes values harder to scan
+     - Embed values in long sentences - extract them to their own lines
+     - Bury important data in paragraphs - use structured sections
+     - Include "Relevant document:" sections
+     - Include "Searched the extract" descriptions  
+     - Include "Extracted facts:" breakdowns
+     - Include step-by-step reasoning processes
+     - Include internal chain-of-thought explanations
+     - Include technical field names like "KEY_VALUES", "PARTY_NAMES", or any other internal metadata field names
+     - Include technical section identifiers or field labels
+     - Include document filenames or document names (e.g., "Found in: [document name]")
+     - Include references to specific document files or identifiers
+   - Present information in a way that values are immediately clear and easy to scan
+
+{_get_entity_normalization_instructions()}
 
 {_get_citation_instructions()}
 
@@ -910,13 +1179,23 @@ The system is configured to REQUIRE tool calls. You cannot proceed without calli
 
 **WHAT IS A FACTUAL CLAIM?**
 Any specific information that answers the user's question, including:
-- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
-- **Dates**: When something happened, dates of reports, inspection dates
-- **Names**: Valuers, appraisers, inspectors, parties involved
-- **Addresses**: Property addresses, locations
-- **Assessments**: Professional opinions, valuations, conditions, ratings
-- **Details**: Property features, specifications, characteristics
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities, rents, fees
+- **Dates**: When something happened, dates of reports, inspection dates, completion dates, valuation dates
+- **Names**: Valuers, appraisers, inspectors, parties involved, agents, companies
+- **Addresses**: Property addresses, locations, postcodes
+- **Assessments**: Professional opinions, valuations, conditions, ratings, EPC ratings
+- **Details**: Property features, specifications, characteristics, amenities, structures
+- **Descriptive Facts**: Security features (CCTV, alarms, gates), landscaping details (gardens, fencing, boundaries), property conditions, maintenance details, any descriptive information about the property
+- **Lists**: Each item in a list (amenities, features, structures) should be cited separately if relevant
 - **Any specific data point** that directly answers the question
+- **CRITICAL**: If you mention ANY fact that appears in the documents (even if it's descriptive like "CCTV coverage" or "well-maintained gardens"), you MUST cite it
+
+**CRITICAL - EXTRACT CITATIONS FOR EVERY DISTINCT FACT:**
+- If a block contains multiple facts (e.g., "Market Value: £2,300,000. Valuation date: 12th February 2024. Valuer: John Smith"), extract a SEPARATE citation for EACH fact
+- If a block lists multiple items (e.g., "Amenities: Swimming pool, Tennis court, Gym"), extract a citation for EACH item if they're relevant to the query
+- If a block mentions multiple values (e.g., "90-day: £1,950,000, 180-day: £2,050,000"), extract a citation for EACH value
+- If a block mentions multiple names (e.g., "Valuers: John Smith MRICS and Jane Doe MRICS"), extract a citation for EACH name
+- **DO NOT** combine multiple facts into one citation - each distinct piece of information needs its own citation number
 
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 If the user is asking about "value" or "valuation", you MUST extract citations for:
@@ -958,14 +1237,47 @@ Example 3 - Multiple Values:
 - You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
 - You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
 
+Example 4 - Multiple Facts in One Block:
+- You see: <BLOCK id="BLOCK_CITE_ID_20">Content: "Market Value: £2,300,000 as of 12th February 2024. Valuation conducted by Sukhbir Tiwana MRICS. Property address: Highlands, Berden Road, CM23 1AB"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,300,000", block_id="BLOCK_CITE_ID_20", citation_number=6)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_20", citation_number=7)
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_20", citation_number=8)
+- You MUST call: cite_source(cited_text="Property address: Highlands, Berden Road, CM23 1AB", block_id="BLOCK_CITE_ID_20", citation_number=9)
+- **CRITICAL**: Extract a separate citation for EACH distinct fact, even if they're in the same block
+
+Example 5 - Lists and Amenities:
+- You see: <BLOCK id="BLOCK_CITE_ID_25">Content: "The property includes: Five-bedroom detached house, One-bedroom Coach House, Triple Carport, Store, Gym, Pond, Tennis Court, Outdoor Swimming Pool"</BLOCK>
+- If the user asks about amenities, you MUST call cite_source for EACH relevant item:
+- You MUST call: cite_source(cited_text="Five-bedroom detached house", block_id="BLOCK_CITE_ID_25", citation_number=10)
+- You MUST call: cite_source(cited_text="One-bedroom Coach House", block_id="BLOCK_CITE_ID_25", citation_number=11)
+- You MUST call: cite_source(cited_text="Triple Carport", block_id="BLOCK_CITE_ID_25", citation_number=12)
+- You MUST call: cite_source(cited_text="Store", block_id="BLOCK_CITE_ID_25", citation_number=13)
+- You MUST call: cite_source(cited_text="Gym", block_id="BLOCK_CITE_ID_25", citation_number=14)
+- You MUST call: cite_source(cited_text="Pond", block_id="BLOCK_CITE_ID_25", citation_number=15)
+- You MUST call: cite_source(cited_text="Tennis Court", block_id="BLOCK_CITE_ID_25", citation_number=16)
+- You MUST call: cite_source(cited_text="Outdoor Swimming Pool", block_id="BLOCK_CITE_ID_25", citation_number=17)
+- **CRITICAL**: When extracting citations for lists, cite EACH item separately - do NOT combine them into one citation
+
+Example 6 - Descriptive Facts (Security, Landscaping, etc.):
+- You see: <BLOCK id="BLOCK_CITE_ID_30">Content: "The property benefits from CCTV coverage throughout the external areas"</BLOCK>
+- You MUST call: cite_source(cited_text="CCTV coverage throughout the external areas of the property", block_id="BLOCK_CITE_ID_30", citation_number=18)
+- You see: <BLOCK id="BLOCK_CITE_ID_31">Content: "Well-maintained gardens with defined boundaries of timber fencing and mature hedging"</BLOCK>
+- You MUST call: cite_source(cited_text="Well-maintained gardens with defined boundaries of timber fencing and mature hedging", block_id="BLOCK_CITE_ID_31", citation_number=19)
+- **CRITICAL**: Descriptive facts about security, landscaping, property conditions, maintenance, or any property characteristics MUST be cited if they appear in the documents
+- **CRITICAL**: Do NOT skip citations for descriptive information - if it's in the document and you mention it, you MUST cite it
+
 **CRITICAL RULES:**
-1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries, but for valuation queries you may need 6-8+ citations)
+1. ✅ Call cite_source for EVERY factual claim (minimum 5-8 citations for most queries, 10-15+ for complex queries with lists/amenities)
 2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
 3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
 4. ✅ Extract citations for ALL relevant information, not just one piece
-5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
-6. ❌ Do NOT skip citations - if you see multiple values, cite each one
-7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+5. ✅ **CRITICAL - ONE FACT PER CITATION**: Each distinct fact/value/date/name/item should get its own citation number
+6. ✅ **CRITICAL - LISTS**: When you see lists (amenities, features, structures), extract a citation for EACH item in the list
+7. ✅ **CRITICAL - MULTIPLE FACTS IN ONE BLOCK**: If a block contains multiple facts, extract a separate citation for EACH fact
+8. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+9. ❌ Do NOT skip citations - if you see multiple values, cite each one
+10. ❌ Do NOT combine multiple facts into one citation - each fact needs its own citation number
+11. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
 8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
 9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
    - Primary Market Value (e.g., "Market Value: £2,300,000")
@@ -974,17 +1286,36 @@ Example 3 - Multiple Values:
    - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
    - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
    - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
-10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
-   - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
-   - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
-   - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
-   - **VERIFY**: If you're citing "under offer at £2,400,000", make sure the block contains "£2,400,000" or "2,400,000" and mentions "under offer"
-   - **DO NOT** use a block_id just because it's on the same page - the block must contain the specific fact you're citing
-   - **EXAMPLE**: If you see two blocks on page 28:
-     * Block A: "90-day value: £1,950,000"
-     * Block B: "under offer at £2,400,000"
-     * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
-     * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT EXACTLY**:
+   - **BEFORE** calling cite_source, you MUST read the ENTIRE block content and verify it contains the EXACT fact you're citing
+   - **STEP-BY-STEP VERIFICATION PROCESS**:
+     1. Read the complete block content from start to finish
+     2. Identify the core fact/statement in the block
+     3. Compare it to the fact you want to cite
+     4. Ask yourself: "Does this block actually state the same fact I'm citing?"
+     5. Only use the block_id if the answer is YES
+   - **CRITICAL RULES**:
+     - The block must contain the SAME CORE MEANING as what you're citing
+     - For values/amounts: The block must contain the exact number AND the context (e.g., "90-day value: £1,950,000" requires both "90-day" AND "£1,950,000" in the same block)
+     - For negative statements: The block must contain BOTH the negative indicator (no/not/none) AND the core concept (e.g., "no planning history" requires both "no" and "planning history" in the block)
+     - For decisions/status: The block must contain the exact decision word (e.g., "granted" vs "refused" - these are DIFFERENT facts)
+   - **DO NOT**:
+     - Use a block_id just because it's on the same page
+     - Use a block_id just because it contains similar words
+     - Use a block_id if the block talks about a DIFFERENT fact, even if related
+     - Assume blocks are correct - always verify by reading the full block content
+   - **EXAMPLE - CORRECT**:
+     * You want to cite: "no recent planning history"
+     * Block A content: "We note that the subject property has no recent planning history, within the last 10 years."
+     * Block B content: "Planning consent is assumed for existing uses and is not affected by statutory notices."
+     * ✅ CORRECT: Use Block A (it contains "no recent planning history")
+     * ❌ WRONG: Do NOT use Block B (it talks about planning consent, not planning history)
+   - **EXAMPLE - CORRECT**:
+     * You want to cite: "Certificate of Lawfulness granted"
+     * Block A content: "Certificate of Lawfulness granted for construction of games room"
+     * Block B content: "Certificate of Lawfulness refused for construction of games room"
+     * ✅ CORRECT: Use Block A (it says "granted")
+     * ❌ WRONG: Do NOT use Block B (it says "refused" - this is a DIFFERENT fact)
 11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
@@ -1058,6 +1389,7 @@ When presenting valuation information, organize it clearly and comprehensively:
 - Mention any risk factors, caveats, or limitations
 - Include professional information (valuer name, qualifications, firm name) naturally within the response
 - Present information in a flowing, natural narrative style
+- **PUNCTUATION**: Do NOT add periods at the end of standalone lines (headings, bullet points). Only use periods mid-sentence when text continues after
 
 **MUST**: If you find multiple valuation figures in the document, you MUST list ALL of them with their assumptions. Include every valuation perspective found (primary Market Value, reduced marketing period values, market rent, etc.) with their full written form and summarized assumptions. Present information naturally in a flowing narrative style, not as instructions or explanations of methodology.
 """
@@ -1242,13 +1574,23 @@ The system is configured to REQUIRE tool calls. You cannot proceed without calli
 
 **WHAT IS A FACTUAL CLAIM?**
 Any specific information that answers the user's question, including:
-- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities
-- **Dates**: When something happened, dates of reports, inspection dates
-- **Names**: Valuers, appraisers, inspectors, parties involved
-- **Addresses**: Property addresses, locations
-- **Assessments**: Professional opinions, valuations, conditions, ratings
-- **Details**: Property features, specifications, characteristics
+- **Values/Amounts**: Prices, valuations, measurements, dimensions, quantities, rents, fees
+- **Dates**: When something happened, dates of reports, inspection dates, completion dates, valuation dates
+- **Names**: Valuers, appraisers, inspectors, parties involved, agents, companies
+- **Addresses**: Property addresses, locations, postcodes
+- **Assessments**: Professional opinions, valuations, conditions, ratings, EPC ratings
+- **Details**: Property features, specifications, characteristics, amenities, structures
+- **Descriptive Facts**: Security features (CCTV, alarms, gates), landscaping details (gardens, fencing, boundaries), property conditions, maintenance details, any descriptive information about the property
+- **Lists**: Each item in a list (amenities, features, structures) should be cited separately if relevant
 - **Any specific data point** that directly answers the question
+- **CRITICAL**: If you mention ANY fact that appears in the documents (even if it's descriptive like "CCTV coverage" or "well-maintained gardens"), you MUST cite it
+
+**CRITICAL - EXTRACT CITATIONS FOR EVERY DISTINCT FACT:**
+- If a block contains multiple facts (e.g., "Market Value: £2,300,000. Valuation date: 12th February 2024. Valuer: John Smith"), extract a SEPARATE citation for EACH fact
+- If a block lists multiple items (e.g., "Amenities: Swimming pool, Tennis court, Gym"), extract a citation for EACH item if they're relevant to the query
+- If a block mentions multiple values (e.g., "90-day: £1,950,000, 180-day: £2,050,000"), extract a citation for EACH value
+- If a block mentions multiple names (e.g., "Valuers: John Smith MRICS and Jane Doe MRICS"), extract a citation for EACH name
+- **DO NOT** combine multiple facts into one citation - each distinct piece of information needs its own citation number
 
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 If the user is asking about "value" or "valuation", you MUST extract citations for:
@@ -1290,14 +1632,47 @@ Example 3 - Multiple Values:
 - You MUST call: cite_source(cited_text="90-day marketing period value: £1,950,000", block_id="BLOCK_CITE_ID_7", citation_number=4)
 - You MUST call: cite_source(cited_text="180-day marketing period value: £2,050,000", block_id="BLOCK_CITE_ID_7", citation_number=5)
 
+Example 4 - Multiple Facts in One Block:
+- You see: <BLOCK id="BLOCK_CITE_ID_20">Content: "Market Value: £2,300,000 as of 12th February 2024. Valuation conducted by Sukhbir Tiwana MRICS. Property address: Highlands, Berden Road, CM23 1AB"</BLOCK>
+- You MUST call: cite_source(cited_text="Market Value: £2,300,000", block_id="BLOCK_CITE_ID_20", citation_number=6)
+- You MUST call: cite_source(cited_text="Valuation date: 12th February 2024", block_id="BLOCK_CITE_ID_20", citation_number=7)
+- You MUST call: cite_source(cited_text="Valuer: Sukhbir Tiwana MRICS", block_id="BLOCK_CITE_ID_20", citation_number=8)
+- You MUST call: cite_source(cited_text="Property address: Highlands, Berden Road, CM23 1AB", block_id="BLOCK_CITE_ID_20", citation_number=9)
+- **CRITICAL**: Extract a separate citation for EACH distinct fact, even if they're in the same block
+
+Example 5 - Lists and Amenities:
+- You see: <BLOCK id="BLOCK_CITE_ID_25">Content: "The property includes: Five-bedroom detached house, One-bedroom Coach House, Triple Carport, Store, Gym, Pond, Tennis Court, Outdoor Swimming Pool"</BLOCK>
+- If the user asks about amenities, you MUST call cite_source for EACH relevant item:
+- You MUST call: cite_source(cited_text="Five-bedroom detached house", block_id="BLOCK_CITE_ID_25", citation_number=10)
+- You MUST call: cite_source(cited_text="One-bedroom Coach House", block_id="BLOCK_CITE_ID_25", citation_number=11)
+- You MUST call: cite_source(cited_text="Triple Carport", block_id="BLOCK_CITE_ID_25", citation_number=12)
+- You MUST call: cite_source(cited_text="Store", block_id="BLOCK_CITE_ID_25", citation_number=13)
+- You MUST call: cite_source(cited_text="Gym", block_id="BLOCK_CITE_ID_25", citation_number=14)
+- You MUST call: cite_source(cited_text="Pond", block_id="BLOCK_CITE_ID_25", citation_number=15)
+- You MUST call: cite_source(cited_text="Tennis Court", block_id="BLOCK_CITE_ID_25", citation_number=16)
+- You MUST call: cite_source(cited_text="Outdoor Swimming Pool", block_id="BLOCK_CITE_ID_25", citation_number=17)
+- **CRITICAL**: When extracting citations for lists, cite EACH item separately - do NOT combine them into one citation
+
+Example 6 - Descriptive Facts (Security, Landscaping, etc.):
+- You see: <BLOCK id="BLOCK_CITE_ID_30">Content: "The property benefits from CCTV coverage throughout the external areas"</BLOCK>
+- You MUST call: cite_source(cited_text="CCTV coverage throughout the external areas of the property", block_id="BLOCK_CITE_ID_30", citation_number=18)
+- You see: <BLOCK id="BLOCK_CITE_ID_31">Content: "Well-maintained gardens with defined boundaries of timber fencing and mature hedging"</BLOCK>
+- You MUST call: cite_source(cited_text="Well-maintained gardens with defined boundaries of timber fencing and mature hedging", block_id="BLOCK_CITE_ID_31", citation_number=19)
+- **CRITICAL**: Descriptive facts about security, landscaping, property conditions, maintenance, or any property characteristics MUST be cited if they appear in the documents
+- **CRITICAL**: Do NOT skip citations for descriptive information - if it's in the document and you mention it, you MUST cite it
+
 **CRITICAL RULES:**
-1. ✅ Call cite_source for EVERY factual claim (minimum 3-5 citations for most queries, but for valuation queries you may need 6-8+ citations)
+1. ✅ Call cite_source for EVERY factual claim (minimum 5-8 citations for most queries, 10-15+ for complex queries with lists/amenities)
 2. ✅ Use sequential citation numbers (1, 2, 3, 4, 5...) - start from 1 and increment for each new citation
 3. ✅ Find the BLOCK_CITE_ID in the <BLOCK> tags from the document extracts
 4. ✅ Extract citations for ALL relevant information, not just one piece
-5. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
-6. ❌ Do NOT skip citations - if you see multiple values, cite each one
-7. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
+5. ✅ **CRITICAL - ONE FACT PER CITATION**: Each distinct fact/value/date/name/item should get its own citation number
+6. ✅ **CRITICAL - LISTS**: When you see lists (amenities, features, structures), extract a citation for EACH item in the list
+7. ✅ **CRITICAL - MULTIPLE FACTS IN ONE BLOCK**: If a block contains multiple facts, extract a separate citation for EACH fact
+8. ❌ Do NOT write an answer yet - ONLY extract citations by calling the tool
+9. ❌ Do NOT skip citations - if you see multiple values, cite each one
+10. ❌ Do NOT combine multiple facts into one citation - each fact needs its own citation number
+11. ❌ Do NOT finish without calling the tool - tool calls are MANDATORY
 8. ⚠️ **CRITICAL - NO DUPLICATE CITATIONS**: Do NOT cite the same fact twice. If you see the same information in different blocks or with slightly different wording (e.g., "EPC Rating: D" and "EPC Rating: The property has an Energy Performance Certificate (EPC) rating of D1"), cite it ONCE only. The system will automatically detect and skip duplicates, but you should avoid creating them.
 9. ⚠️ **FOR VALUATION QUERIES - MANDATORY**: You MUST extract citations for ALL valuation scenarios:
    - Primary Market Value (e.g., "Market Value: £2,300,000")
@@ -1306,17 +1681,36 @@ Example 3 - Multiple Values:
    - Market Rent if mentioned (e.g., "Market Rent: £6,000 per calendar month")
    - **SEARCH ALL PAGES**: Reduced marketing period values often appear on later pages (page 28-30+) - do NOT stop after finding the primary Market Value
    - **EXAMPLE**: If you see "Market Value: £2,300,000" on page 30 and "90-day value: £1,950,000" on page 28, you MUST cite BOTH
-10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT**:
-   - **BEFORE** calling cite_source, VERIFY that the block_id you're using actually contains the fact you're citing
-   - **CHECK**: Does the block content contain the EXACT value/amount/date/name you're citing?
-   - **VERIFY**: If you're citing "90-day value: £1,950,000", make sure the block contains "£1,950,000" or "1,950,000" and mentions "90-day" or "90 day"
-   - **VERIFY**: If you're citing "under offer at £2,400,000", make sure the block contains "£2,400,000" or "2,400,000" and mentions "under offer"
-   - **DO NOT** use a block_id just because it's on the same page - the block must contain the specific fact you're citing
-   - **EXAMPLE**: If you see two blocks on page 28:
-     * Block A: "90-day value: £1,950,000"
-     * Block B: "under offer at £2,400,000"
-     * When citing "90-day value: £1,950,000", you MUST use Block A's block_id (NOT Block B)
-     * When citing "under offer at £2,400,000", you MUST use Block B's block_id (NOT Block A)
+10. ✅ **CRITICAL - VERIFY BLOCK_ID MATCHES CITED_TEXT EXACTLY**:
+   - **BEFORE** calling cite_source, you MUST read the ENTIRE block content and verify it contains the EXACT fact you're citing
+   - **STEP-BY-STEP VERIFICATION PROCESS**:
+     1. Read the complete block content from start to finish
+     2. Identify the core fact/statement in the block
+     3. Compare it to the fact you want to cite
+     4. Ask yourself: "Does this block actually state the same fact I'm citing?"
+     5. Only use the block_id if the answer is YES
+   - **CRITICAL RULES**:
+     - The block must contain the SAME CORE MEANING as what you're citing
+     - For values/amounts: The block must contain the exact number AND the context (e.g., "90-day value: £1,950,000" requires both "90-day" AND "£1,950,000" in the same block)
+     - For negative statements: The block must contain BOTH the negative indicator (no/not/none) AND the core concept (e.g., "no planning history" requires both "no" and "planning history" in the block)
+     - For decisions/status: The block must contain the exact decision word (e.g., "granted" vs "refused" - these are DIFFERENT facts)
+   - **DO NOT**:
+     - Use a block_id just because it's on the same page
+     - Use a block_id just because it contains similar words
+     - Use a block_id if the block talks about a DIFFERENT fact, even if related
+     - Assume blocks are correct - always verify by reading the full block content
+   - **EXAMPLE - CORRECT**:
+     * You want to cite: "no recent planning history"
+     * Block A content: "We note that the subject property has no recent planning history, within the last 10 years."
+     * Block B content: "Planning consent is assumed for existing uses and is not affected by statutory notices."
+     * ✅ CORRECT: Use Block A (it contains "no recent planning history")
+     * ❌ WRONG: Do NOT use Block B (it talks about planning consent, not planning history)
+   - **EXAMPLE - CORRECT**:
+     * You want to cite: "Certificate of Lawfulness granted"
+     * Block A content: "Certificate of Lawfulness granted for construction of games room"
+     * Block B content: "Certificate of Lawfulness refused for construction of games room"
+     * ✅ CORRECT: Use Block A (it says "granted")
+     * ❌ WRONG: Do NOT use Block B (it says "refused" - this is a DIFFERENT fact)
 11. ✅ **IMPORTANT**: When you later write your response in Phase 2, you MUST use the EXACT citation numbers from Phase 1 that match your facts. The system will automatically renumber them based on appearance order. Match facts to citations - if you're stating "Market Value: £2,300,000" and Phase 1 has citation [1] for that, use [1]. If you're stating "Property Address: Highlands" and Phase 1 has citation [3] for that, use [3] (NOT [2]).
 
 **START NOW: Begin extracting citations by calling cite_source for each factual claim you find.**"""
@@ -1361,11 +1755,16 @@ def get_final_answer_prompt(
     user_query: str,
     conversation_history: str,
     formatted_outputs: str,
-    citations: list = None
+    citations: list = None,
+    is_citation_query: bool = False,
+    is_agent_mode: bool = False
 ) -> str:
     """
     Prompt for answer generation with real-time citation tracking.
     Citations are now created as the LLM writes the answer.
+    
+    Args:
+        is_agent_mode: If True, LLM has access to open_document tool for proactive display
     """
     # Format citations for prompt (only if provided - backward compatibility)
     citation_list = ""
@@ -1460,6 +1859,239 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
     risks_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_risks'] else ""
     next_actions_note = " (INCLUDE THIS SECTION)" if conditional_sections['include_next_actions'] else ""
     
+    # Build conditional sourcing rules based on query type
+    if is_citation_query:
+        sourcing_rules = """**⚠️ CRITICAL RULE FOR CITATION QUERIES: ONLY USE DOCUMENT CONTENT ⚠️**
+
+- **This is a citation query** - the user clicked on a specific citation and is asking about it
+- You MUST ONLY use information that appears in the DOCUMENT EXTRACTS above
+- Focus on information that relates to or expands on the cited text
+- DO NOT use general knowledge, common sense, or assumptions about what "properties typically have" or "common risks"
+- If the documents don't mention something related to the citation, DO NOT make it up or use generic examples
+- If information is missing from the documents, explicitly state: "This information is not mentioned in the documents"
+- DO NOT generate generic lists (e.g., "common risks that properties might face") - ONLY list what the documents actually say
+- Search for information that links to or expands on the citation context
+
+Create a comprehensive answer using ONLY the document extracts above, focusing on information related to the citation."""
+        answer_instructions = """   - **CRITICAL (CITATION QUERY)**: You MUST ONLY use information from the DOCUMENT EXTRACTS above
+   - **CRITICAL**: Focus on information that relates to or expands on the citation context
+   - **CRITICAL**: DO NOT use general knowledge or make assumptions about what "properties in similar areas might face"
+   - **CRITICAL**: If information is NOT in the document extracts, you MUST state that it's not mentioned in the documents
+   - **CRITICAL**: If the documents don't mention specific risks, do NOT list generic risks - only mention what the documents actually say
+   - Search for information that links to the citation - look for related details, explanations, or context around the cited text
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - you MUST use it
+   - NEVER say "information not provided" or "not available" if citations were extracted
+   - NEVER generate generic lists of "common risks" or "typical issues" - ONLY use what's in the documents
+   - Start directly with the answer - do NOT repeat the question"""
+        extraction_instructions = """   - **CRITICAL (CITATION QUERY)**: ONLY extract information that appears in the DOCUMENT EXTRACTS above
+   - **CRITICAL**: Focus on information that relates to or expands on the citation context
+   - **CRITICAL**: DO NOT use general knowledge or create generic lists (e.g., "common risks that properties might face")
+   - **CRITICAL**: If the documents don't mention specific information, DO NOT make it up - state that it's not in the documents
+   - Extract and include ALL relevant information FROM THE DOCUMENTS that links to the citation: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value being cited
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - include all relevant figures, dates, names, and details FROM THE DOCUMENTS ONLY"""
+    else:
+        sourcing_rules = """**INFORMATION SOURCING RULES:**
+
+- **PREFER document content**: Use information from the DOCUMENT EXTRACTS above whenever available
+- **General knowledge is acceptable**: If the documents don't contain the information, you may use general knowledge to provide a helpful answer
+- **Be clear about sources**: If using general knowledge, you can mention it's general information (but don't need citation markers for it)
+- **Citation markers**: Only add citation markers [1], [2], [3]... for facts that come from the document extracts
+- **Balance**: Provide helpful, comprehensive answers using document content when available, supplemented with general knowledge when needed
+
+Create a comprehensive answer to the user's question, prioritizing information from the document extracts above."""
+        # Default answer instructions for non-citation, non-agent mode (Reader mode)
+        answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain the information, you may use general knowledge to provide a helpful answer
+   - **Citation markers**: Only add [1], [2], [3]... for facts from document extracts (not general knowledge)
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
+   - If using general knowledge, provide helpful context but don't add citation markers for it
+   - Start directly with the answer - do NOT repeat the question
+   - **CRITICAL - NO REDUNDANCY**: Present each fact ONCE only. Do NOT list the same information twice in different formats (e.g., first in a summary, then again in details). Each piece of data should appear exactly once with its citation."""
+        extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
+   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value FROM THE DOCUMENTS
+   - **Note**: Don't add citation markers to general knowledge - only to facts from document extracts
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - prioritize document content, supplement with general knowledge when helpful"""
+    
+    # AGENT MODE: Add instructions for proactive document display and navigation
+    agent_mode_instructions = ""
+    if is_agent_mode:
+        agent_mode_instructions = """
+
+**🎯 AGENT MODE - AVAILABLE TOOLS:**
+
+You have tools to proactively help the user with navigation and document display.
+
+---
+**1. 🧭 NAVIGATION TOOL (PREFERRED for property map requests)**
+
+**navigate_to_property_by_name(property_name: str, reason: str)**
+
+This is the MAIN tool for navigation requests. Use it when the user wants to go to a property on the map.
+
+**WHEN TO USE:**
+- "take me to [property name]"
+- "go to [property]"
+- "show me [property] on the map"
+- "navigate to [property]"
+- "where is [property]" (if they want to see it on map)
+- "find [property] on the map"
+
+**HOW TO USE:**
+1. Write a brief response: "I'll take you to the Highlands property on the map."
+2. Call the tool: navigate_to_property_by_name(property_name="highlands", reason="Navigating to Highlands property as requested")
+
+**EXAMPLES:**
+- User: "take me to the highlands pin"
+  → Call: navigate_to_property_by_name(property_name="highlands", reason="Navigating to Highlands property as requested")
+
+- User: "show me berden road on the map"
+  → Call: navigate_to_property_by_name(property_name="berden road", reason="Showing Berden Road property on map")
+
+**CRITICAL:**
+- This tool handles EVERYTHING: search + map open + pin selection
+- DO NOT also call search_property, show_map_view, or select_property_pin
+- DO NOT try to answer navigation requests with document content
+
+---
+**2. 📄 DOCUMENT DISPLAY TOOL (MANDATORY for all queries with citations)**
+
+**open_document(citation_number: int, reason: str)**
+
+Shows the user the source document for a citation.
+
+**⚠️ MANDATORY RULE: If you have citations in your response, you MUST call open_document.**
+- This applies to ALL queries that result in citations
+- No exceptions - if you cited information, show the source
+- Call this AFTER providing your answer with citations
+
+**⚠️ CRITICAL - CHOOSING THE RIGHT CITATION FOR open_document:**
+
+**BEFORE calling open_document, you MUST follow these steps:**
+
+**Step 1 - IDENTIFY THE PRIMARY REQUEST (CRITICAL FOR COMPLEX QUERIES):**
+  - Parse the user's query to find the PRIMARY object/information being requested
+  - IGNORE contextual words like "company", "property", "that valued", "of the", etc. - these are just context
+  - Focus on the MAIN thing the user wants to see: "phone number", "address", "email", "value", "planning", etc.
+  - Examples:
+    * "phone number of the company" → PRIMARY: "phone number" (NOT "company")
+    * "address of the property" → PRIMARY: "address" (NOT "property")
+    * "email for the company" → PRIMARY: "email" (NOT "company")
+    * "value of the property" → PRIMARY: "value" (NOT "property")
+  - The PRIMARY request is what you need to match to a citation - contextual words are just for finding the right source
+  - Be precise: "phone number" means a telephone number, NOT an address or company name
+  - Remember: The PRIMARY request is the guide - match the citation to what they asked for, NOT to contextual words
+
+**Step 2 - FIND THE CITATION NUMBER IN YOUR ACTUAL RESPONSE:**
+  - Look at your ACTUAL response text (not what you intended to write)
+  - **CRITICAL**: Check the DETAILED response section, not just the summary line
+  - If you have both a summary and detailed sections, the detailed section is more accurate
+  - Find the EXACT text that answers the user's PRIMARY request
+  - Find the citation number [N] that is IMMEDIATELY attached to that specific text
+  - CRITICAL: Match the citation number to what you ACTUALLY wrote, not what you intended
+  - Example: If user asked for "phone number" and your ACTUAL response has:
+    * Summary: "Phone number is +44...[1]" (summary line)
+    * Detailed: "Company: MJ Group[1]. Address: 15 Alfred[2]. Phone: +44 (0) 203 463 8725[3]" (detailed section)
+    * Use citation_number=3 (from detailed section, NOT [1] from summary)
+  - Example: If user asked for "address" and your ACTUAL response has "Company: MJ Group[1]. Address: 15 Alfred Place[2]", use citation_number=2 (NOT [1])
+  - ⚠️ DO NOT assume citation [1] has the PRIMARY info - CHECK your actual detailed response to see which citation number is attached to the PRIMARY information
+
+**Step 3 - VERIFY THE MATCH:**
+  - Double-check: Does the citation number you selected correspond to the EXACT information the user requested?
+  - If the user asked for "phone number", the citation must be attached to phone number text, NOT address, company name, or anything else
+  - Look at your ACTUAL response: if phone number is at [3], use citation_number=3 (even if you intended to put it at [1])
+  - If unsure, search your response for the PRIMARY keyword and find which citation number [N] is attached to it
+
+**Step 4 - SELECT:** Use the citation number that matches the PRIMARY information in your ACTUAL response.
+  - **CRITICAL**: Match to your ACTUAL response, not your intended structure
+  - If PRIMARY info is at citation [1] → use citation_number=1
+  - If PRIMARY info is at citation [2] → use citation_number=2
+  - If PRIMARY info is at citation [3] → use citation_number=3
+  - Example: User asks "phone number" → Your ACTUAL response: "Company: MJ Group[1]. Phone: +44...[3]" → Use citation_number=3 (NOT [1])
+  - Example: User asks "address" → Your ACTUAL response: "Company: MJ Group[1]. Address: 15 Alfred[2]" → Use citation_number=2 (NOT [1])
+  - ⚠️ ALWAYS check your ACTUAL response text to find which citation number has the PRIMARY information
+
+**REASONING EXAMPLES:**
+- User: "What is the phone number?"
+  → PRIMARY: "phone number" (ignore other words)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+  → Reasoning: User asked for PHONE NUMBER. I check my ACTUAL response: phone number is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response, not intended structure)
+
+- User: "please show me the phone number of the company that valued the highlands property"
+  → PRIMARY: "phone number" (ignore "company", "valued", "highlands", "property" - these are just context)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+  → Reasoning: User asked for PHONE NUMBER. I check my ACTUAL response: phone number is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response where PRIMARY info appears)
+
+- User: "What is the address?"
+  → PRIMARY: "address" (ignore other words)
+  → Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place, London[2]..."
+  → Reasoning: User asked for ADDRESS. I check my ACTUAL response: address is at citation [2]
+  → Use: citation_number=2 (match to ACTUAL response where PRIMARY info appears)
+
+- User: "Tell me about planning"
+  → PRIMARY: "planning" (ignore other words)
+  → Your ACTUAL response: "Property details: ... Planning: No recent applications[3]..."
+  → Reasoning: User asked for PLANNING. I check my ACTUAL response: planning is at citation [3]
+  → Use: citation_number=3 (match to ACTUAL response where PRIMARY info appears)
+
+**CRITICAL: MATCH CITATION NUMBER TO YOUR ACTUAL RESPONSE, NOT YOUR INTENDED STRUCTURE**
+
+**MANDATORY USAGE:**
+- ✅ **ALWAYS call open_document if you have citations in your response**
+- ✅ This applies to ALL queries: information queries, location queries, general queries, etc.
+- ✅ If you provided factual information with citations, you MUST call open_document
+- ✅ Examples: "What is the phone number?" (has citations → call open_document), "Where are the cables?" (has citations → call open_document), "Tell me about the property" (has citations → call open_document)
+
+**ONLY EXCEPTIONS (when NOT to use):**
+- ❌ For navigation requests (use navigate_to_property_by_name instead)
+- ❌ When you have NO citations in your response (e.g., conversational queries like "hello", "thanks")
+
+---
+**TOOL RULES:**
+- **CALL the tools using the tool-calling interface - DO NOT write prose about calling tools**
+- ❌ WRONG: "I will now open the document to show you the source"
+- ❌ WRONG: "Let me open the document for you"
+- ✅ RIGHT: Simply call open_document(citation_number=1, reason="...") using the tool interface
+- For navigation: brief response + call navigate_to_property_by_name
+- **For ALL other queries with citations: full answer with citations + MANDATORY tool call to open_document**
+- **CRITICAL**: If your response contains citations [1], [2], [3], etc., you MUST call the open_document tool
+- Use the citation number that matches the PRIMARY information in your ACTUAL response (check which citation [N] has the PRIMARY info)
+- **DO NOT write "I will open the document" - just CALL the tool**
+"""
+    
+        answer_instructions = """   - **PREFER document content**: Use information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain the information, you may use general knowledge to provide a helpful answer
+   - **Citation markers**: Only add [1], [2], [3]... for facts from document extracts (not general knowledge)
+   - The information IS available in the document extracts above (if citations were extracted)
+   - If citations were extracted (see list above), the information EXISTS in the documents - prioritize using it
+   - If using general knowledge, provide helpful context but don't add citation markers for it
+   - Start directly with the answer - do NOT repeat the question
+   - **CRITICAL - STRUCTURE RESPONSE FOR CORRECT CITATION OPENING**:
+     * **PRIMARY INFORMATION FIRST (BEST PRACTICE)**: Identify what the user is asking for (the PRIMARY request) and try to place that information FIRST in your response with citation [1]
+     * **Example**: If user asks "What is the phone number?", ideally start with "Phone Number: +44 (0) 203 463 8725[1]..." (NOT "Company: MJ Group[1]. Phone: +44...[2]")
+     * **Example**: If user asks "What is the address?", ideally start with "Address: 15 Alfred Place[1]..." (NOT "Company: MJ Group[1]. Address: 15 Alfred[2]")
+     * **Example**: If user asks "phone number of the company", PRIMARY is "phone number" → ideally start with "Phone Number: +44...[1]..." (NOT "Company: MJ Group[1]. Phone: +44...[2]")
+     * **IMPORTANT**: When calling open_document, match the citation number to where the PRIMARY information ACTUALLY appears in your response (even if it's not at [1])
+   - **CRITICAL - NO REDUNDANCY**: Present each fact ONCE only. Do NOT list the same information twice in different formats (e.g., first in a summary, then again in details). Each piece of data should appear exactly once with its citation."""
+        extraction_instructions = """   - **PREFER document content**: Extract information from the DOCUMENT EXTRACTS above when available
+   - **General knowledge allowed**: If documents don't contain information, you may supplement with general knowledge
+   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, risks, etc.
+   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value FROM THE DOCUMENTS
+   - **Note**: Don't add citation markers to general knowledge - only to facts from document extracts
+   - **DO NOT** place citations at the end of sentences - place them right after the cited information
+   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
+   - Be professional, factual, and detailed - prioritize document content, supplement with general knowledge when helpful"""
+    
     return f"""**USER QUESTION:**  
 "{user_query}"
 
@@ -1476,6 +2108,10 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
 **CRITICAL - CITATION MARKERS (INVISIBLE)**:
 - Citations have already been extracted in Phase 1 (see list above)
 - As you write your answer, you MUST add invisible citation markers using bracket format [1], [2], [3], [4], [5]... for EACH fact you include
+- **⚠️ CRITICAL - EVERY FACT FROM DOCUMENTS MUST HAVE A CITATION**:
+  * **ABSOLUTE RULE**: If you mention ANY fact, detail, feature, or information that comes from the document extracts above, you MUST include a citation marker for it
+  * **NO EXCEPTIONS**: This includes descriptive facts like "CCTV coverage", "well-maintained gardens", "timber fencing", "mature hedging", security features, landscaping details, property conditions, maintenance information, or ANY other information from the documents
+  * **CRITICAL**: If a fact appears in your answer and it's based on document content (not general knowledge), it MUST have a citation marker - there are NO exceptions
 - **⚠️ CRITICAL - MATCHING FACTS TO CITATIONS (READ THIS CAREFULLY)**:
   * **STEP 1**: Look at the Phase 1 citation list above - each citation has a number and the fact it represents
   * **STEP 2**: Before writing each fact in your answer, STOP and find the EXACT matching citation in Phase 1
@@ -1486,6 +2122,8 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
     - Match by CONCEPT: If you're writing "90-day value", find the citation that mentions "90-day" and use its number
     - Match by DATE: If you're writing "12th February 2024", find the citation that mentions this date and use its number
     - Match by NAME: If you're writing "Highlands", find the citation that mentions "Highlands" or "Property Address" and use its number
+    - Match by DESCRIPTIVE FACT: If you're writing "CCTV coverage", find the citation that mentions "CCTV" or "security" and use its number. If you're writing "well-maintained gardens", find the citation that mentions "gardens" or "landscaping" and use its number
+    - **CRITICAL**: For descriptive facts, search for keywords in the Phase 1 citations - if a citation mentions "CCTV" or "security", use it for security-related facts. If a citation mentions "gardens" or "landscaping", use it for landscaping facts
   * **EXAMPLES**:
     - If Phase 1 has "**Citation [4]**: 90-day marketing period value: £1,950,000 [90-DAY VALUE] [Block: BLOCK_CITE_ID_570]", when you write "90-day value: £1,950,000", you MUST use [4] (NOT [1], [2], [3], or any other number)
     - If Phase 1 has "**Citation [1]**: Market Value: £2,300,000 [Block: BLOCK_CITE_ID_566]", when you write "Market Value: £2,300,000", you MUST use [1]
@@ -1494,10 +2132,15 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
 - **CRITICAL**: Place citation markers IMMEDIATELY after the specific value/amount/date/name being cited - NO SPACE between the fact and citation
 - **CRITICAL**: Each citation marker is permanently attached to its fact - write them together as a unit with NO separation
 - **CRITICAL**: Write fact and citation as ONE unit: "£2,300,000[1]" NOT "£2,300,000 [1]" and NOT "£2,300,000. [1]"
+- **CRITICAL - AVOID UNNECESSARY PERIODS**: Do NOT add periods before citations. Use periods only for complete sentences, not for simple value statements like "Phone Number: +44 (0) 203 463 8725[1]"
 - **WORKFLOW**: Before writing each fact, check the Phase 1 citation list to find the matching citation number
-- **Example CORRECT**: If Phase 1 has citations [1]=Market Value, [2]=Valuation date, [3]=Property Address, [4]=90-day value, write: "Market Value: £2,300,000[1]. Property Address: Highlands[3]. 90-day value: £1,950,000[4]. Valuation date: 12th February 2024[2]."
+- **Example CORRECT**: If Phase 1 has citations [1]=Market Value, [2]=Valuation date, [3]=Property Address, [4]=90-day value, write: "Market Value: £2,300,000[1]. Property Address: Highlands[3]. 90-day value: £1,950,000[4]. Valuation date: 12th February 2024[2]"
+- **CRITICAL - MINIMIZE PERIODS**: Only use periods (.) when necessary for complete sentences. For simple value statements, avoid periods: "Phone Number: +44 (0) 203 463 8725[1]" (not "Phone Number: +44 (0) 203 463 8725.[1]")
 - **Example CORRECT (Multiple Valuers)**: If Phase 1 has [6]=Sukhbir Tiwana, [7]=Graham Finegold, write: "Valuation conducted by Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS"
+- **Example CORRECT (Descriptive Facts)**: If Phase 1 has [10]=CCTV coverage, [11]=Well-maintained gardens, write: "Security: CCTV coverage throughout the external areas of the property[10]. Landscaping: Well-maintained gardens with defined boundaries of timber fencing and mature hedging[11]."
+- **CRITICAL**: Descriptive facts like security features and landscaping MUST have citations - do NOT write them without citation markers
 - **Example INCORRECT**: "Market Value: £2,300,000[1]. Property Address: Highlands[2]. 90-day value: £1,950,000[3]." (WRONG - used [2] for property address when Phase 1 has it as [3], used [3] for 90-day value when Phase 1 has it as [4])
+- **Example INCORRECT**: "Security: CCTV coverage throughout the external areas of the property. Landscaping: Well-maintained gardens with defined boundaries of timber fencing and mature hedging." (WRONG - missing citations for descriptive facts)
 - **Example INCORRECT**: "Market Value: £2,300,000 [1]" (WRONG - space before citation)
 - **Example INCORRECT**: "Market Value: £2,300,000. [1]" (WRONG - period and space before citation)
 - **Example INCORRECT**: "Valuation conducted by Sukhbir Tiwana MRICS and Graham Finegold MRICS. [6] [7]" (WRONG - citations at end, should be: "Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS")
@@ -1505,8 +2148,16 @@ The user is asking specifically for the VALUE/VALUATION amount. You MUST include
 
 ### TASK: Create Final Answer with Citations
 
-Create a comprehensive answer to the user's question using the document extracts above.
+**⚠️ CRITICAL - FORMATTING CONSISTENCY FOR ALL RESPONSES ⚠️**
+- Apply the SAME formatting standards (headings, structure, citations) as if this were the FIRST response in the conversation
+- DO NOT abbreviate, shorten, or reduce formatting quality because of conversation history
+- Even for follow-up questions, you MUST use the full CANONICAL TEMPLATE STRUCTURE below
+- ALWAYS include: H1 heading and proper citations - present information directly without separate concept sections
+- The fact that there's conversation history does NOT mean you should provide less formatted answers
+- Each response should be comprehensive and well-structured on its own
 
+{sourcing_rules}
+{agent_mode_instructions}
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 - If the user is asking about "value" or "valuation", you MUST include ALL valuation scenarios found in the documents
 - **MANDATORY**: If documents mention "90-day value" or "180-day value", you MUST include them with their assumptions
@@ -1516,14 +2167,20 @@ Create a comprehensive answer to the user's question using the document extracts
 
 **CITATION MARKERS (BRACKET FORMAT - INVISIBLE TO USER)**:
 - **MUST**: Use bracket format [1], [2], [3], [4], [5]... for citation markers (these will be converted to buttons by the frontend)
-- **MUST**: Place citation markers IMMEDIATELY after the specific value/amount/date/name being cited - NO SPACE, NO PUNCTUATION between fact and citation
+- **MUST**: Place citation markers IMMEDIATELY after the specific value/amount/date/name/descriptive fact being cited - NO SPACE, NO PUNCTUATION between fact and citation
 - **CRITICAL**: Write as ONE unit: "£2,300,000[1]" NOT "£2,300,000 [1]" and NOT "£2,300,000. [1]"
+- **CRITICAL**: For descriptive facts, also write as ONE unit: "CCTV coverage throughout the external areas of the property[10]" NOT "CCTV coverage throughout the external areas of the property [10]"
 - **CRITICAL**: For multiple valuers, cite each separately: "Sukhbir Tiwana[6] MRICS and Graham Finegold[7] MRICS" (NOT "Sukhbir Tiwana and Graham Finegold MRICS. [6] [7]")
 - **DO NOT** place citations at the end of sentences - place them right after the cited fact with NO separation
 - **CRITICAL**: Match facts to citations extracted in Phase 1 - use the EXACT citation number from Phase 1 that corresponds to the fact you're stating
 - **CRITICAL**: Use the ORIGINAL Phase 1 citation numbers - do NOT create sequential numbers. The system will automatically renumber them based on appearance order.
 - **CRITICAL**: Each citation marker is permanently attached to its fact - they must always appear together as a single unit
 - **DO NOT** place citations at the end of sentences, paragraphs, or after periods - place them immediately after the fact with no space or punctuation
+- **CRITICAL - DESCRIPTIVE FACTS MUST BE CITED**: If you mention security features, landscaping, property conditions, maintenance details, or any descriptive information from the documents, you MUST include a citation marker. Examples:
+  * ✅ CORRECT: "Security: CCTV coverage throughout the external areas of the property[10]"
+  * ✅ CORRECT: "Landscaping: Well-maintained gardens with defined boundaries of timber fencing and mature hedging[11]"
+  * ❌ WRONG: "Security: CCTV coverage throughout the external areas of the property" (missing citation)
+  * ❌ WRONG: "Landscaping: Well-maintained gardens with defined boundaries of timber fencing and mature hedging" (missing citation)
 - **Examples of correct usage** (using original Phase 1 citation numbers):
   * If Phase 1 has: "1. Market Value: £2,300,000", "2. Valuation date: 12th February 2024", "3. Property Address: Highlands"
   * Write: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest. Property Address: Highlands[3]. Valuation date: 12th February 2024[2]."
@@ -1549,47 +2206,33 @@ Create a comprehensive answer to the user's question using the document extracts
    - Short, direct answer that resolves the user's question immediately
    - No fluff, no justification yet
    - Maximum 2-3 sentences
-   - Example: "# Market Value: £2,300,000[1]"
+   - Example: "# Property Valuation Summary"
 
-2. **Key Concepts (H2)**:
-   - Use markdown heading ## (double hash) for "Key Concepts" section
-   - List 3-5 key concepts with one-line explanations
-   - Use bullet points (-) with **bold** concept names
-   - Format: "- **Concept Name**: One-line explanation"
-   - Maximum 5 bullet points
-   - **CRITICAL - NO DUPLICATION**: Key Concepts should be a BRIEF summary. Do NOT repeat these exact same facts in Detailed Explanation
-   - Example: "## Key Concepts\n- **Market Value**: £2,300,000[1] - The primary valuation figure"
+2. **Key Concepts (H2)** - REMOVED:
+   - DO NOT include a "Key Concepts" section
+   - Present information directly in the main answer without separate concept sections
+   - Information should flow naturally in the response
 
-3. **Detailed Explanation (H2)**:
-   - Use markdown heading ## (double hash) for "Detailed Explanation"
-   - Use markdown heading ### (triple hash) for each subtopic within this section
-   - Each ### subtopic should have 1-3 paragraphs
-   - Maximum 3 sentences per paragraph
-   - Maximum ~50 words per paragraph (split if longer)
-   - One idea per paragraph
-   - **CRITICAL - NO DUPLICATION**: Detailed Explanation should EXPAND on Key Concepts with additional context, examples, and details. Do NOT repeat the exact same sentences from Key Concepts
-   - **CRITICAL - NO DUPLICATION**: If Key Concepts says "No obvious signs of contamination[1]", Detailed Explanation should say something like "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]" (expands with context, not repeats)
-
-4. **Process/Steps (H2 - Conditional)**{steps_note}:
+3. **Process/Steps (H2 - Conditional)**{steps_note}:
    - Only include if applicable (procedural queries)
    - Use markdown heading ## (double hash) for "Process / Steps"
    - Use numbered list (1., 2., 3.) for steps
    - Each step: "1. **Step 1:** Clear action"
    - Maximum 5 steps (split into sub-sections if more)
 
-5. **Practical Application (H2 - Conditional)**{practical_note}:
+4. **Practical Application (H2 - Conditional)**{practical_note}:
    - Include if query requires real-world application guidance
    - Use markdown heading ## (double hash) for "Practical Application"
    - 1-2 paragraphs explaining how to use this information
    - Maximum 3 sentences per paragraph
 
-6. **Risks/Edge Cases (H2 - Optional)**{risks_note}:
+5. **Risks/Edge Cases (H2 - Optional)**{risks_note}:
    - Include only if relevant limitations or risks exist
    - Use markdown heading ## (double hash) for "Risks / Edge Cases"
    - Use bullet points (-) for list of risks/limitations
    - Maximum 5 bullet points
 
-7. **Next Actions (H2 - Optional)**{next_actions_note}:
+6. **Next Actions (H2 - Optional)**{next_actions_note}:
    - Include if follow-up actions are suggested
    - Use markdown heading ## (double hash) for "Next Actions"
    - Use bullet points (-) for suggested follow-ups
@@ -1599,16 +2242,25 @@ Create a comprehensive answer to the user's question using the document extracts
 - NEVER skip heading levels (# → ## → ###, not # → ###)
 - If a section can be read independently → it deserves a ## (H2)
 - # (H1) = Final outcome/main answer (only one H1 per response)
-- ## (H2) = Major sections (Key Concepts, Detailed Explanation, etc.)
+- ## (H2) = Major sections (Process/Steps, Practical Application, etc.) - DO NOT create "Key Concepts" sections
 - ### (H3) = Sub-sections within H2 sections
 - Regular paragraphs = Explanation text
-- Bullet points (-) or numbered lists (1., 2., 3.) = Scannable information lists
+- **CRITICAL - Use Bullet Points for Lists**: When presenting multiple items (amenities, features, structures, etc.), use bullet points:
+  ```
+  **Additional Structures:**
+  - One-bedroom Coach House
+  - Triple Carport
+  - Store
+  - Gym
+  ```
+- **DO NOT** list multiple items on one line separated by commas
+- **DO NOT** list multiple items as plain text lines without bullets
+- Numbered lists (1., 2., 3.) = Process/Steps sections only
 
 **INFORMATION ORDERING (MUST FOLLOW)**:
 1. Answer first (# H1 - primary answer)
-2. Explain later (## H2 - Key Concepts, Detailed Explanation)
-3. Justify last (if needed - within Detailed Explanation)
-4. Extend optionally (Process, Practical Application, Risks, Next Actions)
+2. Present information directly in the response - DO NOT create separate "Key Concepts" sections
+3. Extend optionally (Process, Practical Application, Risks, Next Actions) - only if relevant
 
 **MINIMAL COGNITIVE LOAD RULES**:
 - Maximum 3-5 bullet points per list
@@ -1622,15 +2274,12 @@ Create a comprehensive answer to the user's question using the document extracts
 - Include "Practical Application" only if query requires real-world usage guidance
 - Include "Risks / Edge Cases" only if limitations or risks are relevant
 - Include "Next Actions" only if follow-up actions are appropriate
-- For simple queries: # H1 + ## Key Concepts + ## Brief Detailed Explanation may be sufficient
+- For simple queries: # H1 with direct information presentation is sufficient
 
 **CONTENT GENERATION INSTRUCTIONS**:
 
 1. **Answer Directly and Comprehensively** (MUST)
-   - The information IS available in the document extracts above
-   - If citations were extracted (see list above), the information EXISTS in the documents - you MUST use it
-   - NEVER say "information not provided" or "not available" if citations were extracted
-   - Start directly with the answer - do NOT repeat the question
+{answer_instructions}
 
 2. **Valuation Query Handling** (MUST for valuation queries)
    {VALUATION_PRIORITIZATION_RULES}
@@ -1650,11 +2299,7 @@ Create a comprehensive answer to the user's question using the document extracts
    - Do NOT include: Property features, floor areas, property composition details, any non-valuation information
 
 4. **General Information Extraction** (MUST)
-   - Extract and include ALL relevant information: prices, valuations, amounts, dates, names, addresses, assumptions, etc.
-   - **CRITICAL**: Include citation markers ([1], [2], [3], etc.) IMMEDIATELY after each specific fact/value being cited
-   - **DO NOT** place citations at the end of sentences - place them right after the cited information
-   - **Example**: "Market Value: £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest..."
-   - Be professional, factual, and detailed - include all relevant figures, dates, names, and details
+{extraction_instructions}
 
 5. **Search Strategy** (IMPORTANT)
    - Look carefully in the DOCUMENT CONTENT EXTRACTS section
@@ -1677,9 +2322,74 @@ Create a comprehensive answer to the user's question using the document extracts
 - Use citations inline (bracket format: [1], [2], [3]) - see citation rules above
 - Ensure all valuation figures, assumptions, and details are included
 - Present information clearly and comprehensively
-- **Note: Formatting and structure will be handled in a separate step - focus on content completeness**
+
+{_get_entity_normalization_instructions()}
 
 Generate the answer content:"""
+
+
+# ============================================================================
+# GENERAL QUERY PROMPTS
+# ============================================================================
+
+def get_general_query_prompt(
+    user_query: str,
+    conversation_history: str,
+    current_date: str,
+    current_time: str
+) -> str:
+    """
+    Prompt for general knowledge queries.
+    Includes current date/time context.
+    Pattern: Follow get_summary_human_content() structure
+    """
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**CURRENT DATE/TIME CONTEXT:**
+- Current Date: {current_date}
+- Current Time: {current_time}
+
+**INSTRUCTIONS:**
+Answer the user's question using your general knowledge. If the question is about the current date or time, use the information provided above.
+
+Be concise, accurate, and helpful. If your knowledge has a cutoff date, mention it when relevant.
+
+{_get_entity_normalization_instructions()}
+
+**Answer:**"""
+
+
+# ============================================================================
+# TEXT TRANSFORMATION PROMPTS
+# ============================================================================
+
+def get_text_transformation_prompt(
+    text_to_transform: str,
+    transformation_instruction: str,
+    user_query: str
+) -> str:
+    """
+    Prompt for text transformation.
+    Handles: sharpen, reorganize, concise, expand, rephrase
+    Pattern: Follow get_summary_human_content() structure
+    """
+    return f"""**USER REQUEST:**  
+"{user_query}"
+
+**TRANSFORMATION INSTRUCTION:**  
+{transformation_instruction}
+
+**TEXT TO TRANSFORM:**  
+{text_to_transform}
+
+**INSTRUCTIONS:**
+Transform the text above according to the user's instruction. Preserve all key information, facts, and citations (if present). Follow the transformation instruction precisely while maintaining the original intent and meaning.
+
+**Transformed Text:**"""
 
 
 # ============================================================================
@@ -1713,8 +2423,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 - **MUST**: Do NOT add, remove, or modify any information
 - **MUST**: Do NOT generate new content - only reorganize and format what's already there
 - **CRITICAL**: When reorganizing, citations MUST move WITH their associated facts - never separate them
-- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context, not repeat the same sentence
-- **CRITICAL - AVOID DUPLICATION**: Key Concepts = brief summary (one line). Detailed Explanation = expanded context with more detail. They should complement each other, not duplicate
+- **CRITICAL - AVOID DUPLICATION**: Do NOT repeat the same information in multiple sections. Present each fact once with its citation.
 
 **CRITICAL CITATION PRESERVATION RULES** (MUST FOLLOW):
 
@@ -1740,8 +2449,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
    - If raw response uses [1], [2], [3], formatted must use same sequence
 
 4. **When Reorganizing Content**:
-   - If moving "Market Value: £2,300,000[1]" to Key Concepts section, keep it as "Market Value: £2,300,000[1]"
-   - If moving "12th February 2024[2]" to Detailed Explanation, keep it as "12th February 2024[2]"
+   - Present information directly: "Market Value: £2,300,000[1]"
    - Citations are part of the fact - they move together as a unit
 
 **CANONICAL TEMPLATE ENFORCEMENT**:
@@ -1756,8 +2464,7 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 
 2. **Verify Information Ordering**:
    - H1 (#) primary answer must come first (with citations preserved)
-   - H2 (##) Key Concepts should come early (if applicable) - extract key facts WITH their citations
-   - H2 (##) Detailed Explanation should follow - preserve all citations when moving content
+   - Present key facts directly in the response WITH their citations - no separate concept sections
    - Optional sections (Process, Practical Application, Risks, Next Actions) come last
    - Reorganize content if ordering is incorrect, but keep citations with their facts
 
@@ -1771,65 +2478,122 @@ def get_response_formatting_prompt(raw_response: str, user_query: str) -> str:
 
 4. **Apply Canonical Template Structure**:
    - If response lacks H1, create one from the primary answer - preserve all citations
-   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Key Concepts" section, extract 3-5 key points WITH their citations and create H2 section
-   - **CRITICAL - AVOID DUPLICATION**: If response lacks "Detailed Explanation" section, organize remaining content under H2 with H3 sub-sections - preserve all citations
-   - **CRITICAL - NO REPETITION**: Key Concepts should be a BRIEF summary (one-line per concept). Detailed Explanation should EXPAND on these concepts with more detail, NOT repeat the same information
-   - **CRITICAL - NO REPETITION**: If a fact appears in Key Concepts, the Detailed Explanation should provide ADDITIONAL context/explanation, not repeat the exact same fact
-   - **CRITICAL - NO REPETITION**: Do NOT copy the same sentences from Key Concepts into Detailed Explanation - use different wording and add more detail
-   - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy
-   - **CRITICAL**: When extracting key concepts, keep the citation with each concept (e.g., "- **Market Value**: £2,300,000[1] - The primary valuation figure")
-   - **EXAMPLE - CORRECT (No Duplication)**:
-     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
-     * Detailed Explanation: "The valuation report indicates that no environmental reports were provided, but there were no visible signs of contamination during the inspection[1]. The assumption is made that the property has not been contaminated previously[2]."
-   - **EXAMPLE - INCORRECT (Duplication)**:
-     * Key Concepts: "- **Contamination Risk**: No obvious signs of contamination[1]"
-     * Detailed Explanation: "No obvious signs of contamination[1]. The assumption is made that the property has not been contaminated[2]." (WRONG - repeats the same fact)
+   - **CRITICAL - AVOID DUPLICATION**: Present all key information directly in the response with citations
+   - Ensure all content follows: # H1 → ## H2 → ### H3 hierarchy (if needed)
+   - **CRITICAL**: Present information naturally - do NOT create separate "Key Concepts" sections
+   - Use clear labels and values directly in the response: "**Market Value:** £2,300,000[1]"
+   - **DO NOT** create separate concept sections - integrate information into the main response
 
-**CITATION FORMAT** (MUST - Preserve Exactly):
-{CITATION_FORMAT_RULES}
+**CITATION HANDLING** (CRITICAL):
+- **MUST INCLUDE citation markers** ([1], [2], [3], etc.) in the text immediately after each fact
+- **CRITICAL**: Citation markers are REQUIRED in the text - the frontend automatically converts them to clickable citation buttons
+- **IMPORTANT**: The markers will NOT appear as raw text "[1]" to users - they will be rendered as styled clickable buttons by the frontend
+- Place citation markers directly after the fact they support: "£2,300,000[1]" not "£2,300,000 [1]" or "£2,300,000[1]."
+- **CRITICAL - NO UNNECESSARY PERIODS**: Do NOT add periods (.) before citations or at the end of simple value statements
+- **Example CORRECT**: "Phone Number: +44 (0) 203 463 8725[1]" (no period needed)
+- **Example INCORRECT**: "Phone Number: +44 (0) 203 463 8725.[1]" (unnecessary period)
+- Only use periods at the end of complete sentences that require them, not after simple value statements
+- Use the EXACT citation numbers from Phase 1 (see citation list above)
+- **DO NOT** remove citation markers - they are essential for the frontend to render citations correctly
+- **DO NOT** place citations at the end of sentences or paragraphs - they must be inline with the fact
 
-**CRITICAL - SEQUENTIAL CITATION ORDER**:
-- Citations MUST be used in sequential order as they appear in the response
-- First citation: [1], Second: [2], Third: [3], Fourth: [4], Fifth: [5], etc.
-- **NEVER reuse a citation number** - once you use [1], the next must be [2], then [3], etc.
-- **NEVER restart the sequence** - citations must always increase: [1] → [2] → [3] → [4] → [5] → ...
-
-**FORMATTING STANDARDS**:
+**FORMATTING STANDARDS - MAXIMUM CLARITY**:
 - Use markdown heading syntax: # for H1, ## for H2, ### for H3
-- Use **bold** for key figures, names, and important values within paragraphs
-- Use bullet points (-) for lists in Key Concepts and other sections
-- Use numbered lists (1., 2., 3.) for Process/Steps sections
-- **CRITICAL**: Maintain inline citation markers ([1], [2], [3]) IMMEDIATELY after the specific fact/value being cited
-- **CRITICAL**: If citations appear at the end of sentences or phrases, move them to immediately after the cited information
-- **NOTE**: Citation markers in bracket format will be converted to clickable buttons by the frontend - do not add visible superscripts
+- **CRITICAL**: Make values immediately clear and scannable
+- Use **bold** for section headers (## Header) - these should be clear and descriptive
+- **CRITICAL - Smart Bolding**: Only bold what makes sense - labels and section headers, NOT all values
+- For key data points, use this structure:
+  ```
+  ## Section Header
+  
+  **Key Label:**
+  Value[1] (regular text, not bolded - only the label is bold)
+  *Secondary note or assumption in italics*
+  ```
+- **CRITICAL - All Values Must Have Labels**: Every value, figure, amount, date, and name MUST have a clear label/title
+  - Labels should be bold: "**Market Value:**", "**90-Day Value:**", "**Market Rent:**", "**Valuation Date:**", "**Valuers:**"
+  - Values should be regular text (NOT bold): "£2,300,000[1]", "12th February 2024[2]", "Sukhbir Tiwana MRICS[3]"
+  - **DO NOT** show values without labels - this is misleading and unclear
+- **BOLD ONLY**:
+  - Section headers (## Header)
+  - Labels (e.g., **Market Value:**, **Parking:**, **Security:**)
+  - Category names in lists (e.g., **Type:**, **Additional Structures:**)
+- **DO NOT BOLD**:
+  - Actual values (e.g., £2,300,000[1] should be regular text)
+  - Dates (e.g., 12th February 2024[2] should be regular text)
+  - Names (e.g., Sukhbir Tiwana MRICS[3] should be regular text)
+  - List items (e.g., "Five-bedroom detached house[1]" should be regular text)
+  - Descriptive text (e.g., "Ample parking for multiple cars[9]" should be regular text)
+- **DO NOT** use inline format: "Label: Value" - this makes values harder to scan
+- **DO NOT** embed multiple pieces of information in one line
+- Place values on the line below the label with clear separation
+- Use italic (*text*) for assumptions/explanatory notes beneath primary values
+- Use blank lines between sections for better visual separation
+- **CRITICAL - Use Bullet Points for Lists**: When a section contains multiple items (amenities, features, structures, etc.), use bullet points:
+  ```
+  **Additional Structures:**
+  - Item 1[1]
+  - Item 2[2]
+  - Item 3[3]
+  ```
+- **DO NOT** list multiple items on one line separated by commas
+- **DO NOT** list multiple items as plain text lines without bullets
+- Use numbered lists (1., 2., 3.) for Process/Steps sections only
+- **CRITICAL**: Each important data point should be on its own line for immediate clarity
+- **PUNCTUATION**: Do NOT add periods/full stops at the end of standalone lines (headings, values, list items). Only use periods when text continues on the same line after the sentence. Example:
+  - ✅ "## Market Value\n£2,300,000[1]" (no period - value on its own line)
+  - ✅ "**Valuation Date:**\n12th February 2024[2]" (no period - value on its own line)
+  - ✅ "The value is £2,300,000[1]. This represents the market value." (period needed - sentence continues)
+  - ❌ "£2,300,000[1]." (unnecessary period on standalone value line)
 
-**CORRECT CITATION EXAMPLES** (Follow These Patterns):
+**CORRECT FORMATTING EXAMPLES** (Follow These Patterns - Citations MUST be included in the output):
 
-✅ **CORRECT - H1 with citation**:
+✅ **CORRECT - H1 with citation** (only labels are bolded, values are regular text):
 ```
-# Market Value: £2,300,000[1]
+# Property Valuation Summary
 
-The property has a market value of £2,300,000[1] (Two Million, Three Hundred Thousand Pounds) for the freehold interest as of 12th February 2024[2].
+## Market Value
+
+**Market Value:**
+£2,300,000[1]
+
+The property has a market value of £2,300,000[1] for the freehold interest as of 12th February 2024[2].
 ```
 
-✅ **CORRECT - Key Concepts with citations**:
+✅ **CORRECT - Key Concepts with vertical label-value format** (labels are bolded, values are regular text):
 ```
 ## Key Concepts
 
-- **Market Value**: £2,300,000[1] - The primary valuation figure for the freehold interest
-- **Valuation Date**: 12th February 2024[2] - When the valuation was conducted
-- **Valuers**: Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS - The qualified professionals
-- **90-Day Value**: £1,950,000[5] - Reduced marketing period scenario (15% discount)
-- **180-Day Value**: £2,050,000[6] - Extended marketing period scenario (10% discount)
+**Market Value:**
+£2,300,000[1]
+*The primary valuation figure for the freehold interest*
+
+**Valuation Date:**
+12th February 2024[2]
+*When the valuation was conducted*
+
+**Valuers:**
+Sukhbir Tiwana MRICS[3]
+Graham Finegold MRICS[4]
+*Registered valuers*
+
+**90-Day Value:**
+£1,950,000[5]
+*Reduced marketing period scenario (15% discount)*
+
+**180-Day Value:**
+£2,050,000[6]
+*Extended marketing period scenario (10% discount)*
 ```
 
-✅ **CORRECT - Detailed Explanation with citations**:
-```
-## Detailed Explanation
-
-### Primary Valuation
-The market value of £2,300,000[1] represents the estimated amount the property would sell for in the open market. This valuation assumes standard marketing conditions and a willing buyer and seller. The valuation was conducted on 12th February 2024[2] by Sukhbir Tiwana[3] MRICS and Graham Finegold[4] MRICS.
-```
+**CRITICAL - All Values Must Have Labels**:
+- **MUST**: Every value, figure, amount, date, and name MUST have a clear label/title
+- **MUST**: Use format "**Label:**" followed by "Value[1]" on the next line (label is bold, value is regular text)
+- **MUST**: Include labels for names (e.g., "**Valuers:**", "**Property Owner:**", "**Agent:**")
+- **MUST**: Include labels for dates (e.g., "**Valuation Date:**", "**Completion Date:**")
+- **MUST**: Include labels for amounts (e.g., "**Market Value:**", "**90-Day Value:**", "**Market Rent:**")
+- **DO NOT** show values without labels - this is misleading and unclear
+- **DO NOT** bold the actual values - only bold the labels
 
 ❌ **INCORRECT - Citations separated from facts**:
 ```
@@ -1847,14 +2611,237 @@ The property has a market value of £2,300,000 (Two Million, Three Hundred Thous
 
 ❌ **INCORRECT - Citations renumbered or reused**:
 ```
-## Key Concepts
-
-- **Market Value**: £2,300,000¹
+- **Market Value**: £2,300,000¹ (WRONG - should use correct citation number)
 - **Valuation Date**: 12th February 2024¹ (WRONG - should be ²)
 - **Valuers**: Sukhbir Tiwana¹ MRICS (WRONG - should be ³)
 ```
+
+{_get_entity_normalization_instructions()}
 
 **MUST**: Do NOT remove or omit any information from the raw response. Your job is to organize and format it better, not to filter it. The content is already complete - only format and structure it.
 
 **FORMATTED RESPONSE**:"""
 
+
+# ============================================================================
+# COMBINED CITATION + ANSWER PROMPT (SINGLE LLM CALL OPTIMIZATION)
+# ============================================================================
+
+def get_combined_citation_answer_prompt(
+    user_query: str,
+    conversation_history: str,
+    search_summary: str,
+    formatted_outputs: str,
+    metadata_lookup_tables: dict = None
+) -> str:
+    """
+    OPTIMIZED: Combined prompt for citation extraction AND answer generation in ONE LLM call.
+    This saves ~4-6 seconds compared to the 2-phase approach.
+    
+    The LLM will:
+    1. Call cite_source tool for each factual claim it wants to include
+    2. Return the final answer text with citation markers [1], [2], etc.
+    """
+    # Build metadata lookup section
+    metadata_section = ""
+    if metadata_lookup_tables:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        metadata_section = "\n--- Block ID Reference Table ---\n"
+        metadata_section += "Use these block IDs when calling cite_source().\n\n"
+        
+        MAX_BLOCKS_PER_DOC = 300  # Reduced for combined prompt
+        total_blocks = 0
+        
+        for doc_id, metadata_table in metadata_lookup_tables.items():
+            doc_id_short = doc_id[:8] + "..." if len(doc_id) > 8 else doc_id
+            
+            limited_blocks = list(metadata_table.items())[:MAX_BLOCKS_PER_DOC]
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                logger.warning(f"[PROMPT] Limiting metadata for doc {doc_id_short} from {len(metadata_table)} to {MAX_BLOCKS_PER_DOC} blocks")
+            
+            metadata_section += f"\nDocument {doc_id_short}:\n"
+            
+            for block_id, bbox_data in sorted(limited_blocks):
+                total_blocks += 1
+                bbox_left, bbox_top, bbox_width, bbox_height, page = _format_bbox_for_prompt(bbox_data)
+                metadata_section += f"  {block_id}: page={page}\n"
+            
+            if len(metadata_table) > MAX_BLOCKS_PER_DOC:
+                metadata_section += f"  ... ({len(metadata_table) - MAX_BLOCKS_PER_DOC} more blocks not shown)\n"
+    
+    return f"""**USER QUESTION:**  
+"{user_query}"
+
+**CONVERSATION HISTORY:**  
+{conversation_history}
+
+**RETRIEVAL SUMMARY:**  
+{search_summary}
+
+**DOCUMENT CONTENT EXTRACTS (with block IDs):**  
+{formatted_outputs}
+{metadata_section}
+---
+
+### TASK: Answer the question WITH citations (SINGLE PASS)
+
+You must answer the user's question while citing your sources. Do this in ONE response:
+
+**STEP 1 - For EACH fact you include in your answer:**
+- Call the `cite_source` tool with:
+  - `block_id`: The BLOCK_CITE_ID from the document (e.g., "BLOCK_CITE_ID_42")
+  - `citation_number`: Sequential number (1, 2, 3...) - MUST BE UNIQUE AND INCREMENT FOR EACH CALL
+  - `cited_text`: The fact you're citing
+
+**STEP 2 - Write your answer with citation markers:**
+- Place [1], [2], [3]... immediately after each fact
+- Example: "The Market Value is £2,300,000[1] as of February 2024[2]"
+
+**⚠️ CRITICAL - CITATION NUMBERING RULES (MUST FOLLOW) ⚠️**
+- EACH cite_source call MUST have a DIFFERENT citation_number
+- citation_number MUST increment: first call = 1, second call = 2, third call = 3, etc.
+- NEVER use the same citation_number twice - every fact gets a UNIQUE number
+- In your answer text, use the SAME numbers: [1] for first fact, [2] for second fact, [3] for third fact
+- **WRONG**: cite_source(..., citation_number=1), cite_source(..., citation_number=1), cite_source(..., citation_number=1)
+- **CORRECT**: cite_source(..., citation_number=1), cite_source(..., citation_number=2), cite_source(..., citation_number=3)
+
+**CRITICAL RULES:**
+- Call cite_source for EVERY factual claim
+- Use STRICTLY sequential citation numbers (1, 2, 3...) - NEVER repeat a number
+- Place citations IMMEDIATELY after the fact, NO space
+- For valuation queries: include ALL scenarios (90-day, 180-day, Market Rent)
+- Do NOT add periods at the end of standalone lines, headings, or bullet points - only use periods when text continues on the same line
+
+**EXAMPLE:**
+If you see: <BLOCK id="BLOCK_CITE_ID_42">Content: "Market Value: £2,300,000"</BLOCK>
+And: <BLOCK id="BLOCK_CITE_ID_43">Content: "Valuation date: 12th February 2024"</BLOCK>
+1. Call: cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
+2. Call: cite_source(block_id="BLOCK_CITE_ID_43", citation_number=2, cited_text="Valuation date: 12th February 2024")
+3. Write: "The Market Value is £2,300,000[1] as of 12th February 2024[2]"
+
+**IMPORTANT: You MUST return BOTH:**
+1. Call cite_source() for each fact (tool calls) - with UNIQUE sequential citation_numbers
+2. Write the complete answer text below (with [1], [2], [3]... markers matching the tool calls)
+
+DO NOT return only tool calls - you MUST also write the answer text!
+
+{_get_entity_normalization_instructions()}
+
+**YOUR ANSWER (write the complete answer WITH citation markers below):**"""
+
+
+# ============================================================================
+# ATTACHMENT CONTEXT PROMPTS - For file attachments in chat
+# ============================================================================
+
+# Prompt for FAST response mode (no citations)
+ATTACHMENT_CONTEXT_FAST_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached the following document(s) to their query. Answer based on this content.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based ONLY on the attached document content
+- Be concise and direct
+- Do NOT include citation markers ([1], [2], etc.) - this is a fast response mode
+- Do NOT reference page numbers or document structure
+- Simply provide the answer as if having a conversation
+- If the answer is not in the documents, say so clearly
+
+**USER QUERY:** {query}
+"""
+
+# Prompt for DETAILED response mode (with page references)
+ATTACHMENT_CONTEXT_DETAILED_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached the following document(s) for detailed analysis.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based on the attached document content
+- Include page references like "(Page 3)" or "(Pages 5-7)" when citing specific information
+- Be thorough but organized
+- Use headers and bullet points for clarity
+- If information spans multiple pages, note the range
+- If the answer is not in the documents, say so clearly
+
+**REFERENCE FORMAT:**
+- "(Page X)" for single page references
+- "(Pages X-Y)" for ranges
+- Example: "The property was valued at £2.3M (Page 12) with a 90-day value of £2.1M (Page 14)"
+
+**USER QUERY:** {query}
+"""
+
+# Prompt for FULL/PROJECT response mode (with clickable citations after processing)
+ATTACHMENT_CONTEXT_FULL_PROMPT = """
+**USER-ATTACHED DOCUMENT CONTEXT:**
+The user has attached document(s) that are being processed for full integration.
+For now, answer based on the extracted text below. Citations will become clickable once processing completes.
+
+{attachment_context}
+
+**INSTRUCTIONS:**
+- Answer the user's question based on the attached document content
+- Include page references like "(Page X)" that will later become clickable citations
+- Be thorough and professional
+- Structure your answer with clear sections
+- If the answer is not in the documents, say so clearly
+
+**NOTE:** The documents are being processed in the background. Page references will become
+clickable citations that open the document at the referenced location once processing completes.
+
+**USER QUERY:** {query}
+"""
+
+def format_attachment_context(attachment_context: dict) -> str:
+    """Format attachment context for inclusion in prompts."""
+    if not attachment_context:
+        return ""
+    
+    texts = attachment_context.get('texts', [])
+    filenames = attachment_context.get('filenames', [])
+    page_texts = attachment_context.get('pageTexts', [])
+    
+    formatted_parts = []
+    
+    for i, (text, filename) in enumerate(zip(texts, filenames)):
+        formatted_parts.append(f"=== DOCUMENT {i+1}: {filename} ===")
+        
+        # If we have page-by-page text, use it for better structure
+        if page_texts and i < len(page_texts) and page_texts[i]:
+            for page_num, page_text in enumerate(page_texts[i], 1):
+                if page_text.strip():
+                    formatted_parts.append(f"\n--- Page {page_num} ---")
+                    formatted_parts.append(page_text.strip())
+        else:
+            # Fall back to full text
+            formatted_parts.append(text)
+        
+        formatted_parts.append("")  # Empty line between documents
+    
+    return "\n".join(formatted_parts)
+
+def get_attachment_prompt(response_mode: str, attachment_context: dict, query: str) -> str:
+    """Get the appropriate prompt based on response mode."""
+    formatted_context = format_attachment_context(attachment_context)
+    
+    if response_mode == 'fast':
+        return ATTACHMENT_CONTEXT_FAST_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )
+    elif response_mode == 'detailed':
+        return ATTACHMENT_CONTEXT_DETAILED_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )
+    else:  # 'full' or default
+        return ATTACHMENT_CONTEXT_FULL_PROMPT.format(
+            attachment_context=formatted_context,
+            query=query
+        )

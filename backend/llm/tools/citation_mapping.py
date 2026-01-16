@@ -54,6 +54,48 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     
     import re
     
+    # CRITICAL: Check for exact phrase match FIRST (highest priority for all citations)
+    # This ensures citations match the exact fact being stated, not just similar words
+    cited_lower = cited_text.lower().strip()
+    block_lower = block_content.lower()
+    
+    # Try exact phrase match first
+    if cited_lower in block_lower:
+        # Exact phrase found - highest confidence
+        _debug_log({
+            "location": "citation_mapping.verify_citation_match:exact_phrase_match",
+            "data": {
+                "cited_text": cited_text,
+                "exact_match": True,
+            },
+        })
+        return {
+            'match': True,
+            'confidence': 'high',
+            'matched_terms': ['exact_phrase_match'],
+            'missing_terms': [],
+            'numeric_matches': []
+        }
+    
+    # Try phrase match with normalized whitespace (multiple spaces -> single space)
+    cited_normalized = re.sub(r'\s+', ' ', cited_lower)
+    block_normalized = re.sub(r'\s+', ' ', block_lower)
+    if cited_normalized in block_normalized:
+        _debug_log({
+            "location": "citation_mapping.verify_citation_match:exact_phrase_match_normalized",
+            "data": {
+                "cited_text": cited_text,
+                "exact_match": True,
+            },
+        })
+        return {
+            'match': True,
+            'confidence': 'high',
+            'matched_terms': ['exact_phrase_match'],
+            'missing_terms': [],
+            'numeric_matches': []
+        }
+    
     # Extract numeric values from cited_text (normalize formats: £1,950,000, 1950000, 1,950,000)
     numeric_pattern = r'£?([\d,]+\.?\d*)'
     cited_numbers = re.findall(numeric_pattern, cited_text)
@@ -86,9 +128,128 @@ def verify_citation_match(cited_text: str, block_content: str) -> Dict[str, Any]
     term_matches = [term for term in cited_terms if term in block_terms]
     missing_terms = [term for term in cited_terms if term not in block_terms]
     
+    # CRITICAL: For negative statements (e.g., "no recent planning history"), require key phrase matching
+    # Check if cited_text contains negative indicators
+    negative_indicators = ['no ', 'not ', 'none', 'without', 'lack of', 'absence of']
+    is_negative_statement = any(indicator in cited_text.lower() for indicator in negative_indicators)
+    
+    if is_negative_statement:
+        # For negative statements, extract core semantic concept (remove negative indicators to get the concept)
+        # Then verify the block contains both the negative indicator AND the core concept
+        core_concept = cited_lower
+        for indicator in negative_indicators:
+            core_concept = core_concept.replace(indicator, '').strip()
+        
+        # Extract significant terms from core concept (4+ chars)
+        core_terms = [word.lower() for word in re.findall(r'\b\w{4,}\b', core_concept)]
+        
+        # The block must contain ALL core concept terms
+        # This ensures "no recent planning history" matches blocks that contain "planning history" concept
+        if core_terms:
+            core_terms_in_block = all(term in block_terms for term in core_terms)
+            
+            if not core_terms_in_block:
+                # The block doesn't contain the core concept - this is a mismatch
+                _debug_log({
+                    "location": "citation_mapping.verify_citation_match:negative_statement_fail",
+                    "data": {
+                        "cited_text": cited_text,
+                        "core_concept": core_concept,
+                        "core_terms": core_terms,
+                        "core_terms_in_block": core_terms_in_block,
+                        "block_content_preview": block_content[:150],
+                    },
+                })
+                return {
+                    'match': False,
+                    'confidence': 'low',
+                    'matched_terms': term_matches,
+                    'missing_terms': missing_terms + core_terms,
+                    'numeric_matches': []
+                }
+            
+            # If core terms match, check if the block also contains a negative indicator
+            # This ensures we're matching the right semantic meaning
+            block_has_negative = any(indicator in block_lower for indicator in negative_indicators)
+            if block_has_negative and core_terms_in_block:
+                # High confidence: block contains both negative indicator and core concept
+                return {
+                    'match': True,
+                    'confidence': 'high',
+                    'matched_terms': term_matches + ['negative_semantic_match'],
+                    'missing_terms': [],
+                    'numeric_matches': numeric_matches
+                }
+    
     # Determine confidence
     has_numeric_match = len(numeric_matches) > 0
     has_term_match = len(term_matches) > 0
+    
+    # CRITICAL: For ALL descriptive citations (no numbers), require strict term matching
+    # This prevents "well-maintained gardens with defined boundaries" from matching blocks that only have "gardens"
+    # Short descriptive (2-4 terms): require ALL terms
+    # Longer descriptive (5+ terms): require 80%+ of key terms (excluding common words)
+    is_descriptive = len(cited_numbers_normalized) == 0 and len(cited_terms) >= 2
+    if is_descriptive:
+        # Filter out common/stop words that don't add semantic meaning
+        common_words = {'the', 'and', 'or', 'but', 'with', 'for', 'from', 'that', 'this', 'are', 'was', 'were', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'must', 'shall'}
+        key_terms = [term for term in cited_terms if term not in common_words]
+        
+        if len(key_terms) == 0:
+            # All terms were common words - use all terms
+            key_terms = cited_terms
+        
+        matched_key_terms = [term for term in key_terms if term in block_terms]
+        missing_key_terms = [term for term in key_terms if term not in block_terms]
+        
+        # For short descriptive (2-4 terms): require ALL key terms
+        # For longer descriptive (5+ terms): require 80%+ of key terms
+        if len(key_terms) <= 4:
+            # Short descriptive: ALL key terms must match
+            all_key_terms_match = len(missing_key_terms) == 0
+            if not all_key_terms_match:
+                _debug_log({
+                    "location": "citation_mapping.verify_citation_match:short_descriptive_fail",
+                    "data": {
+                        "cited_text": cited_text,
+                        "cited_terms": cited_terms,
+                        "key_terms": key_terms,
+                        "missing_key_terms": missing_key_terms,
+                        "matched_key_terms": matched_key_terms,
+                        "block_content_preview": block_content[:150],
+                    },
+                })
+                return {
+                    'match': False,
+                    'confidence': 'low',
+                    'matched_terms': term_matches,
+                    'missing_terms': missing_terms + missing_key_terms,
+                    'numeric_matches': []
+                }
+        else:
+            # Longer descriptive: require 80%+ of key terms
+            match_ratio = len(matched_key_terms) / len(key_terms) if len(key_terms) > 0 else 0
+            if match_ratio < 0.8:
+                _debug_log({
+                    "location": "citation_mapping.verify_citation_match:long_descriptive_fail",
+                    "data": {
+                        "cited_text": cited_text,
+                        "cited_terms": cited_terms,
+                        "key_terms": key_terms,
+                        "matched_key_terms": matched_key_terms,
+                        "missing_key_terms": missing_key_terms,
+                        "match_ratio": match_ratio,
+                        "required_ratio": 0.8,
+                        "block_content_preview": block_content[:150],
+                    },
+                })
+                return {
+                    'match': False,
+                    'confidence': 'low',
+                    'matched_terms': term_matches,
+                    'missing_terms': missing_terms + missing_key_terms,
+                    'numeric_matches': []
+                }
     
     # CRITICAL: For valuation figures, require EXACT numeric match
     # If cited_text contains a specific amount (e.g., "£1,950,000"), the block MUST contain that exact amount

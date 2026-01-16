@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ChatHistoryProvider } from "./components/ChatHistoryContext";
 import { SystemProvider } from "./contexts/SystemContext";
+import { ModeProvider } from "./contexts/ModeContext";
 import { BackendApiProvider } from "./components/BackendApi";
 import { PreviewProvider } from "./contexts/PreviewContext";
 import { PropertySelectionProvider } from "./contexts/PropertySelectionContext";
@@ -40,9 +41,11 @@ const App = () => (
               {/* Protected routes - require authentication */}
               <Route path="/dashboard" element={
                 <AuthGuard>
-                  <ChatHistoryProvider>
-                    <DashboardLayout />
-                  </ChatHistoryProvider>
+                  <ModeProvider>
+                    <ChatHistoryProvider>
+                      <DashboardLayout />
+                    </ChatHistoryProvider>
+                  </ModeProvider>
                 </AuthGuard>
               } />
               

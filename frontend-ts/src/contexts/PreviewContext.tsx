@@ -32,6 +32,11 @@ export interface CitationHighlight {
     page: number;
   };
   chunks?: CitationChunkMetadata[];
+  // Full citation metadata for CitationActionMenu (to enable ask questions on cited content)
+  doc_id?: string;
+  block_id?: string;
+  block_content?: string;
+  original_filename?: string;
 }
 
 interface PreviewContextType {
@@ -54,8 +59,19 @@ interface PreviewContextType {
   // NEW: Standalone ExpandedCardView support
   expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
   setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight } | null>>;
-  openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight) => void;
+  openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => void;
   closeExpandedCardView: () => void;
+  // NEW: Agent opening state for glowing border effect
+  isAgentOpening: boolean;
+  setIsAgentOpening: React.Dispatch<React.SetStateAction<boolean>>;
+  // NEW: Agent task overlay state (for navigation tasks)
+  isAgentTaskActive: boolean;
+  agentTaskMessage: string;
+  setAgentTaskActive: (active: boolean, message?: string) => void;
+  stopAgentTask: () => void;
+  // NEW: Map navigation glow effect state
+  isMapNavigating: boolean;
+  setMapNavigating: (active: boolean) => void;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -69,6 +85,13 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [highlightCitation, setHighlightCitation] = React.useState<CitationHighlight | null>(null);
   // NEW: Standalone ExpandedCardView state
   const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
+  // NEW: Agent opening state for glowing border effect
+  const [isAgentOpening, setIsAgentOpening] = React.useState<boolean>(false);
+  // NEW: Agent task overlay state (for navigation tasks)
+  const [isAgentTaskActive, setIsAgentTaskActiveState] = React.useState<boolean>(false);
+  const [agentTaskMessage, setAgentTaskMessage] = React.useState<string>('');
+  // NEW: Map navigation glow effect state
+  const [isMapNavigating, setIsMapNavigatingState] = React.useState<boolean>(false);
   // NEW: Cache PDF documents in memory to avoid reloading when switching between documents
   const [pdfDocumentCache, setPdfDocumentCache] = React.useState<Map<string, PDFDocumentProxy>>(new Map());
   // NEW: Cache rendered PDF pages (fileId -> pageNumber -> ImageData) for instant page switching
@@ -81,13 +104,35 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   // NEW: Open standalone ExpandedCardView
-  const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight) => {
+  const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => {
+    if (isAgentTriggered) {
+      setIsAgentOpening(true);
+    }
     setExpandedCardViewDoc({ docId, filename, highlight });
   }, []);
 
   // NEW: Close standalone ExpandedCardView
   const closeExpandedCardView = React.useCallback(() => {
     setExpandedCardViewDoc(null);
+    setIsAgentOpening(false); // Reset glow state when closing
+  }, []);
+
+  // NEW: Set agent task active (for navigation overlay)
+  const setAgentTaskActive = React.useCallback((active: boolean, message?: string) => {
+    setIsAgentTaskActiveState(active);
+    setAgentTaskMessage(message || '');
+  }, []);
+
+  // NEW: Stop agent task (for overlay stop button)
+  const stopAgentTask = React.useCallback(() => {
+    setIsAgentTaskActiveState(false);
+    setAgentTaskMessage('');
+    setIsMapNavigatingState(false); // Also stop map glow
+  }, []);
+
+  // NEW: Set map navigation glow state
+  const setMapNavigating = React.useCallback((active: boolean) => {
+    setIsMapNavigatingState(active);
   }, []);
 
   // NEW: Preload file without opening preview (for citation preloading)
@@ -100,7 +145,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // File already cached - update with fresh File object but don't open preview
         const updatedFiles = [...prev];
         updatedFiles[existingTabIndex] = file;
-        console.log('✅ [PRELOAD] Document already cached:', file.id);
         return updatedFiles;
       } else {
         // Add to cache silently (without opening preview)
@@ -124,7 +168,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
           newFiles = [...prev, file];
         }
         
-        console.log('📥 [PRELOAD] Document cached (silent):', file.id, file.name);
         return newFiles;
       }
     });
@@ -141,12 +184,10 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const newCache = new Map(prev);
       if (pdf) {
         newCache.set(fileId, pdf);
-        console.log('💾 [PDF_CACHE] Cached PDF document:', fileId);
       } else {
         // Clean up when setting to null
         const removed = newCache.delete(fileId);
         if (removed) {
-          console.log('🗑️ [PDF_CACHE] Removed PDF document from cache:', fileId);
           // Also clean up rendered page cache for this document
           setRenderedPageCache(pageCache => {
             const newPageCache = new Map(pageCache);
@@ -176,7 +217,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
           newCache.set(fileId, docCache);
         }
         docCache.set(pageNumber, imageData);
-        console.log('🎨 [PAGE_CACHE] Cached rendered page:', fileId, 'page', pageNumber);
       } else {
         // Clean up when setting to null
         const docCache = newCache.get(fileId);
@@ -206,19 +246,16 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // Check if already cached - if so, skip (already instant)
       const cached = getCachedRenderedPage(fileId, pageNumber);
       if (cached) {
-        console.log('⚡ [PRELOAD] Page already cached (instant):', fileId, 'page', pageNumber);
         return;
       }
 
       // Check if already being pre-rendered - prevent duplicate concurrent renders
       if (preRenderingInProgressRef.current.has(cacheKey)) {
-        console.log('⏳ [PRELOAD] Page already being pre-rendered, skipping duplicate:', fileId, 'page', pageNumber);
         return;
       }
 
       // Mark as in progress
       preRenderingInProgressRef.current.add(cacheKey);
-      console.log('🔄 [PRELOAD] Pre-rendering page immediately:', fileId, 'page', pageNumber);
       
       // OPTIMIZATION: Use requestIdleCallback if available for non-blocking rendering
       // Otherwise render immediately
@@ -247,7 +284,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
         setCachedRenderedPage(fileId, pageNumber, imageData);
         
-        console.log('✅ [PRELOAD] Page pre-rendered and cached (ready for instant display):', fileId, 'page', pageNumber);
       };
       
       // Use requestIdleCallback for non-blocking rendering, but with a timeout
@@ -294,11 +330,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         
         // Set highlight if provided
         if (highlight) {
-          console.log('🖼️ [PreviewContext] Applying highlight to existing tab:', {
-            fileId: file.id,
-            bbox: highlight.bbox,
-            chunks: highlight.chunks?.length
-          });
           setHighlightCitation({
             ...highlight,
             fileId: file.id
@@ -322,7 +353,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
               if (pdf) {
                 pdf.destroy(); // Clean up PDF.js resources
                 newCache.delete(removedFile.id);
-                console.log('🗑️ [PDF_CACHE] Cleaned up PDF document for removed file:', removedFile.id);
               }
               return newCache;
             });
@@ -340,11 +370,6 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         
         // Set highlight if provided
         if (highlight) {
-          console.log('🖼️ [PreviewContext] Applying highlight to new tab:', {
-            fileId: file.id,
-            bbox: highlight.bbox,
-            chunks: highlight.chunks?.length
-          });
           setHighlightCitation({
             ...highlight,
             fileId: file.id
@@ -368,6 +393,14 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setExpandedCardViewDoc,
     openExpandedCardView,
     closeExpandedCardView,
+    isAgentOpening,
+    setIsAgentOpening,
+    isAgentTaskActive,
+    agentTaskMessage,
+    setAgentTaskActive,
+    stopAgentTask,
+    isMapNavigating,
+    setMapNavigating,
     preloadFile,
     getCachedPdfDocument,
     setCachedPdfDocument,
@@ -378,7 +411,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setHighlightCitation,
     clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating]);
 
   return (
     <PreviewContext.Provider value={value}>

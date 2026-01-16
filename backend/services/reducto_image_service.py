@@ -57,7 +57,7 @@ class ReductoImageService:
         )
         
         logger.info(f"✅ Downloaded {len(downloaded_images)}/{total_images} images (parallel)")
-
+        
         # Step 2: Choose images to upload
         # By default we now upload every image we can successfully download.
         # (This matches product expectation: "pull every image it can".)
@@ -79,7 +79,7 @@ class ReductoImageService:
             )
             images_to_upload = filter_result['filtered_images']
             logger.info(f"🎯 Filtered to {len(images_to_upload)} property-relevant images")
-
+        
         # Step 3: Upload selected images
         processed_images = []
         errors = []
