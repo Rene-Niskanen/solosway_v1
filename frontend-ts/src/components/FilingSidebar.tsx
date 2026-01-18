@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, CloudCheck, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, SquareMousePointer } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, CloudCheck, FileText, File as FileIcon, ChevronRight, MoreVertical, Upload, MousePointer2 } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
@@ -928,23 +928,35 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         console.log('Folder deletion from Supabase (if exists):', error);
       }
     } else {
-      // Delete document - call API
+      // Delete document - optimistic update (remove from UI immediately)
+      const deletedDocument = documents.find(d => d.id === itemId);
+      
+      // Optimistically remove from UI immediately
+      setDocuments(prev => prev.filter(d => d.id !== itemId));
+      
+      // Invalidate cache for current view
+      const cacheKey = viewMode === 'property' && selectedPropertyId
+        ? `property_${selectedPropertyId}`
+        : 'global';
+      documentCacheRef.current.delete(cacheKey);
+      cacheTimestampRef.current.delete(cacheKey);
+      
+      // Call API in background - if it fails, restore the document
       try {
         const response = await backendApi.deleteDocument(itemId);
-        if (response.success) {
-          setDocuments(prev => prev.filter(d => d.id !== itemId));
-          
-          // Invalidate cache for current view
-          const cacheKey = viewMode === 'property' && selectedPropertyId
-            ? `property_${selectedPropertyId}`
-            : 'global';
-          documentCacheRef.current.delete(cacheKey);
-          cacheTimestampRef.current.delete(cacheKey);
-        } else {
+        if (!response.success) {
+          // Restore document if deletion failed
+          if (deletedDocument) {
+            setDocuments(prev => [...prev, deletedDocument]);
+          }
           alert(`Failed to delete document: ${response.error || 'Unknown error'}`);
         }
       } catch (error) {
         console.error('Error deleting document:', error);
+        // Restore document if deletion failed
+        if (deletedDocument) {
+          setDocuments(prev => [...prev, deletedDocument]);
+        }
         alert('Failed to delete document. Please try again.');
       }
     }
@@ -1185,25 +1197,24 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           pointerEvents: isOpen ? 'auto' : 'none'
         }}
       >
-        {/* Header - Compact and Sleek */}
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <CloudCheck className="w-4 h-4 text-gray-400" strokeWidth={1.75} />
-            <h2 className="text-[13px] font-semibold text-gray-900">Documents</h2>
+        {/* Header - Unified Design */}
+        <div className="px-4 pt-4 pb-3 border-b border-gray-100">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <CloudCheck className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
+              <h2 className="text-[13px] font-semibold text-gray-900">Documents</h2>
+            </div>
+            <button
+              onClick={closeSidebar}
+              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
+              aria-label="Close sidebar"
+            >
+              <X className="w-4 h-4" strokeWidth={1.5} />
+            </button>
           </div>
-          <button
-            onClick={closeSidebar}
-            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-white/60 rounded-md transition-colors"
-            aria-label="Close sidebar"
-          >
-            <X className="w-4 h-4" strokeWidth={1.5} />
-          </button>
-        </div>
 
-        {/* Search and Actions - Compact Design */}
-        <div className="px-4 pb-3 space-y-3">
           {/* Search Bar */}
-          <div className="relative">
+          <div className="relative mb-3">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
             <input
               ref={searchInputRef}
@@ -1211,23 +1222,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               placeholder="Search documents..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 bg-white rounded-lg text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none transition-colors"
-              style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-gray-300 transition-all"
             />
           </div>
 
-          {/* Actions Row */}
+          {/* Actions Row - Unified Style */}
           <div className="flex items-center justify-between gap-2">
-            {/* View Mode Toggle - Matching Sidebar Style */}
-            <div className="flex items-center gap-0.5 bg-gray-200/60 rounded-lg p-0.5">
+            {/* View Mode Toggle */}
+            <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
               <button
                 onClick={() => setViewMode('global')}
                 className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
                   viewMode === 'global'
-                    ? 'bg-white text-gray-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
-                style={{ boxShadow: viewMode === 'global' ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
               >
                 All Files
               </button>
@@ -1235,10 +1244,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 onClick={() => setViewMode('property')}
                 className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
                   viewMode === 'property'
-                    ? 'bg-white text-gray-900'
+                    ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
                 }`}
-                style={{ boxShadow: viewMode === 'property' ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none' }}
               >
                 By Property
               </button>
@@ -1256,11 +1264,11 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                 className={`flex items-center justify-center p-1.5 rounded-md transition-all ${
                   isSelectionMode 
                     ? 'bg-blue-50 text-blue-600' 
-                    : 'text-gray-500 hover:bg-white/60 hover:text-gray-700'
+                    : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
                 }`}
                 title="Select documents"
               >
-                <SquareMousePointer className="w-4 h-4" strokeWidth={1.5} />
+                <MousePointer2 className="w-4 h-4" strokeWidth={1.5} />
               </button>
 
               <div className="relative" ref={newMenuRef}>
@@ -1269,8 +1277,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     e.stopPropagation();
                     setShowNewMenu(!showNewMenu);
                   }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-gray-50 rounded-md transition-colors"
-                  style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-md transition-colors"
                   title="New"
                 >
                   <Plus className="w-3.5 h-3.5 text-gray-600" strokeWidth={1.75} />
@@ -1353,8 +1360,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           </div>
         )}
 
-        {/* Content Area - clean grey background */}
-        <div className="flex-1 overflow-y-auto px-3 pt-2">
+        {/* Content Area - Clean Background */}
+        <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-gray-500">Loading...</div>
@@ -1370,8 +1377,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               <p className="text-[12px] text-gray-400 text-center">Upload files or adjust your search</p>
             </div>
           ) : (
-            <div className="space-y-0.5 pb-3">
-              {/* Folders */}
+            <div className="px-3 py-0.5 space-y-0.5">
+              {/* Folders - Premium Container Design */}
               {filteredItems.folders.map((folder) => {
                 const isSelected = selectedItems.has(folder.id);
                 return (
@@ -1379,10 +1386,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   key={folder.id}
                   onMouseEnter={() => setHoveredItemId(folder.id)}
                   onMouseLeave={() => setHoveredItemId(null)}
-                  className={`flex items-center gap-3 px-3 py-2 cursor-pointer group transition-all rounded-lg ${
+                  className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border ${
                     isSelectionMode 
-                      ? (isSelected ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-white/70')
-                      : 'hover:bg-white/70'
+                      ? (isSelected 
+                          ? 'bg-blue-50/50 border-blue-200/60 hover:border-blue-300/80' 
+                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                      : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                   }`}
                   onClick={(e) => {
                     if (editingItemId) return;
@@ -1395,19 +1404,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   }}
                 >
                   {isSelectionMode && (
-                    <div className="flex-shrink-0">
-                      {isSelected ? (
-                        <CheckSquare className="w-4 h-4 text-blue-600" />
-                      ) : (
-                        <Square className="w-4 h-4 text-gray-400" />
-                      )}
+                    <div className="flex-shrink-0 w-3.5">
+                      <motion.div
+                        className="relative"
+                        initial={false}
+                        animate={{
+                          scale: isSelected ? 1 : 1,
+                        }}
+                        transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                      >
+                        <div
+                          className="flex items-center justify-center"
+                          style={{
+                            width: '14px',
+                            height: '14px',
+                            borderRadius: '3px',
+                            border: isSelected 
+                              ? '1.5px solid #3B82F6' 
+                              : '1.5px solid #D1D5DB',
+                            backgroundColor: isSelected ? '#3B82F6' : 'transparent',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          {isSelected && (
+                            <motion.svg
+                              initial={{ scale: 0, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              exit={{ scale: 0, opacity: 0 }}
+                              transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                              width="8"
+                              height="8"
+                              viewBox="0 0 10 10"
+                              fill="none"
+                              xmlns="http://www.w3.org/2000/svg"
+                            >
+                              <path
+                                d="M2 5L4 7L8 3"
+                                stroke="white"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </motion.svg>
+                          )}
+                        </div>
+                      </motion.div>
                     </div>
                   )}
-                  <img 
-                    src="/file.png" 
-                    alt="Folder" 
-                    className="w-5 h-5 object-contain flex-shrink-0"
-                  />
+                  <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" strokeWidth={1.75} />
                   <div className="flex-1 min-w-0">
                     {editingItemId === folder.id ? (
                       <input
@@ -1422,31 +1466,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                           }
                         }}
                         onBlur={() => handleSaveRename(folder.id, true)}
-                        className="w-full px-2 py-1 text-sm border border-blue-500 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                         autoFocus
                         onClick={(e) => e.stopPropagation()}
                       />
                     ) : (
-                      <>
-                        <div className="text-xs font-medium text-gray-900 truncate">{folder.name}</div>
-                        <div className="text-xs text-gray-500">
-                          {folder.document_count || 0} {folder.document_count === 1 ? 'document' : 'documents'}
-                        </div>
-                      </>
+                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                        {folder.name}
+                      </div>
                     )}
                   </div>
                   {!editingItemId && (
                     <>
-                      <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <ChevronRight className="w-3 h-3 text-gray-400 flex-shrink-0" strokeWidth={1.75} />
                       {hoveredItemId === folder.id && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleContextMenuClick(e, folder.id);
                           }}
-                          className="p-1 hover:bg-gray-200 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                         >
-                          <MoreVertical className="w-4 h-4 text-gray-600" />
+                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
                         </button>
                       )}
                     </>
@@ -1468,42 +1509,41 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   }
                   
                   return (
-                    <div key={propertyId} className="mb-1">
-                      {/* Property Section Header - Clickable */}
+                    <div key={propertyId} className="px-3 mb-0.5">
+                      {/* Property Section Header - Premium Container Design */}
                       <div 
                         onClick={() => togglePropertyExpansion(propertyId)}
-                        className="px-6 py-2.5 bg-slate-50/50 border-b border-slate-200/40 cursor-pointer hover:bg-slate-100/50 transition-colors flex items-center justify-between"
+                        className={`px-2.5 py-1.5 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 ${
+                          isExpanded 
+                            ? 'bg-gray-50 border-gray-200/60' 
+                            : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
+                        }`}
                       >
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <img 
-                            src="/houseicon.png" 
-                            alt="Property" 
-                            className="w-8 h-8 object-contain flex-shrink-0"
-                          />
-                          <div className="flex-1 min-w-0">
-                            {/* Only show if we have a real address (not a UUID fallback or "Unknown Property") */}
-                            {propertyAddress && 
-                             !propertyAddress.startsWith('Property ') && 
-                             propertyAddress !== 'Unknown Property' && (
-                              <h3 className="font-semibold line-clamp-2" style={{ 
-                                color: '#6E778D', 
-                                fontSize: '12px'
-                              }}>
-                                {propertyAddress}
-                              </h3>
-                            )}
-                            <p className="text-xs text-slate-500 mt-0.5">
-                              {propertyDocs.length} {propertyDocs.length === 1 ? 'document' : 'documents'}
-                            </p>
-                          </div>
-                        </div>
                         <ChevronRight 
-                          className={`w-4 h-4 text-slate-400 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} 
+                          className={`w-3 h-3 text-gray-400 flex-shrink-0 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+                          strokeWidth={1.75}
                         />
+                        <img 
+                          src="/houseicon.png" 
+                          alt="Property" 
+                          className="w-3.5 h-3.5 object-contain flex-shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          {propertyAddress && 
+                           !propertyAddress.startsWith('Property ') && 
+                           propertyAddress !== 'Unknown Property' && (
+                            <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                              {propertyAddress}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-500 flex-shrink-0 font-medium">
+                          {propertyDocs.length}
+                        </span>
                       </div>
-                      {/* Documents in this property - Only show when expanded */}
+                      {/* Documents in this property - Indented sub-items */}
                       {isExpanded && (
-                        <div className="pt-4">
+                        <div className="pl-9 pr-3 py-0.5 space-y-0.5">
                           {propertyDocs.map((doc) => {
                             const isLinked = isDocumentLinked(doc);
                             const isSelected = selectedItems.has(doc.id);
@@ -1519,10 +1559,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                                 onMouseEnter={() => setHoveredItemId(doc.id)}
                                 onMouseLeave={() => setHoveredItemId(null)}
-                                className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                                className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border ${
                                   isSelectionMode 
-                                    ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                                    : 'bg-white hover:shadow'
+                                    ? (isSelected 
+                                        ? 'bg-blue-50/50 border-blue-200/60 hover:border-blue-300/80' 
+                                        : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                                    : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                                 }`}
                                 onClick={(e) => {
                                   if (editingItemId) return;
@@ -1535,15 +1577,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                 }}
                               >
                                 {isSelectionMode && (
-                                  <div className="flex-shrink-0">
-                                    {isSelected ? (
-                                      <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
-                                    ) : (
-                                      <Square className="w-3.5 h-3.5 text-gray-400" />
-                                    )}
+                                  <div className="flex-shrink-0 w-3.5">
+                                    <motion.div
+                                      className="relative"
+                                      initial={false}
+                                      animate={{
+                                        scale: isSelected ? 1 : 1,
+                                      }}
+                                      transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                    >
+                                      <div
+                                        className="flex items-center justify-center"
+                                        style={{
+                                          width: '14px',
+                                          height: '14px',
+                                          borderRadius: '3px',
+                                          border: isSelected 
+                                            ? '1.5px solid #3B82F6' 
+                                            : '1.5px solid #D1D5DB',
+                                          backgroundColor: isSelected ? '#3B82F6' : 'transparent',
+                                          transition: 'all 0.15s ease',
+                                        }}
+                                      >
+                                        {isSelected && (
+                                          <motion.svg
+                                            initial={{ scale: 0, opacity: 0 }}
+                                            animate={{ scale: 1, opacity: 1 }}
+                                            exit={{ scale: 0, opacity: 0 }}
+                                            transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                            width="8"
+                                            height="8"
+                                            viewBox="0 0 10 10"
+                                            fill="none"
+                                            xmlns="http://www.w3.org/2000/svg"
+                                          >
+                                            <path
+                                              d="M2 5L4 7L8 3"
+                                              stroke="white"
+                                              strokeWidth="1.5"
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                            />
+                                          </motion.svg>
+                                        )}
+                                      </div>
+                                    </motion.div>
                                   </div>
                                 )}
-                                <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                                <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
                                 <div className="flex-1 min-w-0">
                                   {editingItemId === doc.id ? (
                                     <input
@@ -1558,34 +1639,25 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                                         }
                                       }}
                                       onBlur={() => handleSaveRename(doc.id, false)}
-                                      className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                      className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                                       autoFocus
                                       onClick={(e) => e.stopPropagation()}
                                     />
                                   ) : (
-                                    <>
-                                      <div className="text-xs font-medium text-gray-900 break-words">{doc.original_filename}</div>
-                                      <div className="flex items-center gap-2 mt-0.5">
-                                        <span className="text-xs text-gray-500">
-                                          {formatDate(doc.created_at || doc.updated_at)}
-                                        </span>
-                                        <span className="text-xs text-gray-400">•</span>
-                                        <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                          {isLinked ? 'Linked' : 'Unlinked'}
-                                        </span>
-                                      </div>
-                                    </>
+                                    <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                      {doc.original_filename}
+                                    </div>
                                   )}
                                 </div>
-                                {!editingItemId && hoveredItemId === doc.id && (
+                                {!editingItemId && (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleContextMenuClick(e, doc.id);
                                     }}
-                                    className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                    className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                                   >
-                                    <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
+                                    <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
                                   </button>
                                 )}
                               </div>
@@ -1597,8 +1669,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                   );
                 })
               ) : (
-                // Flat list for global view or when inside a folder
-                <div className="pt-4">
+                // Flat list for global view or when inside a folder - Premium Design
+                <div className="px-3 py-0.5 space-y-0.5">
                   {filteredItems.documents.map((doc) => {
                   const isLinked = isDocumentLinked(doc);
                   const isSelected = selectedItems.has(doc.id);
@@ -1614,10 +1686,12 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                       onMouseEnter={() => setHoveredItemId(doc.id)}
                       onMouseLeave={() => setHoveredItemId(null)}
-                      className={`rounded-md shadow-sm mb-2 mx-4 px-3 py-2 flex items-center gap-3 transition-all cursor-pointer group relative max-w-md ${
+                      className={`flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer group transition-all duration-200 rounded-md border ${
                         isSelectionMode 
-                          ? (isSelected ? 'bg-blue-50 hover:bg-blue-100 hover:shadow' : 'bg-white hover:shadow')
-                          : 'bg-white hover:shadow'
+                          ? (isSelected 
+                              ? 'bg-blue-50/50 border-blue-200/60 hover:border-blue-300/80' 
+                              : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50')
+                          : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
                       }`}
                       onClick={(e) => {
                         if (editingItemId) return;
@@ -1630,15 +1704,54 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       }}
                     >
                       {isSelectionMode && (
-                        <div className="flex-shrink-0">
-                          {isSelected ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
-                          ) : (
-                            <Square className="w-3.5 h-3.5 text-gray-400" />
-                          )}
+                        <div className="flex-shrink-0 w-3.5">
+                          <motion.div
+                            className="relative"
+                            initial={false}
+                            animate={{
+                              scale: isSelected ? 1 : 1,
+                            }}
+                            transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                          >
+                            <div
+                              className="flex items-center justify-center"
+                              style={{
+                                width: '14px',
+                                height: '14px',
+                                borderRadius: '3px',
+                                border: isSelected 
+                                  ? '1.5px solid #3B82F6' 
+                                  : '1.5px solid #D1D5DB',
+                                backgroundColor: isSelected ? '#3B82F6' : 'transparent',
+                                transition: 'all 0.15s ease',
+                              }}
+                            >
+                              {isSelected && (
+                                <motion.svg
+                                  initial={{ scale: 0, opacity: 0 }}
+                                  animate={{ scale: 1, opacity: 1 }}
+                                  exit={{ scale: 0, opacity: 0 }}
+                                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                  width="8"
+                                  height="8"
+                                  viewBox="0 0 10 10"
+                                  fill="none"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path
+                                    d="M2 5L4 7L8 3"
+                                    stroke="white"
+                                    strokeWidth="1.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </motion.svg>
+                              )}
+                            </div>
+                          </motion.div>
                         </div>
                       )}
-                      <div className="flex-shrink-0">{getFileIcon(doc)}</div>
+                      <div className="flex-shrink-0 w-3.5 h-3.5 flex items-center justify-center">{getFileIcon(doc)}</div>
                       <div className="flex-1 min-w-0">
                         {editingItemId === doc.id ? (
                           <input
@@ -1653,34 +1766,25 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                               }
                             }}
                             onBlur={() => handleSaveRename(doc.id, false)}
-                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-gray-400"
+                            className="w-full px-2 py-1 text-xs border border-blue-500 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
                             autoFocus
                             onClick={(e) => e.stopPropagation()}
                           />
                         ) : (
-                          <>
-                            <div className="text-xs font-medium text-gray-900 truncate">{doc.original_filename}</div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-xs text-gray-500">
-                                {formatDate(doc.created_at || doc.updated_at)}
-                              </span>
-                              <span className="text-xs text-gray-400">•</span>
-                              <span className={`text-xs ${isLinked ? 'text-gray-600' : 'text-gray-400'}`}>
-                                {isLinked ? 'Linked' : 'Unlinked'}
-                              </span>
-                            </div>
-                          </>
+                          <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                            {doc.original_filename}
+                          </div>
                         )}
                       </div>
-                      {!editingItemId && hoveredItemId === doc.id && (
+                      {!editingItemId && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleContextMenuClick(e, doc.id);
                           }}
-                          className="p-1 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                         >
-                          <MoreVertical className="w-3.5 h-3.5 text-gray-500" />
+                          <MoreVertical className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
                         </button>
                       )}
                     </div>
@@ -1909,41 +2013,82 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           />
         )}
         
-        {/* Delete Confirmation Dialog - Clean style */}
-        {deleteConfirmDialog.isOpen && (
-          <div className="absolute inset-0 z-[10002] flex items-center justify-center pointer-events-none px-4">
-            <div 
-              className="pointer-events-auto bg-white rounded-lg p-4 w-full"
-              style={{ 
-                maxWidth: 'min(calc(100% - 2rem), 280px)',
-                minWidth: '200px',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
-              }}
-            >
-              <p className="text-[13px] text-gray-900 mb-1 font-medium">Delete this {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?</p>
-              <p className="text-[12px] text-gray-500 mb-4 break-all" style={{ wordBreak: 'break-word' }}>
-                "{deleteConfirmDialog.itemName}"
-                {deleteConfirmDialog.isFolder && <span className="block mt-1 text-gray-400">All contents will be deleted.</span>}
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
-                  }}
-                  className="px-3 py-1.5 text-[13px] text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-md transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDelete}
-                  className="px-3 py-1.5 text-[13px] font-medium text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
-                >
-                  Delete
-                </button>
-              </div>
+        {/* Delete Confirmation Dialog - High quality design */}
+        <AnimatePresence>
+          {deleteConfirmDialog.isOpen && (
+            <div className="absolute inset-0 z-[10002] flex items-center justify-center pointer-events-none px-4">
+              {/* Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="absolute inset-0 bg-black/50 backdrop-blur-sm pointer-events-auto"
+                onClick={() => setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' })}
+              />
+              
+              {/* Dialog */}
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0, y: 8 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.95, opacity: 0, y: 8 }}
+                transition={{ 
+                  duration: 0.2,
+                  ease: [0.16, 1, 0.3, 1]
+                }}
+                className="pointer-events-auto bg-white rounded-xl w-full relative z-10"
+                style={{ 
+                  maxWidth: 'min(calc(100% - 2rem), 400px)',
+                  minWidth: '320px',
+                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="p-6">
+                  {/* Title */}
+                  <div className="mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                      Delete this {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?
+                    </h3>
+                    <p className="text-sm text-gray-500 break-words leading-relaxed" style={{ wordBreak: 'break-word' }}>
+                      "{deleteConfirmDialog.itemName}"
+                    </p>
+                    {deleteConfirmDialog.isFolder && (
+                      <p className="text-xs text-gray-400 mt-2">
+                        All contents will be deleted.
+                      </p>
+                    )}
+                  </div>
+                  
+                  {/* Actions */}
+                  <div className="flex justify-end gap-3 mt-6">
+                    <button
+                      onClick={() => {
+                        setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
+                      }}
+                      className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all duration-200"
+                      style={{
+                        minWidth: '80px'
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleDelete}
+                      className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
+                      style={{
+                        minWidth: '80px',
+                        boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
             </div>
-          </div>
-        )}
+          )}
+        </AnimatePresence>
     </div>
   );
 };

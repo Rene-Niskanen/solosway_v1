@@ -321,16 +321,38 @@ export const Sidebar = ({
     );
   };
 
+  // Calculate actual width values
+  const getSidebarWidthValue = () => {
+    if (isCollapsed) return 0;
+    if (isExpanded) return 320;
+    return 224; // w-56 = 224px
+  };
+
+  const sidebarWidthValue = getSidebarWidthValue();
+
+  // Hide sidebar when collapsed
+  // When map is visible, sidebar should be hidden (collapsed), but user can toggle it open
+  const shouldHideSidebar = isCollapsed;
+
   return (
     <>
+      {/* Always render to prevent gaps - just position off-screen when closed */}
       <div
-        className={`${getSidebarWidth()} flex flex-col fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
+        className={`flex flex-col fixed top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
         style={{
-          background: '#F1F1F1', // Always solid background to prevent map showing through
-          transition: 'width 0s ease-out', // Instant transition to prevent map showing through gaps
-          overflow: 'hidden',
-          willChange: 'width', // Optimize for performance
-          // Ensure background extends fully
+          // Match sidebar grey background for seamless look - always solid
+          background: '#F1F1F1',
+          // When collapsed OR (map visible AND collapsed), move off-screen to the left
+          // When open (even in map view if user toggled it), position at left: 0
+          left: shouldHideSidebar ? '-1000px' : '0px',
+          width: isCollapsed ? `${sidebarWidthValue}px` : `${sidebarWidthValue}px`, // Keep width when closed to prevent layout shift
+          // Instant transitions to prevent map showing through gaps (same as FilingSidebar)
+          transition: 'left 0s ease-out, width 0s ease-out',
+          willChange: 'left, width', // Optimize for performance
+          // Force GPU acceleration for smoother rendering
+          transform: 'translateZ(0)',
+          backfaceVisibility: 'hidden',
+          // Ensure background extends fully to prevent any gaps
           boxShadow: 'none',
           borderRight: 'none',
           // Ensure full height coverage - use 100vh to cover entire viewport
@@ -343,10 +365,16 @@ export const Sidebar = ({
           top: '0',
           bottom: '0',
           // Higher z-index to ensure it's above map
-          zIndex: className?.includes('z-[150]') ? 150 : 1000
+          zIndex: className?.includes('z-[150]') ? 150 : 1000,
+          // Extend slightly beyond to ensure full coverage
+          minWidth: `${sidebarWidthValue}px`,
+          right: 'auto',
+          // Hide pointer events when sidebar should be hidden
+          pointerEvents: shouldHideSidebar ? 'none' : 'auto',
+          overflow: 'hidden'
         }}
       >
-        {!isCollapsed && (
+        {!shouldHideSidebar && (
           <div className="flex flex-col h-full pt-4 pb-3">
             {/* User Profile Block - OpenAI style integrated dropdown */}
             <div className="px-3 mb-1">
@@ -519,7 +547,7 @@ export const Sidebar = ({
         )}
 
         {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
-        {isExpanded && !isCollapsed && (
+        {isExpanded && !shouldHideSidebar && (
           <div className="absolute inset-0 flex flex-col" style={{ background: '#F1F1F1' }}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
@@ -657,12 +685,12 @@ export const Sidebar = ({
                 </div>
               )}
             </div>
-
           </div>
         )}
       </div>
 
       {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
+      {/* Always show toggle rail, even in map view */}
       <button
         type="button"
         onClick={(e) => {
@@ -674,8 +702,9 @@ export const Sidebar = ({
         style={{
           WebkitTapHighlightColor: 'transparent',
           zIndex: 100003, // Higher than dropdown backdrop (100001) and dropdown (100002) to ensure it's always clickable
-          // Always position at the right edge of the sidebar itself (not panels)
-          left: isCollapsed ? '0px' : isExpanded ? '320px' : '224px',
+          // When sidebar is collapsed, position at left: 0
+          // Otherwise, position at the right edge of the sidebar
+          left: isCollapsed ? '0px' : (isExpanded ? '320px' : '224px'),
           // Match sidebar background for seamless look
           background: '#F1F1F1',
           pointerEvents: 'auto',

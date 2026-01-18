@@ -6773,7 +6773,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
               return '450px';
             })(),
-            backgroundColor: '#FFFFFF',
+            backgroundColor: '#FCFCF9',
             boxShadow: 'none',
             transition: (isResizing || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen)) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing, entering fullscreen initially, restoring from citation, or when in fullscreen mode
             willChange: 'width', // Optimize for smooth width changes
@@ -6820,14 +6820,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
               visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible',
               position: 'relative',
-              backgroundColor: '#FFFFFF', // Ensure solid background to prevent leaks
+              backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
               overflow: 'hidden', // Prevent content from leaking during transitions
               width: '100%',
               height: '100%'
             }}
           >
             {/* Header */}
-            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FCFCF9', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <button
@@ -7096,7 +7096,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ref={contentAreaRef}
               className="flex-1 overflow-y-auto sidechat-scroll" 
               style={{ 
-                backgroundColor: '#FFFFFF',
+                backgroundColor: '#FCFCF9',
                 padding: '16px 0', // Simplified padding - content will be centered
                 // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
                 marginRight: '6px',
@@ -7135,7 +7135,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div 
               ref={chatInputContainerRef}
               style={{ 
-                backgroundColor: '#FFFFFF', 
+                backgroundColor: '#FCFCF9', 
                 paddingTop: '16px', 
                 paddingBottom: '24px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form

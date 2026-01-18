@@ -1906,6 +1906,31 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [documents, addPreviewFile]);
 
   const handleDeleteDocument = async (documentId: string) => {
+    // Optimistic update - remove from UI immediately
+    const deletedDocument = documents.find(doc => doc.id === documentId);
+    const deletedIndex = selectedCardIndex !== null && filteredDocuments[selectedCardIndex]?.id === documentId ? selectedCardIndex : null;
+    
+    // Remove from local state immediately
+    setDocuments(prev => {
+      const updated = prev.filter(doc => doc.id !== documentId);
+      
+      // Save to recent projects after file deletion (user interaction)
+      if (property) {
+        saveToRecentProjects({
+          ...property,
+          documentCount: updated.length
+        });
+      }
+      
+      return updated;
+    });
+    
+    // If the deleted document was selected, close the preview
+    if (deletedIndex !== null) {
+      setSelectedCardIndex(null);
+    }
+    
+    // Call API in background - if it fails, restore the document
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
       const response = await fetch(`${backendUrl}/api/documents/${documentId}`, {
@@ -1918,34 +1943,35 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
 
       // Handle 404 as success - document is already gone
       if (response.status === 404) {
-        console.info(`Document ${documentId} was already deleted, removing from UI`);
-        // Fall through to remove from local state
+        console.info(`Document ${documentId} was already deleted`);
+        // Already removed from UI, nothing to do
       } else if (!response.ok) {
         throw new Error(`Failed to delete document: ${response.status}`);
-      }
-
-      // Remove from local state
-      setDocuments(prev => {
-        const updated = prev.filter(doc => doc.id !== documentId);
-        
-        // Save to recent projects after successful file deletion (user interaction)
-        if (property) {
-          saveToRecentProjects({
-            ...property,
-            documentCount: updated.length
-          });
-        }
-        
-        return updated;
-      });
-      
-      // If the deleted document was selected, close the preview
-      if (selectedCardIndex !== null && filteredDocuments[selectedCardIndex]?.id === documentId) {
-        setSelectedCardIndex(null);
       }
     } catch (err: unknown) {
       console.error('Error deleting document:', err);
       const errorMessage = err instanceof Error ? err.message : String(err);
+      
+      // Restore document if deletion failed
+      if (deletedDocument) {
+        setDocuments(prev => {
+          const updated = [...prev, deletedDocument].sort((a, b) => {
+            // Maintain original order if possible
+            return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+          });
+          
+          // Restore property count
+          if (property) {
+            saveToRecentProjects({
+              ...property,
+              documentCount: updated.length
+            });
+          }
+          
+          return updated;
+        });
+      }
+      
       alert(`Failed to delete document: ${errorMessage}`);
     }
   };
@@ -2564,6 +2590,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
               ease: [0.12, 0, 0.39, 0], // Very smooth easing curve for buttery smooth handover
               layout: isChatPanelResizing ? { duration: 0 } : { duration: 0.3 } // Disable layout transitions during resize
             }}
+            data-property-details-panel="true"
             className={`bg-white flex overflow-hidden pointer-events-auto ${
               // In split-view (chat + property details), remove heavy shadows so there's no "divider shadow"
               isChatPanelOpen ? '' : 'shadow-2xl ring-1 ring-black/5'
@@ -3992,117 +4019,88 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
             
             {/* Upload errors are now handled by UploadProgressBar component */}
             
-             {/* Selection Floating Bar - Updated Style */}
+             {/* Selection Floating Bar - White UI */}
                 {/* Only show when in local selection mode (for deletion), not chat selection mode */}
                 {isLocalSelectionMode && localSelectedDocumentIds.size > 0 && (
                         <div
-                    className="absolute bottom-6 left-0 right-0 mx-auto w-fit bg-gray-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50"
+                    className="absolute bottom-6 left-0 right-0 mx-auto w-fit bg-white text-gray-900 px-6 py-3 rounded-full shadow-xl border border-gray-200 flex items-center gap-4 z-50"
                   >
-                    <span className="font-medium text-sm">{localSelectedDocumentIds.size} selected</span>
-                    <div className="h-4 w-px bg-gray-700"></div>
-                    
-                    {/* Reprocess Button with Dropdown */}
-                    <div className="relative">
-                      <button
-                        onClick={() => setReprocessDropdownOpen(!reprocessDropdownOpen)}
-                        className={`text-blue-400 hover:text-blue-300 font-medium text-sm flex items-center gap-1.5 transition-colors ${isReprocessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        disabled={isReprocessing}
-                        title="Reprocess documents for citation highlighting"
-                      >
-                        {isReprocessing ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <RefreshCw size={14} />
-                        )}
-                        Reprocess
-                        <ChevronDown size={12} className="opacity-70" />
-                      </button>
-                      
-                      {/* Dropdown Menu */}
-                      {reprocessDropdownOpen && !isReprocessing && (
-                        <div 
-                          className="absolute bottom-full left-0 mb-2 w-56 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
-                          onMouseLeave={() => setReprocessDropdownOpen(false)}
-                        >
-                          <button
-                            onClick={() => handleReprocessSelected('full')}
-                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5 text-gray-800"
-                          >
-                            <span className="font-medium">Full Reprocess</span>
-                            <span className="text-xs text-gray-500">Re-embed & extract BBOX (slower)</span>
-                          </button>
-                          <button
-                            onClick={() => handleReprocessSelected('bbox_only')}
-                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex flex-col gap-0.5 text-gray-800"
-                          >
-                            <span className="font-medium">Update BBOX Only</span>
-                            <span className="text-xs text-gray-500">Keep embeddings, add BBOX (faster)</span>
-                          </button>
-                        </div>
-                      )}
-                      
-                      {/* Result Toast */}
-                      {reprocessResult && (
-                        <div 
-                          className={`absolute bottom-full left-0 mb-2 px-3 py-2 rounded-lg shadow-lg text-sm whitespace-nowrap z-50 ${
-                            reprocessResult.success 
-                              ? 'bg-green-50 text-green-800 border border-green-200' 
-                              : 'bg-red-50 text-red-800 border border-red-200'
-                          }`}
-                        >
-                          {reprocessResult.message}
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="h-4 w-px bg-gray-700"></div>
+                    <span className="font-medium text-sm text-gray-700">{localSelectedDocumentIds.size} selected</span>
+                    <div className="h-4 w-px bg-gray-300"></div>
                     <button 
                       onClick={() => setShowDeleteConfirm(true)}
-                      className="text-red-400 hover:text-red-300 font-medium text-sm flex items-center gap-1.5 transition-colors"
+                      className="text-red-600 hover:text-red-700 font-medium text-sm flex items-center gap-1.5 transition-colors"
                     >
                       <Trash2 size={14} />
                       Delete
                     </button>
+                    <div className="h-4 w-px bg-gray-300"></div>
                     <button 
                       onClick={() => {
                         setLocalSelectedDocumentIds(new Set());
                         setIsLocalSelectionMode(false);
                       }}
-                      className="text-gray-400 hover:text-white text-sm transition-colors"
+                      className="text-gray-600 hover:text-gray-900 text-sm font-medium transition-colors"
                     >
                       Cancel
                     </button>
                   </div>
                 )}
              
-             {/* Delete Confirmation Dialog */}
+             {/* Delete Confirmation Dialog - High quality design */}
              <AnimatePresence>
                 {showDeleteConfirm && (
-                  <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-                          <motion.div
-                      initial={{ scale: 0.96, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      exit={{ scale: 0.96, opacity: 0 }}
-                      transition={{ duration: 0.15 }}
-                      className="bg-white w-full shadow-xl"
-                      style={{ borderRadius: 0, maxWidth: '340px' }}
+                  <div className="absolute inset-0 z-[60] flex items-center justify-center p-4 pointer-events-none">
+                    {/* Backdrop */}
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="absolute inset-0 bg-black/50 backdrop-blur-sm pointer-events-auto"
+                      onClick={() => setShowDeleteConfirm(false)}
+                    />
+                    
+                    {/* Dialog */}
+                    <motion.div
+                      initial={{ scale: 0.95, opacity: 0, y: 8 }}
+                      animate={{ scale: 1, opacity: 1, y: 0 }}
+                      exit={{ scale: 0.95, opacity: 0, y: 8 }}
+                      transition={{ 
+                        duration: 0.2,
+                        ease: [0.16, 1, 0.3, 1]
+                      }}
+                      className="bg-white rounded-xl w-full relative z-10 pointer-events-auto"
+                      style={{ 
+                        maxWidth: 'min(calc(100% - 2rem), 420px)',
+                        minWidth: '320px',
+                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+                      }}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                       <div className="px-5 py-4 border-b border-gray-100">
-                         <h3 className="text-base font-semibold text-gray-900">Delete Documents?</h3>
-                       </div>
-                       <div className="px-5 py-4">
-                         <p className="text-sm text-gray-600 leading-relaxed">
-                           Are you sure? This will permanently delete {localSelectedDocumentIds.size} {localSelectedDocumentIds.size === 1 ? 'document' : 'documents'}. This action cannot be undone.
-                       </p>
-                       </div>
-                       <div className="px-5 py-3 border-t border-gray-100 flex justify-end gap-2">
-                              <button
-                                onClick={() => setShowDeleteConfirm(false)}
-                           className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors"
-                              >
-                                Cancel
-                              </button>
-                              <button
+                      <div className="p-6">
+                        {/* Title */}
+                        <div className="mb-4">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                            Delete Documents?
+                          </h3>
+                          <p className="text-sm text-gray-600 leading-relaxed">
+                            Are you sure? This will permanently delete <span className="font-medium text-gray-900">{localSelectedDocumentIds.size}</span> {localSelectedDocumentIds.size === 1 ? 'document' : 'documents'}. This action cannot be undone.
+                          </p>
+                        </div>
+                        
+                        {/* Actions */}
+                        <div className="flex justify-end gap-3 mt-6">
+                          <button
+                            onClick={() => setShowDeleteConfirm(false)}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all duration-200"
+                            style={{
+                              minWidth: '80px'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
                                 onClick={async () => {
                                   // Optimistically update UI immediately for instant feedback
                                   const documentsToDelete = Array.from(localSelectedDocumentIds);
@@ -4155,11 +4153,16 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                     setDocuments(previousDocuments);
                                   });
                                 }}
-                           className="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-700 transition-colors"
+                                className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
+                                style={{
+                                  minWidth: '80px',
+                                  boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
+                                }}
                               >
                                 Delete
                               </button>
                             </div>
+                      </div>
                           </motion.div>
                   </div>
               )}

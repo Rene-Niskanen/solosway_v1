@@ -1695,11 +1695,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             const containerWidth = containerRect.width;
             const containerLeft = containerRect.left;
             
-            const leftEdge = chatPanelWidth + sidebarWidth;
-            const visibleWidth = containerWidth - (leftEdge - containerLeft);
-            const visibleCenterX = leftEdge + (visibleWidth / 2);
+            const leftObstruction = chatPanelWidth + sidebarWidth;
+            let rightObstruction = 0;
+            if (showPropertyDetailsPanel) {
+              const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+              if (propertyPanelElement) {
+                rightObstruction = propertyPanelElement.getBoundingClientRect().width;
+              } else {
+                rightObstruction = 600;
+              }
+            }
+            const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+            const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, window.innerWidth - rightObstruction));
+            const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+            const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
             const containerCenterX = containerLeft + (containerWidth / 2);
-            const horizontalOffset = (visibleCenterX - containerCenterX);
+            const horizontalOffset = visibleCenterX - containerCenterX;
             
             console.log('📍 Title card clicked - re-centering with chat panel:', {
               chatPanelWidth,
@@ -1786,26 +1797,60 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         const containerWidth = containerRect.width;
         const containerLeft = containerRect.left;
         
-        // Calculate the center of the visible map area (accounting for chat panel and sidebar)
-        const leftEdge = currentChatPanelWidth + currentSidebarWidth; // Left edge of visible map area (right edge of chat panel)
-        const visibleWidth = containerWidth - (leftEdge - containerLeft); // Width of visible map area within container
-        const visibleCenterX = leftEdge + (visibleWidth / 2); // Center of visible area in viewport coordinates
-        const containerCenterX = containerLeft + (containerWidth / 2); // Center of map container in viewport coordinates
+        // Calculate the center of the visible map area (accounting for chat panel, sidebar, and PropertyDetailsPanel)
+        // Mapbox offset is relative to the map container's canvas center, so we need container-relative coordinates
+        const viewportWidth = window.innerWidth;
         
-        // Calculate offset relative to map container center (Mapbox expects this)
-        const horizontalOffset = (visibleCenterX - containerCenterX);
+        // Left obstruction: chat panel + sidebar (in viewport coordinates)
+        const leftObstruction = currentChatPanelWidth + currentSidebarWidth;
+        
+        // Right obstruction: PropertyDetailsPanel when open (in viewport coordinates)
+        let rightObstruction = 0;
+        if (showPropertyDetailsPanel) {
+          const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+          if (propertyPanelElement) {
+            const panelRect = propertyPanelElement.getBoundingClientRect();
+            rightObstruction = panelRect.width;
+          } else {
+            // Fallback to minimum width (600px) if we can't find the element
+            rightObstruction = 600;
+          }
+        }
+        
+        // Calculate visible bounds in viewport coordinates
+        const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+        const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, viewportWidth - rightObstruction));
+        
+        // Ensure visible width is valid
+        const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+        
+        // Center of visible area in viewport coordinates
+        const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
+        
+        // Center of map container in viewport coordinates (from actual container rect)
+        const containerCenterX = containerLeft + (containerWidth / 2);
+        
+        // Calculate offset: Mapbox offset is in pixels relative to the map canvas center
+        // Positive X offset moves the target point to the RIGHT of the map center
+        // Negative X offset moves the target point to the LEFT of the map center
+        // We want the pin at visibleCenterX, so: offset = visibleCenterX - containerCenterX
+        // If visibleCenterX > containerCenterX, we need positive offset (move right)
+        // If visibleCenterX < containerCenterX, we need negative offset (move left)
+        const horizontalOffset = visibleCenterX - containerCenterX;
         
         console.log('📍 Property pin clicked - centering calculation:', {
           chatPanelWidth: currentChatPanelWidth,
           sidebarWidth: currentSidebarWidth,
-          containerWidth,
-          containerLeft,
-          leftEdge,
+          showPropertyDetailsPanel,
+          rightObstruction,
+          viewportWidth,
+          leftObstruction,
+          visibleLeftEdge,
+          visibleRightEdge,
           visibleWidth,
           visibleCenterX,
           containerCenterX,
           horizontalOffset,
-          windowWidth: window.innerWidth,
           source: 'pin-click',
           usingRefs: true
         });
@@ -3175,11 +3220,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                         const containerWidth = containerRect.width;
                         const containerLeft = containerRect.left;
                         
-                        const leftEdge = chatPanelWidth + sidebarWidth;
-                        const visibleWidth = containerWidth - (leftEdge - containerLeft);
-                        const visibleCenterX = leftEdge + (visibleWidth / 2);
+                        const leftObstruction = chatPanelWidth + sidebarWidth;
+                        let rightObstruction = 0;
+                        if (showPropertyDetailsPanel) {
+                          const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+                          if (propertyPanelElement) {
+                            rightObstruction = propertyPanelElement.getBoundingClientRect().width;
+                          } else {
+                            rightObstruction = 600;
+                          }
+                        }
+                        const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+                        const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, window.innerWidth - rightObstruction));
+                        const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+                        const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
                         const containerCenterX = containerLeft + (containerWidth / 2);
-                        const horizontalOffset = (visibleCenterX - containerCenterX);
+                        const horizontalOffset = visibleCenterX - containerCenterX;
                         
                         console.log('📍 Title card clicked (navigation) - re-centering with chat panel:', {
                           chatPanelWidth,
@@ -3259,12 +3315,23 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                 
                 // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
                 const currentChatPanelWidth = chatPanelWidthRef.current;
-                const leftEdge = currentChatPanelWidth + sidebarWidth;
-                const visibleWidth = containerWidth - (leftEdge - containerLeft);
-                const visibleCenterX = leftEdge + (visibleWidth / 2);
+                const leftObstruction = currentChatPanelWidth + sidebarWidth;
+                let rightObstruction = 0;
+                if (showPropertyDetailsPanel) {
+                  const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+                  if (propertyPanelElement) {
+                    rightObstruction = propertyPanelElement.getBoundingClientRect().width;
+                  } else {
+                    rightObstruction = 600;
+                  }
+                }
+                const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+                const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, window.innerWidth - rightObstruction));
+                const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+                const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
                 const containerCenterX = containerLeft + (containerWidth / 2);
                 // Calculate offset relative to map container center (Mapbox expects this)
-                const horizontalOffset = (visibleCenterX - containerCenterX);
+                const horizontalOffset = visibleCenterX - containerCenterX;
                 
                 console.log('📍 Recent project: Flying to property pin location:', { 
                   lat: finalLat, 
@@ -3704,18 +3771,29 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         
         // Use chatPanelWidthRef to get the CURRENT chat panel width (may have been updated by navigation action)
         const currentChatPanelWidth = chatPanelWidthRef.current;
-        const leftEdge = currentChatPanelWidth + sidebarWidth;
-        const visibleWidth = containerWidth - (leftEdge - containerLeft);
-        const visibleCenterX = leftEdge + (visibleWidth / 2);
+        const leftObstruction = currentChatPanelWidth + sidebarWidth;
+        let rightObstruction = 0;
+        if (showPropertyDetailsPanel) {
+          const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+          if (propertyPanelElement) {
+            rightObstruction = propertyPanelElement.getBoundingClientRect().width;
+          } else {
+            rightObstruction = 600;
+          }
+        }
+        const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+        const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, window.innerWidth - rightObstruction));
+        const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+        const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
         const containerCenterX = containerLeft + (containerWidth / 2);
-        const horizontalOffset = (visibleCenterX - containerCenterX);
+        const horizontalOffset = visibleCenterX - containerCenterX;
         
         console.log('📍 Property centering (instant jump):', {
           chatPanelWidth: currentChatPanelWidth,
           sidebarWidth,
           containerWidth,
           containerLeft,
-          leftEdge,
+          leftObstruction,
           visibleWidth,
           visibleCenterX,
           containerCenterX,
@@ -4223,11 +4301,22 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
               const containerWidth = containerRect.width;
               const containerLeft = containerRect.left;
               
-              const leftEdge = chatPanelWidth + sidebarWidth;
-              const visibleWidth = containerWidth - (leftEdge - containerLeft);
-              const visibleCenterX = leftEdge + (visibleWidth / 2);
+              const leftObstruction = chatPanelWidth + sidebarWidth;
+              let rightObstruction = 0;
+              if (showPropertyDetailsPanel) {
+                const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+                if (propertyPanelElement) {
+                  rightObstruction = propertyPanelElement.getBoundingClientRect().width;
+                } else {
+                  rightObstruction = 600;
+                }
+              }
+              const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+              const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, window.innerWidth - rightObstruction));
+              const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+              const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
               const containerCenterX = containerLeft + (containerWidth / 2);
-              const horizontalOffset = (visibleCenterX - containerCenterX);
+              const horizontalOffset = visibleCenterX - containerCenterX;
               
               console.log('📍 Title card clicked (navigation end) - re-centering with chat panel:', {
                 chatPanelWidth,
@@ -4808,18 +4897,47 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     // When chat is open, center in visible area. When chat closes, center in full viewport
     let horizontalOffset: number;
     if (chatPanelWidth > 0 && map.current) {
-      // Chat is open - center in visible area (between chat panel and screen edge)
-      // CRITICAL: Mapbox offset is relative to the map container, not the viewport
+      // Chat is open - center in visible area (between chat panel and PropertyDetailsPanel)
+      // Mapbox offset is relative to the map container's canvas center
       const mapContainer = map.current.getContainer();
       const containerRect = mapContainer.getBoundingClientRect();
       const containerWidth = containerRect.width;
       const containerLeft = containerRect.left;
+      const viewportWidth = window.innerWidth;
       
-      const leftEdge = chatPanelWidth + sidebarWidth;
-      const visibleWidth = containerWidth - (leftEdge - containerLeft);
-      const visibleCenterX = leftEdge + (visibleWidth / 2);
+      // Left obstruction: chat panel + sidebar (in viewport coordinates)
+      const leftObstruction = chatPanelWidth + sidebarWidth;
+      
+      // Right obstruction: PropertyDetailsPanel when open (in viewport coordinates)
+      let rightObstruction = 0;
+      if (showPropertyDetailsPanel) {
+        const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+        if (propertyPanelElement) {
+          const panelRect = propertyPanelElement.getBoundingClientRect();
+          rightObstruction = panelRect.width;
+        } else {
+          // Fallback to minimum width (600px) if we can't find the element
+          rightObstruction = 600;
+        }
+      }
+      
+      // Calculate visible bounds in viewport coordinates
+      const visibleLeftEdge = Math.max(leftObstruction, containerLeft);
+      const visibleRightEdge = Math.max(visibleLeftEdge, Math.min(containerLeft + containerWidth, viewportWidth - rightObstruction));
+      
+      // Ensure visible width is valid
+      const visibleWidth = Math.max(0, visibleRightEdge - visibleLeftEdge);
+      
+      // Center of visible area in viewport coordinates
+      const visibleCenterX = visibleLeftEdge + (visibleWidth / 2);
+      
+      // Center of map container in viewport coordinates (from actual container rect)
       const containerCenterX = containerLeft + (containerWidth / 2);
-      horizontalOffset = (visibleCenterX - containerCenterX);
+      
+      // Calculate offset: Mapbox offset is in pixels relative to the map canvas center
+      // Positive X offset moves the target point to the RIGHT of the map center
+      // Negative X offset moves the target point to the LEFT of the map center
+      horizontalOffset = visibleCenterX - containerCenterX;
     } else {
       // Chat is closed - center in full viewport (no offset)
       horizontalOffset = 0;
@@ -4830,12 +4948,16 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       previousWidth: previousChatPanelWidthRef.current,
       chatJustClosed,
       sidebarWidth,
+      showPropertyDetailsPanel,
+      rightObstruction: chatPanelWidth > 0 && showPropertyDetailsPanel ? (() => {
+        const propertyPanelElement = document.querySelector('[data-property-details-panel]') as HTMLElement;
+        return propertyPanelElement ? propertyPanelElement.getBoundingClientRect().width : 600;
+      })() : 0,
+      viewportWidth: typeof window !== 'undefined' ? window.innerWidth : 'N/A',
       horizontalOffset,
       hasSelectedProperty,
       hasVisibleTitleCard,
-      titleCardPropertyId,
-      containerWidth: map.current ? map.current.getContainer().getBoundingClientRect().width : 'N/A',
-      containerLeft: map.current ? map.current.getContainer().getBoundingClientRect().left : 'N/A'
+      titleCardPropertyId
     });
     
     // Longer delay to ensure chat panel has finished animating and any ongoing animations have settled

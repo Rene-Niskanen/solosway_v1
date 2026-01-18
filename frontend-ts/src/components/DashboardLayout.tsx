@@ -271,6 +271,20 @@ const DashboardLayoutContent = ({
     // Do NOT create chat history yet; wait for first submitted query
   }, [handleChatModeChange]);
 
+  // Auto-collapse sidebar when entering map view (only on transition from not visible to visible)
+  const prevMapVisibleRef = React.useRef<boolean>(false);
+  React.useEffect(() => {
+    const mapJustBecameVisible = !prevMapVisibleRef.current && isMapVisible;
+    prevMapVisibleRef.current = isMapVisible;
+    
+    // Only auto-collapse when map FIRST becomes visible, not continuously
+    if (mapJustBecameVisible && !isSidebarCollapsed) {
+      console.log('🗺️ Map became visible - auto-collapsing sidebar');
+      setIsSidebarCollapsed(true);
+      setIsSidebarExpanded(false);
+    }
+  }, [isMapVisible, isSidebarCollapsed]);
+
   const handleReturnToChat = React.useCallback(() => {
     if (previousChatData) {
       setCurrentChatData(previousChatData);

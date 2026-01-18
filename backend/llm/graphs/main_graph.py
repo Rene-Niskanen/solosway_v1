@@ -25,7 +25,7 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
+from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action, detect_navigation_intent_node
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
     check_cached_documents,
@@ -285,6 +285,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - ~5-10x faster than normal pipeline
     """
     
+    builder.add_node("detect_navigation_intent", detect_navigation_intent_node)
+    """
+    Pre-Router Node: LLM-based Navigation Intent Detection
+    Runs before routing to determine if query is navigation vs information-seeking.
+    Sets navigation_intent in state for should_route to use.
+    """
+    
     builder.add_node("handle_navigation_action", handle_navigation_action)
     """
     INSTANT Path Node: Navigation Action Handler (~0.1s)
@@ -398,38 +405,12 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, query='{user_query[:60]}...'")
         
         # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
-        # When user wants to navigate to a property on the map
+        # Uses LLM-based detection from navigation_intent state (set by detect_navigation_intent_node)
         # Only in agent mode - reader mode doesn't have navigation tools
-        if is_agent_mode:
-            # Explicit navigation phrases - must be very specific
-            # Include variations with "please" and other polite words
-            navigation_patterns = [
-                "take me to the", "take me to ", "please take me to", "please take me to the",
-                "go to the map", "navigate to the", "please navigate to", "please navigate to the",
-                "show me on the map", "show on map", "find on map", "open the map",
-                "go to map", "click on the", "select the pin", "click the pin",
-                "please show me", "please go to", "please find"
-            ]
-            
-            # Pin-specific patterns - strong indicator of navigation
-            pin_patterns = [" pin", "property pin", "map pin"]
-            
-            # Information query keywords - these should NOT trigger navigation
-            info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
-                           "inspection", "document", "tell me about", "what is", "how much",
-                           "summary", "details", "information", "data"]
-            
-            # Check if this looks like an information query (NOT navigation)
-            is_info_query = any(keyword in user_query for keyword in info_keywords)
-            
-            # Only check navigation if NOT an info query
-            if not is_info_query:
-                has_navigation_intent = any(pattern in user_query for pattern in navigation_patterns)
-                has_pin_intent = any(pattern in user_query for pattern in pin_patterns)
-                
-                if has_navigation_intent or has_pin_intent:
-                    logger.info(f"⚡ [ROUTER] should_route → navigation_action (navigation intent detected: '{user_query}')")
-                    return "navigation_action"
+        navigation_intent = state.get("navigation_intent")
+        if is_agent_mode and navigation_intent and navigation_intent.get("is_navigation"):
+            logger.info(f"⚡ [ROUTER] should_route → navigation_action (LLM detected: '{navigation_intent.get('reason')}')")
+            return "navigation_action"
         
         # PATH 0: CITATION QUERY (ULTRA-FAST ~2s)
         # When user clicked on a citation and asked a question about it
@@ -516,16 +497,20 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge(START, "check_cached_documents")
     logger.debug("Edge: START -> check_cached_documents")
 
-    # Cache Check → Conditional: Use cached or route (RESTORED FROM HEAD)
+    # Cache Check → Conditional: Use cached or detect navigation intent (then route)
     builder.add_conditional_edges(
         "check_cached_documents",
         should_use_cached_documents,
         {
             "process_documents": "process_documents",  # Cached - skip to process
-            "route_query": "route_query"  # Not cached - go directly to route_query (HEAD behavior)
+            "route_query": "detect_navigation_intent"  # Not cached - detect navigation intent first
         }
     )
-    logger.debug("Conditional: check_cached_documents -> [process_documents|route_query] (RESTORED FROM HEAD)")
+    logger.debug("Conditional: check_cached_documents -> [process_documents|detect_navigation_intent]")
+    
+    # Navigation Intent Detection → Route Query
+    builder.add_edge("detect_navigation_intent", "route_query")
+    logger.debug("Edge: detect_navigation_intent -> route_query (LLM-based intent detection)")
 
     # Router → Conditional routing (ORIGINAL - restored from HEAD)
     # NOTE: Citation routing is handled by should_route based on citation_context

@@ -216,10 +216,9 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     return cleanedParts.slice(0, 3).join(', ').trim() || address;
   };
 
-  // Generate PDF thumbnail
+  // Generate PDF thumbnail - optimized for instant preview
   const generatePdfThumbnail = async (file: File): Promise<string | null> => {
     try {
-      console.log('Generating thumbnail for PDF:', file.name);
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
       const page = await pdf.getPage(1);
@@ -227,7 +226,6 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       const canvas = document.createElement('canvas');
       const context = canvas.getContext('2d');
       if (!context) {
-        console.warn('Could not get canvas context');
         return null;
       }
       
@@ -236,13 +234,12 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       const pageWidth = viewport.width;
       const pageHeight = viewport.height;
       
-      // Calculate scale to fit within reasonable thumbnail size while maintaining aspect ratio
-      // Target max dimensions for thumbnail
-      const maxWidth = 400;
-      const maxHeight = 600;
+      // Optimized for speed: smaller dimensions and lower scale for instant preview
+      const maxWidth = 280; // Reduced from 400 for faster rendering
+      const maxHeight = 400; // Reduced from 600 for faster rendering
       const scaleX = maxWidth / pageWidth;
       const scaleY = maxHeight / pageHeight;
-      const scale = Math.min(scaleX, scaleY, 2.0); // Cap at 2.0 for quality
+      const scale = Math.min(scaleX, scaleY, 1.5); // Reduced from 2.0 for faster rendering
       
       const scaledViewport = page.getViewport({ scale });
       canvas.width = scaledViewport.width;
@@ -257,8 +254,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
         viewport: scaledViewport,
       } as any).promise;
       
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-      console.log('Thumbnail generated successfully, dimensions:', canvas.width, 'x', canvas.height);
+      // Lower quality for faster encoding (0.75 instead of 0.92)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
       return dataUrl;
     } catch (error) {
       console.error('Failed to generate PDF thumbnail:', error);
@@ -266,7 +263,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     }
   };
 
-  // File handling
+  // File handling - optimized for parallel processing
   const handleFileAdd = useCallback(async (file: File) => {
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newFile: UploadedFile = {
@@ -276,39 +273,35 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       uploadStatus: 'uploading'
     };
 
+    // Add file immediately to show it right away
     setUploadedFiles(prev => [...prev, newFile]);
-    setUploading(true);
 
-    // Generate thumbnail immediately for PDFs (before upload completes)
+    // Check if PDF for thumbnail generation
     const isPDF = file.type === 'application/pdf' || 
                  file.type === 'application/x-pdf' ||
                  file.name.toLowerCase().endsWith('.pdf');
     
+    // Generate thumbnail in parallel (don't await - let it update when ready)
     if (isPDF) {
-      try {
-        const thumbnailUrl = await generatePdfThumbnail(file);
+      generatePdfThumbnail(file).then(thumbnailUrl => {
         if (thumbnailUrl) {
-          console.log('PDF thumbnail generated:', file.name);
-          // Update state with thumbnail immediately
           setUploadedFiles(prev => prev.map(f =>
             f.id === fileId ? { ...f, thumbnailUrl } : f
           ));
         }
-      } catch (error) {
+      }).catch(error => {
         console.warn('Failed to generate PDF thumbnail for', file.name, error);
-      }
+      });
     }
 
+    // Upload in parallel (don't block other files)
     try {
-      // Upload without property_id (temporary upload)
-      // Documents will be processed later when linked to the created property
-      // Use silent: true to suppress global progress notification
       const response = await backendApi.uploadPropertyDocumentViaProxy(
         file,
         {
-          skip_processing: 'true',  // Don't process yet - will process after property creation
-          project_upload: 'true',   // Mark as project upload
-          silent: true              // Don't show global progress notification
+          skip_processing: 'true',
+          project_upload: 'true',
+          silent: true
         },
         (percent) => {
           setUploadedFiles(prev => prev.map(f =>
@@ -335,8 +328,6 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       setUploadedFiles(prev => prev.map(f =>
         f.id === fileId ? { ...f, uploadStatus: 'error' } : f
       ));
-    } finally {
-      setUploading(false);
     }
   }, []);
 
@@ -353,16 +344,23 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
     const droppedFiles = Array.from(e.dataTransfer.files);
-    for (const file of droppedFiles) {
-      await handleFileAdd(file);
-    }
+    
+    // Process all files in parallel - show them all immediately
+    setUploading(true);
+    Promise.all(droppedFiles.map(file => handleFileAdd(file))).finally(() => {
+      setUploading(false);
+    });
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
-    for (const file of selectedFiles) {
-      await handleFileAdd(file);
-    }
+    
+    // Process all files in parallel - show them all immediately
+    setUploading(true);
+    Promise.all(selectedFiles.map(file => handleFileAdd(file))).finally(() => {
+      setUploading(false);
+    });
+    
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -538,84 +536,148 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
               <div className="w-full max-w-md" style={{ marginTop: '-40px' }}>
                 {/* Project name input */}
                 <div style={{ marginBottom: '24px' }}>
-                  <div className="relative">
-                  <input
-                    type="text"
-                    value={propertyTitle}
-                    onChange={(e) => setPropertyTitle(e.target.value)}
+                  <div 
+                    className="relative flex flex-col"
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.72)',
+                      backdropFilter: 'blur(16px) saturate(160%)',
+                      WebkitBackdropFilter: 'blur(16px) saturate(160%)',
+                      border: '1px solid rgba(82, 101, 128, 0.35)',
+                      boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+                      borderRadius: '12px',
+                      padding: '12px',
+                      transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={propertyTitle}
+                      onChange={(e) => setPropertyTitle(e.target.value)}
                       onFocus={() => setIsInputFocused(true)}
                       onBlur={() => setIsInputFocused(false)}
-                      className="w-full bg-transparent border-0 border-b transition-colors focus:outline-none"
-                    style={{
-                        padding: '12px 0',
-                        fontSize: '18px',
+                      className="w-full bg-transparent border-0 transition-colors focus:outline-none"
+                      style={{
+                        padding: '0',
+                        fontSize: '14px',
                         fontWeight: 400,
                         color: '#1a1a1a',
-                        borderBottomWidth: '1px',
-                        borderBottomColor: isInputFocused ? '#a1a1a1' : '#e5e5e5',
                         letterSpacing: '-0.01em',
                       }}
                     />
                     {!propertyTitle && !isInputFocused && (
                       <div 
                         className="absolute inset-0 pointer-events-none flex items-center"
-                        style={{ padding: '12px 0' }}
+                        style={{ padding: '0 12px' }}
                       >
-                        <span style={{ fontSize: '18px', color: '#a1a1a1', fontWeight: 400, letterSpacing: '-0.01em' }}>
+                        <span style={{ fontSize: '14px', color: '#a1a1a1', fontWeight: 400, letterSpacing: '-0.01em' }}>
                           {displayedPlaceholder}
                         </span>
                       </div>
                     )}
                   </div>
-                  <p style={{ fontSize: '12px', color: '#a1a1a1', marginTop: '8px', fontWeight: 400, letterSpacing: '-0.01em' }}>
+                  <p style={{ fontSize: '12px', color: '#a1a1a1', marginTop: '8px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Project name
                   </p>
                 </div>
 
-                {/* Files section - flat design */}
+                {/* Files section - minimalistic container design */}
                 <div style={{ marginBottom: '32px' }}>
                   <p style={{ fontSize: '12px', color: '#a1a1a1', marginBottom: '12px', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Attachments
                   </p>
                   
-                  {/* Drop zone - minimal */}
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-                  onDragLeave={(e) => { e.preventDefault(); setIsDragOver(false); }}
-                  onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                    className="cursor-pointer transition-all"
+                  {/* Drop zone - minimalistic square container */}
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); setIsDragOver(false); }}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="relative flex flex-col cursor-pointer items-center justify-center"
                     style={{
-                      padding: '32px 24px',
+                      width: '100%',
+                      aspectRatio: uploadedFiles.length > 0 ? '2.5 / 1' : '1 / 1',
+                      maxHeight: uploadedFiles.length > 0 ? '160px' : '240px',
+                      padding: uploadedFiles.length > 0 ? '20px' : '24px',
                       borderRadius: '12px',
-                      backgroundColor: isDragOver ? '#f5f5f5' : '#fafafa',
-                      border: '1px solid #e5e5e5',
+                      background: isDragOver 
+                        ? '#F0F9FF' 
+                        : 'rgba(255, 255, 255, 0.72)',
+                      backdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                      WebkitBackdropFilter: isDragOver ? 'none' : 'blur(16px) saturate(160%)',
+                      border: isDragOver
+                        ? '2px dashed rgb(36, 41, 50)'
+                        : '1px solid rgba(82, 101, 128, 0.35)',
+                      boxShadow: isDragOver 
+                        ? '0 4px 12px 0 rgba(59, 130, 246, 0.15), 0 2px 4px 0 rgba(59, 130, 246, 0.10)' 
+                        : 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+                      transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                     }}
                   >
                     <div className="flex flex-col items-center">
-                      <Upload className="w-5 h-5 text-neutral-500 mb-3" strokeWidth={1.5} />
-                      <p style={{ fontSize: '14px', color: '#a1a1a1', marginBottom: '4px', fontWeight: 400, letterSpacing: '-0.01em' }}>
-                        Drop files here or <span style={{ color: '#a1a1a1', fontWeight: 500 }}>browse</span>
+                      <Upload 
+                        className="text-neutral-500" 
+                        style={{ 
+                          width: uploadedFiles.length > 0 ? '18px' : '20px', 
+                          height: uploadedFiles.length > 0 ? '18px' : '20px',
+                          marginBottom: uploadedFiles.length > 0 ? '8px' : '12px',
+                        }} 
+                        strokeWidth={1.5} 
+                      />
+                      <p style={{ 
+                        fontSize: uploadedFiles.length > 0 ? '13px' : '14px', 
+                        color: '#71717A', 
+                        marginBottom: uploadedFiles.length > 0 ? '3px' : '4px', 
+                        fontWeight: 400, 
+                        letterSpacing: '-0.01em',
+                      }}>
+                        Drop files here or <span style={{ color: '#71717A', fontWeight: 500 }}>browse</span>
                       </p>
-                      <p style={{ fontSize: '12px', color: '#a3a3a3', fontWeight: 400, letterSpacing: '-0.01em' }}>
+                      <p style={{ 
+                        fontSize: uploadedFiles.length > 0 ? '11px' : '12px', 
+                        color: '#A1A1AA', 
+                        fontWeight: 400, 
+                        letterSpacing: '-0.01em',
+                      }}>
                         PDF, images, documents
                       </p>
                     </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleFileSelect}
-                    className="hidden"
-                  />
-                </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleFileSelect}
+                      className="hidden"
+                    />
+                  </div>
 
                   {/* File List - Document-shaped cards */}
                 {uploadedFiles.length > 0 && (
                     <div className="flex flex-wrap gap-3 mt-4">
-                    {uploadedFiles.map((uploadedFile) => (
-                      <div
-                        key={uploadedFile.id}
+                    <AnimatePresence mode="popLayout">
+                      {uploadedFiles.map((uploadedFile, index) => (
+                        <motion.div
+                          key={uploadedFile.id}
+                          initial={{ 
+                            opacity: 0, 
+                            scale: 0.94,
+                            y: 20
+                          }}
+                          animate={{ 
+                            opacity: 1, 
+                            scale: 1,
+                            y: 0
+                          }}
+                          exit={{ 
+                            opacity: 0, 
+                            scale: 0.96,
+                            y: -8,
+                            transition: { duration: 0.2, ease: [0.4, 0, 0.2, 1] }
+                          }}
+                          transition={{ 
+                            duration: 0.45,
+                            delay: index * 0.025,
+                            ease: [0.16, 1, 0.3, 1] // Premium easing curve - smooth deceleration
+                          }}
                           className="relative group"
                           style={{
                             width: '140px',
@@ -753,8 +815,9 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                 : uploadedFile.file.name}
                             </p>
                           </div>
-                      </div>
-                    ))}
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
                   </div>
                 )}
                 </div>
