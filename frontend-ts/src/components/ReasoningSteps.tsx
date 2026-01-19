@@ -2,7 +2,7 @@ import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, FileText, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter, Infinity } from 'lucide-react';
+import { Search, SearchCheck, FileText, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter, Infinity, Globe, FileEdit, CheckCircle2 } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
 import * as pdfjs from 'pdfjs-dist';
@@ -16,7 +16,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Types for reasoning steps
 export interface ReasoningStep {
   step: string;
-  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
+  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin' | 'file_organizing' | 'file_complete' | 'document_creating' | 'document_complete' | 'browser_researching' | 'browser_complete' | 'desktop_planning';
   message: string;
   count?: number;
   target?: string;
@@ -215,7 +215,79 @@ interface ReasoningStepsProps {
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   hasResponseText?: boolean; // Stop animations when response text has started
   isAgentMode?: boolean; // Show agent-specific steps only in Agent mode
+  thinkingText?: string; // Desktop automation: streaming thinking text with typewriter effect
 }
+
+/**
+ * ThinkingDisplay - Shows streaming thinking text with typewriter effect
+ * Used for desktop automation to show conversational updates like "I'll help you organize..."
+ */
+const ThinkingDisplay: React.FC<{ text: string; isActive: boolean }> = ({ text, isActive }) => {
+  if (!text) return null;
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -5 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -5 }}
+      transition={{ duration: 0.2 }}
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: '8px',
+        padding: '8px 12px',
+        marginBottom: '8px',
+        borderRadius: '8px',
+        backgroundColor: 'rgba(251, 191, 36, 0.08)',
+        border: '1px solid rgba(251, 191, 36, 0.2)',
+      }}
+    >
+      <Infinity 
+        style={{ 
+          width: '16px', 
+          height: '16px', 
+          color: '#F59E0B', 
+          flexShrink: 0,
+          marginTop: '2px',
+          strokeWidth: 2.5 
+        }} 
+      />
+      <div style={{ flex: 1 }}>
+        <span 
+          style={{ 
+            color: '#D97706', 
+            fontSize: '13px',
+            fontWeight: 500,
+            lineHeight: 1.5,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {text}
+          {isActive && (
+            <span 
+              className="thinking-cursor"
+              style={{
+                display: 'inline-block',
+                width: '2px',
+                height: '14px',
+                backgroundColor: '#F59E0B',
+                marginLeft: '2px',
+                verticalAlign: 'text-bottom',
+                animation: 'blink 1s step-end infinite',
+              }}
+            />
+          )}
+        </span>
+      </div>
+      <style>{`
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
+        }
+      `}</style>
+    </motion.div>
+  );
+};
 
 // True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
 const Globe3D: React.FC = () => {
@@ -964,6 +1036,212 @@ const StepRenderer: React.FC<{
         </span>
       );
     
+    // =========================================================================
+    // DESKTOP AUTOMATION STEPS (OpenCode Integration)
+    // =========================================================================
+    
+    case 'desktop_planning':
+      // Planning desktop automation - orange agentic container
+      const isDesktopPlanningActive = isLoading && !hasResponseText;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(251, 191, 36, 0.4)',
+          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <Infinity style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#F59E0B', 
+            flexShrink: 0,
+            strokeWidth: 2.5 
+          }} />
+          {isDesktopPlanningActive ? (
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Planning desktop action'}</span>
+          ) : (
+            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Planning desktop action'}</span>
+          )}
+        </span>
+      );
+    
+    case 'file_organizing':
+      // File organization in progress - orange agentic container with FolderOpen icon
+      const isFileOrganizingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(251, 191, 36, 0.4)',
+          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <FolderOpen style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#F59E0B', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          {isFileOrganizingActive ? (
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Organizing files'}</span>
+          ) : (
+            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Organizing files'}</span>
+          )}
+        </span>
+      );
+    
+    case 'file_complete':
+      // File operation completed - green success styling
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(34, 197, 94, 0.4)',
+          backgroundColor: 'rgba(34, 197, 94, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <CheckCircle2 style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#22C55E', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          <span style={{ color: '#16A34A', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Files organized'}</span>
+        </span>
+      );
+    
+    case 'document_creating':
+      // Document creation in progress - orange agentic container with FileEdit icon
+      const isDocumentCreatingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(251, 191, 36, 0.4)',
+          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <FileEdit style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#F59E0B', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          {isDocumentCreatingActive ? (
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Creating document'}</span>
+          ) : (
+            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Creating document'}</span>
+          )}
+        </span>
+      );
+    
+    case 'document_complete':
+      // Document creation completed - green success styling
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(34, 197, 94, 0.4)',
+          backgroundColor: 'rgba(34, 197, 94, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <CheckCircle2 style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#22C55E', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          <span style={{ color: '#16A34A', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Document created'}</span>
+        </span>
+      );
+    
+    case 'browser_researching':
+      // Browser research in progress - orange agentic container with Globe icon
+      const isBrowserResearchingActive = isLoading && !hasResponseText;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(251, 191, 36, 0.4)',
+          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <Globe style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#F59E0B', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          {isBrowserResearchingActive ? (
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Researching online'}</span>
+          ) : (
+            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Researching online'}</span>
+          )}
+        </span>
+      );
+    
+    case 'browser_complete':
+      // Browser task completed - green success styling
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '3px 8px 3px 6px',
+          borderRadius: '6px',
+          border: '1px solid rgba(34, 197, 94, 0.4)',
+          backgroundColor: 'rgba(34, 197, 94, 0.08)',
+          marginLeft: '-2px',
+          position: 'relative',
+          zIndex: 2,
+        }}>
+          <CheckCircle2 style={{ 
+            width: '14px', 
+            height: '14px', 
+            color: '#22C55E', 
+            flexShrink: 0,
+            strokeWidth: 2 
+          }} />
+          <span style={{ color: '#16A34A', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Research complete'}</span>
+        </span>
+      );
+    
     default:
       // Fallback to message - display as-is
       return <span style={highlightStyle}>{step.message}</span>;
@@ -976,7 +1254,7 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, thinkingText = '' }) => {
   // Track which documents we've already started preloading
   const preloadedDocsRef = useRef<Set<string>>(new Set());
   
@@ -1034,7 +1312,14 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       if (step.action_type === 'context') return;
       
       // Skip agent-specific steps in Reader mode (only show in Agent mode)
-      if (!isAgentMode && (step.action_type === 'executing' || step.action_type === 'opening' || step.action_type === 'navigating' || step.action_type === 'highlighting' || step.action_type === 'opening_map' || step.action_type === 'selecting_pin')) {
+      // Includes navigation, document opening, and desktop automation steps
+      const agentOnlySteps = [
+        'executing', 'opening', 'navigating', 'highlighting', 'opening_map', 'selecting_pin',
+        // Desktop automation steps (OpenCode integration)
+        'file_organizing', 'file_complete', 'document_creating', 'document_complete',
+        'browser_researching', 'browser_complete', 'desktop_planning'
+      ];
+      if (!isAgentMode && agentOnlySteps.includes(step.action_type)) {
         return;
       }
       
@@ -1439,6 +1724,13 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
       contain: 'layout style',
       minHeight: '1px' // Prevent collapse
     }}>
+      {/* Desktop Automation: Thinking text with typewriter effect */}
+      <AnimatePresence>
+        {thinkingText && isAgentMode && (
+          <ThinkingDisplay text={thinkingText} isActive={isLoading} />
+        )}
+      </AnimatePresence>
+      
       {/* Steps stacked vertically - always visible */}
       {isLoading && animatedSteps.length > 0 ? (
         <AnimatePresence mode="popLayout">

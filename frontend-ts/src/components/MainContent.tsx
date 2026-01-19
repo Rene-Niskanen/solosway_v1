@@ -3030,9 +3030,23 @@ export const MainContent = ({
         // Return empty div - the sidebar will be rendered globally
         return <div />;
       case 'projects':
+        // Calculate sidebar width: toggle rail (12px) + sidebar width
+        const TOGGLE_RAIL_WIDTH = 12;
+        const sidebarWidth = (() => {
+          if (isSidebarCollapsed) {
+            return TOGGLE_RAIL_WIDTH; // 12px when collapsed
+          } else if (isSidebarExpanded) {
+            return 320 + TOGGLE_RAIL_WIDTH; // 332px when expanded
+          } else {
+            return 224 + TOGGLE_RAIL_WIDTH; // 236px when normal
+          }
+        })();
         return (
           <div className="w-full h-full overflow-auto">
-            <ProjectsPage onCreateProject={() => setShowNewPropertyWorkflow(true)} />
+            <ProjectsPage 
+              onCreateProject={() => setShowNewPropertyWorkflow(true)} 
+              sidebarWidth={sidebarWidth}
+            />
           </div>
         );
       case 'profile':

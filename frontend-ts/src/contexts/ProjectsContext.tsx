@@ -44,7 +44,9 @@ export const ProjectsProvider: React.FC<ProjectsProviderProps> = ({ children }) 
     try {
       const response = await backendApi.getProjects(status);
       if (response.success && response.data) {
-        setProjects(response.data.projects);
+        // Ensure projects is always an array
+        const projectsList = response.data.projects;
+        setProjects(Array.isArray(projectsList) ? projectsList : []);
       } else {
         // If the table doesn't exist yet, treat it as empty projects (not an error)
         // This provides a better UX - user sees "No projects yet" instead of an error
@@ -55,6 +57,7 @@ export const ProjectsProvider: React.FC<ProjectsProviderProps> = ({ children }) 
           // Don't set error - just show empty state
         } else {
           setError(response.error || 'Failed to fetch projects');
+          setProjects([]); // Ensure projects is always an array even on error
         }
       }
     } catch (err) {
@@ -65,6 +68,7 @@ export const ProjectsProvider: React.FC<ProjectsProviderProps> = ({ children }) 
         setProjects([]);
       } else {
         setError(errorMsg);
+        setProjects([]); // Ensure projects is always an array even on error
       }
     } finally {
       setIsLoading(false);

@@ -36,36 +36,34 @@ async def detect_navigation_intent_llm(user_query: str) -> dict:
     """
     system_prompt = """You are a query intent classifier for a property appraisal application.
 
-Determine if the user wants to:
-1. NAVIGATE: Physically go to/select a property pin on the map interface
-2. SEARCH: Find information, data, or answers about a property from documents
+**CRITICAL - CHECK THIS FIRST:**
+If the query contains ANY of these words, ALWAYS return "INTENT: SEARCH" (NOT navigate):
+- "google" → SEARCH (this is browser automation, not app navigation)
+- "website" → SEARCH
+- "web" → SEARCH
+- "internet" → SEARCH
+- "online" → SEARCH
+- ".com" or ".org" or ".net" → SEARCH
+- "cat pictures" or any non-property topic → SEARCH
 
-**NAVIGATE examples** (user wants to click/select a map pin, NOT find information):
-- "take me to the highlands property"
-- "go to the highlands pin"
-- "show me the highlands property on the map"
-- "navigate to 123 main street"
-- "click on the cottage property"
-- "select the highlands pin"
-- "open the map"
+Examples that are NOT navigation:
+- "go to google" → SEARCH (browser, not app navigation)
+- "go to google and search for cat pictures" → SEARCH
+- "please go to google and find me cat pictures" → SEARCH
+- "open bbc.com" → SEARCH
 
-**SEARCH examples** (user wants information FROM documents):
-- "what is the flood risk of the highlands property"
-- "show me the valuation for highlands"
-- "tell me about the highlands property"
-- "what are the bedrooms in highlands"
-- "please show me the market value of highlands"
-- "find the inspection report for highlands"
-- "show me details about the highlands"
+**NAVIGATE** means going to a PROPERTY PIN in THIS APP's map:
+- "take me to the highlands property" → NAVIGATE
+- "go to the highlands pin" → NAVIGATE
+- "show me the cottage on the map" → NAVIGATE
+- "select the highlands pin" → NAVIGATE
 
-**KEY DISTINCTION**: 
-- "show me the highlands property" → NAVIGATE (go to the pin)
-- "show me the value of the highlands property" → SEARCH (find information)
-- "show me the highlands on the map" → NAVIGATE (map interaction)
-- "show me information about highlands" → SEARCH (find data)
+**SEARCH** means finding information from documents:
+- "what is the flood risk of highlands" → SEARCH
+- "show me the valuation" → SEARCH
+- "tell me about the property" → SEARCH
 
-If the query asks about ANY specific data, value, detail, risk, condition, document, report, or analysis - it's SEARCH.
-If the query only asks to GO TO, SELECT, CLICK, or NAVIGATE to a property/pin/map - it's NAVIGATE.
+The word "google" or any website should NEVER be navigation - always return SEARCH for those.
 
 Respond in this exact format:
 INTENT: NAVIGATE or SEARCH

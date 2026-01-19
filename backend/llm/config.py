@@ -20,6 +20,19 @@ class LLMConfig(BaseSettings):
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
+    # Additional LLM Providers (for OpenCode integration)
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    xai_api_key: str = os.getenv("XAI_API_KEY", "")
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    
+    # OpenCode Desktop Automation Settings
+    opencode_enabled: bool = os.getenv("OPENCODE_ENABLED", "false").lower() == "true"
+    opencode_serve_url: str = os.getenv("OPENCODE_SERVE_URL", "http://localhost:3333")
+    opencode_allowed_folders: str = os.getenv("OPENCODE_ALLOWED_FOLDERS", "")
+    opencode_provider: str = os.getenv("OPENCODE_PROVIDER", "openai")  # Provider for OpenCode: openai, anthropic, google, xai, ollama
+    opencode_model: str = os.getenv("OPENCODE_MODEL", "gpt-4o")  # Model for OpenCode operations
+
     # Voyage AI embeddings
     voyage_api_key: str = os.getenv("VOYAGE_API_KEY", "")
     voyage_embedding_model: str = os.getenv("VOYAGE_EMBEDDING_MODEL", "voyage-law-2")

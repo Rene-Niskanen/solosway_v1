@@ -7,6 +7,7 @@ import { ProjectCard } from "./ProjectCard";
 
 interface ProjectsPageProps {
   onCreateProject: () => void;
+  sidebarWidth?: number;
 }
 
 type TabType = 'active' | 'negotiating' | 'archived';
@@ -23,7 +24,7 @@ const TABS: Tab[] = [
   { id: 'archived', label: 'Archived', icon: Archive },
 ];
 
-export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) => {
+export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sidebarWidth = 0 }) => {
   const { projects, isLoading, error, activeFilter, setActiveFilter } = useProjects();
   const [activeTab, setActiveTab] = React.useState<TabType>('active');
 
@@ -42,15 +43,26 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
 
   // Filter projects based on active tab
   const filteredProjects = React.useMemo(() => {
+    if (!projects || !Array.isArray(projects)) {
+      return [];
+    }
     return projects.filter(p => p.status === activeTab);
   }, [projects, activeTab]);
 
   // Check if there are any projects at all (across all statuses)
-  const hasAnyProjects = projects.length > 0;
+  const hasAnyProjects = projects && Array.isArray(projects) && projects.length > 0;
 
   // Empty state - minimal, Claude/OpenAI-inspired design
   const InitialEmptyState = () => (
-    <div className="w-full h-full flex flex-col items-center justify-center" style={{ minHeight: 'calc(100vh - 80px)' }}>
+    <div 
+      className="fixed flex flex-col items-center justify-center"
+      style={{
+        top: 0,
+        left: sidebarWidth,
+        right: 0,
+        bottom: 0,
+      }}
+    >
       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5">
         <FolderOpen className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
       </div>
@@ -60,7 +72,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
       </p>
       <button
         onClick={onCreateProject}
-        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-sm transition-all duration-150 hover:bg-gray-50"
+        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
         style={{
           border: '1px solid rgba(0, 0, 0, 0.15)',
           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
@@ -123,7 +135,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
         <h1 style={{ fontSize: '20px', fontWeight: 600, color: '#18181B', letterSpacing: '-0.02em' }}>Projects</h1>
         <button
           onClick={onCreateProject}
-          className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-sm transition-all duration-150 hover:bg-gray-50"
+          className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
           style={{
             border: '1px solid rgba(0, 0, 0, 0.15)',
             boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',

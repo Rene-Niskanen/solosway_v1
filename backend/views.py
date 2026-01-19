@@ -4,6 +4,12 @@ from .models import Document, DocumentStatus, Property, PropertyDetails, Documen
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
+# Autonomous Agent Intelligence Services
+from .services.task_planner_service import task_planner_service, SubGoal
+from .services.working_memory_service import working_memory_service, Finding, ExtractionMethod
+from .services.information_extractor import information_extractor
+from .services.reflection_engine import reflection_engine
+from .services.result_synthesizer import result_synthesizer
 from datetime import datetime
 import os
 import uuid
@@ -17,6 +23,7 @@ import time
 import re
 import math
 import queue
+import asyncio
 from .tasks import process_document_task, process_document_fast_task
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
@@ -303,6 +310,821 @@ def get_performance_metrics():
             'PERFORMANCE_ERROR',
             500
         )), 500
+
+# ============================================================================
+# BROWSER AUTOMATION ENDPOINTS (Frontend-driven)
+# ============================================================================
+
+@views.route('/api/browser/step', methods=['POST', 'OPTIONS'])
+def browser_step():
+    """
+    Process a single browser automation step with autonomous intelligence.
+    
+    Frontend sends: screenshot (base64), task, action_history, current_url, session_id
+    Backend returns: next action to execute, plus goal progress and findings
+    
+    This enables frontend-driven automation where the frontend controls
+    the browser directly (Electron webview) and just asks the backend
+    for decisions. When session_id is provided, uses intelligent services
+    for goal tracking, information extraction, and reflection.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+    
+    try:
+        data = request.get_json()
+        aria_snapshot = data.get('aria_snapshot')  # ARIA snapshot (preferred, fast)
+        screenshot_base64 = data.get('screenshot')  # Screenshot (fallback only)
+        task = data.get('task', '')
+        action_history = data.get('action_history', [])
+        failed_actions = data.get('failed_actions', [])  # List of failed actions with errors
+        is_loop = data.get('is_loop', False)  # Whether we're stuck in a loop (3+ same actions)
+        is_stuck = data.get('is_stuck', False)  # Whether repeating same action without progress
+        current_url = data.get('current_url', '')
+        page_content = data.get('page_content', '')  # Optional: additional page content
+        step_number = data.get('step_number', 1)
+        max_steps = data.get('max_steps', 15)
+        
+        # NEW: Session-based autonomous intelligence
+        session_id = data.get('session_id')  # Optional session for intelligent browsing
+        previous_url = data.get('previous_url', '')  # URL before this action
+        last_action = data.get('last_action', '')  # Last action that was executed
+        
+        if not task:
+            return jsonify({'success': False, 'error': 'Task is required'}), 400
+        
+        # ========================================
+        # AUTONOMOUS INTELLIGENCE PROCESSING
+        # ========================================
+        current_goal = None
+        goal_context = ""
+        new_findings = []
+        goal_completed = False
+        reflection_result = None
+        
+        if session_id:
+            # Get current goal from task planner
+            current_goal = task_planner_service.get_current_goal(session_id)
+            
+            # Get existing findings for context
+            existing_findings = working_memory_service.get_findings(session_id)
+            
+            if current_goal and aria_snapshot:
+                # Run reflection on last action (if we have one)
+                if last_action and previous_url:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        # Get action history as ActionRecord objects
+                        action_records = working_memory_service.get_action_history(session_id, limit=10)
+                        
+                        reflection_result = loop.run_until_complete(
+                            reflection_engine.evaluate_step(
+                                action_taken=last_action,
+                                url_before=previous_url,
+                                url_after=current_url,
+                                current_goal=current_goal,
+                                findings_so_far=existing_findings,
+                                action_history=action_records,
+                                aria_snapshot=aria_snapshot[:5000] if aria_snapshot else None
+                            )
+                        )
+                        
+                        logger.info(f"🤔 [BROWSER_STEP] Reflection: on_track={reflection_result.on_track}, "
+                                   f"goal_achieved={reflection_result.goal_achieved}, "
+                                   f"suggested={reflection_result.suggested_action}")
+                        
+                        # Check if goal is achieved via reflection
+                        goal_achieved_via_reflection = reflection_result.goal_achieved
+                        
+                        # ALSO check for automatic goal completion based on URL/page state
+                        # This handles cases where the reflection engine might miss obvious completions
+                        goal_achieved_via_url = False
+                        if current_goal:
+                            goal_desc_lower = current_goal.description.lower()
+                            url_lower = current_url.lower()
+                            
+                            # If goal is about showing photos/images and we're on Google Images
+                            if any(word in goal_desc_lower for word in ['photo', 'image', 'picture', 'show']):
+                                if "udm=2" in current_url or "/images" in url_lower or "imghp" in url_lower:
+                                    goal_achieved_via_url = True
+                                    logger.info(f"🎉 [BROWSER_STEP] Auto-detected goal completion: on Google Images for photo goal")
+                            
+                            # If goal is about searching and we're on search results
+                            if "search" in goal_desc_lower and "google.com/search" in url_lower:
+                                # Check if the search query matches the goal
+                                import urllib.parse
+                                parsed = urllib.parse.urlparse(current_url)
+                                query_params = urllib.parse.parse_qs(parsed.query)
+                                search_query = query_params.get('q', [''])[0].lower()
+                                # Extract key terms from goal description
+                                goal_keywords = [w for w in goal_desc_lower.split() if len(w) > 3 and w not in ['search', 'google', 'for', 'find']]
+                                if search_query and any(kw in search_query for kw in goal_keywords):
+                                    goal_achieved_via_url = True
+                                    logger.info(f"🎉 [BROWSER_STEP] Auto-detected goal completion: on search results matching goal")
+                        
+                        # Mark goal complete if either reflection or URL detection says so
+                        if goal_achieved_via_reflection or goal_achieved_via_url:
+                            task_planner_service.mark_goal_complete(session_id, current_goal.id)
+                            goal_completed = True
+                            # Get next goal
+                            current_goal = task_planner_service.get_current_goal(session_id)
+                            logger.info(f"🎉 [BROWSER_STEP] Goal completed! Moving to next goal.")
+                        
+                        # Check if we should extract information
+                        if reflection_result.should_extract or reflection_result.suggested_action == "extract":
+                            extraction_result = loop.run_until_complete(
+                                information_extractor.extract_from_snapshot(
+                                    aria_snapshot=aria_snapshot,
+                                    current_url=current_url,
+                                    goal=current_goal,
+                                    existing_findings=existing_findings
+                                )
+                            )
+                            
+                            # Store findings in working memory
+                            for finding_dict in extraction_result.findings:
+                                # Check if this finding contains image data
+                                image_data = finding_dict.get('image_data')
+                                metadata = {}
+                                if image_data:
+                                    metadata['image_data'] = image_data
+                                    # Also mark extraction method as image-specific
+                                    extraction_method = ExtractionMethod.LLM_INFERENCE
+                                else:
+                                    extraction_method = ExtractionMethod.ARIA_SNAPSHOT
+                                
+                                finding = working_memory_service.add_finding(
+                                    session_id=session_id,
+                                    fact=finding_dict.get('fact', ''),
+                                    source_url=current_url,
+                                    goal_id=current_goal.id,
+                                    confidence=finding_dict.get('confidence', 0.7),
+                                    extraction_method=extraction_method,
+                                    element_ref=finding_dict.get('element_ref'),
+                                    raw_text=finding_dict.get('raw_text'),
+                                    metadata=metadata
+                                )
+                                if finding:
+                                    new_findings.append(finding.to_dict())
+                            
+                            logger.info(f"🔍 [BROWSER_STEP] Extracted {len(new_findings)} new findings")
+                    finally:
+                        loop.close()
+                
+                # Check if we should extract even without prior action (first visit to page)
+                elif step_number == 1 or (not last_action and aria_snapshot):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        should_extract = loop.run_until_complete(
+                            information_extractor.should_extract(aria_snapshot, current_goal, current_url)
+                        )
+                        
+                        if should_extract:
+                            extraction_result = loop.run_until_complete(
+                                information_extractor.extract_from_snapshot(
+                                    aria_snapshot=aria_snapshot,
+                                    current_url=current_url,
+                                    goal=current_goal,
+                                    existing_findings=existing_findings
+                                )
+                            )
+                            
+                            for finding_dict in extraction_result.findings:
+                                # Check if this finding contains image data
+                                image_data = finding_dict.get('image_data')
+                                metadata = {}
+                                if image_data:
+                                    metadata['image_data'] = image_data
+                                    extraction_method = ExtractionMethod.LLM_INFERENCE
+                                else:
+                                    extraction_method = ExtractionMethod.ARIA_SNAPSHOT
+                                
+                                finding = working_memory_service.add_finding(
+                                    session_id=session_id,
+                                    fact=finding_dict.get('fact', ''),
+                                    source_url=current_url,
+                                    goal_id=current_goal.id,
+                                    confidence=finding_dict.get('confidence', 0.7),
+                                    extraction_method=extraction_method,
+                                    element_ref=finding_dict.get('element_ref'),
+                                    raw_text=finding_dict.get('raw_text'),
+                                    metadata=metadata
+                                )
+                                if finding:
+                                    new_findings.append(finding.to_dict())
+                    finally:
+                        loop.close()
+            
+            # Track visited URL
+            if current_url:
+                working_memory_service.add_visited_url(session_id, current_url)
+            
+            # Build goal context for LLM prompt
+            if current_goal:
+                progress = task_planner_service.get_progress(session_id)
+                findings_summary = ""
+                if existing_findings:
+                    findings_list = [f"  • {f.fact}" for f in existing_findings[-5:]]  # Last 5 findings
+                    findings_summary = "\n".join(findings_list)
+                
+                goal_context = f"""
+=== AUTONOMOUS AGENT CONTEXT ===
+CURRENT SUB-GOAL: {current_goal.description}
+EXPECTED RESULT: {current_goal.expected_result}
+PROGRESS: {progress['completed']}/{progress['total']} goals complete
+
+FINDINGS SO FAR:
+{findings_summary if findings_summary else "  (none yet)"}
+================================
+"""
+        
+        # ========================================
+        # END AUTONOMOUS INTELLIGENCE PROCESSING
+        # ========================================
+        
+        # Import OpenAI - use text-only model (faster, cheaper) when ARIA snapshot available
+        # Fall back to vision model only if we have screenshot but no ARIA snapshot
+        from langchain_openai import ChatOpenAI
+        from backend.llm.config import config
+        
+        use_vision = not aria_snapshot and screenshot_base64
+        model = "gpt-4o" if use_vision else "gpt-4o-mini"  # Use cheaper model for text-only
+        
+        llm = ChatOpenAI(
+            api_key=config.openai_api_key,
+            model=model,
+            temperature=0,
+        )
+        
+        # Build error context for prompt
+        error_context = ""
+        if failed_actions:
+            error_context = f"\n\n⚠️ RECENT FAILED ACTIONS:\n" + "\n".join(f"- {fa}" for fa in failed_actions)
+            error_context += "\n\nIf previous actions failed, try different selectors or approaches. Common issues:"
+            error_context += "\n- Element not found: Try more specific selectors (aria-label, role, id)"
+            error_context += "\n- Text selector: Use partial text matching (text=Maps matches 'Google Maps')"
+            error_context += "\n- Hidden element: Try scrolling first or finding a parent clickable element"
+        
+        loop_warning = ""
+        if is_loop:
+            loop_warning = "\n\n🚨 LOOP DETECTED: You've tried the same action 3+ times without success."
+            loop_warning += "\nTry a COMPLETELY DIFFERENT approach:"
+            loop_warning += "\n- NAVIGATE directly to the URL instead of clicking! Examples:"
+            loop_warning += "\n  - For Google Images: NAVIGATE https://www.google.com/search?q=YOUR+QUERY&udm=2"
+            loop_warning += "\n  - For Google News: NAVIGATE https://www.google.com/search?q=YOUR+QUERY&tbm=nws"
+            loop_warning += "\n- Use a different selector"
+            loop_warning += "\n- Scroll to reveal more elements"
+            loop_warning += "\n- Look for alternative UI elements"
+        elif is_stuck:
+            loop_warning = "\n\n⚠️ STUCK: The same action is being repeated but nothing is changing on the page."
+            loop_warning += "\nThis usually means the element doesn't navigate anywhere."
+            loop_warning += "\nTry NAVIGATE to go directly to the target URL instead of clicking!"
+            loop_warning += "\nFor Google Images: NAVIGATE https://www.google.com/search?q=YOUR+QUERY&udm=2"
+        
+        # Parse multi-part tasks (tasks with "and", "then", "also")
+        # Split task into sub-tasks for proper tracking
+        import re
+        multi_task_pattern = r'\s+(?:and then|then|and also|also|and)\s+'
+        sub_tasks = re.split(multi_task_pattern, task, flags=re.IGNORECASE)
+        sub_tasks = [t.strip() for t in sub_tasks if t.strip()]
+        is_multi_task = len(sub_tasks) > 1
+        
+        multi_task_hint = ""
+        if is_multi_task:
+            multi_task_hint = f"\n\n🎯 MULTI-PART TASK DETECTED ({len(sub_tasks)} parts):"
+            for i, st in enumerate(sub_tasks, 1):
+                multi_task_hint += f"\n  Part {i}: {st}"
+            multi_task_hint += "\n\n⚠️ IMPORTANT: Complete ALL parts before saying DONE!"
+            multi_task_hint += "\n- After completing one part, continue to the next"
+            multi_task_hint += "\n- Only say DONE when ALL parts are complete"
+            multi_task_hint += "\n- You may need to navigate to different pages for each part"
+        
+        # Smart task completion detection based on URL
+        completion_hint = ""
+        url_lower = current_url.lower()
+        task_lower = task.lower()
+        
+        # Detect Google Images - also mark goal complete if we have a session
+        if "udm=2" in current_url or "/images" in url_lower or "imghp" in url_lower:
+            # Check if task was about showing images/photos
+            if any(word in task_lower for word in ['photo', 'image', 'picture', 'show me']):
+                # If we have a session and current goal is about photos, mark it complete
+                if session_id and current_goal:
+                    goal_desc_lower = current_goal.description.lower()
+                    if any(word in goal_desc_lower for word in ['photo', 'image', 'picture', 'show']):
+                        if current_goal.status != "completed":
+                            task_planner_service.mark_goal_complete(session_id, current_goal.id)
+                            goal_completed = True
+                            current_goal = task_planner_service.get_current_goal(session_id)
+                            logger.info(f"🎉 [BROWSER_STEP] Auto-completed photo goal: on Google Images")
+                
+                if is_multi_task:
+                    # For multi-part tasks, indicate this part is done but continue
+                    # Get the next part of the task
+                    next_part = sub_tasks[1] if len(sub_tasks) > 1 else "the next part"
+                    completion_hint = "\n\n🎉 PART 1 COMPLETE! Images are now showing on screen."
+                    completion_hint += "\n\n🚨 DO NOT click 'Images' again - you are already viewing images!"
+                    completion_hint += f"\n\n⏭️ NOW DO PART 2: {next_part}"
+                    completion_hint += "\n\nTo start Part 2:"
+                    completion_hint += "\n1. Find the search textbox (look for a textbox element)"
+                    completion_hint += "\n2. Clear it and TYPE your new search query"
+                    completion_hint += "\n3. PRESS Enter to search"
+                    completion_hint += "\n\nDo NOT say DONE until Part 2 is also complete!"
+                    
+                else:
+                    completion_hint = "\n\n✅ TASK COMPLETE: Images are showing. Respond with DONE."
+        
+        # Rebuild goal_context if we just completed a goal (from either reflection or completion hint)
+        if goal_completed and session_id and current_goal:
+            progress = task_planner_service.get_progress(session_id)
+            existing_findings = working_memory_service.get_findings(session_id)
+            findings_summary = ""
+            if existing_findings:
+                findings_list = [f"  • {f.fact}" for f in existing_findings[-5:]]
+                findings_summary = "\n".join(findings_list)
+            
+            goal_context = f"""
+=== AUTONOMOUS AGENT CONTEXT ===
+CURRENT SUB-GOAL: {current_goal.description}
+EXPECTED RESULT: {current_goal.expected_result}
+PROGRESS: {progress['completed']}/{progress['total']} goals complete
+
+FINDINGS SO FAR:
+{findings_summary if findings_summary else "  (none yet)"}
+================================
+"""
+        
+        # Detect Google search results (NOT images) when task wants images
+        elif "google.com/search" in current_url and "udm=2" not in current_url:
+            if any(word in task_lower for word in ['photo', 'image', 'picture', 'show me']):
+                # Extract query from URL
+                import urllib.parse
+                parsed = urllib.parse.urlparse(current_url)
+                query_params = urllib.parse.parse_qs(parsed.query)
+                search_query = query_params.get('q', [''])[0]
+                if search_query:
+                    encoded_query = urllib.parse.quote_plus(search_query)
+                    completion_hint = f"\n\n📷 NEED IMAGES: You're on regular search but task wants images."
+                    completion_hint += f"\nTo see images, use: NAVIGATE https://www.google.com/search?q={encoded_query}&udm=2"
+        
+        # Detect search results with query terms
+        elif "search" in url_lower or "q=" in current_url:
+            # Extract potential search terms from task
+            search_terms = [word for word in task_lower.split() if len(word) > 3 and word not in ['show', 'find', 'search', 'google', 'photos', 'images', 'then', 'also', 'average', 'price']]
+            if any(term in url_lower for term in search_terms):
+                if is_multi_task:
+                    completion_hint = "\n\n📊 Search results showing. If this completes ONE part of your multi-part task, continue to the next part."
+                    completion_hint += "\nOnly say DONE when ALL parts are complete."
+                else:
+                    completion_hint = "\n\n✅ TASK MAY BE COMPLETE: Search results are showing. Check if the results match the requested task."
+        
+        # Build the prompt - use OpenCode-style format when ARIA snapshot available
+        if aria_snapshot:
+            # ARIA snapshot mode: ref-based selectors (fast, accurate)
+            system_prompt = f"""You are a browser automation agent. You can see the current page as an ARIA snapshot.
+
+Your task: {task}
+{goal_context}
+
+Available actions:
+1. CLICK [ref] - Click an element by its ref (e.g., "CLICK e5")
+2. TYPE [ref] [text] - Type text into an element (e.g., "TYPE e3 cat pictures")
+3. PRESS Enter - Press the Enter key (useful ONLY after typing in search boxes)
+4. NAVIGATE [url] - Go to a URL directly
+5. SCROLL down/up - Scroll the page
+6. DONE [reason] - Task is complete, explain what was accomplished
+
+CRITICAL RULES:
+- Use refs from the snapshot (like e1, e2, e3...)
+- ALWAYS CHECK if a textbox/searchbox is EMPTY before pressing Enter or clicking search buttons
+- If the searchbox shows no value (empty textbox), you MUST TYPE your search query first!
+- After navigating to a new page, form inputs are usually EMPTY - you need to TYPE again
+- Sequence for search: TYPE [ref] [query] → PRESS Enter
+- Don't just click on empty search boxes - TYPE your query into them
+- If clicking something repeatedly doesn't work, TRY A DIFFERENT ACTION (likely TYPE)
+
+ARIA SNAPSHOT READING:
+- textbox "" = EMPTY input, needs TYPE action
+- textbox "NYC photos" = has text, can press Enter
+- link "Images" = clickable link
+- button "Search" = clickable button
+
+Current URL: {current_url}
+Step: {step_number}/{max_steps}
+
+Previous actions taken:
+{chr(10).join(action_history) if action_history else 'None yet'}{error_context}{loop_warning}{multi_task_hint}
+
+=== IMPORTANT STATUS ==={completion_hint if completion_hint else " No special status."}
+========================
+
+Look at the ARIA snapshot below. Find search inputs (textbox) and check if they are EMPTY.
+If you need to search for something and the textbox is empty, TYPE your query first!
+
+⚠️ READ THE STATUS ABOVE CAREFULLY before deciding your next action!
+If it says a part is COMPLETE, move on to the next part - don't repeat the same action!
+
+Respond with ONLY the action command, nothing else."""
+        else:
+            # Screenshot fallback mode: CSS/text selectors
+            system_prompt = f"""You are a browser automation agent controlling a real browser.
+
+Your task: {task}
+
+Available actions:
+1. CLICK [selector] - Click an element. Use CSS selectors or text content.
+   Examples: CLICK button[type="submit"], CLICK text=Search, CLICK [aria-label="Search"]
+   Note: text= selector supports partial matching (text=Maps matches "Google Maps")
+2. TYPE [selector] [text] - Type text into an input field.
+   Examples: TYPE input[name="q"] hello world, TYPE [placeholder="Search"] cats
+3. PRESS Enter - Press the Enter key (useful after typing in search boxes)
+4. NAVIGATE [url] - Go to a URL directly
+5. SCROLL down/up - Scroll the page
+6. DONE [reason] - Task is complete, explain what was accomplished
+
+Current URL: {current_url}
+Step: {step_number}/{max_steps}
+
+Previous actions taken:
+{chr(10).join(action_history) if action_history else 'None yet'}{error_context}{loop_warning}{multi_task_hint}{completion_hint}
+
+Look at the screenshot to understand the current page state.
+Analyze what elements are visible and clickable.
+If previous actions failed, use different selectors or try alternative approaches.
+Respond with ONLY the action command, nothing else.
+
+WHEN TO SAY DONE:
+- Single task: Say DONE when the specific task is visible/complete
+- Multi-part task: Only say DONE when ALL parts are complete. After finishing one part, continue to the next."""
+
+        # Build message content
+        messages_content = []
+        
+        if aria_snapshot:
+            # ARIA snapshot mode: send structured tree
+            messages_content.append({
+                "type": "text",
+                "text": f"Current page ARIA snapshot:\n{aria_snapshot}\n\nWhat is the next action to take?"
+            })
+        elif screenshot_base64:
+            # Screenshot fallback mode: send image
+            if not screenshot_base64.startswith('data:'):
+                screenshot_base64 = f"data:image/png;base64,{screenshot_base64}"
+            
+            messages_content.append({
+                "type": "image_url",
+                "image_url": {"url": screenshot_base64}
+            })
+            
+            messages_content.append({
+                "type": "text",
+                "text": "What is the next action to take?"
+            })
+        else:
+            # No snapshot or screenshot - use page content as last resort
+            if page_content:
+                messages_content.append({
+                    "type": "text",
+                    "text": f"Page content:\n{page_content[:10000]}\n\nWhat is the next action to take?"
+                })
+            else:
+                return jsonify({'success': False, 'error': 'No page data provided (ARIA snapshot, screenshot, or page content required)'}), 400
+        
+        from langchain_core.messages import HumanMessage, SystemMessage
+        
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=messages_content)
+        ])
+        
+        action = response.content.strip()
+        logger.info(f"🤖 [BROWSER_STEP] Step {step_number}: {action}")
+        
+        # Parse the action to determine type
+        action_type = 'unknown'
+        action_data = {}
+        
+        if action.startswith('CLICK'):
+            action_type = 'click'
+            selector = action[5:].strip()
+            action_data = {'selector': selector}
+        elif action.startswith('TYPE'):
+            action_type = 'type'
+            # Parse TYPE [selector] [text]
+            parts = action[4:].strip()
+            # Find the selector (ends at first space after selector pattern)
+            # This is tricky - try to split at the last bracket or quote
+            if ']' in parts:
+                bracket_end = parts.rfind(']') + 1
+                selector = parts[:bracket_end].strip()
+                text = parts[bracket_end:].strip()
+            else:
+                # Simple split
+                split_parts = parts.split(' ', 1)
+                selector = split_parts[0]
+                text = split_parts[1] if len(split_parts) > 1 else ''
+            action_data = {'selector': selector, 'text': text}
+        elif action.startswith('PRESS'):
+            action_type = 'press'
+            key = action[5:].strip()
+            action_data = {'key': key}
+        elif action.startswith('NAVIGATE'):
+            action_type = 'navigate'
+            url = action[8:].strip()
+            action_data = {'url': url}
+        elif action.startswith('SCROLL'):
+            action_type = 'scroll'
+            direction = action[6:].strip().lower()
+            action_data = {'direction': direction}
+        elif action.startswith('DONE'):
+            action_type = 'done'
+            reason = action[4:].strip()
+            action_data = {'reason': reason}
+        
+        # Build enhanced response with intelligence data
+        response_data = {
+            'success': True,
+            'action': action,
+            'action_type': action_type,
+            'action_data': action_data,
+            'step_number': step_number
+        }
+        
+        # Add autonomous intelligence fields if session is active
+        if session_id:
+            response_data['session_id'] = session_id
+            response_data['goal_completed'] = goal_completed
+            response_data['findings'] = new_findings
+            
+            if current_goal:
+                response_data['current_goal'] = {
+                    'id': current_goal.id,
+                    'description': current_goal.description,
+                    'status': current_goal.status
+                }
+            
+            if reflection_result:
+                response_data['reflection'] = {
+                    'on_track': reflection_result.on_track,
+                    'goal_achieved': reflection_result.goal_achieved,
+                    'suggested_action': reflection_result.suggested_action,
+                    'reasoning': reflection_result.reasoning
+                }
+            
+            # Include progress
+            progress = task_planner_service.get_progress(session_id)
+            response_data['progress'] = progress
+            
+            # Record this action in working memory
+            working_memory_service.add_action(
+                session_id=session_id,
+                action_type=action_type,
+                action_data=action_data,
+                url_before=previous_url or current_url,
+                url_after=current_url,
+                success=True,
+                goal_id=current_goal.id if current_goal else None
+            )
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        logger.error(f"🔴 [BROWSER_STEP] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+# ============================================================================
+# AUTONOMOUS AGENT SESSION ENDPOINTS
+# ============================================================================
+
+@views.route('/api/browser/session/start', methods=['POST', 'OPTIONS'])
+def start_browser_session():
+    """
+    Initialize a new autonomous browsing session.
+    
+    Decomposes the task into sub-goals, initializes working memory,
+    and returns the session ID and plan for the frontend to track.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+    
+    try:
+        data = request.get_json()
+        task = data.get('task', '')
+        
+        if not task:
+            return jsonify({'success': False, 'error': 'Task is required'}), 400
+        
+        # Generate session ID
+        session_id = str(uuid.uuid4())
+        
+        logger.info(f"🚀 [SESSION] Starting session {session_id} for task: {task[:100]}...")
+        
+        # Run task decomposition synchronously (use asyncio)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            goals = loop.run_until_complete(task_planner_service.decompose_task(task))
+        finally:
+            loop.close()
+        
+        # Create task plan
+        plan = task_planner_service.create_plan(session_id, task, goals)
+        
+        # Initialize working memory
+        working_memory_service.create_session(session_id, task)
+        
+        # Determine starting URL based on first goal
+        starting_url = _determine_starting_url(goals[0] if goals else None, task)
+        
+        logger.info(f"🚀 [SESSION] Session {session_id} created with {len(goals)} goals")
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'goals': [g.to_dict() for g in goals],
+            'starting_url': starting_url,
+            'task': task
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"🔴 [SESSION] Error starting session: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/browser/session/complete', methods=['POST', 'OPTIONS'])
+def complete_browser_session():
+    """
+    Complete a browsing session and synthesize final results.
+    
+    Aggregates all findings, generates a comprehensive answer,
+    and returns the synthesized result with citations.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+    
+    try:
+        data = request.get_json()
+        session_id = data.get('session_id')
+        
+        if not session_id:
+            return jsonify({'success': False, 'error': 'session_id is required'}), 400
+        
+        logger.info(f"📊 [SESSION] Completing session {session_id}")
+        
+        # Get session data
+        memory = working_memory_service.get_session(session_id)
+        plan = task_planner_service.get_plan(session_id)
+        
+        if not memory:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        # Get completed and failed goals
+        goals_completed = [g for g in (plan.goals if plan else []) if g.status == "completed"]
+        goals_failed = [g for g in (plan.goals if plan else []) if g.status == "failed"]
+        
+        # Get all findings
+        findings = working_memory_service.get_findings(session_id)
+        
+        # Run synthesis synchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(result_synthesizer.synthesize(
+                memory.original_task,
+                findings,
+                goals_completed,
+                goals_failed
+            ))
+        finally:
+            loop.close()
+        
+        # Mark session complete
+        working_memory_service.complete_session(session_id)
+        
+        # Get session stats
+        stats = working_memory_service.get_stats(session_id)
+        
+        logger.info(f"📊 [SESSION] Session {session_id} completed with {len(findings)} findings")
+        
+        return jsonify({
+            'success': True,
+            'answer': result.answer,
+            'summary': result.summary,
+            'findings': [f.to_dict() for f in result.findings],
+            'sources': result.sources,
+            'confidence': result.confidence,
+            'caveats': result.caveats,
+            'data_points': result.data_points,
+            'stats': stats
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"🔴 [SESSION] Error completing session: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/browser/session/status', methods=['GET', 'OPTIONS'])
+def get_session_status():
+    """
+    Get the current status of a browsing session.
+    
+    Returns progress information, current goal, findings, etc.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+    
+    try:
+        session_id = request.args.get('session_id')
+        
+        if not session_id:
+            return jsonify({'success': False, 'error': 'session_id is required'}), 400
+        
+        # Get session data
+        memory = working_memory_service.get_session(session_id)
+        if not memory:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        # Get progress from task planner
+        progress = task_planner_service.get_progress(session_id)
+        
+        # Get findings
+        findings = working_memory_service.get_findings(session_id)
+        
+        # Get stats
+        stats = working_memory_service.get_stats(session_id)
+        
+        return jsonify({
+            'success': True,
+            'session_id': session_id,
+            'status': memory.status,
+            'progress': progress,
+            'findings': [f.to_dict() for f in findings],
+            'hypothesis': memory.current_hypothesis,
+            'stats': stats
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"🔴 [SESSION] Error getting status: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+def _determine_starting_url(goal: SubGoal, task: str) -> str:
+    """
+    Determine the best starting URL based on the first goal.
+    
+    Args:
+        goal: First sub-goal
+        task: Original task
+        
+    Returns:
+        Starting URL (defaults to Google)
+    """
+    if not goal:
+        return "https://www.google.com"
+    
+    goal_lower = goal.description.lower()
+    task_lower = task.lower()
+    
+    # Check for specific site mentions
+    if "rightmove" in goal_lower or "rightmove" in task_lower:
+        return "https://www.rightmove.co.uk"
+    if "zoopla" in goal_lower or "zoopla" in task_lower:
+        return "https://www.zoopla.co.uk"
+    if "amazon" in goal_lower or "amazon" in task_lower:
+        return "https://www.amazon.co.uk"
+    if "wikipedia" in goal_lower or "wikipedia" in task_lower:
+        return "https://www.wikipedia.org"
+    
+    # Default to Google for search tasks
+    return "https://www.google.com"
+
 
 # ============================================================================
 # AI & LLM ENDPOINTS
@@ -805,6 +1627,81 @@ def query_documents_stream():
                 if action_intent['wants_action']:
                     logger.info(f"🎯 [ACTION_INTENT] Detected action intent: {action_intent}")
                 
+                # ============================================================
+                # BROWSER TASK FAST PATH - BYPASS LANGGRAPH FOR REAL-TIME STREAMING
+                # ============================================================
+                # Check if this is a browser task - if so, handle directly without LangGraph
+                browser_patterns = [
+                    "google", "search for", "search on", "go to", "open", "browse",
+                    "website", ".com", ".org", ".net", "web page", "internet",
+                    "look up", "find on the web", "find online", "research online",
+                    "show me photos", "show me images", "show me pictures",
+                    "find photos", "find images", "find pictures",
+                    "search photos", "search images"
+                ]
+                query_lower_for_browser = query.lower()
+                is_browser_task = any(pattern in query_lower_for_browser for pattern in browser_patterns)
+                
+                # Exclude document-related queries that mention "search"
+                doc_exclusions = ["document", "file", "property", "report", "valuation", "in my", "my documents"]
+                if any(exc in query_lower_for_browser for exc in doc_exclusions):
+                    is_browser_task = False
+                
+                if is_browser_task:
+                    logger.info(f"🌐 [BROWSER_FAST_PATH] Detected browser task - using frontend-driven automation")
+                    
+                    # Emit browser research reasoning step
+                    browser_reasoning = {
+                        'type': 'reasoning_step',
+                        'step': 'browser_research',
+                        'action_type': 'browser_researching',
+                        'message': 'Starting browser automation',
+                        'timestamp': time.time(),
+                        'details': {'query': query}
+                    }
+                    yield f"data: {json.dumps(browser_reasoning)}\n\n"
+                    
+                    # Determine starting URL
+                    starting_url = "https://www.google.com"
+                    if ".com" in query or ".org" in query or ".net" in query:
+                        # Extract URL from query
+                        url_match = re.search(r'(https?://)?[\w\-]+\.[\w\-]+[^\s]*', query)
+                        if url_match:
+                            url = url_match.group()
+                            if not url.startswith('http'):
+                                url = 'https://' + url
+                            starting_url = url
+                    
+                    # ========================================================
+                    # FRONTEND-DRIVEN AUTOMATION
+                    # Send 'start_automation' event - frontend will control the webview
+                    # and call /api/browser/step for each action decision
+                    # ========================================================
+                    start_automation_event = {
+                        'type': 'browser_action',
+                        'action_type': 'start_automation',
+                        'task': query,
+                        'url': starting_url,
+                        'max_steps': 15,
+                        'is_loading': True
+                    }
+                    yield f"data: {json.dumps(start_automation_event)}\n\n"
+                    logger.info(f"🌐 [BROWSER_STREAM] Sent start_automation event - frontend will control webview")
+                    
+                    # Send a message to indicate automation is starting
+                    message = f"I'm browsing the web to help with your request. The browser will show what I'm doing."
+                    for i in range(0, len(message), 15):
+                        chunk = message[i:i + 15]
+                        yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                    
+                    # Mark as complete - frontend automation will handle the rest
+                    yield f"data: {json.dumps({'type': 'complete', 'data': {'summary': message, 'citations': {}}})}\n\n"
+                    return  # Exit - frontend handles automation
+                
+                # ============================================================
+                # END BROWSER FAST PATH
+                # ============================================================
+                
                 async def run_and_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
@@ -907,6 +1804,17 @@ def query_documents_stream():
                                 'action_type': 'planning',
                                 'message': 'Preparing response',
                                 'details': {}
+                            },
+                            # Desktop automation nodes (OpenCode integration)
+                            'detect_desktop_intent': {
+                                'action_type': 'desktop_planning',
+                                'message': 'Analyzing request for desktop automation',
+                                'details': {}
+                            },
+                            'handle_desktop_action': {
+                                'action_type': 'desktop_planning',
+                                'message': 'Starting desktop automation',
+                                'details': {}
                             }
                         }
                         
@@ -926,6 +1834,7 @@ def query_documents_stream():
                         # Since we create a new graph for the current loop, we can use astream_events directly
                         timing.mark("graph_execution_start")
                         node_timings = {}  # Track timing per node
+                        
                         try:
                             event_stream = graph.astream_events(initial_state, config_dict, version="v2")
                             async for event in event_stream:
@@ -1171,6 +2080,121 @@ def query_documents_stream():
                                         if citations_from_citation:
                                             final_result['citations'] = citations_from_citation
                                             logger.info(f"⚡ [CITATION_QUERY] Captured {len(citations_from_citation)} citations")
+                                    
+                                    # Handle desktop intent detection - emit browser_action IMMEDIATELY for browser tasks
+                                    # This allows the frontend to open the webview BEFORE automation starts
+                                    elif node_name == "detect_desktop_intent":
+                                        state_data = state_update if state_update else output
+                                        desktop_action_type = state_data.get('desktop_action_type', '')
+                                        desktop_action_params = state_data.get('desktop_action_params', {})
+                                        
+                                        # If it's a browser action, emit browser_action to open webview immediately
+                                        if desktop_action_type and 'browser' in desktop_action_type.lower():
+                                            # Determine starting URL
+                                            starting_url = desktop_action_params.get('url', 'https://www.google.com')
+                                            if not starting_url or starting_url == 'about:blank':
+                                                starting_url = 'https://www.google.com'
+                                            
+                                            browser_open_event = {
+                                                'type': 'browser_action',
+                                                'action_type': 'navigate',
+                                                'url': starting_url
+                                            }
+                                            yield f"data: {json.dumps(browser_open_event)}\n\n"
+                                            logger.info(f"🖥️ [BROWSER] Emitted initial browser_action to open webview: {starting_url}")
+                                    
+                                    # Handle desktop action completion (OpenCode integration)
+                                    elif node_name == "handle_desktop_action":
+                                        state_data = state_update if state_update else output
+                                        
+                                        # Initialize final_result if needed
+                                        if final_result is None:
+                                            final_result = {}
+                                        
+                                        # Capture final_summary from desktop action
+                                        final_summary_from_desktop = state_data.get('final_summary', '')
+                                        if final_summary_from_desktop:
+                                            final_result['final_summary'] = final_summary_from_desktop
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Captured final_summary ({len(final_summary_from_desktop)} chars)")
+                                        
+                                        # Capture agent_actions
+                                        agent_actions_from_desktop = state_data.get('agent_actions', [])
+                                        if agent_actions_from_desktop:
+                                            final_result['agent_actions'] = agent_actions_from_desktop
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Captured {len(agent_actions_from_desktop)} agent actions")
+                                        
+                                        # Capture desktop result for status
+                                        desktop_result = state_data.get('desktop_result', {})
+                                        if desktop_result:
+                                            final_result['desktop_result'] = desktop_result
+                                            
+                                            # Emit completion reasoning step
+                                            action_type = desktop_result.get('action_type', 'unknown')
+                                            success = desktop_result.get('success', False)
+                                            
+                                            # Determine the appropriate completion action_type
+                                            if 'file' in str(action_type).lower() or action_type in ['organize', 'sort', 'rename', 'move']:
+                                                completion_action_type = 'file_complete' if success else 'file_organizing'
+                                            elif 'document' in str(action_type).lower() or action_type in ['create', 'summarize', 'rewrite']:
+                                                completion_action_type = 'document_complete' if success else 'document_creating'
+                                            elif 'browser' in str(action_type).lower() or action_type in ['research', 'form_fill', 'screenshot']:
+                                                completion_action_type = 'browser_complete' if success else 'browser_researching'
+                                            else:
+                                                completion_action_type = 'desktop_planning'
+                                            
+                                            completion_step = {
+                                                'type': 'reasoning_step',
+                                                'step': 'desktop_complete' if success else 'desktop_error',
+                                                'action_type': completion_action_type,
+                                                'message': desktop_result.get('summary', 'Desktop action completed') if success else f"Desktop action failed: {desktop_result.get('error', 'Unknown error')}",
+                                                'details': desktop_result
+                                            }
+                                            yield f"data: {json.dumps(completion_step)}\n\n"
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Emitted completion step: {completion_action_type}")
+                                        
+                                        # Emit accumulated reasoning steps from streaming execution
+                                        desktop_reasoning_steps = state_data.get('desktop_reasoning_steps', [])
+                                        for step in desktop_reasoning_steps:
+                                            reasoning_data = {
+                                                'type': 'reasoning_step',
+                                                'step': step.get('step', 'desktop_step'),
+                                                'action_type': step.get('action_type', 'desktop_planning'),
+                                                'message': step.get('message', ''),
+                                                'details': step.get('details', {})
+                                            }
+                                            yield f"data: {json.dumps(reasoning_data)}\n\n"
+                                        
+                                        if desktop_reasoning_steps:
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Emitted {len(desktop_reasoning_steps)} streaming reasoning steps")
+                                        
+                                        # Emit thinking tokens if present
+                                        thinking_tokens = state_data.get('thinking_tokens', [])
+                                        for token_data in thinking_tokens:
+                                            thinking_event = {
+                                                'type': 'thinking_token',
+                                                'token': token_data.get('token', ''),
+                                                'is_complete': token_data.get('is_complete', False)
+                                            }
+                                            yield f"data: {json.dumps(thinking_event)}\n\n"
+                                        
+                                        if thinking_tokens:
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Emitted {len(thinking_tokens)} thinking tokens")
+                                        
+                                        # Emit browser actions for embedded webview
+                                        browser_actions = state_data.get('browser_actions', [])
+                                        for action_data in browser_actions:
+                                            browser_event = {
+                                                'type': 'browser_action',
+                                                'action_type': action_data.get('action_type', 'navigate'),
+                                                'url': action_data.get('url'),
+                                                'selector': action_data.get('selector'),
+                                                'text': action_data.get('text'),
+                                                'direction': action_data.get('direction')
+                                            }
+                                            yield f"data: {json.dumps(browser_event)}\n\n"
+                                        
+                                        if browser_actions:
+                                            logger.info(f"🖥️ [DESKTOP_ACTION] Emitted {len(browser_actions)} browser actions")
                                     
                                     # Handle summarize_results node completion - citations already have bbox coordinates
                                     elif node_name == "summarize_results":

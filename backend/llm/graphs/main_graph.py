@@ -26,6 +26,7 @@ except ImportError:
 
 from backend.llm.types import MainWorkflowState
 from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action, detect_navigation_intent_node
+from backend.llm.nodes.desktop_action_nodes import detect_desktop_intent_node, handle_desktop_action
 from backend.llm.nodes.retrieval_nodes import (
     rewrite_query_with_context,
     check_cached_documents,
@@ -300,6 +301,22 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Skips ALL document retrieval - directly emits agent actions
     - Frontend handles map opening and pin selection
     """
+    
+    builder.add_node("detect_desktop_intent", detect_desktop_intent_node)
+    """
+    Pre-Router Node: LLM-based Desktop Intent Detection
+    Runs before routing to determine if query is desktop automation vs document search.
+    Sets desktop_intent in state for should_route to use.
+    """
+    
+    builder.add_node("handle_desktop_action", handle_desktop_action)
+    """
+    DESKTOP Path Node: OpenCode Action Handler
+    - User requested file management, document creation, or browser automation
+    - Examples: "organize my downloads", "create a summary document", "research prices online"
+    - Routes to OpenCode serve API
+    - Emits reasoning steps for UI visualization
+    """
 
     # EXISTING NODES (Full Pipeline)
     builder.add_node("rewrite_query", rewrite_query_with_context)
@@ -383,7 +400,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     """
     
     # ROUTING LOGIC FUNCTIONS
-    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "direct_document", "simple_search", "complex_search"]:
+    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "desktop_action", "direct_document", "simple_search", "complex_search"]:
         """
         Conditional routing - makes decision based on initial state.
         
@@ -404,9 +421,21 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         # DEBUG: Log is_agent_mode and query for navigation detection
         logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, query='{user_query[:60]}...'")
         
-        # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
+        # PATH -1: DESKTOP ACTION (OpenCode - file management, document creation, browser automation)
+        # Uses LLM-based detection from desktop_intent state (set by detect_desktop_intent_node)
+        # Only in agent mode when OpenCode is enabled
+        # NOTE: Desktop (browser automation) is checked BEFORE navigation because:
+        # - "go to google" is browser automation, not in-app navigation
+        # - Desktop includes visual browser control which takes precedence
+        desktop_intent = state.get("desktop_intent")
+        if is_agent_mode and desktop_intent and desktop_intent.get("is_desktop_action"):
+            logger.info(f"🖥️ [ROUTER] should_route → desktop_action (LLM detected: '{desktop_intent.get('reason')}')")
+            return "desktop_action"
+        
+        # PATH -0.5: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
         # Uses LLM-based detection from navigation_intent state (set by detect_navigation_intent_node)
         # Only in agent mode - reader mode doesn't have navigation tools
+        # NOTE: This is for IN-APP navigation only (go to map, go to property pin)
         navigation_intent = state.get("navigation_intent")
         if is_agent_mode and navigation_intent and navigation_intent.get("is_navigation"):
             logger.info(f"⚡ [ROUTER] should_route → navigation_action (LLM detected: '{navigation_intent.get('reason')}')")
@@ -508,9 +537,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     )
     logger.debug("Conditional: check_cached_documents -> [process_documents|detect_navigation_intent]")
     
-    # Navigation Intent Detection → Route Query
-    builder.add_edge("detect_navigation_intent", "route_query")
-    logger.debug("Edge: detect_navigation_intent -> route_query (LLM-based intent detection)")
+    # Navigation Intent Detection → Desktop Intent Detection
+    builder.add_edge("detect_navigation_intent", "detect_desktop_intent")
+    logger.debug("Edge: detect_navigation_intent -> detect_desktop_intent (LLM-based intent detection)")
+    
+    # Desktop Intent Detection → Route Query
+    builder.add_edge("detect_desktop_intent", "route_query")
+    logger.debug("Edge: detect_desktop_intent -> route_query (LLM-based intent detection)")
 
     # Router → Conditional routing (ORIGINAL - restored from HEAD)
     # NOTE: Citation routing is handled by should_route based on citation_context
@@ -520,16 +553,21 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         {
             "navigation_action": "handle_navigation_action",  # INSTANT: Map navigation
             "citation_query": "handle_citation_query",  # ULTRA-FAST: Citation click query
+            "desktop_action": "handle_desktop_action",  # DESKTOP: OpenCode file/doc/browser automation
             "direct_document": "fetch_direct_chunks",
             "simple_search": "query_vector_documents",  # Skip expand/clarify
             "complex_search": "rewrite_query"  # Full pipeline
         }
     )
-    logger.debug("Conditional: route_query -> [navigation_action|citation_query|direct_document|simple_search|complex_search]")
+    logger.debug("Conditional: route_query -> [navigation_action|citation_query|desktop_action|direct_document|simple_search|complex_search]")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
     logger.debug("Edge: handle_navigation_action -> format_response (INSTANT)")
+    
+    # DESKTOP PATH: handle → END (OpenCode actions, skips document retrieval)
+    builder.add_edge("handle_desktop_action", END)
+    logger.debug("Edge: handle_desktop_action -> END (DESKTOP automation via OpenCode)")
     
     # ATTACHMENT FAST PATH: handle → format (ULTRA-FAST ~2s, skips ALL retrieval + processing)
     builder.add_edge("handle_attachment_fast", "format_response")

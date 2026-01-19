@@ -30,6 +30,18 @@ import { ResponseModeChoice } from './FileChoiceStep';
 import { ModeSelector } from './ModeSelector';
 import { useMode } from '../contexts/ModeContext';
 import { BotStatusOverlay } from './BotStatusOverlay';
+import { AgentWebView } from './AgentWebView';
+import { isElectron } from '../services/webviewController';
+import { 
+  runWebviewAutomation, 
+  isAutomationAvailable,
+  SubGoal,
+  Finding,
+  ReflectionResult,
+  SessionProgress,
+  SynthesizedResult
+} from '../services/webviewAutomation';
+import type { AgentSubGoal, AgentFinding, AgentProgress, AgentSynthesizedResult } from '../contexts/PreviewContext';
 
 // ChatGPT-style thinking dot animation
 const ThinkingDot: React.FC = () => {
@@ -479,12 +491,16 @@ const StreamingResponseText: React.FC<{
           if (part.startsWith('%%CITATION_')) {
             // Render all citations (including pending) via renderCitationPlaceholder
             // This ensures consistent rendering during and after streaming
-            const citationNode = renderCitationPlaceholder(part, `cit-${idx}-${part}`);
+            // Use timestamp + index + part hash for uniqueness
+            const uniqueKey = `cit-${Date.now()}-${idx}-${part.slice(-10)}`;
+            const citationNode = renderCitationPlaceholder(part, uniqueKey);
             if (citationNode !== null) {
-              result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
+              result.push(<React.Fragment key={uniqueKey}>{citationNode}</React.Fragment>);
             }
           } else if (part) {
-            result.push(<React.Fragment key={`text-${idx}`}>{part}</React.Fragment>);
+            // Use timestamp + index for text parts to ensure uniqueness
+            const uniqueKey = `text-${Date.now()}-${idx}`;
+            result.push(<React.Fragment key={uniqueKey}>{part}</React.Fragment>);
           }
         });
         return result.length > 0 ? result : null;
@@ -977,16 +993,20 @@ const renderTextWithCitations = (
   return parts.map((part, idx) => {
     const placeholder = citationPlaceholders[part];
     if (placeholder) {
+      // Use citation number + index + timestamp for uniqueness
+      const uniqueKey = `cit-${placeholder.num}-${idx}-${Date.now()}`;
       return (
         <CitationLink 
-          key={`cit-${idx}-${placeholder.num}`} 
+          key={uniqueKey} 
           citationNumber={placeholder.num} 
           citationData={placeholder.data} 
           onClick={onCitationClick} 
         />
       );
     }
-    return <span key={`text-${idx}`}>{part}</span>;
+    // Use timestamp + index for text parts
+    const uniqueKey = `text-${Date.now()}-${idx}`;
+    return <span key={uniqueKey}>{part}</span>;
   });
 };
 
@@ -1698,7 +1718,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setIsAgentOpening,
     setAgentTaskActive,
     stopAgentTask,
-    setMapNavigating
+    setMapNavigating,
+    // Browser preview for agentic browsing
+    browserPreview,
+    openBrowserPreview,
+    closeBrowserPreview,
+    updateBrowserPreview,
+    addBrowserAction,
+    // Agent session state for autonomous browsing
+    setAgentGoals,
+    addAgentFinding,
+    setAgentFindings,
+    updateAgentProgress,
+    setAgentSynthesizedResult,
+    setAgentSessionId,
+    markGoalComplete
   } = usePreview();
 
   // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
@@ -2583,6 +2617,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       original_filename?: string;
       block_id?: string;
     };
+    thinkingText?: string; // Desktop automation: streaming thinking text with typewriter effect
   }
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
@@ -3748,7 +3783,199 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     console.warn('Unknown agent action:', action.action);
                 }
               },
-              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+              isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+              // onThinkingToken: Desktop automation - stream thinking text with typewriter effect
+              (token: string, isComplete: boolean) => {
+                setChatMessages(prev => prev.map(msg => 
+                  msg.id === loadingResponseId
+                    ? { 
+                        ...msg, 
+                        thinkingText: isComplete 
+                          ? (msg.thinkingText || '') + token  // Append final token and keep
+                          : (msg.thinkingText || '') + token  // Accumulate tokens
+                      }
+                    : msg
+                ));
+              },
+              // onBrowserAction: Browser action commands for embedded webview
+              (action) => {
+                console.log('🌐 [SIDECHAT-1] onBrowserAction received:', action);
+                
+                // Handle 'start_automation' - NEW frontend-driven automation
+                if (action.type === 'start_automation') {
+                  console.log('🌐 [SIDECHAT-1] START_AUTOMATION action, task:', action.task, 'url:', action.url);
+                  const startingUrl = action.url || 'https://www.google.com';
+                  const task = action.task || '';
+                  
+                  // Check if automation is available (Electron only)
+                  if (!isAutomationAvailable()) {
+                    console.warn('⚠️ [SIDECHAT-1] Automation not available (not in Electron)');
+                    return;
+                  }
+                  
+                  // If browser is already open, just start new automation directly
+                  // Otherwise open it first
+                  const browserAlreadyOpen = browserPreview.isOpen;
+                  
+                  if (!browserAlreadyOpen) {
+                    openBrowserPreview(startingUrl);
+                  }
+                  
+                  // Clear previous action history and set loading state
+                  updateBrowserPreview({ 
+                    isLoading: true, 
+                    currentUrl: startingUrl,
+                    actionHistory: [] // Clear previous actions
+                  });
+                  
+                  // Delay depends on whether browser was already open
+                  const delay = browserAlreadyOpen ? 500 : 1500;
+                  
+                  setTimeout(async () => {
+                    console.log('🤖 [SIDECHAT-1] Starting frontend automation for task:', task);
+                    const result = await runWebviewAutomation(
+                      task,
+                      startingUrl,
+                      { maxSteps: 15, useSession: true },
+                      {
+                        onStepStart: (step, total) => {
+                          console.log(`🤖 [AUTOMATION] Step ${step}/${total}`);
+                        },
+                        onAction: (automationAction) => {
+                          console.log('🎯 [AUTOMATION] Action:', automationAction.action);
+                          addBrowserAction(automationAction.action);
+                        },
+                        onUrlChange: (url) => {
+                          console.log('🌐 [AUTOMATION] URL changed:', url);
+                          updateBrowserPreview({ currentUrl: url });
+                        },
+                        onComplete: (reason, history) => {
+                          console.log('✅ [AUTOMATION] Complete:', reason);
+                          updateBrowserPreview({ isLoading: false });
+                        },
+                        onError: (error) => {
+                          console.error('🔴 [AUTOMATION] Error:', error);
+                          updateBrowserPreview({ isLoading: false, error });
+                        },
+                        // NEW: Intelligence callbacks
+                        onPlanCreated: (goals: SubGoal[]) => {
+                          console.log('🎯 [AUTOMATION] Plan created with', goals.length, 'goals');
+                          const agentGoals: AgentSubGoal[] = goals.map(g => ({
+                            id: g.id,
+                            description: g.description,
+                            status: g.status,
+                            expected_result: g.expected_result
+                          }));
+                          setAgentGoals(agentGoals);
+                        },
+                        onGoalStarted: (goal: SubGoal) => {
+                          console.log('🎯 [AUTOMATION] Goal started:', goal.description);
+                        },
+                        onGoalCompleted: (goalId: string) => {
+                          console.log('✅ [AUTOMATION] Goal completed:', goalId);
+                          markGoalComplete(goalId);
+                        },
+                        onFindingExtracted: (findings: Finding[]) => {
+                          console.log('📝 [AUTOMATION] Findings extracted:', findings.length);
+                          const agentFindings: AgentFinding[] = findings.map(f => ({
+                            id: f.id,
+                            fact: f.fact,
+                            source_url: f.source_url,
+                            confidence: f.confidence,
+                            goal_id: f.goal_id
+                          }));
+                          agentFindings.forEach(f => addAgentFinding(f));
+                        },
+                        onProgressUpdate: (progress: SessionProgress) => {
+                          console.log('📊 [AUTOMATION] Progress:', progress.completed, '/', progress.total);
+                          const agentProgress: AgentProgress = {
+                            completed: progress.completed,
+                            failed: progress.failed,
+                            total: progress.total,
+                            currentGoal: progress.current_goal ? {
+                              id: progress.current_goal.id,
+                              description: progress.current_goal.description,
+                              status: progress.current_goal.status
+                            } : null,
+                            allComplete: progress.all_complete
+                          };
+                          updateAgentProgress(agentProgress);
+                        },
+                        onReflection: (reflection: ReflectionResult) => {
+                          console.log('🤔 [AUTOMATION] Reflection:', reflection.reasoning);
+                          
+                          // Check if CAPTCHA was detected
+                          const isCaptcha = reflection.suggested_action === 'replan' && 
+                                           (reflection.reasoning.toLowerCase().includes('captcha') ||
+                                            reflection.reasoning.toLowerCase().includes('verify') ||
+                                            reflection.alternative_approach?.toLowerCase().includes('captcha') ||
+                                            reflection.alternative_approach?.toLowerCase().includes('manual'));
+                          
+                          if (isCaptcha) {
+                            toast({
+                              title: "CAPTCHA Detected",
+                              description: "The browser encountered a CAPTCHA challenge. You may need to complete it manually, or the system will try an alternative approach.",
+                              variant: "warning",
+                              duration: 5000
+                            });
+                          }
+                        },
+                        onSynthesizedResult: (result: SynthesizedResult) => {
+                          console.log('📊 [AUTOMATION] Synthesized result with confidence:', result.confidence);
+                          const agentResult: AgentSynthesizedResult = {
+                            answer: result.answer,
+                            summary: result.summary,
+                            findings: result.findings.map(f => ({
+                              id: f.id,
+                              fact: f.fact,
+                              source_url: f.source_url,
+                              confidence: f.confidence,
+                              goal_id: f.goal_id
+                            })),
+                            sources: result.sources,
+                            confidence: result.confidence,
+                            caveats: result.caveats,
+                            dataPoints: result.data_points as Record<string, unknown>
+                          };
+                          setAgentSynthesizedResult(agentResult);
+                        }
+                      }
+                    );
+                    console.log('🤖 [SIDECHAT-1] Automation finished:', result.success, 'steps:', result.history.length);
+                  }, delay);
+                  return;
+                }
+                
+                // Handle 'open' action - create webview shell (URL may be null, backend navigates via CDP)
+                if (action.type === 'open') {
+                  console.log('🌐 [SIDECHAT-1] OPEN action, url:', action.url, 'browserPreview.isOpen:', browserPreview.isOpen);
+                  if (!browserPreview.isOpen) {
+                    // Open with URL if provided, otherwise open blank (agent-controlled mode)
+                    const initialUrl = action.url || 'about:blank';
+                    console.log('🌐 [SIDECHAT-1] Opening browser preview with URL:', initialUrl);
+                    openBrowserPreview(initialUrl);
+                  }
+                } else if ((action.type === 'navigate' || action.type === 'url') && action.url) {
+                  // URL update from backend (after CDP navigation)
+                  console.log('🌐 [SIDECHAT-1] URL update:', action.url);
+                  if (!browserPreview.isOpen) {
+                    openBrowserPreview(action.url);
+                  } else {
+                    updateBrowserPreview({ currentUrl: action.url });
+                  }
+                } else if (action.type === 'action' && action.action) {
+                  // Action type contains the action description (e.g., "Step 1: TYPE...")
+                  console.log('🌐 [SIDECHAT-1] Browser action:', action.action);
+                  addBrowserAction(action.action);
+                  updateBrowserPreview({ isLoading: true });
+                } else if (action.type === 'click' || action.type === 'type' || action.type === 'scroll') {
+                  addBrowserAction(`${action.type}: ${action.selector || action.text || action.direction || ''}`);
+                  updateBrowserPreview({ isLoading: true });
+                } else if (action.type === 'close' || action.type === 'complete' || action.type === 'error') {
+                  console.log('🌐 [SIDECHAT-1] Browser task finished:', action.type);
+                  updateBrowserPreview({ isLoading: false });
+                }
+              }
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -5123,7 +5350,35 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     break;
                 }
               },
-              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+              isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+              // onThinkingToken: Desktop automation - stream thinking text with typewriter effect
+              (token: string, isComplete: boolean) => {
+                setChatMessages(prev => prev.map(msg => 
+                  msg.id === loadingResponseId
+                    ? { 
+                        ...msg, 
+                        thinkingText: isComplete 
+                          ? (msg.thinkingText || '') + token  // Append final token and keep
+                          : (msg.thinkingText || '') + token  // Accumulate tokens
+                      }
+                    : msg
+                ));
+              },
+              // onBrowserAction: Browser action commands for embedded webview
+              (action) => {
+                if (action.type === 'navigate' && action.url) {
+                  if (!browserPreview.isOpen) {
+                    openBrowserPreview(action.url);
+                  } else {
+                    updateBrowserPreview({ currentUrl: action.url });
+                  }
+                } else if (action.type === 'click' || action.type === 'type' || action.type === 'scroll') {
+                  addBrowserAction(`${action.type}: ${action.selector || action.text || action.direction || ''}`);
+                  updateBrowserPreview({ isLoading: true });
+                } else if (action.type === 'close') {
+                  closeBrowserPreview();
+                }
+              }
             );
             
             // Clear abort controller and processing flag on completion
@@ -6282,7 +6537,171 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   break;
               }
             },
-            isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+            isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+            // onThinkingToken: Desktop automation - stream thinking text with typewriter effect
+            (token: string, isComplete: boolean) => {
+              setChatMessages(prev => prev.map(msg => 
+                msg.id === loadingResponseId
+                  ? { 
+                      ...msg, 
+                      thinkingText: isComplete 
+                        ? (msg.thinkingText || '') + token  // Append final token and keep
+                        : (msg.thinkingText || '') + token  // Accumulate tokens
+                    }
+                  : msg
+              ));
+            },
+            // onBrowserAction: Browser action commands for embedded webview
+            (action) => {
+              console.log('🌐 [SIDECHAT-FOLLOWUP] onBrowserAction received:', action);
+              
+              // Handle 'start_automation' - NEW frontend-driven automation (same as initial query)
+              if (action.type === 'start_automation') {
+                console.log('🌐 [SIDECHAT-FOLLOWUP] START_AUTOMATION action, task:', action.task, 'url:', action.url);
+                const startingUrl = action.url || 'https://www.google.com';
+                const task = action.task || '';
+                
+                // Check if automation is available (Electron only)
+                if (!isAutomationAvailable()) {
+                  console.warn('⚠️ [SIDECHAT-FOLLOWUP] Automation not available (not in Electron)');
+                  return;
+                }
+                
+                // If browser is already open, just start new automation directly
+                const browserAlreadyOpen = browserPreview.isOpen;
+                
+                if (!browserAlreadyOpen) {
+                  openBrowserPreview(startingUrl);
+                }
+                
+                // Clear previous action history and set loading state
+                updateBrowserPreview({ 
+                  isLoading: true, 
+                  currentUrl: startingUrl,
+                  actionHistory: [] // Clear previous actions
+                });
+                
+                // Delay depends on whether browser was already open
+                const delay = browserAlreadyOpen ? 500 : 1500;
+                
+                console.log('🤖 [SIDECHAT-FOLLOWUP] Starting frontend automation for task:', task);
+                
+                // Start frontend-driven automation after webview is ready
+                setTimeout(async () => {
+                  try {
+                    const { runAutomation } = await import('../services/webviewAutomation');
+                    const result = await runAutomation(
+                      task,
+                      startingUrl,
+                      action.max_steps || 15,
+                      {
+                        onStepStart: (step: number, maxSteps: number) => {
+                          console.log(`🤖 [AUTOMATION] Step ${step}/${maxSteps}`);
+                          setBotActivityMessage(`Browser automation: Step ${step}/${maxSteps}`);
+                        },
+                        onAction: (automationAction) => {
+                          console.log(`🎯 [AUTOMATION] Action: ${automationAction.action}`);
+                          addBrowserAction(automationAction.action);
+                        },
+                        onUrlChange: (url: string) => {
+                          console.log(`🌐 [AUTOMATION] URL changed: ${url}`);
+                          updateBrowserPreview({ currentUrl: url });
+                        },
+                        onComplete: (reason: string) => {
+                          console.log('✅ [AUTOMATION] Complete:', reason);
+                        },
+                        onError: (error: string) => {
+                          console.error('🔴 [AUTOMATION] Error:', error);
+                        },
+                        onPlanCreated: (goals: SubGoal[]) => {
+                          const agentGoals: AgentSubGoal[] = goals.map(g => ({
+                            id: g.id,
+                            description: g.description,
+                            status: g.status,
+                            expected_result: g.expected_result
+                          }));
+                          setAgentGoals(agentGoals);
+                        },
+                        onGoalCompleted: (goalId: string) => {
+                          markGoalComplete(goalId);
+                        },
+                        onFindingExtracted: (findings: Finding[]) => {
+                          const agentFindings: AgentFinding[] = findings.map(f => ({
+                            id: f.id,
+                            fact: f.fact,
+                            source_url: f.source_url,
+                            confidence: f.confidence,
+                            goal_id: f.goal_id
+                          }));
+                          agentFindings.forEach(f => addAgentFinding(f));
+                        },
+                        onProgressUpdate: (progress: SessionProgress) => {
+                          const agentProgress: AgentProgress = {
+                            completed: progress.completed,
+                            failed: progress.failed,
+                            total: progress.total,
+                            currentGoal: progress.current_goal ? {
+                              id: progress.current_goal.id,
+                              description: progress.current_goal.description,
+                              status: progress.current_goal.status
+                            } : null,
+                            allComplete: progress.all_complete
+                          };
+                          updateAgentProgress(agentProgress);
+                        },
+                        onSynthesizedResult: (synthResult: SynthesizedResult) => {
+                          const agentResult: AgentSynthesizedResult = {
+                            answer: synthResult.answer,
+                            summary: synthResult.summary,
+                            findings: synthResult.findings.map(f => ({
+                              id: f.id,
+                              fact: f.fact,
+                              source_url: f.source_url,
+                              confidence: f.confidence,
+                              goal_id: f.goal_id
+                            })),
+                            sources: synthResult.sources,
+                            confidence: synthResult.confidence,
+                            caveats: synthResult.caveats,
+                            dataPoints: synthResult.data_points as Record<string, unknown>
+                          };
+                          setAgentSynthesizedResult(agentResult);
+                        }
+                      }
+                    );
+                    
+                    console.log('🤖 [SIDECHAT-FOLLOWUP] Automation finished:', result.success, 'history:', result.history.length);
+                    
+                    updateBrowserPreview({ isLoading: false });
+                    if (result.success) {
+                      setBotActivityMessage('Task complete');
+                    } else {
+                      setBotActivityMessage(result.error || 'Task failed');
+                    }
+                    
+                    // Keep bot status visible briefly then hide
+                    setTimeout(() => {
+                      setIsBotActive(false);
+                    }, 2000);
+                  } catch (err) {
+                    console.error('❌ [SIDECHAT-FOLLOWUP] Automation error:', err);
+                    updateBrowserPreview({ isLoading: false });
+                    setIsBotActive(false);
+                  }
+                }, delay);
+              } else if (action.type === 'navigate' && action.url) {
+                if (!browserPreview.isOpen) {
+                  openBrowserPreview(action.url);
+                } else {
+                  updateBrowserPreview({ currentUrl: action.url });
+                }
+              } else if (action.type === 'click' || action.type === 'type' || action.type === 'scroll') {
+                addBrowserAction(`${action.type}: ${action.selector || action.text || action.direction || ''}`);
+                updateBrowserPreview({ isLoading: true });
+              } else if (action.type === 'close') {
+                closeBrowserPreview();
+              }
+            }
           );
           
           // Clear abort controller and processing flag on completion
@@ -6700,7 +7119,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             minHeight: '1px' // Prevent collapse
           }}>
           {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} thinkingText={message.thinkingText} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -6759,7 +7178,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               if (draggedWidth !== null) {
                 return `${draggedWidth}px`;
               }
-              // PRIORITY 2: If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
+              // PRIORITY 2: If browser preview is open, shrink chat to 35vw (same as property details)
+              // This pushes the chat to the left, making room for the browser preview
+              if (browserPreview.isOpen) {
+                return '35vw';
+              }
+              // PRIORITY 3: If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
               // Check shouldExpand directly (don't wait for isFullscreenMode to be set) to prevent initial 450px flash
               if (shouldExpand && !isPropertyDetailsOpen) {
                 return `calc(100vw - ${sidebarWidth}px)`;
@@ -7979,6 +8403,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           </motion.div>
         )}
       </AnimatePresence>
+      
+      {/* Agent WebView for browser automation - real embedded browser in Electron, or shows unavailable message */}
+      {browserPreview.isOpen && (
+        <AgentWebView
+          isOpen={browserPreview.isOpen}
+          url={browserPreview.currentUrl}
+          onClose={closeBrowserPreview}
+          onUrlChange={(url) => updateBrowserPreview({ currentUrl: url })}
+          actionHistory={browserPreview.actionHistory}
+          currentAction={browserPreview.currentAction}
+          isLoading={browserPreview.isLoading}
+          goals={browserPreview.goals}
+          findings={browserPreview.findings}
+          progress={browserPreview.progress}
+          synthesizedResult={browserPreview.synthesizedResult}
+        />
+      )}
     </AnimatePresence>
   );
 });

@@ -888,24 +888,25 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
               {/* Bottom panel - floating card */}
               <div 
-                className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-30"
+                className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-30"
                 style={{
                   width: '100%',
                   maxWidth: '400px',
-                  padding: '0 24px',
+                  padding: '0 16px',
                 }}
               >
                 <div 
                   style={{ 
                     backgroundColor: 'white',
-                    borderRadius: '16px',
-                    padding: '20px',
-                    boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08)',
+                    borderRadius: '0',
+                    padding: '16px',
+                    border: '1px solid rgba(0, 0, 0, 0.15)',
+                    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
                   }}
                 >
                   {/* Search */}
-                  <div className="relative mb-4">
-                    <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4" style={{ color: '#a1a1a1' }} />
+                  <div className="relative mb-3">
+                    <MapPin className="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#71717A' }} />
                     <input
                       type="text"
                       value={searchQuery}
@@ -914,34 +915,32 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                       placeholder="Search address..."
                       className="w-full transition-colors focus:outline-none"
                       style={{
-                        padding: '12px 12px 12px 36px',
-                        fontSize: '14px',
-                        borderRadius: '10px',
-                        backgroundColor: '#f5f5f5',
-                        border: '1px solid transparent',
-                        color: '#1a1a1a',
+                        padding: '8px 8px 8px 28px',
+                        fontSize: '13px',
+                        borderRadius: '0',
+                        backgroundColor: 'white',
+                        border: '1px solid rgba(0, 0, 0, 0.15)',
+                        color: '#18181B',
                       }}
                       onFocus={(e) => {
-                        e.currentTarget.style.backgroundColor = '#ffffff';
-                        e.currentTarget.style.border = '1px solid #e5e5e5';
+                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.25)';
                       }}
                       onBlur={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f5f5f5';
-                        e.currentTarget.style.border = '1px solid transparent';
+                        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.15)';
                       }}
                     />
                     {searchQuery && (
                       <button
                         onClick={handleSearch}
                         disabled={isSearching}
-                        className="absolute right-2 top-1/2 transform -translate-y-1/2 transition-all disabled:opacity-50"
+                        className="absolute right-1.5 top-1/2 transform -translate-y-1/2 transition-all disabled:opacity-50"
                         style={{
-                          padding: '6px 12px',
-                          backgroundColor: '#1a1a1a',
+                          padding: '4px 8px',
+                          backgroundColor: '#18181B',
                           color: 'white',
                           fontSize: '12px',
                           fontWeight: 500,
-                          borderRadius: '6px',
+                          borderRadius: '0',
                         }}
                       >
                         {isSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Search'}
@@ -954,30 +953,31 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                     <motion.div
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="mb-4"
+                      className="mb-3"
                       style={{
-                        padding: '12px',
-                        backgroundColor: '#f5f5f5',
-                        borderRadius: '10px',
+                        padding: '10px',
+                        backgroundColor: '#FAFAFA',
+                        borderRadius: '0',
+                        border: '1px solid rgba(0, 0, 0, 0.1)',
                       }}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5">
                         <div 
                           className="flex items-center justify-center flex-shrink-0"
                           style={{
-                            width: '28px',
-                            height: '28px',
-                            backgroundColor: '#1a1a1a',
-                            borderRadius: '8px',
+                            width: '20px',
+                            height: '20px',
+                            backgroundColor: '#18181B',
+                            borderRadius: '0',
                           }}
                         >
-                          <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+                          <Check className="w-2.5 h-2.5 text-white" strokeWidth={2.5} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p style={{ fontSize: '13px', fontWeight: 500, color: '#1a1a1a', lineHeight: 1.4 }}>
+                          <p style={{ fontSize: '13px', fontWeight: 500, color: '#18181B', lineHeight: 1.4 }}>
                             {selectedLocation.address}
                           </p>
-                          <p style={{ fontSize: '11px', color: '#a1a1a1', marginTop: '2px' }}>
+                          <p style={{ fontSize: '11px', color: '#71717A', marginTop: '2px' }}>
                             {selectedLocation.lat.toFixed(5)}, {selectedLocation.lng.toFixed(5)}
                           </p>
                         </div>
@@ -987,26 +987,28 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
                   {/* Helper text */}
                   {!selectedLocation && (
-                    <p className="text-center mb-4" style={{ fontSize: '13px', color: '#a1a1a1' }}>
+                    <p className="text-center mb-3" style={{ fontSize: '13px', color: '#71717A' }}>
                       Click on the map to place a pin
                     </p>
                   )}
 
                   {/* Action buttons */}
-                  <div className="flex gap-3">
+                  <div className="flex gap-2">
                     <button
                       onClick={() => setCurrentStep(1)}
                       className="transition-all"
                       style={{
-                        padding: '10px 20px',
+                        padding: '6px 12px',
                         fontSize: '13px',
                         fontWeight: 500,
-                        borderRadius: '9999px',
-                        color: '#525252',
-                        backgroundColor: '#f5f5f5',
+                        borderRadius: '0',
+                        color: '#18181B',
+                        backgroundColor: 'white',
+                        border: '1px solid rgba(0, 0, 0, 0.15)',
+                        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
                       }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#ebebeb'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#f5f5f5'}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#FAFAFA'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}
                     >
                       Back
                     </button>
@@ -1015,28 +1017,30 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                       disabled={!canCreate}
                       className="flex-1 flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                       style={{
-                        padding: '10px 20px',
+                        padding: '6px 12px',
                         fontSize: '13px',
                         fontWeight: 500,
-                        borderRadius: '9999px',
-                        backgroundColor: canCreate ? '#1a1a1a' : '#e5e5e5',
-                        color: canCreate ? 'white' : '#a1a1a1',
+                        borderRadius: '0',
+                        backgroundColor: canCreate ? '#18181B' : '#E4E4E7',
+                        color: canCreate ? 'white' : '#71717A',
+                        border: canCreate ? 'none' : '1px solid rgba(0, 0, 0, 0.15)',
+                        boxShadow: canCreate ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
                       }}
                       onMouseEnter={(e) => {
                         if (!canCreate) return;
-                        e.currentTarget.style.backgroundColor = '#404040';
+                        e.currentTarget.style.backgroundColor = '#27272A';
                       }}
                       onMouseLeave={(e) => {
                         if (!canCreate) return;
-                        e.currentTarget.style.backgroundColor = '#1a1a1a';
+                        e.currentTarget.style.backgroundColor = '#18181B';
                       }}
                     >
                       {isCreating ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
                         <>
                           <span>Create project</span>
-                          <ArrowRight className="w-4 h-4" strokeWidth={2} />
+                          <ArrowRight className="w-3.5 h-3.5" strokeWidth={2} />
                         </>
                       )}
                     </button>
@@ -1044,7 +1048,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
                   {/* Error */}
                   {error && (
-                    <p className="mt-3 text-center" style={{ fontSize: '13px', color: '#ef4444' }}>{error}</p>
+                    <p className="mt-2 text-center" style={{ fontSize: '13px', color: '#DC2626' }}>{error}</p>
                   )}
                 </div>
               </div>

@@ -39,6 +39,61 @@ export interface CitationHighlight {
   original_filename?: string;
 }
 
+// Sub-goal for autonomous browsing
+export interface AgentSubGoal {
+  id: string;
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  expected_result?: string;
+}
+
+// Finding extracted during autonomous browsing
+export interface AgentFinding {
+  id: string;
+  fact: string;
+  source_url: string;
+  confidence: number;
+  goal_id: string;
+}
+
+// Progress information for autonomous browsing
+export interface AgentProgress {
+  completed: number;
+  failed: number;
+  total: number;
+  currentGoal: AgentSubGoal | null;
+  allComplete: boolean;
+}
+
+// Synthesized result from autonomous browsing
+export interface AgentSynthesizedResult {
+  answer: string;
+  summary: string;
+  findings: AgentFinding[];
+  sources: string[];
+  confidence: number;
+  caveats: string[];
+  dataPoints: Record<string, unknown>;
+}
+
+// Browser preview state for agentic browser automation
+export interface BrowserPreviewState {
+  isOpen: boolean;
+  currentUrl: string;
+  pageTitle: string;
+  screenshot: string | null;  // Base64 encoded screenshot
+  isLoading: boolean;
+  currentAction: string;
+  actionHistory: Array<{ step: number; action: string; timestamp: number }>;
+  error: string | null;
+  // Autonomous agent session state
+  sessionId: string | null;
+  goals: AgentSubGoal[];
+  findings: AgentFinding[];
+  progress: AgentProgress | null;
+  synthesizedResult: AgentSynthesizedResult | null;
+}
+
 interface PreviewContextType {
   previewFiles: FileAttachmentData[];
   activePreviewTabIndex: number;
@@ -72,6 +127,20 @@ interface PreviewContextType {
   // NEW: Map navigation glow effect state
   isMapNavigating: boolean;
   setMapNavigating: (active: boolean) => void;
+  // NEW: Browser preview state for agentic browsing
+  browserPreview: BrowserPreviewState;
+  openBrowserPreview: (url?: string) => void;
+  closeBrowserPreview: () => void;
+  updateBrowserPreview: (update: Partial<BrowserPreviewState>) => void;
+  addBrowserAction: (action: string) => void;
+  // NEW: Agent session state updates
+  setAgentGoals: (goals: AgentSubGoal[]) => void;
+  addAgentFinding: (finding: AgentFinding) => void;
+  setAgentFindings: (findings: AgentFinding[]) => void;
+  updateAgentProgress: (progress: AgentProgress) => void;
+  setAgentSynthesizedResult: (result: AgentSynthesizedResult | null) => void;
+  setAgentSessionId: (sessionId: string | null) => void;
+  markGoalComplete: (goalId: string) => void;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -92,6 +161,23 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [agentTaskMessage, setAgentTaskMessage] = React.useState<string>('');
   // NEW: Map navigation glow effect state
   const [isMapNavigating, setIsMapNavigatingState] = React.useState<boolean>(false);
+  // NEW: Browser preview state for agentic browsing
+  const [browserPreview, setBrowserPreview] = React.useState<BrowserPreviewState>({
+    isOpen: false,
+    currentUrl: '',
+    pageTitle: '',
+    screenshot: null,
+    isLoading: false,
+    currentAction: '',
+    actionHistory: [],
+    error: null,
+    // Agent session state
+    sessionId: null,
+    goals: [],
+    findings: [],
+    progress: null,
+    synthesizedResult: null
+  });
   // NEW: Cache PDF documents in memory to avoid reloading when switching between documents
   const [pdfDocumentCache, setPdfDocumentCache] = React.useState<Map<string, PDFDocumentProxy>>(new Map());
   // NEW: Cache rendered PDF pages (fileId -> pageNumber -> ImageData) for instant page switching
@@ -133,6 +219,112 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // NEW: Set map navigation glow state
   const setMapNavigating = React.useCallback((active: boolean) => {
     setIsMapNavigatingState(active);
+  }, []);
+
+  // NEW: Open browser preview panel
+  const openBrowserPreview = React.useCallback((url?: string) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      isOpen: true,
+      currentUrl: url || prev.currentUrl,
+      isLoading: true,
+      error: null,
+      actionHistory: []
+    }));
+  }, []);
+
+  // NEW: Close browser preview panel
+  const closeBrowserPreview = React.useCallback(() => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      isOpen: false,
+      isLoading: false,
+      currentAction: ''
+    }));
+  }, []);
+
+  // NEW: Update browser preview state
+  const updateBrowserPreview = React.useCallback((update: Partial<BrowserPreviewState>) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      ...update
+    }));
+  }, []);
+
+  // NEW: Add action to browser history
+  const addBrowserAction = React.useCallback((action: string) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      currentAction: action,
+      actionHistory: [
+        ...prev.actionHistory,
+        { step: prev.actionHistory.length + 1, action, timestamp: Date.now() }
+      ]
+    }));
+  }, []);
+
+  // NEW: Set agent session ID
+  const setAgentSessionId = React.useCallback((sessionId: string | null) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      sessionId
+    }));
+  }, []);
+
+  // NEW: Set agent goals
+  const setAgentGoals = React.useCallback((goals: AgentSubGoal[]) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      goals
+    }));
+  }, []);
+
+  // NEW: Add a single agent finding
+  const addAgentFinding = React.useCallback((finding: AgentFinding) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      findings: [...prev.findings, finding]
+    }));
+  }, []);
+
+  // NEW: Set all agent findings (replace)
+  const setAgentFindings = React.useCallback((findings: AgentFinding[]) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      findings
+    }));
+  }, []);
+
+  // NEW: Update agent progress
+  const updateAgentProgress = React.useCallback((progress: AgentProgress) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      progress,
+      // Also update the goal status in goals array
+      goals: prev.goals.map(g => 
+        g.id === progress.currentGoal?.id 
+          ? { ...g, status: progress.currentGoal.status }
+          : g
+      )
+    }));
+  }, []);
+
+  // NEW: Set synthesized result
+  const setAgentSynthesizedResult = React.useCallback((result: AgentSynthesizedResult | null) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      synthesizedResult: result
+    }));
+  }, []);
+
+  // NEW: Mark a goal as complete
+  const markGoalComplete = React.useCallback((goalId: string) => {
+    setBrowserPreview(prev => ({
+      ...prev,
+      goals: prev.goals.map(g => 
+        g.id === goalId ? { ...g, status: 'completed' as const } : g
+      )
+    }));
   }, []);
 
   // NEW: Preload file without opening preview (for citation preloading)
@@ -401,6 +593,18 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     stopAgentTask,
     isMapNavigating,
     setMapNavigating,
+    browserPreview,
+    openBrowserPreview,
+    closeBrowserPreview,
+    updateBrowserPreview,
+    addBrowserAction,
+    setAgentGoals,
+    addAgentFinding,
+    setAgentFindings,
+    updateAgentProgress,
+    setAgentSynthesizedResult,
+    setAgentSessionId,
+    markGoalComplete,
     preloadFile,
     getCachedPdfDocument,
     setCachedPdfDocument,
@@ -411,7 +615,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setHighlightCitation,
     clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating, browserPreview, openBrowserPreview, closeBrowserPreview, updateBrowserPreview, addBrowserAction, setAgentGoals, addAgentFinding, setAgentFindings, updateAgentProgress, setAgentSynthesizedResult, setAgentSessionId, markGoalComplete]);
 
   return (
     <PreviewContext.Provider value={value}>

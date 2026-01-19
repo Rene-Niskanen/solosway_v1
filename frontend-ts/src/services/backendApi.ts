@@ -271,7 +271,21 @@ class BackendApiService {
     // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
     onAgentAction?: (action: { action: string; params: any }) => void,
     // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
-    isAgentMode?: boolean
+    isAgentMode?: boolean,
+    // DESKTOP AUTOMATION: Callback for thinking tokens (narrative streaming)
+    onThinkingToken?: (token: string, isComplete: boolean) => void,
+    // BROWSER ACTIONS: Callback for browser navigation commands (used with embedded webview)
+    onBrowserAction?: (action: {
+      type: 'open' | 'navigate' | 'url' | 'action' | 'click' | 'type' | 'scroll' | 'close' | 'complete' | 'error' | 'start_automation';
+      url?: string;
+      selector?: string;
+      text?: string;
+      direction?: 'up' | 'down' | 'left' | 'right';
+      action?: string;  // Action description (e.g., "Step 1: TYPE...")
+      message?: string; // Completion/error message
+      task?: string;    // Task for frontend-driven automation
+      max_steps?: number; // Max steps for automation
+    }) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -404,6 +418,38 @@ class BackendApiService {
                         download_url: data.download_url
                       }
                     });
+                  }
+                  break;
+                case 'thinking_token':
+                  // DESKTOP AUTOMATION: Handle thinking tokens for narrative streaming
+                  // These provide conversational updates like "I'll help you organize..."
+                  if (onThinkingToken) {
+                    onThinkingToken(data.token || '', data.is_complete || false);
+                  }
+                  break;
+                case 'browser_action':
+                  // BROWSER ACTIONS: Commands for embedded webview (navigate, click, type, etc.)
+                  console.log('🌐 [BROWSER_ACTION] Received:', data);
+                  if (onBrowserAction) {
+                    console.log('🌐 [BROWSER_ACTION] Calling onBrowserAction with:', {
+                      type: data.action_type || 'navigate',
+                      url: data.url,
+                      action: data.action,
+                      task: data.task
+                    });
+                    onBrowserAction({
+                      type: data.action_type || 'navigate',
+                      url: data.url,
+                      selector: data.selector,
+                      text: data.text,
+                      direction: data.direction,
+                      action: data.action,
+                      message: data.message,
+                      task: data.task,
+                      max_steps: data.max_steps
+                    });
+                  } else {
+                    console.warn('🌐 [BROWSER_ACTION] No onBrowserAction callback provided!');
                   }
                   break;
                 case 'complete':

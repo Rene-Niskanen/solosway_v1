@@ -9,7 +9,7 @@ query context whether to show documents proactively.
 """
 
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
@@ -118,6 +118,156 @@ class NavigateToPropertyByNameInput(BaseModel):
             "REQUIRED. A concise explanation (10-20 words) of why navigating helps the user. "
             "Good: 'Navigating to Highlands property as requested' "
             "Bad: 'Going there' (too vague)"
+        )
+    )
+
+
+# =========================================================================
+# DESKTOP AUTOMATION TOOLS (OpenCode Integration)
+# =========================================================================
+# These tools enable file management, document creation, and browser automation
+# via the OpenCode CLI service.
+# =========================================================================
+
+class FileManagementInput(BaseModel):
+    """Schema for file_management tool - organize, sort, rename, or move files"""
+    action: str = Field(
+        description=(
+            "REQUIRED. The file operation to perform. "
+            "Options: 'organize' (group by type/date), 'sort' (rename with pattern), "
+            "'rename' (batch rename), 'move' (relocate files). "
+            "Examples: 'organize', 'sort', 'rename', 'move'"
+        )
+    )
+    path: str = Field(
+        description=(
+            "REQUIRED. The folder path to operate on. "
+            "Must be an absolute path or relative to user's home. "
+            "Examples: '/Users/name/Downloads', '~/Documents/Projects'"
+        )
+    )
+    pattern: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Pattern for organizing/renaming files. "
+            "For organize: 'by_type', 'by_date', 'by_project'. "
+            "For rename: pattern like '{date}_{name}' or '{index:03d}_{name}'. "
+            "Examples: 'by_type', 'by_date', '{date}_{name}'"
+        )
+    )
+    destination: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Destination folder for move operations. "
+            "Required when action='move'. "
+            "Examples: '/Users/name/Documents/Archived', '~/Backup'"
+        )
+    )
+    filter_pattern: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Glob pattern to filter which files to process. "
+            "Examples: '*.pdf', '*.jpg', 'report_*'"
+        )
+    )
+    reason: str = Field(
+        description=(
+            "REQUIRED. A concise explanation (10-20 words) of what this operation achieves. "
+            "Good: 'Organizing Downloads folder by file type for easier access' "
+            "Bad: 'Organizing files' (too vague)"
+        )
+    )
+
+
+class DocumentCreationInput(BaseModel):
+    """Schema for document_creation tool - create, summarize, or rewrite documents"""
+    action: str = Field(
+        description=(
+            "REQUIRED. The document operation to perform. "
+            "Options: 'create' (new document), 'summarize' (summarize existing), "
+            "'rewrite' (improve/transform document). "
+            "Examples: 'create', 'summarize', 'rewrite'"
+        )
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Content or instructions for the document. "
+            "For 'create': the content to write or instructions for generation. "
+            "For 'rewrite': instructions on how to transform (e.g., 'make more formal'). "
+            "Examples: 'Write a project proposal for...', 'Make this more concise'"
+        )
+    )
+    source_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Source document path for summarize/rewrite operations. "
+            "Required when action='summarize' or 'rewrite'. "
+            "Examples: '/Users/name/Documents/report.docx', '~/notes.md'"
+        )
+    )
+    output_path: str = Field(
+        description=(
+            "REQUIRED. Where to save the output document. "
+            "Include filename with extension. "
+            "Examples: '/Users/name/Documents/summary.md', '~/Projects/proposal.docx'"
+        )
+    )
+    template: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Template or format for the document. "
+            "Examples: 'report', 'memo', 'markdown', 'formal_letter'"
+        )
+    )
+    reason: str = Field(
+        description=(
+            "REQUIRED. A concise explanation (10-20 words) of what this document achieves. "
+            "Good: 'Creating project proposal document as requested by user' "
+            "Bad: 'Creating document' (too vague)"
+        )
+    )
+
+
+class BrowserAutomationInput(BaseModel):
+    """Schema for browser_automation tool - research, fill forms, take screenshots"""
+    action: str = Field(
+        description=(
+            "REQUIRED. The browser operation to perform. "
+            "Options: 'research' (gather information), 'form_fill' (fill web forms), "
+            "'screenshot' (capture webpage). "
+            "Examples: 'research', 'form_fill', 'screenshot'"
+        )
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. URL to navigate to. Required for form_fill and screenshot. "
+            "For research, can be omitted to search the web. "
+            "Examples: 'https://example.com/form', 'https://google.com'"
+        )
+    )
+    instructions: str = Field(
+        description=(
+            "REQUIRED. Detailed instructions for the browser task. "
+            "For research: what to find. For form_fill: what data to enter. "
+            "For screenshot: what to capture. "
+            "Examples: 'Find the latest property prices in London', "
+            "'Fill the contact form with company details'"
+        )
+    )
+    output_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. Where to save output (for research results or screenshots). "
+            "Examples: '/Users/name/research_results.md', '~/screenshot.png'"
+        )
+    )
+    reason: str = Field(
+        description=(
+            "REQUIRED. A concise explanation (10-20 words) of what this achieves. "
+            "Good: 'Researching market data to support property valuation' "
+            "Bad: 'Browsing' (too vague)"
         )
     )
 
@@ -244,6 +394,112 @@ class AgentActionTool:
             'reason': reason
         })
         return f"Queued: Navigate to property '{property_name}' - {reason}"
+    
+    # =========================================================================
+    # DESKTOP AUTOMATION METHODS (OpenCode Integration)
+    # =========================================================================
+    
+    def file_management(
+        self, 
+        action: str, 
+        path: str, 
+        reason: str,
+        pattern: Optional[str] = None,
+        destination: Optional[str] = None,
+        filter_pattern: Optional[str] = None
+    ) -> str:
+        """
+        Record a file_management action for organizing/sorting/moving files.
+        
+        Args:
+            action: Operation type ('organize', 'sort', 'rename', 'move')
+            path: Folder path to operate on
+            reason: Explanation of what this achieves
+            pattern: Optional pattern for organizing/renaming
+            destination: Optional destination for move operations
+            filter_pattern: Optional glob pattern to filter files
+        
+        Returns:
+            Confirmation message
+        """
+        logger.info(f"🎯 [AGENT_TOOL] file_management called: action={action}, path={path}")
+        self.actions.append({
+            'action': 'file_management',
+            'file_action': action,
+            'path': path,
+            'pattern': pattern,
+            'destination': destination,
+            'filter_pattern': filter_pattern,
+            'reason': reason
+        })
+        return f"Queued: File {action} on '{path}' - {reason}"
+    
+    def document_creation(
+        self,
+        action: str,
+        output_path: str,
+        reason: str,
+        content: Optional[str] = None,
+        source_path: Optional[str] = None,
+        template: Optional[str] = None
+    ) -> str:
+        """
+        Record a document_creation action for creating/summarizing/rewriting documents.
+        
+        Args:
+            action: Operation type ('create', 'summarize', 'rewrite')
+            output_path: Where to save the document
+            reason: Explanation of what this achieves
+            content: Content or instructions for the document
+            source_path: Source document for summarize/rewrite
+            template: Optional template format
+        
+        Returns:
+            Confirmation message
+        """
+        logger.info(f"🎯 [AGENT_TOOL] document_creation called: action={action}, output={output_path}")
+        self.actions.append({
+            'action': 'document_creation',
+            'doc_action': action,
+            'content': content,
+            'source_path': source_path,
+            'output_path': output_path,
+            'template': template,
+            'reason': reason
+        })
+        return f"Queued: Document {action} -> '{output_path}' - {reason}"
+    
+    def browser_automation(
+        self,
+        action: str,
+        instructions: str,
+        reason: str,
+        url: Optional[str] = None,
+        output_path: Optional[str] = None
+    ) -> str:
+        """
+        Record a browser_automation action for research/form-fill/screenshot.
+        
+        Args:
+            action: Operation type ('research', 'form_fill', 'screenshot')
+            instructions: Detailed instructions for the task
+            reason: Explanation of what this achieves
+            url: Optional URL to navigate to
+            output_path: Optional path to save output
+        
+        Returns:
+            Confirmation message
+        """
+        logger.info(f"🎯 [AGENT_TOOL] browser_automation called: action={action}, url={url}")
+        self.actions.append({
+            'action': 'browser_automation',
+            'browser_action': action,
+            'url': url,
+            'instructions': instructions,
+            'output_path': output_path,
+            'reason': reason
+        })
+        return f"Queued: Browser {action} - {reason}"
     
     def get_actions(self) -> List[Dict[str, Any]]:
         """Get all recorded actions"""
@@ -851,4 +1107,110 @@ Use this ONE tool instead of calling search_property, show_map_view, and select_
         args_schema=NavigateToPropertyByNameInput
     )
     
-    return [open_doc_tool, navigate_tool, search_property_tool, show_map_view_tool, select_property_pin_tool, navigate_by_name_tool], tool_instance
+    # =========================================================================
+    # DESKTOP AUTOMATION TOOLS (OpenCode Integration)
+    # =========================================================================
+    
+    file_management_description = """
+## PURPOSE
+Performs file management operations like organizing, sorting, renaming, or moving files.
+Uses OpenCode's desktop automation to manipulate files on the user's system.
+
+## WHEN TO USE
+- User asks to "organize my files", "sort my downloads", "clean up folders"
+- User wants to "rename files", "move documents", "group by type/date"
+- User mentions specific folders like "Downloads", "Documents", "Desktop"
+
+## ACTIONS
+- 'organize': Group files by type (documents, images, etc.) or by date
+- 'sort': Rename files with a consistent pattern
+- 'rename': Batch rename files based on rules
+- 'move': Relocate files to a different folder
+
+## EXAMPLES
+User: "Organize my downloads folder by file type"
+→ file_management(action="organize", path="~/Downloads", pattern="by_type", reason="Organizing downloads by file type")
+
+User: "Move all PDFs to my documents"
+→ file_management(action="move", path="~/Downloads", destination="~/Documents", filter_pattern="*.pdf", reason="Moving PDFs to Documents folder")
+"""
+    
+    file_management_tool = StructuredTool.from_function(
+        func=tool_instance.file_management,
+        name="file_management",
+        description=file_management_description,
+        args_schema=FileManagementInput
+    )
+    
+    document_creation_description = """
+## PURPOSE
+Creates, summarizes, or rewrites documents using AI assistance.
+Uses OpenCode to generate or transform documents on the user's system.
+
+## WHEN TO USE
+- User asks to "create a document", "write a report", "draft a memo"
+- User wants to "summarize this document", "make a summary"
+- User asks to "rewrite", "improve", "make more formal/concise"
+
+## ACTIONS
+- 'create': Generate a new document from scratch or instructions
+- 'summarize': Create a summary of an existing document
+- 'rewrite': Transform/improve an existing document
+
+## EXAMPLES
+User: "Create a project proposal for the new website"
+→ document_creation(action="create", content="Project proposal for new website redesign...", output_path="~/Documents/proposal.md", reason="Creating project proposal")
+
+User: "Summarize the meeting notes"
+→ document_creation(action="summarize", source_path="~/Documents/meeting_notes.md", output_path="~/Documents/meeting_summary.md", reason="Summarizing meeting notes")
+"""
+    
+    document_creation_tool = StructuredTool.from_function(
+        func=tool_instance.document_creation,
+        name="document_creation",
+        description=document_creation_description,
+        args_schema=DocumentCreationInput
+    )
+    
+    browser_automation_description = """
+## PURPOSE
+Automates browser tasks like web research, form filling, or taking screenshots.
+Uses OpenCode's browser automation capabilities.
+
+## WHEN TO USE
+- User asks to "research", "find information online", "look up"
+- User wants to "fill out a form", "submit data to website"
+- User asks to "take a screenshot", "capture webpage"
+
+## ACTIONS
+- 'research': Gather information from the web on a topic
+- 'form_fill': Fill out web forms with provided data
+- 'screenshot': Capture a webpage image
+
+## EXAMPLES
+User: "Research the latest property prices in London"
+→ browser_automation(action="research", instructions="Find current property prices and market trends in London", output_path="~/research.md", reason="Researching London property prices")
+
+User: "Take a screenshot of the company website"
+→ browser_automation(action="screenshot", url="https://example.com", output_path="~/screenshot.png", reason="Capturing website screenshot")
+"""
+    
+    browser_automation_tool = StructuredTool.from_function(
+        func=tool_instance.browser_automation,
+        name="browser_automation",
+        description=browser_automation_description,
+        args_schema=BrowserAutomationInput
+    )
+    
+    return [
+        open_doc_tool, 
+        navigate_tool, 
+        search_property_tool, 
+        show_map_view_tool, 
+        select_property_pin_tool, 
+        navigate_by_name_tool,
+        # Desktop automation tools
+        file_management_tool,
+        document_creation_tool,
+        browser_automation_tool
+    ], tool_instance

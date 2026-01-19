@@ -77,6 +77,14 @@ class MainWorkflowState(TypedDict, total=False):
     is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
     navigation_intent: Optional[dict]  # LLM-based navigation intent detection result (is_navigation, property_name, reason)
+    # DESKTOP AUTOMATION (OpenCode Integration)
+    desktop_intent: Optional[dict]  # LLM-based desktop action intent detection result
+    desktop_action_type: Optional[str]  # Type of desktop action: file_organize, document_create, browser_research, etc.
+    desktop_action_params: Optional[dict]  # Parameters for the desktop action
+    desktop_result: Optional[dict]  # Result from desktop action execution
+    desktop_reasoning_steps: Optional[list[dict]]  # Accumulated reasoning steps during streaming execution
+    thinking_tokens: Optional[list[dict]]  # Thinking tokens for narrative streaming (character-by-character updates)
+    browser_actions: Optional[list[dict]]  # Browser action commands for embedded webview (navigate, click, type, etc.)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""
