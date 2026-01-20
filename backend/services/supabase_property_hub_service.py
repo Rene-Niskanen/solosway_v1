@@ -256,6 +256,7 @@ class SupabasePropertyHubService:
             # This is the authoritative property location and should be preserved
             property_data = {
                 'id': property_id,
+                'business_id': business_id,  # Required NOT NULL column
                 'business_uuid': business_id,
                 'address_hash': address_data['address_hash'],
                 'normalized_address': address_data['normalized_address'],

@@ -39,6 +39,7 @@ export interface SearchBarProps {
   onAttachmentsChange?: (attachments: FileAttachmentData[]) => void; // Callback when attachments change
   onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
+  isTransitioning?: boolean; // Whether we're transitioning (skip reset during transitions)
 }
 
 export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getValue: () => string; getAttachments: () => FileAttachmentData[] }, SearchBarProps>(({
@@ -60,7 +61,8 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   initialAttachedFiles,
   onAttachmentsChange,
   onQuickStartToggle,
-  isQuickStartBarVisible = false
+  isQuickStartBarVisible = false,
+  isTransitioning = false
 }, ref) => {
   // Track if we're restoring a value (to set cursor position)
   const isRestoringValueRef = useRef(false);
@@ -76,25 +78,9 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
       hasInitializedAttachmentsRef.current = false;
     };
   }, []);
-  // Initialize searchValue from initialValue prop if provided
-  // Use a ref to track the last initialValue to prevent unnecessary resets
-  const lastInitialValueRef = useRef<string | undefined>(initialValue);
-  const [searchValue, setSearchValue] = useState(() => {
-    const initial = initialValue !== undefined ? initialValue : '';
-    lastInitialValueRef.current = initialValue;
-    // If we have an initial value, mark that we're restoring
-    if (initialValue !== undefined && initialValue !== '') {
-      isRestoringValueRef.current = true;
-    }
-    return initial;
-  });
-  
-  // Update lastInitialValueRef when initialValue changes
-  useEffect(() => {
-    if (initialValue !== lastInitialValueRef.current) {
-      lastInitialValueRef.current = initialValue;
-    }
-  }, [initialValue]);
+  // Simple local state like SideChatPanel - no external sync
+  // This prevents the typing reset issue completely
+  const [searchValue, setSearchValue] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
@@ -194,46 +180,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
   }, [initialAttachedFiles]);
 
-  // Update searchValue when initialValue prop changes (e.g., when switching from dashboard to map view)
-  const prevInitialValueRef = useRef<string | undefined>(initialValue);
-  useEffect(() => {
-    const prevInitialValue = prevInitialValueRef.current;
-    prevInitialValueRef.current = initialValue;
-    
-    // Handle both undefined (no initial value) and empty string (clear value)
-    // If we have an initialValue and it's different from current, update
-    // This is important for remounts - useState only initializes on first mount
-    if (initialValue !== undefined) {
-      const shouldUpdate = initialValue !== searchValue;
-      if (shouldUpdate) {
-        // Mark that we're restoring a value
-        isRestoringValueRef.current = true;
-        setSearchValue(initialValue);
-        lastInitialValueRef.current = initialValue;
-        // Resize textarea after setting value
-        if (inputRef.current) {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (inputRef.current) {
-                inputRef.current.style.height = 'auto';
-                const scrollHeight = inputRef.current.scrollHeight;
-                // Calculate viewport-aware maxHeight to prevent overflow
-                // Constrain to viewport height minus safe margins (container padding, icons, spacing)
-                // Dashboard: cap earlier so the bar never rises into the Recent Projects area.
-                const maxHeight = isDashboardView
-                  ? 160
-                  : Math.min(350, typeof window !== 'undefined' ? window.innerHeight - 200 : 350);
-                const newHeight = Math.min(scrollHeight, maxHeight);
-                inputRef.current.style.height = `${newHeight}px`;
-                inputRef.current.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-                inputRef.current.style.minHeight = '28px';
-              }
-            });
-          });
-        }
-      }
-    }
-  }, [initialValue, isMapVisible, currentView]);
+  // REMOVED: initialValue sync effect
+  // SideChatPanel doesn't have this - it just uses simple local state
+  // The initialValue is only used on component mount (via useState initializer above)
+  // This prevents the typing reset issue completely
   
   // Use shared preview context
   const {
@@ -271,6 +221,19 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
   const multiLineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialScrollHeightRef = useRef<number | null>(null);
   const isDeletingRef = useRef(false);
+  
+  // Icon condensation state
+  const iconsRowRef = useRef<HTMLDivElement>(null);
+  const leftGroupRef = useRef<HTMLDivElement>(null);
+  const rightGroupRef = useRef<HTMLDivElement>(null);
+  const [iconCondensation, setIconCondensation] = useState({
+    showVoiceText: true,
+    showLinkText: true,
+    showAttachText: true,
+    showVoice: true,
+    showLink: true,
+    showDocumentSelection: true
+  });
   
   // QuickStartBar positioning refs and state (for map view)
   const searchFormRef = useRef<HTMLFormElement>(null);
@@ -400,9 +363,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
 
   // Reset when resetTrigger changes
   // But preserve value if we have an initialValue that should be preserved
+  // Skip reset during transitions to prevent double render
   const prevResetTriggerRef = useRef<number | undefined>(resetTrigger);
   useEffect(() => {
-    if (resetTrigger !== undefined && resetTrigger !== prevResetTriggerRef.current) {
+    if (resetTrigger !== undefined && resetTrigger !== prevResetTriggerRef.current && !isTransitioning) {
       prevResetTriggerRef.current = resetTrigger;
       
       // Only clear if we don't have an initialValue to preserve
@@ -445,8 +409,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
         clearTimeout(multiLineTimeoutRef.current);
         multiLineTimeoutRef.current = null;
       }
+    } else if (resetTrigger !== undefined && resetTrigger !== prevResetTriggerRef.current && isTransitioning) {
+      // Update ref even if we skip the reset during transition
+      prevResetTriggerRef.current = resetTrigger;
     }
-  }, [resetTrigger, initialValue, isMapVisible, isInChatMode]);
+  }, [resetTrigger, initialValue, isMapVisible, isInChatMode, isTransitioning]);
   
   // Close preview modal when leaving map view
   // This ensures preview doesn't persist when switching to dashboard/home
@@ -1188,6 +1155,138 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
     }
   };
   
+  // Icon condensation logic - measure available space and condense icons
+  useEffect(() => {
+    if (!iconsRowRef.current || !leftGroupRef.current || !rightGroupRef.current) {
+      return;
+    }
+
+    const updateIconCondensation = () => {
+      const iconsRow = iconsRowRef.current;
+      const leftGroup = leftGroupRef.current;
+      const rightGroup = rightGroupRef.current;
+      
+      if (!iconsRow || !leftGroup || !rightGroup) {
+        return;
+      }
+
+      // Get available width (total width minus left group width and padding)
+      const totalWidth = iconsRow.offsetWidth;
+      const leftGroupWidth = leftGroup.offsetWidth;
+      const padding = 20; // Account for margins, padding, and some buffer
+      const availableWidth = totalWidth - leftGroupWidth - padding;
+      
+      // Only show send button if there's content (it's conditionally rendered)
+      // Use refs/state directly - searchValue is from state, attachedFiles and propertyAttachments are from context
+      const hasContent = searchValue.trim().length > 0 || attachedFiles.length > 0 || propertyAttachments.length > 0;
+
+      // Estimate button widths (approximate)
+      // Send button: 32px + 4px margin = 36px
+      // Voice with text: ~80px, icon-only: ~24px
+      // Attach: ~24px (icon only, already condensed)
+      // Link: ~24px (icon only, already condensed)
+      // Document selection: ~40px (icon only)
+      const sendButtonWidth = 36;
+      const documentSelectionWidth = isPropertyDetailsOpen ? 40 : 0;
+      
+      // Calculate required widths for different configurations
+      const voiceWithText = 80;
+      const voiceIconOnly = 24;
+      const attachWidth = 24; // Icon only
+      const linkWidth = 24; // Icon only
+      const gapBetweenButtons = 12; // space-x-3 = 12px
+      const gapInGroup = 6; // gap-1.5 = 6px (for Link/Attach group)
+      
+      // Try different configurations from most complete to most condensed
+      let config = {
+        showVoiceText: true,
+        showLinkText: true, // Not used (Link is icon-only), kept for consistency
+        showAttachText: true, // Not used (Attach is icon-only), kept for consistency
+        showVoice: true,
+        showLink: true,
+        showDocumentSelection: isPropertyDetailsOpen
+      };
+      
+      // Calculate width needed for current config
+      const calculateWidth = (c: typeof config) => {
+        let width = 0;
+        // Send button only shows when there's content
+        if (hasContent) {
+          width += sendButtonWidth;
+        }
+        if (c.showDocumentSelection) width += documentSelectionWidth + (width > 0 ? gapBetweenButtons : 0);
+        // Link and Attach are in a group with smaller gap
+        if (c.showLink && contextConfig.showMic) {
+          width += linkWidth + gapInGroup + attachWidth + (width > 0 ? gapBetweenButtons : 0);
+        } else if (c.showLink) {
+          width += linkWidth + (width > 0 ? gapBetweenButtons : 0);
+        } else if (contextConfig.showMic) {
+          width += attachWidth + (width > 0 ? gapBetweenButtons : 0);
+        }
+        if (c.showVoice) width += (c.showVoiceText ? voiceWithText : voiceIconOnly) + (width > 0 ? gapBetweenButtons : 0);
+        return width;
+      };
+      
+      // Try configuration 1: All with text (Voice has text)
+      if (calculateWidth(config) <= availableWidth) {
+        setIconCondensation(config);
+        return;
+      }
+      
+      // Try configuration 2: Condense Voice (icon only)
+      config.showVoiceText = false;
+      if (calculateWidth(config) <= availableWidth) {
+        setIconCondensation(config);
+        return;
+      }
+      
+      // Try configuration 3: Hide Voice
+      config.showVoice = false;
+      if (calculateWidth(config) <= availableWidth) {
+        setIconCondensation(config);
+        return;
+      }
+      
+      // Try configuration 4: Hide Link
+      config.showLink = false;
+      if (calculateWidth(config) <= availableWidth) {
+        setIconCondensation(config);
+        return;
+      }
+      
+      // Try configuration 5: Hide Document Selection (if visible)
+      config.showDocumentSelection = false;
+      if (calculateWidth(config) <= availableWidth) {
+        setIconCondensation(config);
+        return;
+      }
+      
+      // Final fallback: Only send button and Attach (if available)
+      setIconCondensation(config);
+    };
+
+    // Initial calculation
+    updateIconCondensation();
+
+    // Use ResizeObserver to recalculate on size changes
+    const resizeObserver = new ResizeObserver(() => {
+      // Debounce to avoid excessive recalculations
+      setTimeout(updateIconCondensation, 50);
+    });
+
+    resizeObserver.observe(iconsRowRef.current);
+    if (leftGroupRef.current) {
+      resizeObserver.observe(leftGroupRef.current);
+    }
+    if (rightGroupRef.current) {
+      resizeObserver.observe(rightGroupRef.current);
+    }
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isMapVisible, isPropertyDetailsOpen, contextConfig.showMic, onQuickStartToggle, isQuickStartBarVisible, searchValue, attachedFiles.length, propertyAttachments.length]);
+
   // Calculate QuickStartBar position dynamically based on search bar position (for map view)
   useLayoutEffect(() => {
     if (!isMapVisible || !isQuickStartBarVisible || !searchFormRef.current || !searchContainerRef.current || !quickStartBarWrapperRef.current) {
@@ -1536,6 +1635,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
               
               {/* Icons row - Panel toggle, Map toggle on left, other icons on right */}
               <div 
+                ref={iconsRowRef}
                 className="relative flex items-center justify-between w-full"
                 style={{
                   width: '100%',
@@ -1545,7 +1645,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 }}
               >
                 {/* Left group: Mode selector, Map toggle and Panel toggle */}
-                <div className="flex items-center flex-shrink-0 gap-1">
+                <div ref={leftGroupRef} className="flex items-center flex-shrink-0 gap-1">
                   {/* Mode Selector Dropdown */}
                   <ModeSelector compact={isMapVisible} />
                   
@@ -1566,7 +1666,7 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       }}
                       className="flex items-center gap-1.5 px-2 py-1 text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
-                        backgroundColor: '#FFFFFF',
+                        backgroundColor: isMapVisible ? '#ECECEC' : '#FFFFFF',
                         border: '1px solid rgba(229, 231, 235, 0.6)',
                         borderRadius: '12px',
                         transition: 'background-color 0.2s ease, border-color 0.2s ease',
@@ -1575,10 +1675,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         minHeight: '24px'
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#F5F5F5';
+                        e.currentTarget.style.backgroundColor = isMapVisible ? '#E0E0E0' : '#F5F5F5';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#FFFFFF';
+                        e.currentTarget.style.backgroundColor = isMapVisible ? '#ECECEC' : '#FFFFFF';
                       }}
                       title={isMapVisible ? "Back to search mode" : "Go to map mode"}
                       aria-label={isMapVisible ? "Dashboard" : "Map mode"}
@@ -1669,13 +1769,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                 </div>
               
                 {/* Other icons - on the right */}
-                <div className="flex items-center space-x-3 flex-shrink-0" style={{ 
+                <div ref={rightGroupRef} className="flex items-center space-x-3 flex-shrink-0" style={{ 
                   minWidth: '0',
                   flexShrink: 0,
                   marginRight: '4px'
                 }}>
                 {/* Document Selection Toggle Button - Only show when property details panel is open */}
-                {isPropertyDetailsOpen && (
+                {isPropertyDetailsOpen && iconCondensation.showDocumentSelection && (
                   <div className="relative flex items-center">
                     <button
                       type="button"
@@ -1691,6 +1791,13 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                             ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded' 
                             : 'text-slate-600 hover:text-green-500'
                       }`}
+                      style={{
+                        border: selectedDocumentIds.size > 0
+                          ? '1px solid rgba(16, 185, 129, 0.4)'
+                          : isDocumentSelectionMode
+                            ? '1px solid rgba(37, 99, 235, 0.4)'
+                            : '1px solid rgba(156, 163, 175, 0.6)'
+                      }}
                       title={
                           selectedDocumentIds.size > 0
                             ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
@@ -1700,11 +1807,11 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       }
                     >
                         {selectedDocumentIds.size > 0 ? (
-                          <Scan className="w-5 h-5" strokeWidth={1.5} />
+                          <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
                         ) : isDocumentSelectionMode ? (
-                        <Scan className="w-5 h-5" strokeWidth={1.5} />
+                        <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
                       ) : (
-                        <SquareDashedMousePointer className="w-5 h-5" strokeWidth={1.5} />
+                        <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
                       )}
                       {selectedDocumentIds.size > 0 && (
                         <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">
@@ -1730,19 +1837,28 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       </div>
                     )}
                 
-                {/* Link and Attach buttons grouped together with smaller gap */}
+                {/* Link and Attach buttons grouped together with smaller gap - icon only, open sidebar chat */}
                 <div className="flex items-center gap-1.5">
-                  {onQuickStartToggle && (
+                  {onQuickStartToggle && iconCondensation.showLink && (
                     <button
                       type="button"
-                      onClick={onQuickStartToggle}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                      onClick={() => {
+                        // Open sidebar chat when Link button is clicked
+                        if (onPanelToggle) {
+                          onPanelToggle();
+                        }
+                        // Also toggle QuickStartBar if needed
+                        onQuickStartToggle();
+                      }}
+                      className="flex items-center justify-center p-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                       style={{
                         backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
                         border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
                         transition: 'background-color 0.2s ease, border-color 0.2s ease',
                         height: '24px',
-                        minHeight: '24px'
+                        minHeight: '24px',
+                        width: '24px',
+                        padding: '4px'
                       }}
                       onMouseEnter={(e) => {
                         if (!isQuickStartBarVisible) {
@@ -1757,7 +1873,6 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       title="Link document to property"
                     >
                       <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
-                      <span className="text-xs font-medium">Link</span>
                     </button>
                   )}
                   
@@ -1779,14 +1894,23 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       />
                       <button
                         type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
+                        onClick={() => {
+                          // Open sidebar chat when Attach button is clicked
+                          if (onPanelToggle) {
+                            onPanelToggle();
+                          }
+                          // Also trigger file input
+                          fileInputRef.current?.click();
+                        }}
+                        className="flex items-center justify-center p-1.5 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
                         style={{
                           backgroundColor: '#FFFFFF',
                           border: '1px solid rgba(229, 231, 235, 0.6)',
                           transition: 'background-color 0.2s ease',
                           height: '24px',
-                          minHeight: '24px'
+                          minHeight: '24px',
+                          width: '24px',
+                          padding: '4px'
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.backgroundColor = '#F5F5F5';
@@ -1794,15 +1918,15 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         onMouseLeave={(e) => {
                           e.currentTarget.style.backgroundColor = '#FFFFFF';
                         }}
+                        title="Attach file"
                       >
                         <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        <span className="text-xs font-medium">Attach</span>
                       </button>
                     </>
                   )}
                 </div>
                   
-                  {contextConfig.showMic && (
+                  {contextConfig.showMic && iconCondensation.showVoice && (
                     <button
                       type="button"
                       onClick={() => {}}
@@ -1811,7 +1935,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                         backgroundColor: '#ECECEC',
                         transition: 'background-color 0.2s ease',
                         height: '24px',
-                        minHeight: '24px'
+                        minHeight: '24px',
+                        paddingLeft: iconCondensation.showVoiceText ? '8px' : '4px',
+                        paddingRight: iconCondensation.showVoiceText ? '8px' : '4px',
+                        width: iconCondensation.showVoiceText ? 'auto' : '24px'
                       }}
                       onMouseEnter={(e) => {
                         e.currentTarget.style.backgroundColor = '#E0E0E0';
@@ -1819,9 +1946,10 @@ export const SearchBar = forwardRef<{ handleFileDrop: (file: File) => void; getV
                       onMouseLeave={(e) => {
                         e.currentTarget.style.backgroundColor = '#ECECEC';
                       }}
+                      title="Voice input"
                     >
                       <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                      <span className="text-xs font-medium">Voice</span>
+                      {iconCondensation.showVoiceText && <span className="text-xs font-medium">Voice</span>}
                     </button>
                   )}
                 

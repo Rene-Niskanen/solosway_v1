@@ -7,6 +7,7 @@ import { ProjectCard } from "./ProjectCard";
 
 interface ProjectsPageProps {
   onCreateProject: () => void;
+  sidebarWidth?: number;
 }
 
 type TabType = 'active' | 'negotiating' | 'archived';
@@ -23,7 +24,7 @@ const TABS: Tab[] = [
   { id: 'archived', label: 'Archived', icon: Archive },
 ];
 
-export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) => {
+export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject, sidebarWidth = 0 }) => {
   const { projects, isLoading, error, activeFilter, setActiveFilter } = useProjects();
   const [activeTab, setActiveTab] = React.useState<TabType>('active');
 
@@ -42,15 +43,26 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
 
   // Filter projects based on active tab
   const filteredProjects = React.useMemo(() => {
+    if (!projects || !Array.isArray(projects)) {
+      return [];
+    }
     return projects.filter(p => p.status === activeTab);
   }, [projects, activeTab]);
 
   // Check if there are any projects at all (across all statuses)
-  const hasAnyProjects = projects.length > 0;
+  const hasAnyProjects = projects && Array.isArray(projects) && projects.length > 0;
 
   // Empty state - minimal, Claude/OpenAI-inspired design
   const InitialEmptyState = () => (
-    <div className="w-full h-full flex flex-col items-center justify-center" style={{ minHeight: 'calc(100vh - 80px)' }}>
+    <div 
+      className="fixed flex flex-col items-center justify-center"
+      style={{
+        top: 0,
+        left: sidebarWidth,
+        right: 0,
+        bottom: 0,
+      }}
+    >
       <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-5">
         <FolderOpen className="w-8 h-8 text-gray-400" strokeWidth={1.5} />
       </div>
@@ -60,7 +72,7 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
       </p>
       <button
         onClick={onCreateProject}
-        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-sm transition-all duration-150 hover:bg-gray-50"
+        className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
         style={{
           border: '1px solid rgba(0, 0, 0, 0.15)',
           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
@@ -89,7 +101,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
   // Show loading state
   if (isLoading) {
     return (
-      <div className="w-full h-full flex items-center justify-center min-h-[60vh]">
+      <div 
+        className="w-full h-full flex items-center justify-center min-h-[60vh]"
+        style={{
+          paddingLeft: `${sidebarWidth}px`,
+        }}
+      >
         <div className="w-8 h-8 border-2 border-gray-200 border-t-gray-900 rounded-full animate-spin" />
       </div>
     );
@@ -98,7 +115,12 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
   // Show error state (for real errors, not "table doesn't exist")
   if (error) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center min-h-[60vh]">
+      <div 
+        className="w-full h-full flex flex-col items-center justify-center min-h-[60vh]"
+        style={{
+          paddingLeft: `${sidebarWidth}px`,
+        }}
+      >
         <p className="text-red-500 mb-4">{error}</p>
         <button
           onClick={() => setActiveFilter(activeTab)}
@@ -117,13 +139,19 @@ export const ProjectsPage: React.FC<ProjectsPageProps> = ({ onCreateProject }) =
 
   // Show full page with tabs when there are projects
   return (
-    <div className="w-full max-w-7xl mx-auto px-6 py-8">
+    <div 
+      className="w-full max-w-7xl mx-auto py-8"
+      style={{
+        paddingLeft: `max(${sidebarWidth + 24}px, 1.5rem)`, // sidebar width + default padding (24px = 1.5rem)
+        paddingRight: '1.5rem',
+      }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 style={{ fontSize: '20px', fontWeight: 600, color: '#18181B', letterSpacing: '-0.02em' }}>Projects</h1>
         <button
           onClick={onCreateProject}
-          className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-sm transition-all duration-150 hover:bg-gray-50"
+          className="px-3 py-1.5 bg-white text-gray-800 text-sm font-medium rounded-none transition-all duration-150 hover:bg-gray-50"
           style={{
             border: '1px solid rgba(0, 0, 0, 0.15)',
             boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',

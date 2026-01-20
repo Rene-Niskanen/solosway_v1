@@ -29,6 +29,7 @@ interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+  statusCode?: number;
 }
 
 // Property image interface
@@ -143,14 +144,37 @@ class BackendApiService {
         ? { ...options.headers } 
         : { 'Content-Type': 'application/json', ...options.headers };
       
+
+        // Add timeout for file/document requests (30 seconds - longer than auth check)
+      // Only add timeout if no abort signal is already provided
+      const hasExistingSignal = options.signal;
+      const controller = hasExistingSignal ? undefined : new AbortController();
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
+      
       const response = await fetch(url, {
         ...options,
         credentials: 'include', // ← CRITICAL: Include session cookies
         headers,
+        signal: controller?.signal || options.signal,
       });
+
+      if (timeoutId) clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        
+        // Handle 401 Unauthorized - clear auth state
+        if (response.status === 401) {
+          console.warn(`🔒 401 Unauthorized on ${endpoint} - clearing auth state`);
+          localStorage.removeItem('isAuthenticated');
+          // Return error with status code so caller can handle it
+          return {
+            success: false,
+            error: errorData.error || 'Authentication required',
+            statusCode: 401
+          };
+        }
+        
         throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -161,11 +185,32 @@ class BackendApiService {
         data,
       };
     } catch (error) {
+      // Handle timeout
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.error(`⏱️ Request to ${endpoint} timed out after 30 seconds`);
+        return {
+          success: false,
+          error: 'Request timeout - backend server not responding'
+        };
+      }
       
       console.error(`API Error [${endpoint}]:`, error);
+      
+      // Check if error message indicates 401
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      if (errorMessage.includes('401') || errorMessage.includes('Authentication required') || errorMessage.includes('Unauthorized')) {
+        console.warn(`🔒 401 detected on ${endpoint} - clearing auth state`);
+        localStorage.removeItem('isAuthenticated');
+        return {
+          success: false,
+          error: errorMessage,
+          statusCode: 401
+        };
+      }
+      
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error occurred',
+        error: errorMessage,
       };
     }
   }
@@ -1667,6 +1712,34 @@ class BackendApiService {
   async extractAddressFromDocument(documentId: string): Promise<ApiResponse<string>> {
     return this.fetchApi<string>(`/api/documents/${documentId}/extract-address`, {
       method: 'POST'
+    });
+  }
+
+  /**
+   * Add team member access to a property
+   */
+  async addPropertyAccess(propertyId: string, email: string, accessLevel: string = 'viewer'): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access`, {
+      method: 'POST',
+      body: JSON.stringify({ email, access_level: accessLevel })
+    });
+  }
+
+  /**
+   * Get list of all users with access to a property
+   */
+  async getPropertyAccess(propertyId: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access`, {
+      method: 'GET'
+    });
+  }
+
+  /**
+   * Remove team member access from a property
+   */
+  async removePropertyAccess(propertyId: string, accessId: string): Promise<ApiResponse> {
+    return this.fetchApi(`/api/properties/${propertyId}/access/${accessId}`, {
+      method: 'DELETE'
     });
   }
 

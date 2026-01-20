@@ -84,7 +84,23 @@ def api_login():
         
         # Use Supabase for authentication
         auth_service = SupabaseAuthService()
-        user_data = auth_service.get_user_by_email(email)
+        try:
+            user_data = auth_service.get_user_by_email(email)
+        except Exception as db_error:
+            error_msg = str(db_error)
+            if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                logger.error(f"Database timeout during login for {email}: {db_error}")
+                return jsonify({
+                    'success': False, 
+                    'message': 'Database connection timeout. Please try again in a moment.'
+                }), 503
+            else:
+                logger.error(f"Database error during login for {email}: {db_error}")
+                return jsonify({
+                    'success': False, 
+                    'message': 'Database error. Please try again.'
+                }), 503
+        
         logger.info(f"User found: {user_data is not None}")
         
         if user_data and auth_service.verify_password(user_data, password):

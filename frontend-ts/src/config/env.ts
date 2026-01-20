@@ -6,7 +6,7 @@
 class EnvConfig {
   // Backend API
   get backendUrl(): string {
-    return import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+    return import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
   }
 
   // Mapbox

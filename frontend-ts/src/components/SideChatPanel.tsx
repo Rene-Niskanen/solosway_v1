@@ -363,7 +363,26 @@ const StreamingResponseText: React.FC<{
   
   // Text is already pre-completed at the streaming layer (extractMarkdownBlocks)
   // No need for runtime markdown completion - text is always valid markdown
-  const displayText = text;
+  // Filter out unwanted phrases about opening documents
+  const filteredText = React.useMemo(() => {
+    let cleaned = text;
+    // Remove phrases about opening documents (case-insensitive)
+    const unwantedPhrases = [
+      /i will now open the document to show you the source\.?/gi,
+      /i will now open the document\.?/gi,
+      /i'll open the document\.?/gi,
+      /let me open the document\.?/gi,
+      /i'm going to open the document\.?/gi,
+      /i am going to open the document\.?/gi,
+      /opening the (?:citation|document) (?:view|panel)\.?/gi,
+      /i will (?:now )?(?:show|display) (?:you )?(?:the )?(?:source|document)\.?/gi,
+      /to provide you with the source\.?/gi,
+    ];
+    unwantedPhrases.forEach(pattern => {
+      cleaned = cleaned.replace(pattern, '').trim();
+    });
+    return cleaned;
+  }, [text]);
   
   // Use a stable key - ReactMarkdown will automatically re-render when content changes
   // Changing the key causes expensive remounts which create delays, especially at the end
@@ -372,8 +391,8 @@ const StreamingResponseText: React.FC<{
   
   // Memoize the processed text to prevent unnecessary re-processing
   const processedText = React.useMemo(() => {
-    return displayText;
-  }, [displayText]);
+    return filteredText;
+  }, [filteredText]);
   
   // Process citations on the full text BEFORE ReactMarkdown splits it
   // This ensures citations are matched even if ReactMarkdown splits text across elements
@@ -407,9 +426,11 @@ const StreamingResponseText: React.FC<{
       return `%%CITATION_PENDING_${numStr}%%`;
     });
     
-    // Clean up periods that follow citations
-    processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
-    processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+    // Clean up periods that follow citations (both bracket and superscript)
+    // Remove periods immediately after bracket citations: [1]. -> [1]
+    processedText = processedText.replace(/\[(\d+)\]\.(?=\s|$)/g, '[$1]');
+    // Remove periods immediately after superscript citations: ¹. -> ¹
+    processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\.(?=\s|$)/g, '$1');
     
     // Process bracket citations
     processedText = processedText.replace(bracketPattern, (match, num) => {
@@ -468,6 +489,91 @@ const StreamingResponseText: React.FC<{
     return placeholder;
   };
   
+  // Helper to wrap structured values (phone numbers, emails, URLs, etc.) in spans to prevent line breaks
+  const wrapStructuredValuesInText = (text: string): React.ReactNode[] => {
+    // Patterns for values that shouldn't break across lines:
+    // 1. Phone numbers: +44 (0) 203 463 8725, +44 203 463 8725, (0) 203 463 8725, etc.
+    // 2. Email addresses: user@example.com
+    // 3. URLs/websites: http://example.com, https://www.example.com, www.example.com, example.com/path
+    // 4. File paths: /path/to/file, C:\path\to\file
+    // 5. IP addresses: 192.168.1.1
+    // 6. Currency amounts with symbols: £1,950,000, $2,300,000, €500,000
+    // 7. Dates with specific formats: 12th February 2024, 2024-02-12
+    // 8. Postcodes: SW1A 1AA, WC1E 7EB
+    
+    const patterns = [
+      // Phone numbers (international formats)
+      /(\+?\d{1,4}[\s\-]?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4})/g,
+      // Email addresses
+      /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
+      // URLs (http/https/www)
+      /(https?:\/\/[^\s<>"{}|\\^`\[\]]+|www\.[^\s<>"{}|\\^`\[\]]+|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s<>"{}|\\^`\[\]]*)/g,
+      // Currency amounts (with symbols and commas)
+      /([£$€¥]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/g,
+      // Postcodes (UK format: SW1A 1AA, WC1E 7EB)
+      /([A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})/g,
+      // Dates: 12th February 2024, 2024-02-12
+      /(\d{1,2}(?:st|nd|rd|th)?\s+[A-Z][a-z]+\s+\d{4}|\d{4}-\d{2}-\d{2})/g,
+    ];
+    
+    // Combine all matches and sort by position
+    const matches: Array<{ start: number; end: number; text: string }> = [];
+    
+    patterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        matches.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          text: match[0]
+        });
+      }
+    });
+    
+    // Sort by start position and remove overlaps (keep first match)
+    matches.sort((a, b) => a.start - b.start);
+    const nonOverlapping: Array<{ start: number; end: number; text: string }> = [];
+    for (const match of matches) {
+      if (nonOverlapping.length === 0 || match.start >= nonOverlapping[nonOverlapping.length - 1].end) {
+        nonOverlapping.push(match);
+      }
+    }
+    
+    // Build result array
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    
+    nonOverlapping.forEach((match, idx) => {
+      // Add text before the match
+      if (match.start > lastIndex) {
+        parts.push(<React.Fragment key={`text-${idx}-before`}>{text.substring(lastIndex, match.start)}</React.Fragment>);
+      }
+      // Add structured value wrapped in span
+      // Use word-break: keep-all to prefer keeping the value together, but allow breaking if necessary
+      // This prevents awkward breaks while still allowing text to fit in narrow containers
+      parts.push(
+        <span 
+          key={`structured-${idx}`} 
+          style={{ 
+            wordBreak: 'keep-all', // Prefer not to break, but allow if container is too narrow
+            overflowWrap: 'anywhere', // Allow breaking anywhere if absolutely necessary
+            display: 'inline'
+          }}
+        >
+          {match.text}
+        </span>
+      );
+      lastIndex = match.end;
+    });
+    
+    // Add remaining text
+    if (lastIndex < text.length) {
+      parts.push(<React.Fragment key={`text-${nonOverlapping.length}-after`}>{text.substring(lastIndex)}</React.Fragment>);
+    }
+    
+    return parts.length > 0 ? parts : [<React.Fragment key="text-fallback">{text}</React.Fragment>];
+  };
+  
   // Helper to process children and replace citation placeholders
   const processChildrenWithCitations = (nodes: React.ReactNode): React.ReactNode => {
     return React.Children.map(nodes, child => {
@@ -484,7 +590,11 @@ const StreamingResponseText: React.FC<{
               result.push(<React.Fragment key={`cit-${idx}-${part}`}>{citationNode}</React.Fragment>);
             }
           } else if (part) {
-            result.push(<React.Fragment key={`text-${idx}`}>{part}</React.Fragment>);
+            // Wrap structured values (phone numbers, emails, URLs, etc.) in the text part to prevent line breaks
+            const wrappedParts = wrapStructuredValuesInText(part);
+            result.push(...wrappedParts.map((node, wrapIdx) => 
+              React.cloneElement(node as React.ReactElement, { key: `text-${idx}-wrap-${wrapIdx}` })
+            ));
           }
         });
         return result.length > 0 ? result : null;
@@ -515,7 +625,10 @@ const StreamingResponseText: React.FC<{
         contain: 'layout style paint', // Prevent layout shifts
         wordWrap: 'break-word',
         overflowWrap: 'break-word',
-        wordBreak: 'break-word'
+        wordBreak: 'break-word',
+        maxWidth: '100%', // Ensure text doesn't overflow container
+        overflow: 'visible', // Allow text to wrap instead of being clipped
+        boxSizing: 'border-box' // Include padding in width calculations
       }}
     >
       <ReactMarkdown 
@@ -914,10 +1027,11 @@ const renderTextWithCitations = (
     return match; // Keep original if no citation found
   });
   
-  // First, clean up periods that follow citations (e.g., "[1]." becomes "[1]")
-  // This handles the case where LLM adds periods after standalone citation lines
-  processedText = processedText.replace(/\[(\d+)\]\.\s*(?=\n|$)/g, '[$1]\n');
-  processedText = processedText.replace(/\[(\d+)\]\.\s*$/gm, '[$1]');
+  // Clean up periods that follow citations (both bracket and superscript)
+  // Remove periods immediately after bracket citations: [1]. -> [1]
+  processedText = processedText.replace(/\[(\d+)\]\.(?=\s|$)/g, '[$1]');
+  // Remove periods immediately after superscript citations: ¹. -> ¹
+  processedText = processedText.replace(/([¹²³⁴⁵⁶⁷⁸⁹]+(?:\d+)?)\.(?=\s|$)/g, '$1');
   
   // Process bracket citations
   processedText = processedText.replace(bracketPattern, (match, num) => {
@@ -1636,6 +1750,8 @@ interface SideChatPanelProps {
   } | null;
   sidebarWidth?: number; // Width of the sidebar to offset the panel
   isSidebarCollapsed?: boolean; // Main navigation sidebar collapsed state (true when "closed" / icon-only)
+  isFilingSidebarClosing?: boolean; // Whether FilingSidebar is currently closing (for instant updates)
+  isSidebarCollapsing?: boolean; // Whether main sidebar is currently collapsing (for instant updates)
   onQuerySubmit?: (query: string) => void; // Callback for submitting new queries from panel
   onMapToggle?: () => void; // Callback for toggling map view
   onMinimize?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for minimizing to bubble with chat messages
@@ -1651,6 +1767,7 @@ interface SideChatPanelProps {
   onQuickStartToggle?: () => void; // Callback to toggle QuickStartBar
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
   isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
+  onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes (loading query)
 }
 
 export interface SideChatPanelRef {
@@ -1663,6 +1780,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   citationContext,
   sidebarWidth = 56, // Default to desktop sidebar width (lg:w-14 = 56px)
   isSidebarCollapsed = false,
+  isFilingSidebarClosing = false, // Default to false
+  isSidebarCollapsing = false, // Default to false
   onQuerySubmit,
   onMapToggle,
   onMinimize,
@@ -1677,12 +1796,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   shouldExpand = false, // Default to false
   onQuickStartToggle,
   isQuickStartBarVisible = false, // Default to false
-  isMapVisible = false // Default to false
+  isMapVisible = false, // Default to false
+  onActiveChatChange
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
   // - open: full sidebar visible
   const isMainSidebarOpen = !isSidebarCollapsed;
+  
+  // Track previous sidebar collapsed state to detect collapse immediately for instant updates
+  const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
+  const [isSidebarJustCollapsed, setIsSidebarJustCollapsed] = React.useState(false);
+  
+  React.useEffect(() => {
+    const wasExpanded = !prevSidebarCollapsedRef.current;
+    const justCollapsed = wasExpanded && isSidebarCollapsed;
+    setIsSidebarJustCollapsed(justCollapsed);
+    // Clear flag after one frame
+    if (justCollapsed) {
+      requestAnimationFrame(() => {
+        setIsSidebarJustCollapsed(false);
+      });
+    }
+    prevSidebarCollapsedRef.current = isSidebarCollapsed;
+  }, [isSidebarCollapsed]);
 
   // Use shared preview context (moved early to ensure expandedCardViewDoc is available)
   const {
@@ -2498,7 +2635,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   } = useDocumentSelection();
   
   // Filing sidebar integration
-  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen } = useFilingSidebar();
+  const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth } = useFilingSidebar();
   
   // Agent mode (reader vs agent)
   const { mode: agentMode, isAgentMode } = useMode();
@@ -2678,6 +2815,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       console.log('🔄 [CITATION] Chat messages cleared - resetting first citation flag');
     }
   }, [chatMessages.length]);
+  
+  // Report active chat state to parent (for sidebar "Active Chat" button)
+  // Chat is "active" when there's a loading message (query in progress)
+  React.useEffect(() => {
+    const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+    onActiveChatChange?.(hasLoadingMessage);
+  }, [chatMessages, onActiveChatChange]);
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
@@ -3573,6 +3717,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     
                   case 'navigate_to_property':
                     // Navigate to property details panel
+                    // CRITICAL: Close document preview immediately when navigating to property
+                    // This prevents old content from remaining visible during navigation
+                    console.log('🧭 [AGENT_ACTION] navigate_to_property received - closing preview and navigating');
+                    // Set navigation flag to prevent fullscreen restoration
+                    isNavigatingTaskRef.current = true;
+                    wasFullscreenBeforeCitationRef.current = false;
+                    // IMMEDIATELY close any open document preview to clear old content
+                    closeExpandedCardView();
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
                     if (action.params.property_id && onOpenProperty) {
                       onOpenProperty(null, null, action.params.property_id);
                     }
@@ -5036,6 +5190,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received (initial)');
                     break;
                   case 'navigate_to_property':
+                    // CRITICAL: Close document preview immediately when navigating to property
+                    // This prevents old content from remaining visible during navigation
+                    console.log('🧭 [AGENT_ACTION] navigate_to_property received (initial) - closing preview and navigating');
+                    // Set navigation flag to prevent fullscreen restoration
+                    isNavigatingTaskRef.current = true;
+                    wasFullscreenBeforeCitationRef.current = false;
+                    // IMMEDIATELY close any open document preview to clear old content
+                    closeExpandedCardView();
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
                     if (action.params.property_id && onOpenProperty) {
                       onOpenProperty(null, null, action.params.property_id);
                     }
@@ -6200,6 +6364,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received (follow-up)');
                   break;
                 case 'navigate_to_property':
+                  // CRITICAL: Close document preview immediately when navigating to property
+                  // This prevents old content (like EPC rating) from remaining visible
+                  console.log('🧭 [AGENT_ACTION] navigate_to_property received (follow-up) - closing preview and navigating');
+                  // Set navigation flag to prevent fullscreen restoration
+                  isNavigatingTaskRef.current = true;
+                  wasFullscreenBeforeCitationRef.current = false;
+                  // IMMEDIATELY close any open document preview to clear old content
+                  closeExpandedCardView();
+                  // Update bot status to show navigation activity
+                  setBotActivityMessage('Navigating...');
                   if (action.params.property_id && onOpenProperty) {
                     onOpenProperty(null, null, action.params.property_id);
                   }
@@ -6691,8 +6865,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           margin: '0', 
           marginTop: '8px', 
           wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
           position: 'relative',
-          contain: 'layout style'
+          contain: 'layout style',
+          maxWidth: '100%', // Ensure it doesn't exceed container
+          boxSizing: 'border-box' // Include padding in width
           // Padding is handled by parent content wrapper (32px left/right)
         }}>
           <div style={{ 
@@ -6744,16 +6922,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             x: 0, 
             opacity: 1
           }}
-          exit={{ x: -400, opacity: 0 }}
+          exit={{ x: 0, opacity: 0, transition: { duration: 0 } }} // No slide animation on exit - instant disappear
           transition={shouldExpand ? { duration: 0 } : { 
             duration: 0.2,
             ease: [0.4, 0, 0.2, 1]
-          }} // Instant if opening in fullscreen
+          }} // Normal enter animation
           layout={!shouldExpand} // Disable layout animation when opening in fullscreen
           className="fixed top-0 bottom-0 z-30"
           style={{
-            left: `${sidebarWidth}px`, // Always positioned after sidebar
+            left: (() => {
+              // Always use sidebarWidth prop which MainContent calculates correctly
+              // MainContent accounts for FilingSidebar width when open/closing, and base sidebar when closed
+              // This ensures instant updates with no gaps during open/close transitions
+              return `${sidebarWidth}px`;
+            })(), // Always positioned using sidebarWidth from MainContent - updates instantly
             width: (() => {
+              // Use sidebarWidth prop directly - MainContent already calculates it correctly
+              // accounting for FilingSidebar when open/closing, and base sidebar when closed
+              const actualLeft = sidebarWidth;
+              
               // PRIORITY 1: If draggedWidth is set (e.g., during navigation), use it
               // This takes precedence over fullscreen to allow navigation tasks to shrink the chat
               if (draggedWidth !== null) {
@@ -6762,21 +6949,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // PRIORITY 2: If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
               // Check shouldExpand directly (don't wait for isFullscreenMode to be set) to prevent initial 450px flash
               if (shouldExpand && !isPropertyDetailsOpen) {
-                return `calc(100vw - ${sidebarWidth}px)`;
+                return `calc(100vw - ${actualLeft}px)`;
               }
               if (isExpanded) {
                 // Use fullscreen width if fullscreen mode is enabled AND (property details is closed OR user manually requested fullscreen)
                 if (isFullscreenMode && (!isPropertyDetailsOpen || isManualFullscreenRef.current)) {
-                  return `calc(100vw - ${sidebarWidth}px)`;
+                  return `calc(100vw - ${actualLeft}px)`;
                 }
                 return lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw');
               }
               return '450px';
             })(),
-            backgroundColor: '#FFFFFF',
+            backgroundColor: '#FCFCF9',
             boxShadow: 'none',
-            transition: (isResizing || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen)) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)', // Disable transition while resizing, entering fullscreen initially, restoring from citation, or when in fullscreen mode
-            willChange: 'width', // Optimize for smooth width changes
+            // Disable ALL transitions instantly when FilingSidebar/sidebar closes or resizes to prevent map showing through
+            // Track previous sidebar state to detect collapse immediately
+            // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
+            // This ensures chat panel adjusts immediately with no animation delay
+            transition: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen)) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen) ? 'none' : 'width', // Disable ALL transitions (including left) when resizing or closing
+            willChange: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
@@ -6820,25 +7012,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
               visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible',
               position: 'relative',
-              backgroundColor: '#FFFFFF', // Ensure solid background to prevent leaks
+              backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
               overflow: 'hidden', // Prevent content from leaking during transitions
               width: '100%',
               height: '100%'
             }}
           >
             {/* Header */}
-            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FFFFFF', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
+            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FCFCF9', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <button
                     onClick={onSidebarToggle}
-                    className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 transition-all duration-200`}
+                    className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
                     title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
                     type="button"
                     style={{
                       padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
                       height: '24px',
-                      minHeight: '24px'
+                      minHeight: '24px',
+                      backgroundColor: '#FFFFFF',
+                      opacity: 1,
+                      backdropFilter: 'none'
                     }}
                   >
                     {isMainSidebarOpen ? (
@@ -6866,13 +7061,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                         onClick={toggleFilingSidebar}
-                        className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 transition-colors duration-200`}
+                        className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-colors duration-200`}
                         title="Toggle Files sidebar"
                         type="button"
                         style={{
                           padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
                           height: '24px',
-                          minHeight: '24px'
+                          minHeight: '24px',
+                          backgroundColor: '#FFFFFF',
+                          opacity: 1,
+                          backdropFilter: 'none'
                         }}
                       >
                         <FolderOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -6931,7 +7129,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     }}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
-                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-md transition-all duration-200 group"
+                    style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
                     title="New chat"
                   >
                     <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
@@ -6942,7 +7141,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   {/* Reasoning trace toggle */}
                   <div 
-                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 bg-white/70 rounded-md"
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 rounded-md"
+                    style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
                     title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
                   >
                     <Footprints className="w-4 h-4 text-slate-600" strokeWidth={1.5} />
@@ -7026,9 +7226,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onChatWidthChange(newWidth);
                       }
                     }}
-                    className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 focus:outline-none outline-none"
+                    className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 focus:outline-none outline-none"
                     style={{
-                      marginLeft: '4px'
+                      marginLeft: '4px',
+                      backgroundColor: '#FFFFFF',
+                      opacity: 1,
+                      backdropFilter: 'none'
                     }}
                     title={(() => {
                       // Calculate current width using same logic as onClick
@@ -7096,7 +7299,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               ref={contentAreaRef}
               className="flex-1 overflow-y-auto sidechat-scroll" 
               style={{ 
-                backgroundColor: '#FFFFFF',
+                backgroundColor: '#FCFCF9',
                 padding: '16px 0', // Simplified padding - content will be centered
                 // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
                 marginRight: '6px',
@@ -7135,7 +7338,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div 
               ref={chatInputContainerRef}
               style={{ 
-                backgroundColor: '#FFFFFF', 
+                backgroundColor: '#FCFCF9', 
                 paddingTop: '16px', 
                 paddingBottom: '24px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
@@ -7215,7 +7418,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <div 
                     className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
                     style={{
-                      background: isDragOver ? '#F5F5F5' : '#ffffff',
+                      background: isDragOver ? '#F5F5F5' : '#FFFFFF',
                       border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
                       boxShadow: isDragOver 
                         ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
@@ -7524,11 +7727,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           // IMPORTANT: When draggedWidth is set, use it as the source of truth (not isExpanded)
                           const actualWidth = draggedWidth !== null ? draggedWidth : (isExpanded ? 600 : 380);
                           const isChatBig = actualWidth > 450;
-                          // Much higher threshold for "Close chat" to prevent text from appearing when chat is small (380px)
-                          // Only show text when chat is significantly wider than the small size
-                          const isChatBigEnoughForCloseChat = actualWidth > 600; // Increased from 550 to 600 to prevent stretching
+                          // Lower threshold for "Close chat" to make it appear more readily
+                          const isChatBigEnoughForCloseChat = actualWidth > 450; // Lowered from 600 to 450 to show text more readily
                           const showText = showCloseChat 
-                            ? isChatBigEnoughForCloseChat  // Only show "Close chat" text when chat is big enough
+                            ? isChatBigEnoughForCloseChat  // Show "Close chat" text when chat is big enough
                             : (isChatBig || showMapButton); // Show "Map" text when chat is big OR when showing map button
                           
                           return (
@@ -7629,6 +7831,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                     ? 'text-blue-600 hover:text-blue-700 bg-blue-50 rounded'
                                     : 'text-gray-900 hover:text-gray-700'
                               }`}
+                              style={{
+                                border: selectedDocumentIds.size > 0
+                                  ? '1px solid rgba(16, 185, 129, 0.4)'
+                                  : isDocumentSelectionMode
+                                    ? '1px solid rgba(37, 99, 235, 0.4)'
+                                    : '1px solid rgba(156, 163, 175, 0.6)'
+                              }}
                               title={
                                 selectedDocumentIds.size > 0
                                   ? `${selectedDocumentIds.size} document${selectedDocumentIds.size > 1 ? 's' : ''} selected - Queries will search only these documents. Click to ${isDocumentSelectionMode ? 'exit' : 'enter'} selection mode.`
@@ -7638,11 +7847,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               }
                             >
                               {selectedDocumentIds.size > 0 ? (
-                                <Scan className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
                               ) : isDocumentSelectionMode ? (
-                                <Scan className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                                <Scan className="w-3.5 h-3.5" strokeWidth={1.5} />
                               ) : (
-                                <SquareDashedMousePointer className="w-[18px] h-[18px]" strokeWidth={1.5} />
+                                <SquareDashedMousePointer className="w-3.5 h-3.5" strokeWidth={1.5} />
                               )}
                             {selectedDocumentIds.size > 0 && (
                               <span className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 text-white text-[10px] font-semibold rounded-full flex items-center justify-center">

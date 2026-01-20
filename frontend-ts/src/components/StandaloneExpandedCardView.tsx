@@ -81,7 +81,7 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [highlight, docId]);
   
   const { previewFiles, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, isAgentOpening, setIsAgentOpening } = usePreview();
-  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth } = useFilingSidebar();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
 
   // Try to get filename from cached file data if not provided
   useEffect(() => {
@@ -930,53 +930,25 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
   }, [chatPanelWidth, isChatPanelOpen]);
   
   // Calculate the actual left position for the document preview
-  // This must match the logic in MainContent.tsx for SideChatPanel's sidebarWidth calculation
-  // When chat panel is open: chatPanelWidth is the width, chat panel's left = calculated sidebarWidth (includes filing sidebar)
-  // So document preview left = chatPanelLeft + chatPanelWidth + gap
-  // When chat panel is closed: position after sidebar (which may include filing sidebar) + gap
-  // Calculate directly on every render (no memoization) to ensure instant updates when sidebar opens/closes
+  // SideChatPanel uses: left = sidebarWidth (which already includes filing sidebar and base sidebar)
+  // So document preview left = sidebarWidth + chatPanelWidth (chat panel's right edge)
   const leftPosition = (() => {
-    const toggleRailWidth = 12;
-    
-    // Calculate the actual sidebar width (base + filing sidebar if open)
-    // This matches the logic in MainContent.tsx (lines 3575-3599)
-    let actualSidebarWidth = sidebarWidth; // Base sidebar width
-    
-    if (isFilingSidebarOpen) {
-      if (sidebarWidth <= 8) {
-        // Collapsed sidebar: FilingSidebar starts at 12px, ends at 12px + filingSidebarWidth
-        actualSidebarWidth = 12 + filingSidebarWidth;
-      } else {
-        // Not collapsed: FilingSidebar starts at sidebarWidth + 12px, ends at sidebarWidth + 12px + filingSidebarWidth
-        actualSidebarWidth = sidebarWidth + toggleRailWidth + filingSidebarWidth;
-      }
-    }
-    
     if (isChatPanelOpen) {
-      // When document preview is open (this component is rendering), calculate chat panel position
-      const chatPanelLeft = Math.max(0, actualSidebarWidth - toggleRailWidth);
-      
-      // Calculate chat panel width directly to match SideChatPanel logic
-      // This ensures instant updates when sidebar opens/closes without waiting for async onChatWidthChange
-      // Priority: Use chatPanelWidth if it's a custom dragged width, otherwise calculate from window
-      let actualChatWidth: number;
-      if (chatPanelWidth > 0 && chatPanelWidth !== window.innerWidth * 0.5) {
-        // Use the actual dragged/resized width from the chat panel (custom width, not default 50vw)
-        // This is the raw pixel width reported by SideChatPanel via onChatWidthChange
-        actualChatWidth = chatPanelWidth;
-      } else {
-        // Calculate directly from window width to match SideChatPanel's default calculation
-        // This ensures instant positioning when sidebar opens/closes
-        // Use exactly 50vw for true 50/50 split (matches SideChatPanel default)
-        actualChatWidth = typeof window !== 'undefined' ? window.innerWidth * 0.5 : 960;
-      }
-      
-      return chatPanelLeft + actualChatWidth;
+      // Use chatPanelWidth directly - it's the actual width of the chat panel
+      // Position directly at chat panel's right edge: sidebarWidth (chat left) + chatPanelWidth (chat width)
+      const calculatedLeft = sidebarWidth + chatPanelWidth;
+      return Math.floor(calculatedLeft); // Round down to prevent sub-pixel gaps
     } else {
       // Chat panel closed - position immediately after sidebar (which may include filing sidebar)
-      return actualSidebarWidth;
+      return sidebarWidth;
     }
   })();
+  
+  // Calculate the width of the document preview panel
+  const panelWidth = typeof window !== 'undefined' ? window.innerWidth - leftPosition : 0;
+  
+  // Hide "Reference Agent" text when panel is too narrow (less than 400px) to prevent overlap
+  const shouldHideReferenceAgent = panelWidth < 400;
 
   const content = (
     <motion.div
@@ -996,25 +968,30 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
           height: '100vh'
         } : {
           position: 'fixed',
-          // Position alongside chat panel with no gaps
-          // Calculates correct position accounting for filing sidebar
+          // Position directly after chat panel with zero gap
+          // Use exact pixel positioning to eliminate any gaps
           left: `${leftPosition}px`,
-          right: '0px', // No gap from right edge - this automatically calculates width
-          top: '0px', // No gap from top
-          bottom: '0px', // No gap from bottom - this automatically calculates height
-          borderRadius: '0px', // No border radius when edge-to-edge
-          // Remove the heavy shadow in split-view (it reads like a shadow on the chat edge).
-          // Use a subtle divider instead.
+          right: '0px',
+          top: '0px',
+          bottom: '0px',
+          width: 'auto', // Let left/right define width
+          height: 'auto', // Let top/bottom define height
+          margin: 0, // Explicitly remove any margins
+          padding: 0, // Explicitly remove any padding
+          borderRadius: '0px',
           boxShadow: 'none',
           borderLeft: '1px solid rgba(226, 232, 240, 0.9)',
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: 'auto',
-          // No transition for left positioning - updates instantly when chatPanelWidth or filing sidebar changes
-          // This prevents gaps when sidebar or filing sidebar opens/closes
-          transition: 'none', // Always no transition for instant positioning - prevents gaps
-          transitionProperty: 'none', // Explicitly disable all transitions to prevent gaps
-          boxSizing: 'border-box' // Ensure padding/borders are included in width/height
+          // No transition for instant positioning - prevents gaps
+          // Also disable when FilingSidebar is resizing for real-time updates
+          transition: 'none',
+          transitionProperty: 'none',
+          boxSizing: 'border-box',
+          // Ensure no gaps by using exact positioning
+          transform: 'translateZ(0)', // Force hardware acceleration
+          willChange: isFilingSidebarResizing ? 'left' : 'auto' // Optimize during resize
         })
       }}
       onClick={(e) => {
@@ -1128,7 +1105,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
       )}
 
       {/* Header */}
-      <div className="pr-4 pl-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0 relative" style={{ minHeight: '56px', paddingTop: '16px', paddingBottom: '16px' }}>
+      <div className="pr-4 pl-6 flex items-center justify-between shrink-0 relative" style={{ 
+        minHeight: '56px', 
+        paddingTop: '16px', 
+        paddingBottom: '16px', 
+        backgroundColor: '#FCFCF9',
+        borderBottom: '1px solid rgba(229, 231, 235, 0.8)',
+        boxShadow: '0 1px 0 rgba(255, 255, 255, 0.8) inset, 0 1px 2px rgba(0, 0, 0, 0.06)'
+      }}>
         <div className="flex items-center gap-2" style={{ marginTop: '2px' }}>
           <motion.button
             onClick={onClose}
@@ -1166,12 +1150,14 @@ export const StandaloneExpandedCardView: React.FC<StandaloneExpandedCardViewProp
             )}
           </motion.button>
         </div>
-        <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
-          <TextCursorInput className="w-4 h-4 text-gray-600 flex-shrink-0" />
-          <span className="text-sm font-medium text-gray-900">
-            Reference Agent
-          </span>
-        </div>
+        {!shouldHideReferenceAgent && (
+          <div className="flex items-center gap-2 absolute left-1/2 transform -translate-x-1/2">
+            <TextCursorInput className="w-4 h-4 text-gray-600 flex-shrink-0" />
+            <span className="text-sm font-medium text-gray-900">
+              Reference Agent
+            </span>
+          </div>
+        )}
         {/* Zoom controls - only show in fullscreen mode */}
         {isFullscreen && (
           <div className="flex items-center gap-2 absolute top-4 right-4 z-50">

@@ -173,28 +173,24 @@ export const ChatPanel = ({
         {isOpen && (
           <motion.div 
             initial={{
-              x: -20,
-              opacity: 0,
-              scale: 0.95
+              opacity: 1,
+              scale: 1
             }} 
             animate={{
-              x: 0,
               opacity: 1,
               scale: 1
             }} 
             exit={{
-              x: -10,
-              opacity: 0,
-              scale: 0.98
+              opacity: 0
             }} 
             transition={{
-              duration: 0.15,
+              duration: 0.05,
               ease: [0.4, 0, 0.2, 1]
             }} 
             className={`fixed top-0 h-full w-80 bg-white/95 backdrop-blur-xl border-r border-slate-200/60 flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.08)] z-[350] ${className || ''}`}
             style={{
               left: sidebarWidth !== undefined ? `${sidebarWidth}px` : '236px', // Fallback: sidebar (224px) + toggle rail (12px)
-              transition: 'left 0.2s ease-out',
+              transition: 'left 0.05s ease-out',
               // Remove left border when in small sidebar mode to eliminate grey line
               ...(isSmallSidebarMode ? { 
                 borderLeft: 'none'

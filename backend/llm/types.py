@@ -76,6 +76,7 @@ class MainWorkflowState(TypedDict, total=False):
     attachment_context: Optional[dict]  # NEW: Extracted text from attached files (texts, pageTexts, filenames)
     is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
+    navigation_intent: Optional[dict]  # LLM-based navigation intent detection result (is_navigation, property_name, reason)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

@@ -43,6 +43,9 @@ export interface SidebarProps {
   onNewChat?: () => void;
   isMapVisible?: boolean;
   onCreateProject?: () => void;
+  hasActiveChat?: boolean; // Whether there's an active chat query running
+  onRestoreActiveChat?: () => void; // Callback to restore/re-engage with active chat
+  isChatVisible?: boolean; // Whether the chat panel is currently visible
 }
 
 type NavItem = {
@@ -50,7 +53,7 @@ type NavItem = {
   label: string;
   icon: React.ComponentType<any>;
   badge?: string;
-  action?: 'navigate' | 'expand' | 'toggleFiling';
+  action?: 'navigate' | 'expand' | 'toggleFiling' | 'openChat';
 };
 
 export const Sidebar = ({
@@ -68,7 +71,10 @@ export const Sidebar = ({
   onChatSelect,
   onNewChat,
   isMapVisible = false,
-  onCreateProject
+  onCreateProject,
+  hasActiveChat = false,
+  onRestoreActiveChat,
+  isChatVisible = false
 }: SidebarProps) => {
   const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -180,6 +186,7 @@ export const Sidebar = ({
     { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
     { id: 'projects', label: 'Projects', icon: Layers, action: 'navigate' },
     { id: 'database', label: 'Files', icon: FolderOpen, action: 'toggleFiling' },
+    { id: 'chat', label: 'Chat', icon: MessageCircle, action: 'openChat' },
     { id: 'analytics', label: 'Analytics', icon: BarChart3, action: 'navigate' },
   ];
 
@@ -202,6 +209,9 @@ export const Sidebar = ({
       onExpand?.();
     } else if (item.action === 'toggleFiling') {
       toggleFilingSidebar();
+    } else if (item.action === 'openChat') {
+      // Open chat - either restore active chat or start new one
+      onRestoreActiveChat?.();
     } else if (item.id === 'home') {
       handleItemClick('home');
     } else if (item.id === 'settings') {
@@ -212,14 +222,18 @@ export const Sidebar = ({
   };
 
   const isItemActive = (item: NavItem) => {
-    // Mutually exclusive selection: Filing sidebar takes priority, then check activeItem
+    // Mutually exclusive selection: Filing sidebar takes priority, then chat, then check activeItem
     if (isFilingSidebarOpen) {
       return item.action === 'toggleFiling';
     }
-    if (item.id === 'home') {
-      return activeItem === 'search' && !isMapVisible;
+    // Chat is active when chat panel is visible
+    if (item.action === 'openChat') {
+      return isChatVisible;
     }
-    return activeItem === item.id;
+    if (item.id === 'home') {
+      return activeItem === 'search' && !isMapVisible && !isChatVisible;
+    }
+    return activeItem === item.id && !isChatVisible;
   };
 
   // Chat history handlers
@@ -279,36 +293,39 @@ export const Sidebar = ({
   // Determine if chat history should be shown
   const showChatHistoryInSidebar = isExpanded && isChatPanelOpen;
 
-  // Calculate sidebar width based on state - default to showing labels
-  const getSidebarWidth = () => {
-    if (isCollapsed) return 'w-0';
-    if (isExpanded) return 'w-80';
-    return 'w-56'; // Default width with labels
-  };
-
   // Render a nav item with icon and label
   const renderNavItem = (item: NavItem) => {
     const Icon = item.icon;
     const active = isItemActive(item);
+    const isChat = item.action === 'openChat';
+    const showChatIndicator = isChat && hasActiveChat;
 
     return (
       <button
         key={item.id}
         onClick={() => handleNavClick(item)}
-        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 group relative ${
+        className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
           active 
-            ? 'bg-white text-gray-900' 
-            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
+            ? 'bg-white text-gray-900 border-gray-300' 
+            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
         }`}
         style={{
-          boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+          boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+          transition: 'background-color 75ms, color 75ms, border-color 75ms',
+          boxSizing: 'border-box'
         }}
         aria-label={item.label}
       >
-        <Icon
-          className="w-[18px] h-[18px] flex-shrink-0"
-          strokeWidth={1.75}
-        />
+        <div className="relative">
+          <Icon
+            className="w-[18px] h-[18px] flex-shrink-0"
+            strokeWidth={1.75}
+          />
+          {/* Pulsing indicator for active chat query */}
+          {showChatIndicator && (
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+          )}
+        </div>
         <span className="text-[13px] font-normal flex-1 text-left">
           {item.label}
         </span>
@@ -321,16 +338,38 @@ export const Sidebar = ({
     );
   };
 
+  // Calculate actual width values
+  const getSidebarWidthValue = () => {
+    if (isCollapsed) return 0;
+    if (isExpanded) return 320;
+    return 224; // w-56 = 224px
+  };
+
+  const sidebarWidthValue = getSidebarWidthValue();
+
+  // Hide sidebar when collapsed
+  // When map is visible, sidebar should be hidden (collapsed), but user can toggle it open
+  const shouldHideSidebar = isCollapsed;
+
   return (
     <>
+      {/* Always render to prevent gaps - just position off-screen when closed */}
       <div
-        className={`${getSidebarWidth()} flex flex-col fixed left-0 top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
+        className={`flex flex-col fixed top-0 h-full ${className?.includes('z-[150]') ? 'z-[150]' : 'z-[1000]'} ${className || ''}`}
         style={{
-          background: '#F1F1F1', // Always solid background to prevent map showing through
-          transition: 'width 0s ease-out', // Instant transition to prevent map showing through gaps
-          overflow: 'hidden',
-          willChange: 'width', // Optimize for performance
-          // Ensure background extends fully
+          // Match sidebar grey background for seamless look - always solid
+          background: '#F1F1F1',
+          // When collapsed OR (map visible AND collapsed), move off-screen to the left
+          // When open (even in map view if user toggled it), position at left: 0
+          left: shouldHideSidebar ? '-1000px' : '0px',
+          width: isCollapsed ? `${sidebarWidthValue}px` : `${sidebarWidthValue}px`, // Keep width when closed to prevent layout shift
+          // Instant transitions to prevent map showing through gaps (same as FilingSidebar)
+          transition: 'left 0s ease-out, width 0s ease-out',
+          willChange: 'left, width', // Optimize for performance
+          // Force GPU acceleration for smoother rendering
+          transform: 'translateZ(0)',
+          backfaceVisibility: 'hidden',
+          // Ensure background extends fully to prevent any gaps
           boxShadow: 'none',
           borderRight: 'none',
           // Ensure full height coverage - use 100vh to cover entire viewport
@@ -343,10 +382,16 @@ export const Sidebar = ({
           top: '0',
           bottom: '0',
           // Higher z-index to ensure it's above map
-          zIndex: className?.includes('z-[150]') ? 150 : 1000
+          zIndex: className?.includes('z-[150]') ? 150 : 1000,
+          // Extend slightly beyond to ensure full coverage
+          minWidth: `${sidebarWidthValue}px`,
+          right: 'auto',
+          // Hide pointer events when sidebar should be hidden
+          pointerEvents: shouldHideSidebar ? 'none' : 'auto',
+          overflow: 'hidden'
         }}
       >
-        {!isCollapsed && (
+        {!shouldHideSidebar && (
           <div className="flex flex-col h-full pt-4 pb-3">
             {/* User Profile Block - OpenAI style integrated dropdown */}
             <div className="px-3 mb-1">
@@ -354,13 +399,14 @@ export const Sidebar = ({
                 <button
                   ref={brandButtonRef}
                   onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors duration-75 text-left ${
                     isBrandDropdownOpen 
                       ? 'bg-white' 
                       : 'hover:bg-white/60'
                   }`}
                   style={{
-                    boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+                    boxShadow: isBrandDropdownOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                    transition: 'background-color 75ms'
                   }}
                   aria-label="Account menu"
                 >
@@ -488,13 +534,14 @@ export const Sidebar = ({
                   }
                   onChatToggle?.();
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 ${
+                className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors duration-75 ${
                   isChatPanelOpen && !isFilingSidebarOpen
                     ? 'bg-white text-gray-900' 
                     : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
                 }`}
                 style={{
-                  boxShadow: isChatPanelOpen && !isFilingSidebarOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none'
+                  boxShadow: isChatPanelOpen && !isFilingSidebarOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                  transition: 'background-color 75ms, color 75ms'
                 }}
               >
                 <MessageSquare 
@@ -519,7 +566,7 @@ export const Sidebar = ({
         )}
 
         {/* Expanded Sidebar Content (Chat History) - OpenAI/Claude style */}
-        {isExpanded && !isCollapsed && (
+        {isExpanded && !shouldHideSidebar && (
           <div className="absolute inset-0 flex flex-col" style={{ background: '#F1F1F1' }}>
             {/* Header with New Chat button */}
             <div className="px-3 pt-4 pb-2">
@@ -663,6 +710,7 @@ export const Sidebar = ({
       </div>
 
       {/* Sidebar Toggle Rail - seamless with sidebar and adjacent panels */}
+      {/* Always show toggle rail, even in map view */}
       <button
         type="button"
         onClick={(e) => {
@@ -674,8 +722,9 @@ export const Sidebar = ({
         style={{
           WebkitTapHighlightColor: 'transparent',
           zIndex: 100003, // Higher than dropdown backdrop (100001) and dropdown (100002) to ensure it's always clickable
-          // Always position at the right edge of the sidebar itself (not panels)
-          left: isCollapsed ? '0px' : isExpanded ? '320px' : '224px',
+          // When sidebar is collapsed, position at left: 0
+          // Otherwise, position at the right edge of the sidebar
+          left: isCollapsed ? '0px' : (isExpanded ? '320px' : '224px'),
           // Match sidebar background for seamless look
           background: '#F1F1F1',
           pointerEvents: 'auto',

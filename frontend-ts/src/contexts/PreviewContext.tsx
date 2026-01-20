@@ -72,6 +72,15 @@ interface PreviewContextType {
   // NEW: Map navigation glow effect state
   isMapNavigating: boolean;
   setMapNavigating: (active: boolean) => void;
+  // NEW: Chat panel visibility tracking for document preview gating
+  isChatPanelVisible: boolean;
+  setIsChatPanelVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  // NEW: Pending document preview (queued when chat is hidden)
+  pendingExpandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
+  clearPendingExpandedCardView: () => void;
+  // NEW: Pending preview files (queued when chat is hidden, opened when chat becomes visible)
+  pendingPreviewFiles: FileAttachmentData[];
+  pendingPreviewHighlight: CitationHighlight | null;
   MAX_PREVIEW_TABS: number;
 }
 
@@ -92,6 +101,13 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [agentTaskMessage, setAgentTaskMessage] = React.useState<string>('');
   // NEW: Map navigation glow effect state
   const [isMapNavigating, setIsMapNavigatingState] = React.useState<boolean>(false);
+  // NEW: Chat panel visibility tracking for document preview gating
+  const [isChatPanelVisible, setIsChatPanelVisible] = React.useState<boolean>(false);
+  // NEW: Pending document preview (queued when chat is hidden, opened when chat becomes visible)
+  const [pendingExpandedCardViewDoc, setPendingExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
+  // NEW: Pending preview files (queued when chat is hidden, opened when chat becomes visible)
+  const [pendingPreviewFiles, setPendingPreviewFiles] = React.useState<FileAttachmentData[]>([]);
+  const [pendingPreviewHighlight, setPendingPreviewHighlight] = React.useState<CitationHighlight | null>(null);
   // NEW: Cache PDF documents in memory to avoid reloading when switching between documents
   const [pdfDocumentCache, setPdfDocumentCache] = React.useState<Map<string, PDFDocumentProxy>>(new Map());
   // NEW: Cache rendered PDF pages (fileId -> pageNumber -> ImageData) for instant page switching
@@ -104,18 +120,100 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   // NEW: Open standalone ExpandedCardView
+  // Modified to gate document preview based on chat panel visibility
   const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => {
+    // If chat panel is not visible, queue the document for later (silent background opening)
+    if (!isChatPanelVisible) {
+      console.log('📋 [PREVIEW] Chat panel hidden - queueing document for later:', { docId, filename });
+      setPendingExpandedCardViewDoc({ docId, filename, highlight });
+      return;
+    }
+    
+    // Chat panel is visible - open normally
     if (isAgentTriggered) {
       setIsAgentOpening(true);
     }
     setExpandedCardViewDoc({ docId, filename, highlight });
-  }, []);
+  }, [isChatPanelVisible]);
 
   // NEW: Close standalone ExpandedCardView
   const closeExpandedCardView = React.useCallback(() => {
     setExpandedCardViewDoc(null);
     setIsAgentOpening(false); // Reset glow state when closing
   }, []);
+
+  // NEW: Clear pending document preview (e.g., when starting a new chat)
+  const clearPendingExpandedCardView = React.useCallback(() => {
+    setPendingExpandedCardViewDoc(null);
+    // Also clear pending preview files
+    setPendingPreviewFiles([]);
+    setPendingPreviewHighlight(null);
+  }, []);
+
+  // NEW: Effect to open pending document when chat becomes visible
+  React.useEffect(() => {
+    if (isChatPanelVisible && pendingExpandedCardViewDoc) {
+      console.log('📋 [PREVIEW] Chat panel visible - opening queued document:', pendingExpandedCardViewDoc);
+      setExpandedCardViewDoc(pendingExpandedCardViewDoc);
+      setPendingExpandedCardViewDoc(null);
+    }
+  }, [isChatPanelVisible, pendingExpandedCardViewDoc]);
+
+  // NEW: Effect to open pending preview files when chat becomes visible
+  React.useEffect(() => {
+    if (isChatPanelVisible && pendingPreviewFiles.length > 0) {
+      console.log('📋 [PREVIEW] Chat panel visible - opening queued preview files:', pendingPreviewFiles.length);
+      // Add all pending files to preview
+      setPreviewFiles(prev => {
+        // Merge pending files with existing, avoiding duplicates
+        const existingIds = new Set(prev.map(f => f.id));
+        const newFiles = pendingPreviewFiles.filter(f => !existingIds.has(f.id));
+        const merged = [...prev, ...newFiles];
+        
+        // Limit to MAX_PREVIEW_TABS
+        const finalFiles = merged.length > MAX_PREVIEW_TABS 
+          ? merged.slice(-MAX_PREVIEW_TABS) 
+          : merged;
+        
+        // Set active tab to the last pending file
+        if (newFiles.length > 0) {
+          const lastPendingFile = newFiles[newFiles.length - 1];
+          const index = finalFiles.findIndex(f => f.id === lastPendingFile.id);
+          if (index !== -1) {
+            setActivePreviewTabIndex(index);
+          }
+        }
+        
+        return finalFiles;
+      });
+      
+      // Open preview and set highlight if provided
+      setIsPreviewOpen(true);
+      if (pendingPreviewHighlight) {
+        setHighlightCitation(pendingPreviewHighlight);
+      }
+      
+      // Clear pending state
+      setPendingPreviewFiles([]);
+      setPendingPreviewHighlight(null);
+    }
+  }, [isChatPanelVisible, pendingPreviewFiles, pendingPreviewHighlight, MAX_PREVIEW_TABS]);
+
+  // NEW: Effect to close preview when chat panel becomes hidden
+  React.useEffect(() => {
+    if (!isChatPanelVisible && isPreviewOpen) {
+      console.log('📋 [PREVIEW] Chat panel hidden - closing preview modal');
+      setIsPreviewOpen(false);
+    }
+    
+    // Queue expanded card view document when chat becomes hidden
+    if (!isChatPanelVisible && expandedCardViewDoc) {
+      console.log('📋 [PREVIEW] Chat panel hidden - queueing expanded card view document:', expandedCardViewDoc);
+      setPendingExpandedCardViewDoc(expandedCardViewDoc);
+      setExpandedCardViewDoc(null);
+      setIsAgentOpening(false); // Reset glow state
+    }
+  }, [isChatPanelVisible, isPreviewOpen, expandedCardViewDoc]);
 
   // NEW: Set agent task active (for navigation overlay)
   const setAgentTaskActive = React.useCallback((active: boolean, message?: string) => {
@@ -316,6 +414,23 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [getCachedRenderedPage, setCachedRenderedPage]);
 
   const addPreviewFile = React.useCallback((file: FileAttachmentData, highlight?: CitationHighlight) => {
+    // If chat panel is not visible, queue the file for later (silent background opening)
+    if (!isChatPanelVisible) {
+      console.log('📋 [PREVIEW] Chat panel hidden - queueing preview file for later:', file.name || file.id);
+      setPendingPreviewFiles(prev => {
+        // Check if file is already in pending queue
+        if (prev.some(f => f.id === file.id)) {
+          return prev; // Already queued
+        }
+        return [...prev, file];
+      });
+      if (highlight) {
+        setPendingPreviewHighlight(highlight);
+      }
+      return;
+    }
+    
+    // Chat panel is visible - open normally
     setPreviewFiles(prev => {
       // Check if file is already in preview tabs
       const existingTabIndex = prev.findIndex(f => f.id === file.id);
@@ -379,7 +494,17 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return newFiles;
       }
     });
-  }, []);
+  }, [isChatPanelVisible]);
+
+  // NEW: Gated setIsPreviewOpen - only opens if chat is visible, but always allows closing
+  const gatedSetIsPreviewOpen = React.useCallback((open: boolean) => {
+    if (open && !isChatPanelVisible) {
+      console.log('📋 [PREVIEW] Attempted to open preview but chat panel is hidden - ignoring');
+      return;
+    }
+    // Always allow closing, even if chat is not visible
+    setIsPreviewOpen(open);
+  }, [isChatPanelVisible]);
 
   const value = React.useMemo(() => ({
     previewFiles,
@@ -387,7 +512,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     isPreviewOpen,
     setPreviewFiles,
     setActivePreviewTabIndex,
-    setIsPreviewOpen,
+    setIsPreviewOpen: gatedSetIsPreviewOpen,
     addPreviewFile,
     expandedCardViewDoc,
     setExpandedCardViewDoc,
@@ -401,6 +526,12 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     stopAgentTask,
     isMapNavigating,
     setMapNavigating,
+    isChatPanelVisible,
+    setIsChatPanelVisible,
+    pendingExpandedCardViewDoc,
+    clearPendingExpandedCardView,
+    pendingPreviewFiles,
+    pendingPreviewHighlight,
     preloadFile,
     getCachedPdfDocument,
     setCachedPdfDocument,
@@ -411,7 +542,7 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setHighlightCitation,
     clearHighlightCitation,
     MAX_PREVIEW_TABS
-  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating]);
+  }), [previewFiles, activePreviewTabIndex, isPreviewOpen, addPreviewFile, preloadFile, getCachedPdfDocument, setCachedPdfDocument, getCachedRenderedPage, setCachedRenderedPage, preloadPdfPage, highlightCitation, clearHighlightCitation, expandedCardViewDoc, openExpandedCardView, closeExpandedCardView, isAgentOpening, isAgentTaskActive, agentTaskMessage, setAgentTaskActive, stopAgentTask, isMapNavigating, setMapNavigating, isChatPanelVisible, pendingExpandedCardViewDoc, clearPendingExpandedCardView, pendingPreviewFiles, pendingPreviewHighlight, gatedSetIsPreviewOpen]);
 
   return (
     <PreviewContext.Provider value={value}>

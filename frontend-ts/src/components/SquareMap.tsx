@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Moon } from 'lucide-react';
+import { Moon, Layers, Loader2 } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mockPropertyHubData, transformPropertyHubForFrontend } from '../data/mockPropertyHubData';
@@ -217,6 +217,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const currentMarker = useRef<mapboxgl.Marker | null>(null);
+  const defaultPreviewContainer = useRef<HTMLDivElement>(null);
+  const lightPreviewContainer = useRef<HTMLDivElement>(null);
+  const defaultPreviewMap = useRef<mapboxgl.Map | null>(null);
+  const lightPreviewMap = useRef<mapboxgl.Map | null>(null);
   const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
   const backendApi = useBackendApi();
   // Store pending location change when map isn't visible
@@ -388,6 +392,8 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
   // Default to the colored map theme on first load (user preference)
   const [isColorfulMap, setIsColorfulMap] = useState(true);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
+  const [defaultPreviewUrl, setDefaultPreviewUrl] = useState<string | null>(null);
+  const [lightPreviewUrl, setLightPreviewUrl] = useState<string | null>(null);
   const [showPropertyDetailsPanel, setShowPropertyDetailsPanel] = useState(false);
   const [showPropertyTitleCard, setShowPropertyTitleCard] = useState(false);
   const [titleCardPropertyId, setTitleCardPropertyId] = useState<string | null>(null);
@@ -4674,6 +4680,116 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     // Don't cleanup on visibility change - keep map initialized
     // Cleanup only happens on component unmount (see separate useEffect below)
   }, []); // Run once on mount, not when isVisible changes
+
+  // Initialize both preview maps for toggle button thumbnails
+  useEffect(() => {
+    if (!isVisible || !defaultPreviewContainer.current || !lightPreviewContainer.current || !mapboxToken) return;
+    if (defaultPreviewMap.current && lightPreviewMap.current) return; // Already initialized
+
+    // Small delay to ensure containers are rendered
+    const timer = setTimeout(() => {
+      mapboxgl.accessToken = mapboxToken;
+      
+      // Get current map center if available, otherwise use default
+      const currentCenter = map.current?.getCenter();
+      const center: [number, number] = currentCenter 
+        ? [currentCenter.lng, currentCenter.lat]
+        : [-0.1276, 51.5074];
+      const previewZoom = 7; // Fixed zoom level for preview (very zoomed out to avoid city name labels)
+
+      // Helper function to hide labels and capture preview
+      const hideLabelsAndCapture = (mapInstance: mapboxgl.Map, setter: (url: string) => void) => {
+        const style = mapInstance.getStyle();
+        if (style && style.layers) {
+          style.layers.forEach((layer) => {
+            if (layer.type === 'symbol' || layer.id.includes('label') || layer.id.includes('place')) {
+              mapInstance.setLayoutProperty(layer.id, 'visibility', 'none');
+            }
+          });
+        }
+        
+        setTimeout(() => {
+          const canvas = mapInstance.getCanvas();
+          const imageUrl = canvas.toDataURL('image/png');
+          setter(imageUrl);
+        }, 200);
+      };
+
+      // Create Default (Outdoors) preview map
+      defaultPreviewMap.current = new mapboxgl.Map({
+        container: defaultPreviewContainer.current!,
+        style: 'mapbox://styles/mapbox/outdoors-v12',
+        center: center,
+        zoom: previewZoom,
+        attributionControl: false,
+        interactive: false,
+        preserveDrawingBuffer: true,
+      });
+
+      defaultPreviewMap.current.on('load', () => {
+        if (defaultPreviewMap.current) {
+          hideLabelsAndCapture(defaultPreviewMap.current, setDefaultPreviewUrl);
+        }
+      });
+
+      // Create Light preview map
+      lightPreviewMap.current = new mapboxgl.Map({
+        container: lightPreviewContainer.current!,
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: center,
+        zoom: previewZoom,
+        attributionControl: false,
+        interactive: false,
+        preserveDrawingBuffer: true,
+      });
+
+      lightPreviewMap.current.on('load', () => {
+        if (lightPreviewMap.current) {
+          hideLabelsAndCapture(lightPreviewMap.current, setLightPreviewUrl);
+        }
+      });
+
+      // Update previews when main map moves
+      if (map.current) {
+        const syncPreviews = () => {
+          if (defaultPreviewMap.current && lightPreviewMap.current && map.current) {
+            const currentCenter = map.current.getCenter();
+            const center: [number, number] = [currentCenter.lng, currentCenter.lat];
+            
+            defaultPreviewMap.current.setCenter(center);
+            defaultPreviewMap.current.setZoom(7);
+            lightPreviewMap.current.setCenter(center);
+            lightPreviewMap.current.setZoom(7);
+            
+            setTimeout(() => {
+              if (defaultPreviewMap.current) {
+                const canvas = defaultPreviewMap.current.getCanvas();
+                setDefaultPreviewUrl(canvas.toDataURL('image/png'));
+              }
+              if (lightPreviewMap.current) {
+                const canvas = lightPreviewMap.current.getCanvas();
+                setLightPreviewUrl(canvas.toDataURL('image/png'));
+              }
+            }, 300);
+          }
+        };
+
+        map.current.on('moveend', syncPreviews);
+      }
+    }, 100);
+
+    return () => {
+      clearTimeout(timer);
+      if (defaultPreviewMap.current) {
+        defaultPreviewMap.current.remove();
+        defaultPreviewMap.current = null;
+      }
+      if (lightPreviewMap.current) {
+        lightPreviewMap.current.remove();
+        lightPreviewMap.current = null;
+      }
+    };
+  }, [isVisible, mapboxToken]);
   
   // Update map visibility and interactivity when isVisible or isInteractive changes
   useEffect(() => {
@@ -5167,74 +5283,98 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             }}
           />
           
-          {/* Map Style Toggle Button - positioned in top right corner */}
-          <motion.button
-            onClick={toggleMapStyle}
-            disabled={isChangingStyle}
-            className={`fixed top-5 z-50 w-9 h-9 backdrop-blur-sm rounded-full shadow-lg border border-white/20 flex items-center justify-center transition-all duration-200 ${
-              isChangingStyle 
-                ? 'bg-gray-100/90 cursor-not-allowed' 
-                : 'bg-white/90 hover:bg-white hover:shadow-xl'
-            }`}
+          {/* Hidden Preview Map Containers for Thumbnails */}
+          <div
+            ref={defaultPreviewContainer}
+            style={{
+              position: 'absolute',
+              width: '64px',
+              height: '64px',
+              left: '-10000px',
+              top: '-10000px',
+              visibility: 'hidden',
+              pointerEvents: 'none',
+            }}
+          />
+          <div
+            ref={lightPreviewContainer}
+            style={{
+              position: 'absolute',
+              width: '64px',
+              height: '64px',
+              left: '-10000px',
+              top: '-10000px',
+              visibility: 'hidden',
+              pointerEvents: 'none',
+            }}
+          />
+          
+          {/* Map Style Toggle Button - Google Maps Style */}
+          <div
+            className="absolute"
             style={{
               right: '20px',
-              top: '20px'
+              top: '20px',
+              zIndex: 60,
             }}
-            whileHover={!isChangingStyle ? { 
-              scale: 1.08, 
-              y: -2,
-              boxShadow: "0 20px 40px -12px rgba(0, 0, 0, 0.3)"
-            } : {}}
-            whileTap={!isChangingStyle ? { 
-              scale: 0.92, 
-              y: 1 
-            } : {}}
-            transition={{
-              type: "spring",
-              stiffness: 400,
-              damping: 25,
-              mass: 0.8
-            }}
-            title={isChangingStyle ? "Changing map style..." : (isColorfulMap ? "Switch to Light Map" : "Switch to Colorful Map")}
           >
-            <motion.div
-              animate={{ rotate: isColorfulMap ? 180 : 0 }}
-              transition={{ 
-                duration: 0.4, 
-                ease: [0.4, 0.0, 0.2, 1]
+            <motion.button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Clicking toggles the map style
+                toggleMapStyle();
               }}
-              className="w-5 h-5 flex items-center justify-center"
+              disabled={isChangingStyle}
+              className="flex flex-col overflow-hidden transition-all duration-200"
+              style={{
+                width: '40px',
+                height: '40px',
+                backgroundColor: '#FFFFFF',
+                border: 'none',
+                borderRadius: '8px',
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04)',
+                cursor: isChangingStyle ? 'not-allowed' : 'pointer',
+                padding: 0,
+                pointerEvents: 'auto',
+              }}
+              whileHover={!isChangingStyle ? {
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.06)',
+              } : {}}
+              title={isChangingStyle ? "Changing style..." : "Map type"}
             >
-              {isChangingStyle ? (
-                // Loading spinner
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="w-4 h-4"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 12a9 9 0 11-6.219-8.56"/>
-                  </svg>
-                </motion.div>
-              ) : isColorfulMap ? (
-                // Light mode icon (sun)
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="5"/>
-                  <line x1="12" y1="1" x2="12" y2="3"/>
-                  <line x1="12" y1="21" x2="12" y2="23"/>
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                  <line x1="1" y1="12" x2="3" y2="12"/>
-                  <line x1="21" y1="12" x2="23" y2="12"/>
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-                </svg>
-              ) : (
-                // Colorful mode icon (moon)
-                <Moon className="w-5 h-5" strokeWidth={2} />
-              )}
-            </motion.div>
-          </motion.button>
+              {/* Map preview button */}
+              <div
+                className="w-full h-full relative"
+                style={{ borderRadius: '8px', overflow: 'hidden' }}
+              >
+                {isChangingStyle ? (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    >
+                      <Loader2 className="w-5 h-5 text-gray-500" />
+                    </motion.div>
+                  </div>
+                ) : (isColorfulMap ? lightPreviewUrl : defaultPreviewUrl) ? (
+                  <img
+                    src={isColorfulMap ? lightPreviewUrl! : defaultPreviewUrl!}
+                    alt="Map preview"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                    }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-100">
+                    <Layers className="w-5 h-5 text-gray-400" strokeWidth={1.5} />
+                  </div>
+                )}
+              </div>
+            </motion.button>
+          </div>
           
           
           {/* 

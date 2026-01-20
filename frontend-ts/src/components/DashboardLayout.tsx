@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { Sidebar } from './Sidebar';
 import { MainContent } from './MainContent';
@@ -87,6 +86,9 @@ const DashboardLayoutContent = ({
   const [wasChatPanelOpenBeforeCollapse, setWasChatPanelOpenBeforeCollapse] = React.useState<boolean>(false);
   const [homeClicked, setHomeClicked] = React.useState<boolean>(false);
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
+  const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
+  const [shouldRestoreActiveChat, setShouldRestoreActiveChat] = React.useState<boolean>(false); // Signal to restore active chat
+  const [isChatVisible, setIsChatVisible] = React.useState<boolean>(false); // Track if chat panel is visible
   const { addChatToHistory, updateChatInHistory, getChatById } = useChatHistory();
 
   const handleViewChange = (viewId: string) => {
@@ -98,10 +100,14 @@ const DashboardLayoutContent = ({
     // Always close chat panel when navigating to a different view, except upload
     if (viewId !== 'upload') {
       setIsChatPanelOpen(false);
+      setIsChatVisible(false); // Also clear chat visibility state
     }
     
     // Special handling for home - reset everything to default state and close all panels
     if (viewId === 'home') {
+      // CRITICAL: Set map visibility immediately to prevent double render
+      setIsMapVisible(false);
+      
       setCurrentChatData(null);
       setCurrentChatId(null);
       currentChatIdRef.current = null;
@@ -111,6 +117,7 @@ const DashboardLayoutContent = ({
       setHomeClicked(true); // Flag that home was clicked
       // Close all panels
       setIsChatPanelOpen(false);
+      setIsChatVisible(false); // Clear chat visibility state
       closeFilingSidebar(); // Close filing sidebar
       // Set view to search since home displays the search interface
       setCurrentView('search');
@@ -264,12 +271,62 @@ const DashboardLayoutContent = ({
     setPreviousChatData(null); // Clear previous chat data when starting new chat
     setHasPerformedSearch(false);
     setIsInChatMode(true);
-    setCurrentView('search');
+    // Only change view if we're not already on search/home (to avoid unnecessary navigation)
+    if (currentView !== 'search' && currentView !== 'home') {
+      setCurrentView('search');
+    }
     setIsChatPanelOpen(false);
     // Trigger reset in SearchBar
     setResetTrigger(prev => prev + 1);
     // Do NOT create chat history yet; wait for first submitted query
-  }, [handleChatModeChange]);
+  }, [handleChatModeChange, currentView]);
+
+  // Handler to restore active chat from sidebar (re-engage with running chat)
+  const handleRestoreActiveChat = React.useCallback(() => {
+    console.log('🔄 DashboardLayout: Opening chat', { hasActiveChat, currentView });
+    
+    // CRITICAL: Always set these FIRST to prevent dashboard from showing
+    // Set the signal immediately BEFORE any other state changes
+    setShouldRestoreActiveChat(true);
+    // Ensure map is visible for fullscreen chat view
+    setIsMapVisible(true);
+    // Set chat mode immediately
+    setIsInChatMode(true);
+    // MainContent will set hasPerformedSearch to true when it receives shouldRestoreActiveChat
+    
+    // Only change view if we're not already on search/home (to avoid unnecessary navigation)
+    if (currentView !== 'search' && currentView !== 'home') {
+      setCurrentView('search');
+    }
+    
+    if (hasActiveChat) {
+      // There's an active chat - restore it
+      console.log('🔄 DashboardLayout: Restoring active chat');
+      // Clear the signal after a short delay (MainContent will pick it up and set hasPerformedSearch)
+      setTimeout(() => setShouldRestoreActiveChat(false), 300);
+    } else {
+      // No active chat - create a new one
+      console.log('🔄 DashboardLayout: Creating new chat');
+      // Clear the signal after a short delay (MainContent will pick it up and set hasPerformedSearch)
+      setTimeout(() => setShouldRestoreActiveChat(false), 300);
+      // Also reset chat state for a fresh start
+      setCurrentChatId(null);
+      currentChatIdRef.current = null;
+      setCurrentChatData(null);
+      setPreviousChatData(null);
+      setResetTrigger(prev => prev + 1); // Trigger reset in SearchBar
+    }
+  }, [hasActiveChat, currentView]);
+  
+  // Callback from MainContent when active chat state changes
+  const handleActiveChatChange = React.useCallback((isActive: boolean) => {
+    setHasActiveChat(isActive);
+  }, []);
+  
+  // Callback from MainContent when chat panel visibility changes
+  const handleChatVisibilityChange = React.useCallback((isVisible: boolean) => {
+    setIsChatVisible(isVisible);
+  }, []);
 
   const handleReturnToChat = React.useCallback(() => {
     if (previousChatData) {
@@ -291,10 +348,7 @@ const DashboardLayoutContent = ({
   }, []);
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, scale: 0.98 }} 
-      animate={{ opacity: 1, scale: 1 }} 
-      transition={{ duration: 0.8, ease: [0.23, 1, 0.32, 1] }} 
+    <div 
       className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
       style={{ backgroundColor: 'transparent' }}
     >
@@ -384,6 +438,9 @@ const DashboardLayoutContent = ({
         onChatSelect={handleChatSelect}
         onNewChat={handleNewChat}
         isMapVisible={isMapVisible}
+        hasActiveChat={hasActiveChat}
+        onRestoreActiveChat={handleRestoreActiveChat}
+        isChatVisible={isChatVisible}
         onSignOut={async () => {
           try {
             const result = await backendApi.logout();
@@ -424,8 +481,11 @@ const DashboardLayoutContent = ({
         isSidebarExpanded={isSidebarExpanded}
         onSidebarToggle={handleSidebarToggle}
         onMapVisibilityChange={setIsMapVisible}
+        onActiveChatChange={handleActiveChatChange}
+        shouldRestoreActiveChat={shouldRestoreActiveChat}
+        onChatVisibilityChange={handleChatVisibilityChange}
       />
-    </motion.div>
+    </div>
   );
 };
 

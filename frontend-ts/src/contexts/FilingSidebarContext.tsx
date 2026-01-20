@@ -9,6 +9,7 @@ interface FilingSidebarContextType {
   searchQuery: string;
   selectedItems: Set<string>;
   width: number; // Current width of FilingSidebar (default 320px, can be resized)
+  isResizing: boolean; // Whether FilingSidebar is currently being resized
   openSidebar: () => void;
   closeSidebar: () => void;
   toggleSidebar: () => void;
@@ -19,6 +20,7 @@ interface FilingSidebarContextType {
   clearSelection: () => void;
   selectAll: (itemIds: string[]) => void;
   setWidth: (width: number) => void;
+  setIsResizing: (isResizing: boolean) => void;
 }
 
 const FilingSidebarContext = createContext<FilingSidebarContextType | undefined>(undefined);
@@ -30,6 +32,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [searchQuery, setSearchQueryState] = useState<string>('');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [width, setWidthState] = useState<number>(320); // Default width: 320px (w-80)
+  const [isResizing, setIsResizingState] = useState<boolean>(false);
 
   const openSidebar = useCallback(() => {
     setIsOpen(true);
@@ -97,6 +100,10 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     setWidthState(newWidth);
   }, []);
 
+  const setIsResizing = useCallback((resizing: boolean) => {
+    setIsResizingState(resizing);
+  }, []);
+
   // Keyboard shortcut handler (Cmd/Ctrl + F)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -130,6 +137,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     searchQuery,
     selectedItems,
     width,
+    isResizing,
     openSidebar,
     closeSidebar,
     toggleSidebar,
@@ -140,6 +148,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
     clearSelection,
     selectAll,
     setWidth,
+    setIsResizing,
   };
 
   return (

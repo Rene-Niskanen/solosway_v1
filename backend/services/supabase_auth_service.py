@@ -22,7 +22,15 @@ class SupabaseAuthService:
         self.supabase = get_supabase_client()
     
     def get_user_by_email(self, email):
-        """Get user by email from Supabase"""
+        """Get user by email from Supabase
+        
+        Returns:
+            dict: User data if found
+            None: User not found or other error
+        Raises:
+            TimeoutError: If database connection times out
+            Exception: For other database errors
+        """
         try:
             import time
             start_time = time.time()
@@ -39,12 +47,16 @@ class SupabaseAuthService:
             if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
                 logger.error(f"❌ Supabase TIMEOUT fetching user {email}: {e}")
                 logger.error(f"   This usually means Supabase is not responding or network issues")
+                # Re-raise timeout errors so they can be handled specifically
+                raise TimeoutError(f"Database connection timeout: {e}") from e
             elif '401' in error_msg or 'unauthorized' in error_msg.lower():
                 logger.error(f"❌ Supabase AUTH ERROR for user {email}: {e}")
                 logger.error(f"   Check SUPABASE_SERVICE_KEY in .env file")
+                raise Exception(f"Database authentication error: {e}") from e
             else:
                 logger.error(f"❌ Error fetching user from Supabase: {e}")
-            return None
+                # For other errors, re-raise so caller can handle
+                raise
     
     def get_user_by_id(self, user_id):
         """Get user by ID from Supabase"""
