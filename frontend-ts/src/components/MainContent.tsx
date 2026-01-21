@@ -16,9 +16,9 @@ import Profile from './Profile';
 import { FileManager } from './FileManager';
 import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Layout, Plus, ArrowUp, Folder } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -87,6 +87,8 @@ const LocationPickerModal: React.FC<{
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   // Store sidebar state before entering preview mode
   const sidebarStateBeforePreviewRef = React.useRef<boolean | null>(null);
+  // Store sidebar state before opening the modal
+  const sidebarStateBeforeModalRef = React.useRef<boolean | null>(null);
   const [locationInput, setLocationInput] = React.useState<string>('');
   // Initialize with empty values - will be loaded from localStorage when modal opens
   const [selectedCoordinates, setSelectedCoordinates] = React.useState<[number, number] | null>(null);
@@ -94,6 +96,10 @@ const LocationPickerModal: React.FC<{
   const [selectedZoom, setSelectedZoom] = React.useState<number>(9.5);
   const [isGeocoding, setIsGeocoding] = React.useState(false);
   const [geocodeError, setGeocodeError] = React.useState<string>('');
+  const [suggestions, setSuggestions] = React.useState<Array<{ place_name: string; center: [number, number] }>>([]);
+  const [showSuggestions, setShowSuggestions] = React.useState(false);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = React.useState(false);
+  const isSelectingSuggestionRef = React.useRef<boolean>(false);
   
   const mapContainer = React.useRef<HTMLDivElement>(null);
   const previewMapContainer = React.useRef<HTMLDivElement>(null);
@@ -115,17 +121,116 @@ const LocationPickerModal: React.FC<{
   const isLoadingFromStorageRef = React.useRef<boolean>(false);
   // Track if coordinates are being updated from map drag to prevent effect loop
   const isUpdatingFromDragRef = React.useRef<boolean>(false);
+  // Track if map is in initial load phase - prevent any zoom/position changes during this
+  const isInitialMapLoadRef = React.useRef<boolean>(true);
 
   // Track if location data is ready to prevent race conditions
   const [isLocationDataReady, setIsLocationDataReady] = React.useState(false);
+
+  // Fetch autocomplete suggestions
+  React.useEffect(() => {
+    if (!locationInput.trim() || locationInput.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+
+    // Don't fetch suggestions if we're in the middle of selecting one
+    if (isSelectingSuggestionRef.current) {
+      return;
+    }
+
+    const fetchSuggestions = async () => {
+      setIsLoadingSuggestions(true);
+      try {
+        const geocodingUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(locationInput)}.json?access_token=${mapboxToken}&limit=5&autocomplete=true&country=gb&proximity=-0.1276,51.5074`;
+        const response = await fetch(geocodingUrl);
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          setSuggestions(data.features.map((feature: any) => ({
+            place_name: feature.place_name,
+            center: feature.center
+          })));
+          // Only show suggestions if we're not selecting one
+          if (!isSelectingSuggestionRef.current) {
+            setShowSuggestions(true);
+          }
+        } else {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
+      } catch (error) {
+        console.error('Suggestions error:', error);
+        setSuggestions([]);
+      } finally {
+        setIsLoadingSuggestions(false);
+      }
+    };
+
+    // Debounce the search
+    const timeoutId = setTimeout(fetchSuggestions, 300);
+    return () => clearTimeout(timeoutId);
+  }, [locationInput, mapboxToken]);
+
+  // Handle suggestion selection
+  const handleSuggestionSelect = (suggestion: { place_name: string; center: [number, number] }) => {
+    isSelectingSuggestionRef.current = true;
+    setLocationInput(suggestion.place_name);
+    setShowSuggestions(false);
+    
+    const [lng, lat] = suggestion.center;
+    const coords: [number, number] = [lng, lat];
+    
+    setSelectedCoordinates(coords);
+    setSelectedLocationName(suggestion.place_name);
+    
+    // Geocode to get bbox and calculate zoom
+    const geocodeForZoom = async () => {
+      try {
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(suggestion.place_name)}.json?access_token=${mapboxToken}&limit=1`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.features && data.features.length > 0) {
+          const feature = data.features[0];
+          const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
+          setSelectedZoom(calculatedZoom);
+        }
+      } catch (error) {
+        console.error('Error geocoding for zoom:', error);
+      } finally {
+        isSelectingSuggestionRef.current = false;
+      }
+    };
+    
+    geocodeForZoom();
+  };
+
+  // Store and restore sidebar state when modal opens/closes
+  React.useEffect(() => {
+    if (isOpen) {
+      // Store sidebar state when modal opens
+      if (getSidebarState) {
+        sidebarStateBeforeModalRef.current = getSidebarState();
+      }
+      // Close sidebar when modal opens
+      onCloseSidebar?.();
+    } else {
+      // Restore sidebar state when modal closes
+      if (onRestoreSidebarState && sidebarStateBeforeModalRef.current !== null) {
+        onRestoreSidebarState(sidebarStateBeforeModalRef.current);
+        sidebarStateBeforeModalRef.current = null;
+      }
+    }
+  }, [isOpen, getSidebarState, onCloseSidebar, onRestoreSidebarState]);
 
   // Reload saved location when modal opens - simple: whatever was last saved
   React.useEffect(() => {
     if (isOpen) {
       setIsLocationDataReady(false);
       
-      // Set flag to prevent sync effect from running during initial load
+      // Set flags to prevent sync effect and zoom updates during initial load
       isLoadingFromStorageRef.current = true;
+      isInitialMapLoadRef.current = true;
       
       // Simple logic: Get the last saved location from localStorage
       if (typeof window !== 'undefined') {
@@ -163,8 +268,9 @@ const LocationPickerModal: React.FC<{
       console.log('📍 LocationPicker: No saved location found, using default (London)');
     } else {
       setIsLocationDataReady(false);
-      // Reset flag when modal closes
+      // Reset flags when modal closes
       isLoadingFromStorageRef.current = false;
+      isInitialMapLoadRef.current = true; // Reset for next open
     }
   }, [isOpen]);
 
@@ -217,27 +323,31 @@ const LocationPickerModal: React.FC<{
     const initialCenter = selectedCoordinates;
     const initialZoom = selectedZoom;
 
-    // Wait for dialog animation to complete (200ms) plus buffer for rendering
-    // Use a longer delay to account for Radix UI dialog animations
-    const initTimeout = setTimeout(() => {
+    // Wait for dialog to be fully open and use requestAnimationFrame for smoother initialization
+    const initMap = () => {
       if (!isOpen || !mapContainer.current) {
         console.error('❌ LocationPicker: Modal closed or container disappeared before map init', { isOpen, hasContainer: !!mapContainer.current });
         return;
       }
 
-      // Double-check container has dimensions - retry if not ready
-      const checkAndInit = () => {
-        if (!isOpen || !mapContainer.current) return;
+      // Use requestAnimationFrame to ensure DOM is ready and dialog animation is complete
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!isOpen || !mapContainer.current) return;
 
-        if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
-          console.warn('📍 LocationPicker: Container has no dimensions, retrying...', {
-            width: mapContainer.current.offsetWidth,
-            height: mapContainer.current.offsetHeight
-          });
-          // Retry after a short delay
-          setTimeout(checkAndInit, 100);
-          return;
-        }
+          // Double-check container has dimensions - retry if not ready
+          const checkAndInit = () => {
+            if (!isOpen || !mapContainer.current) return;
+
+            if (mapContainer.current.offsetWidth === 0 || mapContainer.current.offsetHeight === 0) {
+              console.warn('📍 LocationPicker: Container has no dimensions, retrying...', {
+                width: mapContainer.current.offsetWidth,
+                height: mapContainer.current.offsetHeight
+              });
+              // Use requestAnimationFrame for retry instead of setTimeout
+              requestAnimationFrame(checkAndInit);
+              return;
+            }
 
         // Container is ready, proceed with initialization
         console.log('📍 LocationPicker: Creating map instance...', {
@@ -264,7 +374,11 @@ const LocationPickerModal: React.FC<{
             dragPan: true,
             scrollZoom: true,
             boxZoom: true,
-            doubleClickZoom: true
+            doubleClickZoom: true,
+            // Performance optimizations
+            antialias: false, // Disable antialiasing for better performance
+            preserveDrawingBuffer: false, // Don't preserve drawing buffer unless needed
+            fadeDuration: 0 // Disable fade animations for faster rendering
           });
 
           console.log('✅ LocationPicker: Map instance created', {
@@ -280,16 +394,22 @@ const LocationPickerModal: React.FC<{
 
             console.log('✅ LocationPicker: Map loaded successfully');
             
-            // Map is now loaded and initialized, allow sync effect to run after a short delay
-            // This prevents the sync from running immediately and causing glitches
+            // Map is now loaded and initialized, allow sync effect to run after a delay
+            // Keep the flag true longer to prevent any sync during initial render
+            // The map is already at the correct position from constructor, so no sync needed
             setTimeout(() => {
               isMapJustInitializedRef.current = false;
               isLoadingFromStorageRef.current = false; // Clear loading flag after map is stable
+              isInitialMapLoadRef.current = false; // Allow zoom/position updates after map is fully stable
               console.log('📍 LocationPicker: Map initialization complete, sync effect can now run');
-            }, 1000); // 1 second delay to ensure map is stable
+            }, 2000); // 2 second delay to ensure map is fully stable and no sync happens on initial load
 
-            // Resize map to ensure it renders correctly
-            map.current.resize();
+            // Resize map using requestAnimationFrame for smoother rendering
+            requestAnimationFrame(() => {
+              if (map.current) {
+                map.current.resize();
+              }
+            });
 
             // Don't add marker - using dotted border frame instead
             // marker.current = new mapboxgl.Marker({ color: '#3b82f6' })
@@ -299,18 +419,15 @@ const LocationPickerModal: React.FC<{
             console.log('✅ LocationPicker: Map loaded (no marker - using dotted border frame)');
 
             // Hide Mapbox branding
-            const container = map.current.getContainer();
-            const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
-            const logo = container.querySelector('.mapboxgl-ctrl-logo');
-            if (attrib) (attrib as HTMLElement).style.display = 'none';
-            if (logo) (logo as HTMLElement).style.display = 'none';
-
-            // Force a repaint to ensure map is visible
-            setTimeout(() => {
+            requestAnimationFrame(() => {
               if (map.current) {
-                map.current.resize();
+                const container = map.current.getContainer();
+                const attrib = container.querySelector('.mapboxgl-ctrl-attrib');
+                const logo = container.querySelector('.mapboxgl-ctrl-logo');
+                if (attrib) (attrib as HTMLElement).style.display = 'none';
+                if (logo) (logo as HTMLElement).style.display = 'none';
               }
-            }, 100);
+            });
           };
 
           const handleMapClick = (e: mapboxgl.MapMouseEvent) => {
@@ -377,7 +494,12 @@ const LocationPickerModal: React.FC<{
           const handleStyleLoad = () => {
             if (map.current) {
               console.log('✅ LocationPicker: Map style loaded');
-              map.current.resize();
+              // Use requestAnimationFrame for smoother resize
+              requestAnimationFrame(() => {
+                if (map.current) {
+                  map.current.resize();
+                }
+              });
             }
           };
 
@@ -387,22 +509,19 @@ const LocationPickerModal: React.FC<{
           map.current.on('moveend', handleMapMoveEnd);
           map.current.on('error', handleMapError);
           map.current.on('style.load', handleStyleLoad);
-      
-          // Also try to resize after a short delay as fallback
-          setTimeout(() => {
-            if (map.current && !map.current.loaded()) {
-              console.log('📍 LocationPicker: Map not loaded yet, will resize when ready');
-            } else if (map.current) {
-              map.current.resize();
-            }
-          }, 500);
         } catch (error) {
           console.error('❌ LocationPicker: Failed to create map:', error);
         }
-      };
+          };
 
-      checkAndInit();
-    }, 300); // Increased delay to account for dialog animation (200ms) + buffer
+          checkAndInit();
+        });
+      });
+    };
+
+    // Wait for dialog animation to complete, then initialize
+    // Use a shorter delay since we're using requestAnimationFrame for better timing
+    const initTimeout = setTimeout(initMap, 150);
 
     return () => {
       clearTimeout(initTimeout);
@@ -435,6 +554,12 @@ const LocationPickerModal: React.FC<{
       return;
     }
     
+    // Skip sync during initial map load - map is already at correct position
+    if (isInitialMapLoadRef.current) {
+      console.log('📍 LocationPicker: Skipping sync - initial map load');
+      return;
+    }
+    
     // Skip sync if this coordinate change came from user interaction
     if (isUserInteractionRef.current) {
       console.log('📍 LocationPicker: Skipping sync - coordinate change from user interaction');
@@ -460,13 +585,13 @@ const LocationPickerModal: React.FC<{
     const syncMap = () => {
       if (!map.current || !map.current.loaded()) return;
       
-      // Double-check we're not in a user interaction, just initialized, or loading from storage
-      if (isUserInteractionRef.current || isMapJustInitializedRef.current || isLoadingFromStorageRef.current) {
+      // Double-check we're not in a user interaction, just initialized, loading from storage, or initial load
+      if (isUserInteractionRef.current || isMapJustInitializedRef.current || isLoadingFromStorageRef.current || isInitialMapLoadRef.current) {
         return;
       }
 
       try {
-        // Check if map is already at the target location to avoid unnecessary flyTo
+        // Check if map is already at the target location to avoid unnecessary movement
         const currentCenter = map.current.getCenter();
         const currentZoom = map.current.getZoom();
         const targetLng = selectedCoordinates[0];
@@ -479,14 +604,14 @@ const LocationPickerModal: React.FC<{
         );
         const zoomDiff = Math.abs(currentZoom - targetZoom);
         
-        // Only flyTo if the location or zoom is significantly different
+        // Only move if the location or zoom is significantly different
         if (distance > 0.001 || zoomDiff > 0.5) {
-          map.current.flyTo({
+          // Use jumpTo instead of flyTo to avoid animation - instant positioning
+          map.current.jumpTo({
             center: selectedCoordinates,
-            zoom: targetZoom,
-            duration: 600
+            zoom: targetZoom
           });
-          console.log('✅ LocationPicker: Map synced with coordinates');
+          console.log('✅ LocationPicker: Map synced with coordinates (instant)');
         } else {
           console.log('📍 LocationPicker: Map already at target location, skipping sync');
         }
@@ -690,6 +815,12 @@ const LocationPickerModal: React.FC<{
           const calculatedZoom = calculateZoomFromBbox(feature.bbox, feature.place_type);
           setSelectedLocationName(feature.place_name);
           setLocationInput(feature.place_name);
+          
+          // Don't update zoom during initial map load - map is already at correct position
+          if (isInitialMapLoadRef.current) {
+            console.log('📍 LocationPicker: Skipping zoom update during initial map load');
+            return;
+          }
           
           // Only update zoom if it wasn't explicitly set by user, or if the calculated zoom is significantly different
           // This prevents overwriting user's intended zoom level
@@ -944,8 +1075,10 @@ const LocationPickerModal: React.FC<{
   return (
     <>
       <motion.button
-        onClick={() => setIsOpen(true)}
-        className="w-full group relative bg-white border border-slate-200 rounded-lg hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
+        onClick={() => {
+          setIsOpen(true);
+        }}
+        className="w-full group relative bg-white border border-slate-200 rounded-none hover:border-slate-300 hover:shadow-sm transition-all duration-200 text-left"
         whileHover={{ scale: 1.001 }}
         whileTap={{ scale: 0.999 }}
       >
@@ -957,14 +1090,14 @@ const LocationPickerModal: React.FC<{
           
           {/* Content */}
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-slate-900 mb-1 text-sm">
+            <div className="font-medium text-slate-900 mb-1" style={{ fontSize: '13px' }}>
               Default Map Location
             </div>
             <div className="text-xs text-slate-500 mb-3">
               Choose where the map opens when you first view it
             </div>
             {savedLocation && (
-              <div className="text-sm text-slate-600 font-normal">
+              <div className="text-slate-600 font-normal" style={{ fontSize: '12px' }}>
                 {savedLocation}
               </div>
             )}
@@ -980,86 +1113,244 @@ const LocationPickerModal: React.FC<{
       </motion.button>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0">
-          <DialogHeader className="px-6 pt-6 pb-5 border-b border-slate-100">
-            <DialogTitle className="text-xl font-semibold text-slate-900 tracking-tight">Set Default Map Location</DialogTitle>
+        <style>{`
+          [data-radix-dialog-overlay] {
+            background-color: rgba(0, 0, 0, 0.2) !important;
+          }
+          [data-radix-dialog-content] {
+            will-change: transform;
+          }
+          .mapboxgl-canvas {
+            will-change: transform;
+            transform: translateZ(0);
+            image-rendering: -webkit-optimize-contrast;
+          }
+        `}</style>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-0" style={{ borderRadius: 0 }}>
+          <DialogHeader className="px-4 pt-4 pb-3 border-b" style={{ borderColor: '#E9E9EB' }}>
+            <DialogTitle style={{ fontSize: '14px', fontWeight: 500, color: '#415C85', letterSpacing: '-0.01em' }}>Set Default Map Location</DialogTitle>
           </DialogHeader>
 
-          <div className="px-6 py-5 space-y-5">
+          <div className="px-4 py-4 space-y-4">
             {/* Location Input */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-700">Search Location</label>
-              <input
-                type="text"
-                value={locationInput}
-                onChange={(e) => {
-                  setLocationInput(e.target.value);
-                  setGeocodeError('');
-                }}
-                placeholder="Search for a location..."
-                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-400 text-slate-900 placeholder:text-slate-400 transition-all duration-200 bg-white"
-              />
+            <div className="space-y-1.5 relative">
+              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Search Location</label>
+              <div className="relative">
+                <div
+                  className="flex items-center"
+                  id="location-search-container"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    backgroundColor: '#FCFCFC',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    transition: 'border-color 150ms ease',
+                  }}
+                >
+                  <Search className="w-4 h-4 text-gray-400 flex-shrink-0" strokeWidth={2} style={{ marginRight: '12px' }} />
+                  <input
+                    type="text"
+                    value={locationInput}
+                    onChange={(e) => {
+                      setLocationInput(e.target.value);
+                      setGeocodeError('');
+                      if (!isSelectingSuggestionRef.current) {
+                        setShowSuggestions(true);
+                      }
+                    }}
+                    onFocus={(e) => {
+                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                      if (container) {
+                        container.style.borderColor = '#415C85';
+                        container.style.boxShadow = '0 0 0 2px rgba(65, 92, 133, 0.1)';
+                      }
+                      if (suggestions.length > 0) {
+                        setShowSuggestions(true);
+                      }
+                    }}
+                    onBlur={(e) => {
+                      const container = e.currentTarget.closest('#location-search-container') as HTMLElement;
+                      if (container) {
+                        container.style.borderColor = '#E9E9EB';
+                        container.style.boxShadow = 'none';
+                      }
+                      // Delay hiding suggestions to allow click events
+                      setTimeout(() => {
+                        setShowSuggestions(false);
+                      }, 200);
+                    }}
+                    placeholder="Search for a location..."
+                    style={{
+                      flex: 1,
+                      fontSize: '14px',
+                      fontWeight: 400,
+                      color: '#63748A',
+                      backgroundColor: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      letterSpacing: '-0.01em',
+                      lineHeight: '1.4'
+                    }}
+                  />
+                  {isLoadingSuggestions && (
+                    <div className="flex-shrink-0 ml-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                    </div>
+                  )}
+                  {locationInput && !isLoadingSuggestions && (
+                    <button
+                      onClick={() => {
+                        if (locationInput.trim()) {
+                          geocodeLocation(locationInput);
+                        }
+                      }}
+                      disabled={isGeocoding}
+                      className="flex-shrink-0 disabled:opacity-50 ml-2"
+                      style={{
+                        padding: '6px',
+                        backgroundColor: 'transparent',
+                        color: '#63748A',
+                        borderRadius: '50%',
+                        width: '32px',
+                        height: '32px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'background-color 150ms ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f5f5f5';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      {isGeocoding ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
+                    </button>
+                  )}
+                </div>
+
+                {/* Suggestions Dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div 
+                    className="absolute z-50"
+                    style={{
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      width: '100%',
+                      background: '#FCFCFC',
+                      border: '1px solid #E9E9EB',
+                      borderTop: 'none',
+                      borderRadius: '0 0 2px 2px',
+                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                      maxHeight: '400px',
+                      overflowY: 'auto',
+                      marginTop: '1px',
+                    }}
+                  >
+                    {suggestions.map((suggestion, index) => (
+                      <button
+                        key={index}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSuggestionSelect(suggestion);
+                        }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleSuggestionSelect(suggestion);
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
+                        style={{
+                          fontSize: '14px',
+                          color: '#63748A',
+                          lineHeight: '1.4',
+                        }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
+                          <span>{suggestion.place_name}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {isGeocoding && (
-                <p className="text-xs text-slate-500 flex items-center gap-1.5">
-                  <span className="inline-block w-1 h-1 bg-slate-400 rounded-full animate-pulse" />
+                <p style={{ fontSize: '12px', color: '#6C7180', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#6C7180', borderRadius: '50%', animation: 'pulse 1.5s ease-in-out infinite' }} />
                   Searching...
                 </p>
               )}
               {geocodeError && (
-                <p className="text-xs text-red-600 flex items-center gap-1.5">
-                  <span className="inline-block w-1 h-1 bg-red-500 rounded-full" />
+                <p style={{ fontSize: '12px', color: '#DC2626', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px' }}>
+                  <span style={{ display: 'inline-block', width: '4px', height: '4px', backgroundColor: '#DC2626', borderRadius: '50%' }} />
                   {geocodeError}
                 </p>
               )}
             </div>
 
             {/* Map Preview */}
-            <div className="space-y-2.5">
-              <label className="text-sm font-medium text-slate-700">Map Preview</label>
+            <div className="space-y-1.5">
+              <label style={{ fontSize: '13px', fontWeight: 500, color: '#63748A', letterSpacing: '-0.01em' }}>Map Preview</label>
               <div 
-                className="w-full h-96 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 relative shadow-sm"
-                style={{ minHeight: '384px', width: '100%' }}
+                className="w-full h-96 overflow-hidden relative"
+                style={{ 
+                  minHeight: '384px', 
+                  width: '100%',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  backgroundColor: '#F9F9F9'
+                }}
               >
                 {/* Map Container */}
                 <div 
                   ref={mapContainer}
                   className="w-full h-full"
-                  style={{ position: 'relative', zIndex: 1, pointerEvents: 'auto' }}
-                />
-                
-                {/* Refined Border Frame Overlay */}
-                <div 
-                  className="absolute pointer-events-none z-10 border-2 border-slate-300/50 border-dashed rounded-lg" 
-                  style={{
-                    top: '24px',
-                    left: '24px',
-                    right: '24px',
-                    bottom: '24px',
+                  style={{ 
+                    position: 'relative', 
+                    zIndex: 1, 
+                    pointerEvents: 'auto',
+                    willChange: 'transform',
+                    transform: 'translateZ(0)', // Force GPU acceleration
+                    backfaceVisibility: 'hidden' // Optimize rendering
                   }}
                 />
               </div>
             </div>
 
-            {/* Selected Location Display - Simplified */}
-            {selectedLocationName && (
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-slate-900 leading-relaxed">{selectedLocationName}</div>
-              </div>
-            )}
           </div>
 
-          <DialogFooter className="px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+          <DialogFooter style={{ padding: '12px 16px', borderTop: '1px solid #E9E9EB', backgroundColor: '#F9F9F9' }}>
             <div className="flex items-center justify-between w-full">
-              <Button
-                variant="outline"
+              <button
                 onClick={() => setIsOpen(false)}
-                className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#63748A',
+                  backgroundColor: '#F3F4F6',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F0F6FF';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F3F4F6';
+                }}
               >
                 Cancel
-              </Button>
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="outline"
+              </button>
+              <div className="flex items-center gap-2">
+                <button
                   onClick={() => {
                     setIsOpen(false);
                     // Store sidebar state before closing
@@ -1070,17 +1361,57 @@ const LocationPickerModal: React.FC<{
                     onCloseSidebar?.();
                     setIsPreviewMode(true);
                   }}
-                  className="border-slate-200 text-slate-700 hover:bg-white hover:border-slate-300 font-medium"
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: '#63748A',
+                    backgroundColor: '#F3F4F6',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    cursor: 'pointer',
+                    transition: 'background-color 150ms ease',
+                    letterSpacing: '-0.01em'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#F0F6FF';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = '#F3F4F6';
+                  }}
                 >
                   Adjust Zoom & Preview
-                </Button>
-                <Button
+                </button>
+                <button
                   onClick={handleConfirm}
                   disabled={!selectedCoordinates}
-                  className="bg-slate-900 hover:bg-slate-800 text-white disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm min-w-[140px]"
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    color: '#FFFFFF',
+                    backgroundColor: !selectedCoordinates ? '#F3F4F6' : '#415C85',
+                    border: '1px solid #E9E9EB',
+                    borderRadius: '2px',
+                    cursor: !selectedCoordinates ? 'not-allowed' : 'pointer',
+                    transition: 'background-color 150ms ease',
+                    letterSpacing: '-0.01em',
+                    minWidth: '140px',
+                    opacity: !selectedCoordinates ? 0.5 : 1
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedCoordinates) {
+                      e.currentTarget.style.backgroundColor = '#3A4F73';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedCoordinates) {
+                      e.currentTarget.style.backgroundColor = '#415C85';
+                    }
+                  }}
                 >
                   Confirm Location
-                </Button>
+                </button>
               </div>
             </div>
           </DialogFooter>
@@ -1096,7 +1427,7 @@ const LocationPickerModal: React.FC<{
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[9999]"
             style={{
-              backgroundColor: '#f1f5f9', // slate-100 - ensure full coverage
+              backgroundColor: '#F1F1F1', // Match main background color
               top: 0,
               left: 0,
               right: 0,
@@ -1107,22 +1438,19 @@ const LocationPickerModal: React.FC<{
           >
             {/* Preview Mode Label */}
             <div className="absolute top-6 left-1/2 transform -translate-x-1/2 z-[10003] pointer-events-none">
-              <div className="bg-slate-900 text-white px-4 py-2 rounded-full text-xs font-semibold tracking-wide shadow-lg backdrop-blur-sm bg-opacity-90">
+              <div style={{
+                backgroundColor: '#415C85',
+                color: '#FFFFFF',
+                padding: '6px 12px',
+                borderRadius: '2px',
+                fontSize: '11px',
+                fontWeight: 500,
+                letterSpacing: '-0.01em',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+              }}>
                 Preview Mode
               </div>
             </div>
-
-            {/* Preview Mode Overlay Frame - with proper padding from screen edges */}
-            <div 
-              className="absolute pointer-events-none z-[10002] border-2 border-slate-400/70 border-dashed rounded-lg" 
-              style={{
-                top: '80px', // Padding below Preview Mode label
-                left: '48px', // Increased padding from left edge (after collapsed sidebar)
-                right: '48px', // Increased padding from right edge
-                bottom: '80px', // Enough space above buttons to see the border
-                boxShadow: '0 0 0 1px rgba(148, 163, 184, 0.2)'
-              }}
-            />
 
             {/* Full Screen Map - positioned to cover top white area */}
             <div 
@@ -1141,16 +1469,15 @@ const LocationPickerModal: React.FC<{
             
 
 
-            {/* Buttons - Inside dotted lines, positioned appropriately */}
+            {/* Buttons - Positioned at bottom right */}
             <div 
-              className="absolute z-[10001] flex gap-3"
+              className="absolute z-[10001] flex gap-2"
               style={{
-                bottom: '96px', // Positioned above the bottom border with spacing
-                right: '64px' // Aligned with right border padding
+                bottom: '24px',
+                right: '24px'
               }}
             >
-              <Button
-                variant="outline"
+              <button
                 onClick={() => {
                   setIsPreviewMode(false);
                   // Restore sidebar state
@@ -1159,11 +1486,28 @@ const LocationPickerModal: React.FC<{
                     sidebarStateBeforePreviewRef.current = null;
                   }
                 }}
-                className="px-4 py-2 h-auto bg-white hover:bg-slate-50 border-slate-200 text-slate-700 shadow-sm backdrop-blur-sm font-medium"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#63748A',
+                  backgroundColor: '#F3F4F6',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F0F6FF';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#F3F4F6';
+                }}
               >
                 Back
-              </Button>
-              <Button
+              </button>
+              <button
                 onClick={() => {
                   handleConfirm();
                   // Restore sidebar state after confirming
@@ -1172,10 +1516,28 @@ const LocationPickerModal: React.FC<{
                     sidebarStateBeforePreviewRef.current = null;
                   }
                 }}
-                className="px-4 py-2 h-auto bg-slate-900 hover:bg-slate-800 text-white shadow-sm font-medium min-w-[140px]"
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: '#FFFFFF',
+                  backgroundColor: '#415C85',
+                  border: '1px solid #E9E9EB',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  transition: 'background-color 150ms ease',
+                  letterSpacing: '-0.01em',
+                  minWidth: '140px'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#3A4F73';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = '#415C85';
+                }}
               >
                 Confirm Location
-              </Button>
+              </button>
             </div>
           </motion.div>
         )}
@@ -1187,6 +1549,7 @@ const LocationPickerModal: React.FC<{
 // Background Settings Component
 const BackgroundSettings: React.FC = () => {
   const BACKGROUNDS = [
+    { id: 'default-background', name: 'Default Background', image: '/Default Background.png' },
     { id: 'background1', name: 'Background 1', image: '/background1.png' },
     { id: 'background2', name: 'Background 2', image: '/background2.png' },
     { id: 'background3', name: 'Background 3', image: '/Background3.png' },
@@ -1196,7 +1559,7 @@ const BackgroundSettings: React.FC = () => {
     { id: 'velora-grass', name: 'Velora Grass', image: '/VeloraGrassBackground.png' },
   ];
 
-  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Load saved background on mount - check for custom uploaded background first
@@ -1210,6 +1573,10 @@ const BackgroundSettings: React.FC = () => {
         const saved = localStorage.getItem('dashboardBackground');
         if (saved) {
           setSelectedBackground(saved);
+        } else {
+          // Set default background if nothing is saved
+          setSelectedBackground('default-background');
+          localStorage.setItem('dashboardBackground', 'default-background');
         }
       }
     }
@@ -1254,9 +1621,9 @@ const BackgroundSettings: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Background</h3>
-        <p className="text-sm text-slate-600 leading-relaxed">
+      <div>
+        <h3 className="text-[15px] font-medium text-gray-900">Background</h3>
+        <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
           Choose your dashboard background.
         </p>
       </div>
@@ -1269,7 +1636,7 @@ const BackgroundSettings: React.FC = () => {
             <motion.button
               key={background.id}
               onClick={() => handleBackgroundSelect(background.id)}
-              className={`relative rounded-lg overflow-hidden border-2 transition-all ${
+              className={`relative rounded-none overflow-hidden border-2 transition-all ${
                 isSelected
                   ? 'border-slate-900 shadow-lg ring-2 ring-slate-900 ring-offset-2'
                   : 'border-slate-200 hover:border-slate-300'
@@ -1293,24 +1660,12 @@ const BackgroundSettings: React.FC = () => {
               />
               {/* Overlay for selected state - subtle white overlay */}
               {isSelected && (
-                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-lg" />
+                <div className="absolute inset-0 bg-white/5 border-2 border-slate-900 rounded-none" />
               )}
               {/* Checkmark indicator - white circle with checkmark */}
               {isSelected && (
                 <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center shadow-md border border-slate-200">
-                  <svg
-                    className="w-4 h-4 text-slate-900"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2.5}
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
+                  <Check className="w-4 h-4 text-slate-900" strokeWidth={2.5} />
                 </div>
               )}
             </motion.button>
@@ -1319,7 +1674,7 @@ const BackgroundSettings: React.FC = () => {
         {/* Add Background Button */}
         <motion.button
           onClick={() => fileInputRef.current?.click()}
-          className="relative rounded-lg overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
+          className="relative rounded-none overflow-hidden border-2 border-slate-200 hover:border-slate-300 transition-all flex items-center justify-center"
           style={{
             aspectRatio: '16/9',
             background: 'white',
@@ -1379,12 +1734,12 @@ const SettingsView: React.FC<{
   };
 
   const settingsCategories = [
-    { id: 'background', label: 'Background', icon: Image },
+    { id: 'background', label: 'Background', icon: Contrast },
     { id: 'map-settings', label: 'Map Settings', icon: Map },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'privacy', label: 'Privacy', icon: Shield },
     { id: 'language', label: 'Language & Region', icon: Globe },
-    { id: 'display', label: 'Display', icon: Layout },
+    { id: 'display', label: 'Display', icon: Fullscreen },
   ];
 
   const renderSettingsContent = () => {
@@ -1392,9 +1747,9 @@ const SettingsView: React.FC<{
       case 'map-settings':
         return (
           <div className="space-y-6">
-            <div className="space-y-2">
-              <h3 className="text-lg font-semibold text-slate-900 tracking-tight">Map Settings</h3>
-              <p className="text-sm text-slate-600 leading-relaxed">
+            <div>
+              <h3 className="text-[15px] font-medium text-gray-900">Map Settings</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Configure your map preferences and default settings.
               </p>
             </div>
@@ -1418,8 +1773,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Privacy</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Privacy</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Control your privacy and data settings.
               </p>
             </div>
@@ -1432,8 +1787,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Language & Region</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Language & Region</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Set your language and regional preferences.
               </p>
             </div>
@@ -1446,8 +1801,8 @@ const SettingsView: React.FC<{
         return (
           <div className="space-y-6">
             <div>
-              <h3 className="text-xl font-semibold text-slate-800 mb-2">Display</h3>
-              <p className="text-sm text-slate-600">
+              <h3 className="text-[15px] font-medium text-gray-900">Display</h3>
+              <p className="text-[13px] text-gray-500 mt-1.5 font-normal">
                 Adjust display and layout preferences.
               </p>
             </div>
@@ -1465,36 +1820,40 @@ const SettingsView: React.FC<{
     <div className="w-full h-full flex">
       {/* Settings Sidebar - Sleek Design */}
       <div className="w-64 border-r border-slate-100 bg-white/95 backdrop-blur-sm">
-        <div className="p-6 border-b border-slate-100">
-          <h2 className="text-xl font-semibold text-slate-900 tracking-tight">Settings</h2>
-          <p className="text-sm text-slate-500 mt-1.5 font-normal">Manage your preferences</p>
+        <div className="p-6 border-b border-gray-100">
+          <h2 className="text-[15px] font-medium text-gray-900">Settings</h2>
+          <p className="text-[13px] text-gray-500 mt-1.5 font-normal">Manage your preferences</p>
         </div>
-        <nav className="px-4 py-3 space-y-0.5">
+        <nav className="px-3 py-3 space-y-0.5">
           {settingsCategories.map((category) => {
             const Icon = category.icon;
             const isActive = activeCategory === category.id;
             return (
-              <motion.button
+              <button
                 key={category.id}
                 onClick={() => setActiveCategory(category.id)}
-                className={`relative w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                  isActive
-                    ? 'bg-slate-700 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
+                  isActive 
+                    ? 'bg-white text-gray-900 border-gray-300' 
+                    : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
                 }`}
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.97 }}
-                transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                initial={false}
+                style={{
+                  boxShadow: isActive ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+                  transition: 'background-color 75ms, color 75ms, border-color 75ms',
+                  boxSizing: 'border-box'
+                }}
+                aria-label={category.label}
               >
-                <Icon 
-                  className={`transition-all duration-200 ${
-                    isActive ? 'w-5 h-5' : 'w-4 h-4'
-                  }`}
-                  strokeWidth={isActive ? 2.5 : 2}
-                />
-                <span className="tracking-tight">{category.label}</span>
-              </motion.button>
+                <div className="relative">
+                  <Icon
+                    className="w-[18px] h-[18px] flex-shrink-0"
+                    strokeWidth={1.75}
+                  />
+                </div>
+                <span className="text-[13px] font-normal flex-1 text-left">
+                  {category.label}
+                </span>
+              </button>
             );
           })}
         </nav>
@@ -1543,6 +1902,7 @@ export interface MainContentProps {
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes
   shouldRestoreActiveChat?: boolean; // Signal from sidebar to restore active chat
   onChatVisibilityChange?: (isVisible: boolean) => void; // Callback when chat panel visibility changes
+  onOpenChatHistory?: () => void; // Callback to open chat history panel
 }
 export const MainContent = ({
   className,
@@ -1565,10 +1925,11 @@ export const MainContent = ({
   onMapVisibilityChange,
   onActiveChatChange,
   shouldRestoreActiveChat = false,
-  onChatVisibilityChange
+  onChatVisibilityChange,
+  onOpenChatHistory
 }: MainContentProps) => {
   const { addActivity } = useSystem();
-  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing } = useFilingSidebar();
+  const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
   // Track previous states to detect closing transitions for instant updates
   const prevFilingSidebarOpenRef = React.useRef(isFilingSidebarOpen);
   const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
@@ -1629,11 +1990,19 @@ export const MainContent = ({
   const isTransitioningFromChatRef = React.useRef<boolean>(false);
   // Track if we're transitioning TO chat (to prevent dashboard flash)
   const isTransitioningToChatRef = React.useRef<boolean>(false);
+  // Preserve chat state when navigating away so it can be restored when returning
+  const preservedChatStateRef = React.useRef<{
+    messages: any[];
+    query: string;
+    mapSearchQuery: string;
+    hasPerformedSearch: boolean;
+  } | null>(null);
   // Freeze layout state during transitions to prevent recalculation between renders
   const frozenLayoutStateRef = React.useRef<{
     shouldHideProjects: boolean;
     isVerySmall: boolean;
     isSidebarCollapsed: boolean;
+    viewportSize: { width: number; height: number };
   } | null>(null);
   
   // Hide QuickStartBar when switching away from map view
@@ -1858,12 +2227,15 @@ export const MainContent = ({
   
   // Track if we automatically collapsed the sidebar (so we can restore it later)
   const autoCollapsedRef = React.useRef<boolean>(false);
+  // Track when home transition just completed to prevent immediate layout shifts
+  const homeTransitionJustCompletedRef = React.useRef<boolean>(false);
   
   // Automatically collapse sidebar when projects are hidden (to maximize space for search bar)
   // And automatically restore it when projects become visible again
   React.useEffect(() => {
     // Skip auto-collapse during transitions to prevent layout shifts
-    if (isTransitioningFromChatRef.current || isTransitioningFromChat || homeClicked) {
+    // Also skip for a short period after home transition completes to prevent layout shift
+    if (isTransitioningFromChatRef.current || isTransitioningFromChat || homeClicked || homeTransitionJustCompletedRef.current) {
       return;
     }
     
@@ -1905,12 +2277,20 @@ export const MainContent = ({
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
   // PreviewContext handles queuing expandedCardViewDoc when chat becomes hidden
+  // CRITICAL: Use the same logic as SideChatPanel's isVisible prop to ensure consistency
   React.useEffect(() => {
     const chatPanelIsVisible = isMapVisible && hasPerformedSearch;
+    console.log('📋 [MAIN_CONTENT] Updating chat panel visibility:', { 
+      isMapVisible, 
+      hasPerformedSearch, 
+      chatPanelIsVisible,
+      hasExpandedDoc: !!expandedCardViewDoc,
+      expandedDocId: expandedCardViewDoc?.docId
+    });
     setIsChatPanelVisible(chatPanelIsVisible);
     // Also notify parent (DashboardLayout) so Sidebar can show active state
     onChatVisibilityChange?.(chatPanelIsVisible);
-  }, [isMapVisible, hasPerformedSearch, setIsChatPanelVisible, onChatVisibilityChange]);
+  }, [isMapVisible, hasPerformedSearch, setIsChatPanelVisible, onChatVisibilityChange, expandedCardViewDoc]);
   
   // Callback from SideChatPanel to track active chat state
   const handleActiveChatChange = React.useCallback((isActive: boolean) => {
@@ -1924,21 +2304,46 @@ export const MainContent = ({
     if (shouldRestoreActiveChat) {
       console.log('🔄 MainContent: Restoring active chat from sidebar signal - opening in fullscreen');
       // Mark that we're transitioning to chat (prevents dashboard flash)
+      // Set this IMMEDIATELY before any state updates to prevent render race conditions
       isTransitioningToChatRef.current = true;
       // Ensure map is visible
       if (!isMapVisible) {
         setIsMapVisible(true);
       }
-      // Show the chat panel (SideChatPanel becomes visible when hasPerformedSearch is true)
-      setHasPerformedSearch(true);
+      
+      // RESTORE preserved chat state if it exists
+      if (preservedChatStateRef.current) {
+        console.log('🔄 MainContent: Restoring preserved chat state', {
+          messagesCount: preservedChatStateRef.current.messages.length,
+          query: preservedChatStateRef.current.mapSearchQuery,
+          hasPerformedSearch: preservedChatStateRef.current.hasPerformedSearch
+        });
+        // Restore messages first
+        setChatMessages(preservedChatStateRef.current.messages);
+        setChatQuery(preservedChatStateRef.current.query);
+        // Restore search state - this will make the panel visible
+        setHasPerformedSearch(preservedChatStateRef.current.hasPerformedSearch);
+        // Restore query last - this will trigger query processing in SideChatPanel when it becomes visible
+        // Use a small delay to ensure SideChatPanel is visible first
+        setTimeout(() => {
+          setMapSearchQuery(preservedChatStateRef.current!.mapSearchQuery);
+          // Clear preserved state after restoring
+          preservedChatStateRef.current = null;
+        }, 50);
+      } else {
+        // Show the chat panel (SideChatPanel becomes visible when hasPerformedSearch is true)
+        setHasPerformedSearch(true);
+      }
+      
       // Clear the bubble since we're restoring the full chat
       setIsChatBubbleVisible(false);
       // Open chat in fullscreen mode (same as when opening from dashboard)
       setShouldExpandChat(true);
-      // Clear the transition flag after state updates are processed
+      // Clear the transition flag after state updates are processed and chat is visible
+      // Increased timeout to ensure all state updates have propagated and chat is rendered
       setTimeout(() => {
         isTransitioningToChatRef.current = false;
-      }, 100);
+      }, 200);
     }
   }, [shouldRestoreActiveChat, isMapVisible]);
   
@@ -2674,7 +3079,25 @@ export const MainContent = ({
       if (wasInChat) {
         isTransitioningFromChatRef.current = true;
         setIsTransitioningFromChat(true);
-        // Reset chat state immediately to prevent layout shifts
+        
+        // PRESERVE chat state before clearing UI state
+        // This allows queries to continue processing and state to be restored when returning
+        if (chatMessages.length > 0 || mapSearchQuery) {
+          preservedChatStateRef.current = {
+            messages: [...chatMessages],
+            query: chatQuery,
+            mapSearchQuery: mapSearchQuery,
+            hasPerformedSearch: hasPerformedSearch
+          };
+          console.log('💾 MainContent: Preserving chat state when navigating away', {
+            messagesCount: chatMessages.length,
+            query: mapSearchQuery,
+            hasPerformedSearch
+          });
+        }
+        
+        // Reset chat UI state immediately to prevent layout shifts
+        // But preserve the actual data in preservedChatStateRef
         setIsMapVisible(false);
         setMapSearchQuery("");
         setHasPerformedSearch(false);
@@ -2684,8 +3107,14 @@ export const MainContent = ({
           setIsTransitioningFromChat(false);
         }, 100);
       }
-      setChatQuery("");
-      setChatMessages([]);
+      // Don't clear chatQuery and chatMessages if we preserved state
+      // Only clear if we're not preserving state (e.g., starting a completely new chat)
+      // Note: preservedChatStateRef.current is set above if wasInChat is true
+      if (!wasInChat) {
+        setChatQuery("");
+        setChatMessages([]);
+      }
+      // If wasInChat is true, we've already preserved the state above, so don't clear
       // Let the parent handle chat mode changes
       onChatModeChange?.(false);
     }
@@ -2693,9 +3122,11 @@ export const MainContent = ({
     // BUT: Only hide map if we're actually navigating FROM a different view
     // Don't hide map if we're already on search view (e.g., just toggling sidebar)
     // This prevents the map from being hidden when just toggling the sidebar
-    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home') {
+    // CRITICAL: NEVER reset map visibility when shouldRestoreActiveChat is true (chat button clicked)
+    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat) {
       // Only hide map if we're actually navigating FROM a different view TO search/home
       // This prevents hiding the map when just toggling sidebar on map view
+      // BUT: Skip this if we're restoring active chat (chat button was clicked)
       const wasInChat = hasPerformedSearch;
       
       // CRITICAL: Set transition flag BEFORE any state changes to prevent animations
@@ -2709,11 +3140,26 @@ export const MainContent = ({
         }, 100);
       }
       
+      // PRESERVE chat state before clearing UI state (same as above)
+      if (hasPerformedSearch && (chatMessages.length > 0 || mapSearchQuery)) {
+        preservedChatStateRef.current = {
+          messages: [...chatMessages],
+          query: chatQuery,
+          mapSearchQuery: mapSearchQuery,
+          hasPerformedSearch: hasPerformedSearch
+        };
+        console.log('💾 MainContent: Preserving chat state when navigating to home', {
+          messagesCount: chatMessages.length,
+          query: mapSearchQuery,
+          hasPerformedSearch
+        });
+      }
+      
       setIsMapVisible(false);
       setMapSearchQuery("");
       setHasPerformedSearch(false);
     }
-  }, [currentView, onChatModeChange, hasPerformedSearch]);
+  }, [currentView, onChatModeChange, hasPerformedSearch, shouldRestoreActiveChat, chatMessages, chatQuery, mapSearchQuery]);
 
   // Track previous hasPerformedSearch to detect transitions
   const prevHasPerformedSearchForHomeRef = React.useRef<boolean>(hasPerformedSearch);
@@ -2735,7 +3181,8 @@ export const MainContent = ({
       frozenLayoutStateRef.current = {
         shouldHideProjects: shouldHideProjectsForSearchBar,
         isVerySmall: isVerySmall,
-        isSidebarCollapsed: isSidebarCollapsed
+        isSidebarCollapsed: isSidebarCollapsed,
+        viewportSize: { width: viewportSize.width, height: viewportSize.height }
       };
       
       // Set transition flag BEFORE any state changes to prevent double render
@@ -2745,14 +3192,16 @@ export const MainContent = ({
         setTimeout(() => {
           isTransitioningFromChatRef.current = false;
           setIsTransitioningFromChat(false);
-          // Clear frozen layout state after transition completes
-          frozenLayoutStateRef.current = null;
+          // Clear frozen layout state after transition completes (with extra buffer for CSS transitions)
+          setTimeout(() => {
+            frozenLayoutStateRef.current = null;
+          }, 100); // Small delay to ensure CSS transitions complete
         }, 700);
       } else {
         // Even if not transitioning from chat, clear frozen state after a short delay
         setTimeout(() => {
           frozenLayoutStateRef.current = null;
-        }, 100);
+        }, 400); // Longer delay to ensure layout is stable
       }
       
       setChatQuery("");
@@ -2764,6 +3213,14 @@ export const MainContent = ({
       onChatModeChange?.(false);
       // Close document preview when home is clicked
       closeExpandedCardView();
+      
+      // Mark that home transition just completed to prevent immediate layout shifts
+      homeTransitionJustCompletedRef.current = true;
+      // Clear the flag after a delay to allow auto-collapse effect to run normally
+      setTimeout(() => {
+        homeTransitionJustCompletedRef.current = false;
+      }, 500); // 500ms delay to ensure layout is stable
+      
       onHomeResetComplete?.(); // Notify parent that reset is complete
       
       // Update ref for next time
@@ -2821,10 +3278,11 @@ export const MainContent = ({
       case 'home':
       case 'search':
         // CRITICAL: When clicking chat button, shouldRestoreActiveChat is true OR we're in chat mode with map visible
+        // OR we're transitioning to chat (prevents dashboard flash during state updates)
         // We should NEVER render dashboard in this case - always show fullscreen chat view
         // The map and SideChatPanel are rendered separately and will show when isMapVisible && hasPerformedSearch
         // This prevents any possibility of dashboard appearing when chat is clicked
-        if (shouldRestoreActiveChat || (isInChatMode && isMapVisible)) {
+        if (shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && isMapVisible)) {
           // Don't render dashboard - map/chat interface will be rendered instead
           return null;
         }
@@ -2866,8 +3324,12 @@ export const MainContent = ({
                   // Check if search bar should be at bottom (same logic as below)
                   const VERY_SMALL_WIDTH_THRESHOLD = 600;
                   const VERY_SMALL_HEIGHT_THRESHOLD = 500;
-                  const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
-                                             viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
+                  
+                  // Use frozen viewport size during transitions to prevent recalculation
+                  const effectiveViewportSize = useFrozen ? frozenState.viewportSize : viewportSize;
+                  
+                  const isVerySmallViewport = effectiveViewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
+                                             effectiveViewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
                   const shouldPositionAtBottom = isVerySmallViewport && !mapVisible;
                   
                   // Use frozen values during transitions, otherwise use current values
@@ -2883,7 +3345,7 @@ export const MainContent = ({
                   
                   // For normal dashboard view, center everything as a group
                   // Calculate available space: viewport height minus search bar space
-                  const availableHeight = viewportSize.height - searchBarHeight;
+                  const availableHeight = effectiveViewportSize.height - searchBarHeight;
                   
                   // When only logo and search bar are visible (projects hidden), center logo in the middle of available space
                   const isLogoOnlyView = effectiveShouldHideProjects && !effectiveIsVerySmall;
@@ -2915,10 +3377,10 @@ export const MainContent = ({
                         flexDirection: 'column',
                         alignItems: 'center',
                         position: 'relative',
-                        transform: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : ((!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'translateY(-20px)' : 'none'), // Lock transform during transitions to prevent visual shifts, use frozen values when transitioning
+                        transform: (!effectiveIsVerySmall && !effectiveShouldHideProjects) ? 'translateY(-20px)' : 'none', // Apply transform consistently - don't toggle based on transition state
                         zIndex: 2,
                         overflow: 'visible', // Ensure QuickStartBar is not clipped
-                        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable transitions when transitioning from chat
+                        transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'transform 0.3s ease-out', // Smooth transition for transform, but disable during navigation transitions
                         WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
                         MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
                         msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined,
@@ -2965,8 +3427,15 @@ export const MainContent = ({
                         // This ensures the search bar and placeholder text are always visible
                         const VERY_SMALL_WIDTH_THRESHOLD = 600; // When to switch to bottom positioning
                         const VERY_SMALL_HEIGHT_THRESHOLD = 500; // When to switch to bottom positioning
-                        const isVerySmallViewport = viewportSize.width < VERY_SMALL_WIDTH_THRESHOLD || 
-                                                   viewportSize.height < VERY_SMALL_HEIGHT_THRESHOLD;
+                        
+                        // Use frozen viewport size during transitions to prevent recalculation
+                        const frozenState = frozenLayoutStateRef.current;
+                        const useFrozen = isTransitioning && frozenState !== null;
+                        const effectiveViewportSizeForSearch = useFrozen ? frozenState.viewportSize : viewportSize;
+                        const effectiveSidebarCollapsed = useFrozen ? frozenState.isSidebarCollapsed : isSidebarCollapsed;
+                        
+                        const isVerySmallViewport = effectiveViewportSizeForSearch.width < VERY_SMALL_WIDTH_THRESHOLD || 
+                                                   effectiveViewportSizeForSearch.height < VERY_SMALL_HEIGHT_THRESHOLD;
                         
                         // Calculate padding dynamically to ensure equal spacing and prevent cutoff
                         const MIN_PADDING = 16; // 1rem minimum padding
@@ -2975,8 +3444,8 @@ export const MainContent = ({
                         
                         // Calculate available width (account for sidebar)
                         const availableWidth = isMapVisible 
-                          ? viewportSize.width 
-                          : viewportSize.width - (isSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
+                          ? effectiveViewportSizeForSearch.width 
+                          : effectiveViewportSizeForSearch.width - (effectiveSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
                         
                         // Calculate padding: ensure search bar fits with at least minimum padding
                         // If viewport is too small, use minimum padding
@@ -3025,11 +3494,11 @@ export const MainContent = ({
                             backgroundColor: 'transparent', // Fully transparent - background shows through
                             background: 'transparent', // Fully transparent - background shows through
                             backdropFilter: 'none', // No backdrop filter to ensure full transparency
-                            transition: isTransitioningFromChat ? 'none' : undefined, // Disable all transitions when transitioning from chat
-                            WebkitTransition: isTransitioningFromChat ? 'none' : undefined,
-                            MozTransition: isTransitioningFromChat ? 'none' : undefined,
-                            msTransition: isTransitioningFromChat ? 'none' : undefined,
-                            OTransition: isTransitioningFromChat ? 'none' : undefined
+                            transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out', // Smooth transitions, but disable during navigation
+                            WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
+                            MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
+                            msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
+                            OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out'
                           }}>
                 <SearchBar 
                   ref={searchBarRefCallback}
@@ -3149,6 +3618,7 @@ export const MainContent = ({
                             >
                               <RecentProjectsSection 
                                 onNewProjectClick={() => {
+                                  closeSidebar();
                                   setShowNewPropertyWorkflow(true);
                                 }}
                                 onOpenProperty={(address, coordinates, propertyId) => {
@@ -3398,15 +3868,104 @@ export const MainContent = ({
     mapSearchBarRef.current = instance;
   }, []);
 
+  // Global dragend and drop handlers to ensure dragging state is reset
+  // This catches cases where drag ends outside the window, drop doesn't fire, or drop happens in FilingSidebar
+  React.useEffect(() => {
+    const handleGlobalDragEnd = () => {
+      // Always reset dragging state when drag ends, regardless of current state
+      setIsDragging(false);
+      setDragCounter(0);
+    };
+
+    // Global drop handler - catches drops even if they're handled by FilingSidebar
+    // This ensures the overlay disappears when a drop is registered anywhere
+    const handleGlobalDrop = () => {
+      // Always reset dragging state when drop occurs, regardless of where
+      setIsDragging(false);
+      setDragCounter(0);
+    };
+
+    // Also handle mouseup as a fallback (dragend might not fire in some cases)
+    const handleMouseUp = () => {
+      // Only reset if we're currently dragging
+      if (isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+
+    // Use capture phase to catch events early, before stopPropagation can prevent them
+    document.addEventListener('dragend', handleGlobalDragEnd, true);
+    window.addEventListener('dragend', handleGlobalDragEnd, true);
+    document.addEventListener('drop', handleGlobalDrop, true);
+    window.addEventListener('drop', handleGlobalDrop, true);
+    document.addEventListener('mouseup', handleMouseUp, true);
+    window.addEventListener('mouseup', handleMouseUp, true);
+    
+    return () => {
+      document.removeEventListener('dragend', handleGlobalDragEnd, true);
+      window.removeEventListener('dragend', handleGlobalDragEnd, true);
+      document.removeEventListener('drop', handleGlobalDrop, true);
+      window.removeEventListener('drop', handleGlobalDrop, true);
+      document.removeEventListener('mouseup', handleMouseUp, true);
+      window.removeEventListener('mouseup', handleMouseUp, true);
+    };
+  }, [isDragging]);
+  
+  // Additional safety: timeout fallback to reset dragging state if it gets stuck
+  React.useEffect(() => {
+    if (isDragging) {
+      const timeout = setTimeout(() => {
+        // If still dragging after 10 seconds, force reset (safety mechanism)
+        setIsDragging(false);
+        setDragCounter(0);
+      }, 10000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [isDragging]);
+  
+  // Reset dragging state when window loses focus or becomes hidden
+  // This catches cases where drag ends when user switches tabs or windows
+  React.useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+    
+    const handleBlur = () => {
+      if (isDragging) {
+        setIsDragging(false);
+        setDragCounter(0);
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [isDragging]);
+
   // Drag and drop handlers
   const handleDragEnter = React.useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    // Check if dragging over FilingSidebar - let it handle its own drag events
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Don't interfere with FilingSidebar's drag handling
+    }
     
     // Only process file drags
     if (!e.dataTransfer.types.includes('Files')) {
       return;
     }
+    
+    e.preventDefault();
+    e.stopPropagation();
     
     setDragCounter(prev => {
       const newCount = prev + 1;
@@ -3428,19 +3987,33 @@ export const MainContent = ({
     const x = e.clientX;
     const y = e.clientY;
     
+    // Check if drag has left the viewport entirely (outside browser window)
+    const isOutsideViewport = x < 0 || x > window.innerWidth || y < 0 || y > window.innerHeight;
+    
     // Only decrement if we're actually leaving the container bounds
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-    setDragCounter(prev => {
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom || isOutsideViewport) {
+      setDragCounter(prev => {
         const newCount = Math.max(0, prev - 1);
-      if (newCount === 0) {
-        setIsDragging(false);
-      }
-      return newCount;
-    });
+        if (newCount === 0 || isOutsideViewport) {
+          // If outside viewport, immediately reset
+          setIsDragging(false);
+          setDragCounter(0);
+        } else if (newCount === 0) {
+          setIsDragging(false);
+        }
+        return newCount;
+      });
     }
   }, []);
 
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
+    // Check if dragging over FilingSidebar - allow events to propagate
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      // Don't stop propagation - let FilingSidebar handle it
+      return;
+    }
+    
     e.preventDefault();
     e.stopPropagation();
     
@@ -3453,6 +4026,16 @@ export const MainContent = ({
   }, []);
 
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    // Always reset dragging state when drop occurs, regardless of where it's dropped
+    setIsDragging(false);
+    setDragCounter(0);
+    
+    // Check if drop is on FilingSidebar - let it handle the drop
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Let FilingSidebar handle the drop
+    }
+    
     // Check if drop is on property card - if so, let property card handle it
     const propertyPanel = (e.target as HTMLElement).closest('[data-property-panel]');
     if (propertyPanel) {
@@ -3461,8 +4044,6 @@ export const MainContent = ({
     
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
-    setDragCounter(0);
 
     // Check if this is a property document drag
     const propertyDocumentData = e.dataTransfer.getData('application/json');
@@ -3656,7 +4237,7 @@ export const MainContent = ({
       backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
       position: 'relative', 
       zIndex: 1,
-      transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'margin-left 0.2s ease-out' // Disable transition when transitioning from chat
+      transition: 'none' // Instant transition to prevent gaps when sidebar opens/closes
     }}
     onDragEnter={handleDragEnter}
     onDragOver={handleDragOver}
@@ -3893,11 +4474,12 @@ export const MainContent = ({
       )}
 
       {/* SideChatPanel - Render outside content container to ensure visibility */}
-      {(currentView === 'search' || currentView === 'home') && (
-        <SideChatPanel
-          ref={sideChatPanelRef}
-          isVisible={isMapVisible && hasPerformedSearch}
-          query={mapSearchQuery}
+      {/* CRITICAL: Always render SideChatPanel (even when not visible) to allow queries to continue processing in background */}
+      {/* Only hide it visually when not in search/home view or when not visible */}
+      <SideChatPanel
+        ref={sideChatPanelRef}
+        isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch}
+        query={mapSearchQuery}
           citationContext={citationContext}
           isSidebarCollapsed={isSidebarCollapsed}
           sidebarWidth={(() => {
@@ -3970,6 +4552,15 @@ export const MainContent = ({
             // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
           }}
           onMessagesUpdate={(chatMessages) => {
+            // Update main chat messages to preserve state even when navigating away
+            // This ensures queries can continue processing and update messages in the background
+            setChatMessages(chatMessages);
+            
+            // Also update preserved state if we have it, so it stays current
+            if (preservedChatStateRef.current) {
+              preservedChatStateRef.current.messages = [...chatMessages];
+            }
+            
             // Update bubble messages in real-time when chat is minimized
             if (isChatBubbleVisible) {
               setMinimizedChatMessages(chatMessages);
@@ -4007,6 +4598,7 @@ export const MainContent = ({
             setChatPanelWidth(width);
           }}
           onActiveChatChange={handleActiveChatChange}
+          onOpenChatHistory={onOpenChatHistory}
           onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
             console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
             
@@ -4041,7 +4633,6 @@ export const MainContent = ({
             }
           }}
         />
-      )}
 
       {/* Floating Chat Bubble */}
       {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
@@ -4142,6 +4733,7 @@ export const MainContent = ({
       {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Standalone ExpandedCardView - for citations */}
+      {/* CRITICAL: Only render when chat is visible, but expandedCardViewDoc can be set silently in background */}
       {expandedCardViewDoc && isChatPanelVisible && (
         <StandaloneExpandedCardView
           docId={expandedCardViewDoc.docId}

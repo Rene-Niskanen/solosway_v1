@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed, Copy } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed, Copy, History } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -1768,6 +1768,7 @@ interface SideChatPanelProps {
   isQuickStartBarVisible?: boolean; // Whether QuickStartBar is currently visible
   isMapVisible?: boolean; // Whether map is currently visible (side-by-side with chat)
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes (loading query)
+  onOpenChatHistory?: () => void; // Callback to open chat history panel
 }
 
 export interface SideChatPanelRef {
@@ -1797,7 +1798,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onQuickStartToggle,
   isQuickStartBarVisible = false, // Default to false
   isMapVisible = false, // Default to false
-  onActiveChatChange
+  onActiveChatChange,
+  onOpenChatHistory
 }, ref) => {
   // Main navigation state:
   // - collapsed: icon-only sidebar (treat as "closed" for the purposes of showing open controls)
@@ -1835,8 +1837,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     setIsAgentOpening,
     setAgentTaskActive,
     stopAgentTask,
-    setMapNavigating
+    setMapNavigating,
+    setIsChatPanelVisible // CRITICAL: Update chat panel visibility directly from SideChatPanel
   } = usePreview();
+  
+  // CRITICAL: Sync SideChatPanel's actual visibility to PreviewContext
+  // This ensures document preview knows when chat is actually visible (not just calculated)
+  React.useEffect(() => {
+    console.log('📋 [SIDE_CHAT_PANEL] Visibility changed:', { isVisible });
+    setIsChatPanelVisible(isVisible);
+  }, [isVisible, setIsChatPanelVisible]);
 
   // Helper function to clean text of CHUNK markers and EVIDENCE_FEEDBACK tags
   // This prevents artifacts from showing during streaming
@@ -2129,6 +2139,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isResizing, setIsResizing] = React.useState<boolean>(false);
   // Track if this is the first citation clicked in the current chat session
   const isFirstCitationRef = React.useRef<boolean>(true);
+  
+  // CRITICAL: When chat becomes visible with a document already open (silent background opening),
+  // trigger 50/50 split so document appears immediately with correct layout
+  // This handles the case where agent action opened document while chat was hidden
+  const prevChatVisibleForDocRef = React.useRef<boolean>(isVisible);
+  React.useEffect(() => {
+    const chatJustBecameVisible = !prevChatVisibleForDocRef.current && isVisible;
+    prevChatVisibleForDocRef.current = isVisible;
+    
+    if (chatJustBecameVisible && expandedCardViewDoc) {
+      // Chat just became visible and document is already open (was opened silently in background)
+      // Trigger 50/50 split so document appears with correct layout
+      console.log('📂 [SIDE_CHAT_PANEL] Chat visible with silently-opened document - triggering 50/50 split:', {
+        docId: expandedCardViewDoc.docId,
+        filename: expandedCardViewDoc.filename,
+        hasHighlight: !!expandedCardViewDoc.highlight
+      });
+      setIsExpanded(true);
+      setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
+      lockedWidthRef.current = '50vw';
+      
+      // Notify parent of width change
+      if (onChatWidthChange) {
+        const newWidth = window.innerWidth * 0.5;
+        onChatWidthChange(newWidth);
+      }
+      
+      // Mark that we've seen a citation (so subsequent citations don't trigger this again)
+      isFirstCitationRef.current = false;
+    } else if (chatJustBecameVisible && !expandedCardViewDoc) {
+      console.log('📂 [SIDE_CHAT_PANEL] Chat became visible but no document in state - document may not have been opened silently');
+    }
+  }, [isVisible, expandedCardViewDoc, onChatWidthChange, setIsExpanded]);
   
   // Use refs to store resize state for performance (avoid re-renders during drag)
   const resizeStateRef = React.useRef<{
@@ -2877,10 +2920,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Only process if:
     // 1. Query is provided and not empty
     // 2. Query is different from last processed query
-    // 3. Panel is visible
-    // 4. Query hasn't already been added to chat messages
-    // 5. We're not already processing a query
-    if (query && query.trim() && query !== lastProcessedQueryRef.current && isVisible && !isProcessingQueryRef.current) {
+    // 3. Query hasn't already been added to chat messages
+    // 4. We're not already processing a query
+    // NOTE: Removed isVisible check - queries should process in background even when panel is hidden
+    // This allows queries to continue processing when user navigates away
+    if (query && query.trim() && query !== lastProcessedQueryRef.current && !isProcessingQueryRef.current) {
       const queryText = query.trim();
       
       // Check if this query is already in chat messages
@@ -3339,6 +3383,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
+                console.log('✅ SideChatPanel: onComplete received:', { 
+                  hasData: !!data, 
+                  hasSummary: !!data?.summary, 
+                  summaryLength: data?.summary?.length || 0,
+                  summaryPreview: data?.summary?.substring(0, 100) || 'N/A',
+                  displayedTextLength: displayedText.length,
+                  displayedTextPreview: displayedText.substring(0, 100) || 'N/A',
+                  accumulatedTextLength: accumulatedText.length,
+                  accumulatedTextPreview: accumulatedText.substring(0, 100) || 'N/A',
+                  tokenBufferLength: tokenBuffer.length,
+                  pendingBufferLength: pendingBuffer.length,
+                  dataKeys: data ? Object.keys(data) : [],
+                  fullData: data // Include full data for debugging
+                });
+                
                 // Extract any remaining complete blocks
                 extractCompleteBlocks();
                 
@@ -3357,20 +3416,54 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // Use displayedText as source of truth - it was pre-completed during streaming
                 // This ensures text doesn't change when streaming completes (prevents "click" effect)
                 // Fallback to data.summary only if displayedText is empty
-                  const finalText = cleanResponseText(displayedText || data.summary || accumulatedText || "I found some information for you.");
-                
-                // Use citations from complete event, fallback to accumulated citations
-                // Ensure all citation keys are strings (backend may send mixed types)
-                const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
-                  if (!cits || typeof cits !== 'object') return {};
-                  const normalized: Record<string, CitationDataType> = {};
-                  for (const [key, value] of Object.entries(cits)) {
-                    normalized[String(key)] = value as CitationDataType;
+                  // CRITICAL: Ensure we always have text to display
+                  const rawText = displayedText || data?.summary || accumulatedText || "";
+                  const finalText = rawText.trim() 
+                    ? cleanResponseText(rawText) 
+                    : (data?.summary?.trim() || "I couldn't find any documents matching your query. Please try rephrasing or check if documents are available.");
+                  
+                  // Log if text is empty to help debug
+                  if (!finalText || finalText.trim().length === 0) {
+                    console.error('❌ SideChatPanel: finalText is empty!', {
+                      displayedTextLength: displayedText.length,
+                      dataSummaryLength: data?.summary?.length || 0,
+                      accumulatedTextLength: accumulatedText.length,
+                      rawTextLength: rawText.length,
+                      finalTextLength: finalText.length
+                    });
                   }
-                  return normalized;
-                };
-                
-                const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                  
+                  // Use citations from complete event, fallback to accumulated citations
+                  // Ensure all citation keys are strings (backend may send mixed types)
+                  const normalizeCitations = (cits: any): Record<string, CitationDataType> => {
+                    if (!cits || typeof cits !== 'object') return {};
+                    const normalized: Record<string, CitationDataType> = {};
+                    for (const [key, value] of Object.entries(cits)) {
+                      normalized[String(key)] = value as CitationDataType;
+                    }
+                    return normalized;
+                  };
+                  
+                  const finalCitations = normalizeCitations(data.citations || accumulatedCitations || {});
+                  
+                  console.log('✅ SideChatPanel: finalizeText called:', {
+                    finalTextLength: finalText.length,
+                    finalTextPreview: finalText.substring(0, 200) || 'N/A',
+                    usedDisplayedText: !!displayedText,
+                    usedDataSummary: !displayedText && !!data?.summary,
+                    usedAccumulatedText: !displayedText && !data?.summary && !!accumulatedText,
+                    citationsCount: Object.keys(finalCitations).length,
+                    loadingResponseId: loadingResponseId
+                  });
+                  
+                  // Log the message that will be set
+                  console.log('✅ SideChatPanel: Setting response message:', {
+                    id: loadingResponseId,
+                    textLength: finalText.length,
+                    textPreview: finalText.substring(0, 200),
+                    isLoading: false,
+                    citationsCount: Object.keys(finalCitations).length
+                  });
                 
                 // Hide bot status overlay when streaming completes
                 // BUT keep it visible in agent mode if navigation task or document opening is in progress
@@ -3384,10 +3477,41 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // Set the complete formatted text
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                  console.log('✅ SideChatPanel: setChatMessages - before update:', {
+                    prevCount: prev.length,
+                    existingMessageId: existingMessage?.id,
+                    existingMessageText: existingMessage?.text?.substring(0, 50) || 'N/A',
+                    loadingResponseId: loadingResponseId,
+                    allMessageIds: prev.map(m => m.id),
+                    finalTextLength: finalText.length,
+                    finalTextPreview: finalText.substring(0, 100)
+                  });
+                  
+                  // CRITICAL: If message not found, create it (shouldn't happen but safety check)
+                  if (!existingMessage) {
+                    console.warn('⚠️ SideChatPanel: Loading message not found, creating new response message');
+                    const newResponseMessage: ChatMessage = {
+                      id: loadingResponseId,
+                      type: 'response',
+                      text: finalText || 'Response received',
+                      isLoading: false,
+                      reasoningSteps: [],
+                      citations: finalCitations
+                    };
+                    const updated = [...prev, newResponseMessage];
+                    persistedChatMessagesRef.current = updated;
+                    console.log('✅ SideChatPanel: Created new response message:', {
+                      id: newResponseMessage.id,
+                      textLength: newResponseMessage.text.length,
+                      textPreview: newResponseMessage.text.substring(0, 100)
+                    });
+                    return updated;
+                  }
+                  
                 const responseMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: finalText,
+                  text: finalText || 'Response received', // Ensure text is never empty
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
                     citations: finalCitations // Use final citations (normalized to string keys)
@@ -3398,6 +3522,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       ? responseMessage
                       : msg
                   );
+                  
+                  // Verify the update worked
+                  const updatedMessage = updated.find(msg => msg.id === loadingResponseId);
+                  if (!updatedMessage || updatedMessage.text !== responseMessage.text) {
+                    console.error('❌ SideChatPanel: Message update failed!', {
+                      found: !!updatedMessage,
+                      textMatch: updatedMessage?.text === responseMessage.text,
+                      expectedText: responseMessage.text.substring(0, 50),
+                      actualText: updatedMessage?.text?.substring(0, 50)
+                    });
+                  }
+                  
+                  console.log('✅ SideChatPanel: setChatMessages - after update:', {
+                    updatedCount: updated.length,
+                    responseMessageId: responseMessage.id,
+                    responseMessageText: responseMessage.text.substring(0, 100),
+                    responseMessageIsLoading: responseMessage.isLoading,
+                    foundInUpdated: updatedMessage?.text?.substring(0, 50) || 'NOT FOUND',
+                    verified: updatedMessage?.text === responseMessage.text
+                  });
+                  
                   persistedChatMessagesRef.current = updated;
                   return updated;
                 });
@@ -4495,9 +4640,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         docId: docId,
         filename: citationData.original_filename,
         hasHighlight: !!highlightData,
-        highlight: highlightData
+        highlight: highlightData,
+        fromAgentAction: fromAgentAction
       });
-      openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined);
+      // CRITICAL: Pass isAgentTriggered flag so agent actions bypass chat panel visibility check
+      openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined, fromAgentAction);
       
       console.log('✅ Document opened in viewer:', {
         filename: citationData.original_filename,
@@ -4620,6 +4767,54 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           setChatMessages(restoredMessages);
           persistedChatMessagesRef.current = restoredMessages;
           restoredMessageIdsRef.current = new Set(restoredMessages.map(m => m.id));
+          
+          // CRITICAL: Automatically open document preview if restored messages have citations
+          // Find the last response message with citations and open the first citation's document
+          for (let i = restoredMessages.length - 1; i >= 0; i--) {
+            const msg = restoredMessages[i];
+            if (msg.type === 'response' && msg.citations && Object.keys(msg.citations).length > 0) {
+              // Found a response with citations - get the first citation
+              const firstCitationKey = Object.keys(msg.citations)[0];
+              const citationData = msg.citations[firstCitationKey];
+              
+              if (citationData && citationData.doc_id) {
+                console.log('📂 [RESTORE] Auto-opening document preview from restored chat citation:', {
+                  docId: citationData.doc_id,
+                  filename: citationData.original_filename,
+                  hasBbox: !!citationData.bbox
+                });
+                
+                // Automatically open the document preview (as if agent-triggered, so it opens even if chat visibility check fails)
+                // Use a small delay to ensure chat panel visibility is set correctly first
+                setTimeout(() => {
+                  const page = citationData.page || citationData.page_number || citationData.bbox?.page || 1;
+                  const highlightData = citationData.bbox ? {
+                    fileId: citationData.doc_id,
+                    bbox: {
+                      ...citationData.bbox,
+                      page: page
+                    },
+                    page: page,
+                    doc_id: citationData.doc_id,
+                    block_content: (citationData as any).block_content || (citationData as any).cited_text || '',
+                    original_filename: citationData.original_filename
+                  } : undefined;
+                  
+                  // Open as agent-triggered so it bypasses chat visibility check
+                  openExpandedCardView(
+                    citationData.doc_id,
+                    citationData.original_filename || 'document.pdf',
+                    highlightData,
+                    true // isAgentTriggered = true
+                  );
+                }, 100); // Small delay to ensure state is ready
+                
+                // Only open the first citation found (most recent response)
+                break;
+              }
+            }
+          }
+          
           return;
         }
       }
@@ -4627,9 +4822,58 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // If we have persisted messages, restore them (no animation)
       // BUT only if we're not starting a fresh chat (check if query is empty and no persisted messages)
       if (persistedChatMessagesRef.current.length > 0 && (!query || !query.trim())) {
-        setChatMessages(persistedChatMessagesRef.current);
+        const persistedMessages = persistedChatMessagesRef.current;
+        setChatMessages(persistedMessages);
         // Track which messages were restored so they don't animate
-        restoredMessageIdsRef.current = new Set(persistedChatMessagesRef.current.map(m => m.id));
+        restoredMessageIdsRef.current = new Set(persistedMessages.map(m => m.id));
+        
+        // CRITICAL: Automatically open document preview if persisted messages have citations
+        // Find the last response message with citations and open the first citation's document
+        for (let i = persistedMessages.length - 1; i >= 0; i--) {
+          const msg = persistedMessages[i];
+          if (msg.type === 'response' && msg.citations && Object.keys(msg.citations).length > 0) {
+            // Found a response with citations - get the first citation
+            const firstCitationKey = Object.keys(msg.citations)[0];
+            const citationData = msg.citations[firstCitationKey];
+            
+            if (citationData && citationData.doc_id) {
+              console.log('📂 [RESTORE] Auto-opening document preview from persisted messages citation:', {
+                docId: citationData.doc_id,
+                filename: citationData.original_filename,
+                hasBbox: !!citationData.bbox
+              });
+              
+              // Automatically open the document preview (as if agent-triggered)
+              // Use a small delay to ensure chat panel visibility is set correctly first
+              setTimeout(() => {
+                const page = citationData.page || citationData.page_number || citationData.bbox?.page || 1;
+                const highlightData = citationData.bbox ? {
+                  fileId: citationData.doc_id,
+                  bbox: {
+                    ...citationData.bbox,
+                    page: page
+                  },
+                  page: page,
+                  doc_id: citationData.doc_id,
+                  block_content: (citationData as any).block_content || (citationData as any).cited_text || '',
+                  original_filename: citationData.original_filename
+                } : undefined;
+                
+                // Open as agent-triggered so it bypasses chat visibility check
+                openExpandedCardView(
+                  citationData.doc_id,
+                  citationData.original_filename || 'document.pdf',
+                  highlightData,
+                  true // isAgentTriggered = true
+                );
+              }, 100); // Small delay to ensure state is ready
+              
+              // Only open the first citation found (most recent response)
+              break;
+            }
+          }
+        }
+        
         return;
       }
       
@@ -6917,17 +7161,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         <motion.div
           key="side-chat-panel"
           ref={panelRef}
-          initial={shouldExpand ? { opacity: 0 } : { x: -400, opacity: 0 }} // No slide animation if opening in fullscreen
+          initial={{ opacity: 0 }} // No slide animation - instant appearance
           animate={{ 
-            x: 0, 
             opacity: 1
           }}
-          exit={{ x: 0, opacity: 0, transition: { duration: 0 } }} // No slide animation on exit - instant disappear
-          transition={shouldExpand ? { duration: 0 } : { 
-            duration: 0.2,
-            ease: [0.4, 0, 0.2, 1]
-          }} // Normal enter animation
-          layout={!shouldExpand} // Disable layout animation when opening in fullscreen
+          exit={{ opacity: 0, transition: { duration: 0 } }} // No slide animation on exit - instant disappear
+          transition={{ duration: 0 }} // No animation - instant appearance
+          layout={false} // Disable layout animation
           className="fixed top-0 bottom-0 z-30"
           style={{
             left: (() => {
@@ -7024,16 +7264,26 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 <div className="flex items-center gap-2">
                   <button
                     onClick={onSidebarToggle}
-                    className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
+                    className={`flex items-center ${inputContainerWidth >= 550 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
                     title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
                     type="button"
                     style={{
-                      padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
+                      padding: inputContainerWidth < 550 ? '4px' : '4px 8px',
                       height: '24px',
                       minHeight: '24px',
-                      backgroundColor: '#FFFFFF',
+                      backgroundColor: isMainSidebarOpen ? '#FFFFFF' : '#F5F5F5',
                       opacity: 1,
                       backdropFilter: 'none'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isMainSidebarOpen) {
+                        e.currentTarget.style.backgroundColor = '#E8E8E8';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isMainSidebarOpen) {
+                        e.currentTarget.style.backgroundColor = '#F5F5F5';
+                      }
                     }}
                   >
                     {isMainSidebarOpen ? (
@@ -7044,7 +7294,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     ) : (
                       <PanelLeftOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
                     )}
-                    {inputContainerWidth >= 450 && (
+                    {inputContainerWidth >= 550 && (
                       <span className="text-xs font-medium">
                         {isMainSidebarOpen ? "Close" : "Sidebar"}
                       </span>
@@ -7061,11 +7311,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                         onClick={toggleFilingSidebar}
-                        className={`flex items-center ${inputContainerWidth >= 450 ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center w-8 h-8 rounded-md'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-colors duration-200`}
+                        className={`flex items-center ${inputContainerWidth >= 550 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-colors duration-200`}
                         title="Toggle Files sidebar"
                         type="button"
                         style={{
-                          padding: inputContainerWidth < 450 ? '4px' : '4px 8px',
+                          padding: inputContainerWidth < 550 ? '4px' : '4px 8px',
                           height: '24px',
                           minHeight: '24px',
                           backgroundColor: '#FFFFFF',
@@ -7074,12 +7324,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         }}
                       >
                         <FolderOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        {inputContainerWidth >= 450 && (
+                        {inputContainerWidth >= 550 && (
                           <span className="text-xs font-medium">Files</span>
                         )}
                       </motion.button>
                   </AnimatePresence>
                   )}
+
+                  {/* Chat History Button */}
+                  <button
+                    onClick={onOpenChatHistory}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
+                    title="Chat History"
+                    type="button"
+                    style={{
+                      padding: actualPanelWidth < 600 ? '4px' : '4px 8px',
+                      height: '24px',
+                      minHeight: '24px',
+                      backgroundColor: '#FFFFFF',
+                      opacity: 1,
+                      backdropFilter: 'none'
+                    }}
+                  >
+                    <History
+                      className="w-3.5 h-3.5"
+                      strokeWidth={1.5}
+                    />
+                    {actualPanelWidth >= 600 && (
+                      <span className="text-xs font-medium">
+                        Chat History
+                      </span>
+                    )}
+                  </button>
                 </div>
                 <div className="flex items-center space-x-2">
                   <motion.button
@@ -7129,19 +7405,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     }}
                     whileHover={{ scale: 1.01 }}
                     whileTap={{ scale: 0.99 }}
-                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-md transition-all duration-200 group"
-                    style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} border border-slate-200/60 hover:border-slate-300/80 rounded-none transition-all duration-200 group`}
+                    style={{
+                      padding: actualPanelWidth < 600 ? '4px' : '4px 8px',
+                      height: '24px',
+                      minHeight: '24px',
+                      backgroundColor: '#FFFFFF',
+                      opacity: 1,
+                      backdropFilter: 'none'
+                    }}
                     title="New chat"
                   >
                     <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                    <span className="text-slate-600 text-xs">
-                      New chat
-                    </span>
+                    {actualPanelWidth >= 600 && (
+                      <span className="text-slate-600 text-xs">
+                        New chat
+                      </span>
+                    )}
                   </motion.button>
                   
                   {/* Reasoning trace toggle */}
                   <div 
-                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 rounded-md"
+                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 rounded-none"
                     style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
                     title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
                   >
@@ -7150,7 +7435,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       type="button"
                       onClick={() => setShowReasoningTrace(!showReasoningTrace)}
                       className={`relative w-7 h-4 rounded-full transition-colors ${
-                        showReasoningTrace ? 'bg-emerald-500' : 'bg-slate-300'
+                        showReasoningTrace ? 'bg-[#F59E0B]' : 'bg-slate-300'
                       }`}
                     >
                       <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
@@ -7226,9 +7511,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onChatWidthChange(newWidth);
                       }
                     }}
-                    className="flex items-center justify-center p-1.5 border rounded-md transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 focus:outline-none outline-none"
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1' : 'justify-center p-1.5'} border rounded-none transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 focus:outline-none outline-none`}
                     style={{
                       marginLeft: '4px',
+                      height: '24px',
+                      minHeight: '24px',
                       backgroundColor: '#FFFFFF',
                       opacity: 1,
                       backdropFilter: 'none'
@@ -7272,10 +7559,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       } else {
                         currentWidth = 450;
                       }
-                      return currentWidth >= 600 ? (
-                      <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
-                    ) : (
-                      <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                      const isLarge = currentWidth >= 600;
+                      return (
+                        <>
+                          {isLarge ? (
+                            <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                          ) : (
+                            <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                          )}
+                          {actualPanelWidth >= 600 && (
+                            <span className="text-xs font-medium text-slate-600">
+                              {isLarge ? 'Minimise' : 'fullscreen'}
+                            </span>
+                          )}
+                        </>
                       );
                     })()}
                   </button>
