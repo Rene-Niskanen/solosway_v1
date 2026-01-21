@@ -3,7 +3,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { LogOut, User, ArrowRight, ChevronRight, Settings, MessageCircle } from "lucide-react";
+import { LogOut, User, ArrowRight, ChevronRight } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { backendApi } from "@/services/backendApi";
 
@@ -154,7 +154,7 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 10, scale: 0.95 }}
                 transition={{ duration: 0.2 }}
-                className="fixed w-64 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-[100002]"
+                className="fixed w-56 bg-white rounded-lg shadow-lg border border-gray-200 overflow-hidden z-[100002]"
                 style={{ 
                   zIndex: 100002,
                   left: `${dropdownPosition.left}px`,
@@ -167,57 +167,32 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                   setIsOpen(false);
                   onNavigate?.('profile');
                 }}
-                className="w-full px-4 py-3 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left"
+                className="w-full px-2.5 py-2 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left"
               >
-                <div className="flex items-center gap-3">
-                  <Avatar className="w-6 h-6 flex-shrink-0 border border-gray-300/50">
+                <div className="flex items-center gap-2">
+                  <Avatar className="w-5 h-5 flex-shrink-0 border border-gray-300/50">
                     <AvatarImage 
                       src={userData?.profile_image || userData?.avatar_url} 
                       alt={userName}
                       className="object-cover"
                     />
                     <AvatarFallback className="bg-gray-200 flex items-center justify-center">
-                      <span className="text-gray-600 text-[10px] font-medium">
+                      <span className="text-gray-600 text-[9px] font-medium">
                         {userName ? userName.charAt(0).toUpperCase() : 'U'}
                       </span>
                     </AvatarFallback>
                   </Avatar>
-                  <span className="text-sm text-gray-700 truncate">
+                  <span className="text-[12px] text-gray-700 truncate">
                     {userData?.email || userHandle}
                   </span>
                 </div>
               </button>
 
               {/* Menu Items - Simple list */}
-              <div className="py-1">
-
-                {/* Settings */}
-                <button
-                  onClick={() => {
-                    setIsOpen(false);
-                    onNavigate?.('settings');
-                  }}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left"
-                >
-                  <Settings className="w-5 h-5 text-gray-600" />
-                  <span className="text-sm text-gray-900">Settings</span>
-                </button>
-
-                {/* Send Feedback */}
-                <button
-                  onClick={() => {
-                    setIsOpen(false);
-                    // Handle send feedback action
-                    console.log('Send feedback clicked');
-                  }}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left"
-                >
-                  <MessageCircle className="w-5 h-5 text-gray-600" />
-                  <span className="text-sm text-gray-900">Send feedback</span>
-                </button>
+              <div className="py-0.5">
 
                 {/* Divider */}
-                <div className="border-t border-gray-200 my-1" />
+                <div className="border-t border-gray-200 my-0.5" />
 
                 {/* Sign Out */}
                 <button
@@ -225,10 +200,10 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
                     setIsOpen(false);
                     onSignOut?.();
                   }}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left"
+                  className="w-full px-2.5 py-1.5 flex items-center gap-2 hover:bg-gray-50 transition-colors text-left"
                 >
-                  <LogOut className="w-5 h-5 text-gray-600" />
-                  <span className="text-sm text-gray-900">Sign out</span>
+                  <LogOut className="w-3.5 h-3.5 text-gray-600" />
+                  <span className="text-[12px] text-gray-900">Sign out</span>
                 </button>
               </div>
             </motion.div>

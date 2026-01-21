@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Plus, Folder, FolderOpen, CloudCheck, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2 } from 'lucide-react';
+import { X, Search, Plus, Folder, FolderOpen, FileText, File as FileIcon, ChevronRight, MoreVertical, CheckSquare, Square, Upload, MousePointer2, Trash2, ChevronDown, MapPin } from 'lucide-react';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { backendApi } from '../services/backendApi';
 import { usePreview } from '../contexts/PreviewContext';
 import { useBackendApi } from './BackendApi';
 import { uploadEvents } from './UploadProgressBar';
+import { usePropertyAccess } from '../hooks/usePropertyAccess';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +45,91 @@ interface FilingSidebarProps {
   sidebarWidth?: number;
   isSmallSidebarMode?: boolean;
 }
+
+// Component for displaying pending file with image preview
+const PendingFileItem: React.FC<{
+  file: File;
+  index: number;
+  onRemove: (index: number) => void;
+  getFileIcon: (doc: Document) => React.ReactNode;
+}> = ({ file, index, onRemove, getFileIcon }) => {
+  const isImage = file.type.startsWith('image/');
+  const [imageUrl, setImageUrl] = React.useState<string | null>(null);
+  
+  // Create blob URL for images
+  React.useEffect(() => {
+    if (isImage && file) {
+      const url = URL.createObjectURL(file);
+      setImageUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    }
+  }, [isImage, file]);
+  
+  // Create a mock document object for getFileIcon
+  const mockDoc: Document = {
+    id: `pending-${index}`,
+    original_filename: file.name,
+    file_type: file.type
+  };
+  
+  return (
+    <div
+      className="flex items-center gap-2.5 px-3 py-2 bg-white border border-gray-200/60 hover:border-gray-300/80 rounded-lg transition-all duration-200 group"
+    >
+      {/* Image preview or file icon */}
+      <div className="flex-shrink-0 flex items-center justify-center">
+        {isImage && imageUrl ? (
+          <div
+            style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '4px',
+              overflow: 'hidden',
+              backgroundColor: '#F3F4F6',
+              border: '1px solid #E5E7EB',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}
+          >
+            <img
+              src={imageUrl}
+              alt={file.name}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                display: 'block'
+              }}
+            />
+          </div>
+        ) : (
+          <div className="w-3.5 h-3.5 flex items-center justify-center">
+            {getFileIcon(mockDoc)}
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+          {file.name}
+        </div>
+      </div>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(index);
+        }}
+        className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+        title="Remove file"
+      >
+        <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+      </button>
+    </div>
+  );
+};
 
 export const FilingSidebar: React.FC<FilingSidebarProps> = ({ 
   sidebarWidth,
@@ -84,6 +170,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [selectedPropertyForUpload, setSelectedPropertyForUpload] = useState<{ id: string; address: string; type: 'property' | 'folder' } | null>(null);
+  const [propertySearchQuery, setPropertySearchQuery] = useState<string>('');
+  
+  // Property access control - only check when uploading to a property
+  const propertyIdForAccess = selectedPropertyForUpload?.type === 'property' ? selectedPropertyForUpload.id : null;
+  const { canUpload: canUploadToProperty } = usePropertyAccess(propertyIdForAccess);
+  const [availableProperties, setAvailableProperties] = useState<any[]>([]);
+  const [showPropertySelector, setShowPropertySelector] = useState<boolean>(false);
   const [duplicateDialog, setDuplicateDialog] = useState<{
     isOpen: boolean;
     filename: string;
@@ -100,24 +196,29 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     isExactDuplicate: false
   });
 
-  // Delete confirmation dialog state
+  // Delete confirmation pop-up state
   const [deleteConfirmDialog, setDeleteConfirmDialog] = useState<{
     isOpen: boolean;
     itemId: string | null;
     isFolder: boolean;
     itemName: string;
+    position: { x: number; y: number } | null;
   }>({
     isOpen: false,
     itemId: null,
     isFolder: false,
     itemName: '',
+    position: null,
   });
   const newMenuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const deleteConfirmRef = useRef<HTMLDivElement>(null);
   const panelElementRef = useRef<HTMLElement | null>(null);
   const resizeStateRef = useRef<{ startPos: { x: number }; startWidth: number } | null>(null);
   const rafIdRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const propertySelectorRef = useRef<HTMLDivElement>(null);
   
   // Document cache: key is "viewMode_propertyId" or "viewMode_global"
   const documentCacheRef = useRef<Map<string, Document[]>>(new Map());
@@ -126,11 +227,34 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
 
   const { addPreviewFile, setPreviewFiles, setIsPreviewOpen } = usePreview();
 
+  // Fetch properties and folders when selector opens
+  useEffect(() => {
+    if (showPropertySelector && availableProperties.length === 0) {
+      const loadProperties = async () => {
+        try {
+          const response = await backendApi.getAllPropertyHubs();
+          if (response.success && response.data) {
+            const properties = Array.isArray(response.data) 
+              ? response.data 
+              : (response.data as any).properties || [];
+            setAvailableProperties(properties);
+          }
+        } catch (error) {
+          console.error('Failed to load properties:', error);
+        }
+      };
+      loadProperties();
+    }
+  }, [showPropertySelector]);
+
   // Fetch documents when sidebar opens or view changes
   useEffect(() => {
     if (!isOpen) return;
 
     const fetchData = async () => {
+      // Initialize folders as empty - will be loaded after documents
+      setFolders([]);
+      
       // Generate cache key based on view mode and property ID
       const cacheKey = viewMode === 'property' && selectedPropertyId
         ? `property_${selectedPropertyId}`
@@ -142,15 +266,30 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       const now = Date.now();
       const isCacheValid = cachedDocs && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION;
       
+      // Helper function to load folders
+      const loadFolders = () => {
+        if (viewMode === 'property' && !currentFolderId) {
+          setFolders([]);
+        } else {
+          const storageKey = viewMode === 'property' && selectedPropertyId
+            ? `folders_${selectedPropertyId}_${currentFolderId || 'root'}`
+            : `folders_global_${currentFolderId || 'root'}`;
+          const savedFolders = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          setFolders(savedFolders);
+        }
+      };
+
       // Use cached data immediately if available
       if (isCacheValid && cachedDocs) {
         console.log('📦 FilingSidebar: Using cached documents:', cachedDocs.length, 'documents');
         setDocuments(cachedDocs);
+        loadFolders(); // Load folders with cached data
+        
         setIsLoading(false);
         setError(null);
         
         // Still fetch fresh data in background to update cache
-        // (but don't show loading state)
+        // (but don't show loading state or reload folders to avoid double loading)
       } else {
         // No valid cache, show loading and fetch
         setIsLoading(true);
@@ -198,11 +337,21 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             documentCacheRef.current.set(cacheKey, docs);
             cacheTimestampRef.current.set(cacheKey, Date.now());
             
-            setDocuments(docs);
+            // Only update documents and folders if we didn't use cached data
+            // (to avoid double loading when cache was used)
+            if (!isCacheValid) {
+              setDocuments(docs);
+              loadFolders();
+            }
+            // If cache was used, just update cache silently - don't reload UI
           } else {
-            console.warn('📄 FilingSidebar: Property documents request failed:', response.error || 'Unknown error');
-            setError(response.error || 'Failed to load property documents');
-            setDocuments([]);
+            // Only set error if we didn't use cached data
+            if (!isCacheValid) {
+              console.warn('📄 FilingSidebar: Property documents request failed:', response.error || 'Unknown error');
+              setError(response.error || 'Failed to load property documents');
+              setDocuments([]);
+              setFolders([]);
+            }
           }
         } else {
           // Fetch all documents globally
@@ -249,29 +398,28 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               documentCacheRef.current.set(cacheKey, docs);
               cacheTimestampRef.current.set(cacheKey, Date.now());
               
-              setDocuments(docs);
+              // Only update documents and folders if we didn't use cached data
+              // (to avoid double loading when cache was used)
+              if (!isCacheValid) {
+                setDocuments(docs);
+                loadFolders();
+              }
+              // If cache was used, just update cache silently - don't reload UI
             } else {
-              console.warn('📄 FilingSidebar: Request failed:', response.error);
-              setError(response.error || 'Failed to load documents');
-              setDocuments([]);
+              // Only set error if we didn't use cached data
+              if (!isCacheValid) {
+                console.warn('📄 FilingSidebar: Request failed:', response.error);
+                setError(response.error || 'Failed to load documents');
+                setDocuments([]);
+                setFolders([]);
+              }
             }
           } catch (err) {
             console.error('📄 FilingSidebar: Exception fetching all documents:', err);
             setError('Failed to load documents');
             setDocuments([]);
+            setFolders([]);
           }
-        }
-        // Load folders from localStorage
-        // In property view, only load folders if we're inside a folder (not at root)
-        // Folders should not appear in property view at root level
-        if (viewMode === 'property' && !currentFolderId) {
-          setFolders([]);
-        } else {
-          const storageKey = viewMode === 'property' && selectedPropertyId
-            ? `folders_${selectedPropertyId}_${currentFolderId || 'root'}`
-            : `folders_global_${currentFolderId || 'root'}`;
-          const savedFolders = JSON.parse(localStorage.getItem(storageKey) || '[]');
-          setFolders(savedFolders);
         }
       } catch (err) {
         console.error('Error fetching documents:', err);
@@ -439,6 +587,22 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       };
     }
   }, [showNewMenu]);
+
+  // Close property selector when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (propertySelectorRef.current && !propertySelectorRef.current.contains(event.target as Node)) {
+        setShowPropertySelector(false);
+      }
+    };
+
+    if (showPropertySelector) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showPropertySelector]);
 
   // Filter documents based on search query and current folder
   const filteredItems = useMemo(() => {
@@ -704,12 +868,16 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         setOpenContextMenuId(null);
         setContextMenuPosition(null);
       }
+      // Also close delete confirmation pop-up when clicking outside
+      if (deleteConfirmRef.current && !deleteConfirmRef.current.contains(e.target as Node)) {
+        setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
+      }
     };
-    if (openContextMenuId) {
+    if (openContextMenuId || deleteConfirmDialog.isOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [openContextMenuId]);
+  }, [openContextMenuId, deleteConfirmDialog.isOpen]);
 
   // Handle rename
   const handleRename = (itemId: string, currentName: string, isFolder: boolean) => {
@@ -852,17 +1020,33 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   };
 
   // Handle delete confirmation
-  const handleDeleteClick = (itemId: string, isFolder: boolean) => {
+  const handleDeleteClick = (itemId: string, isFolder: boolean, event?: React.MouseEvent) => {
     const item = isFolder 
       ? folders.find(f => f.id === itemId)
       : documents.find(d => d.id === itemId);
     const itemName = isFolder ? (item as Folder)?.name : (item as Document)?.original_filename;
+    
+    // Calculate position near the context menu or delete button
+    let position = { x: 0, y: 0 };
+    if (contextMenuPosition) {
+      // Use context menu position if available (preferred)
+      position = contextMenuPosition;
+    } else if (event && panelElementRef.current) {
+      // Calculate from button click position
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const sidebarRect = panelElementRef.current.getBoundingClientRect();
+      position = {
+        x: rect.right - sidebarRect.left - 200, // Position to the left of the button
+        y: rect.top - sidebarRect.top + 20
+      };
+    }
     
     setDeleteConfirmDialog({
       isOpen: true,
       itemId,
       isFolder,
       itemName: itemName || 'item',
+      position,
     });
     setOpenContextMenuId(null);
     setContextMenuPosition(null);
@@ -873,7 +1057,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
     const { itemId, isFolder } = deleteConfirmDialog;
     if (!itemId) return;
     
-    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
+    setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
     
     if (isFolder) {
       // Delete folder and all its children from state
@@ -949,6 +1133,44 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       }
     } else {
       // Delete document - call API
+      // Check if document belongs to a property and verify access
+      const documentToDelete = documents.find(d => d.id === itemId);
+      if (documentToDelete?.property_id) {
+        // Document belongs to a property - check access via API
+        try {
+          const accessResponse = await backendApi.getPropertyAccess(documentToDelete.property_id);
+          if (accessResponse.success && accessResponse.data) {
+            const accessList = Array.isArray(accessResponse.data) 
+              ? accessResponse.data 
+              : accessResponse.data.access_list || [];
+            
+            // Get current user email
+            const authResult = await backendApi.checkAuth();
+            const userEmail = authResult.success && authResult.data?.user?.email 
+              ? authResult.data.user.email.toLowerCase() 
+              : null;
+            
+            if (userEmail) {
+              const userAccess = accessList.find(
+                (access: any) => 
+                  access.user_email.toLowerCase() === userEmail &&
+                  access.status === 'accepted'
+              );
+              
+              // If user has access but is only a viewer, deny delete
+              if (userAccess && userAccess.access_level === 'viewer') {
+                alert('You do not have permission to delete files. Only editors and owners can delete files from this property.');
+                return;
+              }
+              // If user is not in access list, they might be the owner (same business) - allow
+            }
+          }
+        } catch (error) {
+          console.error('Error checking property access:', error);
+          // On error, allow deletion (fallback to prevent blocking legitimate users)
+        }
+      }
+      
       try {
         const response = await backendApi.deleteDocument(itemId);
         if (response.success) {
@@ -968,6 +1190,66 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
         alert('Failed to delete document. Please try again.');
       }
     }
+  };
+
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only clear drag state if we're actually leaving the drop zone
+    const relatedTarget = e.relatedTarget as HTMLElement;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    // Add files to pending state instead of uploading immediately
+    setPendingFiles(prev => [...prev, ...droppedFiles]);
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(e.target.files || []);
+    // Add files to pending state instead of uploading immediately
+    setPendingFiles(prev => [...prev, ...selectedFiles]);
+    // Reset input to allow re-selecting same file
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleUploadAreaClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  // Handle uploading all pending files
+  const handleUploadPendingFiles = async () => {
+    if (pendingFiles.length === 0) return;
+    
+    // Process each pending file
+    for (const file of pendingFiles) {
+      await handleFileUpload(file);
+    }
+    
+    // Clear pending files and property selection after processing
+    setPendingFiles([]);
+    setSelectedPropertyForUpload(null);
+  };
+
+  // Remove a file from pending list
+  const handleRemovePendingFile = (index: number) => {
+    setPendingFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   // Handle file upload with duplicate checking
@@ -1008,14 +1290,55 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       setIsLoading(true);
       setError(null);
       
+      // Check access level if uploading to a property
+      if (selectedPropertyForUpload?.type === 'property' && !canUploadToProperty()) {
+        setError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+        setIsLoading(false);
+        return;
+      }
+      
       // Dispatch upload start event for global progress bar
       uploadEvents.start(file.name);
       
-      const result = await backendApi.uploadDocument(file, (progress) => {
-        console.log(`Upload progress: ${progress}%`);
-        // Dispatch progress event for global progress bar
-        uploadEvents.progress(progress, file.name);
-      });
+      let result;
+      if (selectedPropertyForUpload) {
+        if (selectedPropertyForUpload.type === 'property') {
+          // Use property upload endpoint when property is selected
+          result = await backendApi.uploadPropertyDocumentViaProxy(
+            file,
+            { property_id: selectedPropertyForUpload.id },
+            (progress) => {
+              console.log(`Upload progress: ${progress}%`);
+              // Dispatch progress event for global progress bar
+              uploadEvents.progress(progress, file.name);
+            }
+          );
+        } else if (selectedPropertyForUpload.type === 'folder') {
+          // Use general upload endpoint when folder is selected
+          result = await backendApi.uploadDocument(file, (progress) => {
+            console.log(`Upload progress: ${progress}%`);
+            // Dispatch progress event for global progress bar
+            uploadEvents.progress(progress, file.name);
+          });
+          
+          // After upload, move document to folder
+          if (result.success && result.data?.document_id) {
+            try {
+              await backendApi.moveDocument(result.data.document_id, selectedPropertyForUpload.id);
+            } catch (error) {
+              console.error('Failed to move document to folder:', error);
+              // Don't fail the upload if move fails
+            }
+          }
+        }
+      } else {
+        // Use general upload endpoint
+        result = await backendApi.uploadDocument(file, (progress) => {
+          console.log(`Upload progress: ${progress}%`);
+          // Dispatch progress event for global progress bar
+          uploadEvents.progress(progress, file.name);
+        });
+      }
       
       if (result.success) {
         // Dispatch upload complete event
@@ -1170,6 +1493,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
   return (
     <div
         ref={(el) => { if (el) panelElementRef.current = el; }}
+        data-filing-sidebar="true"
         className="fixed top-0 h-full flex flex-col z-[10000]"
         style={{
           // Match sidebar grey background for seamless look - always solid
@@ -1207,18 +1531,274 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
       >
         {/* Header - Unified Design */}
         <div className="px-4 pt-4 pb-3 border-b border-gray-100">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <CloudCheck className="w-4 h-4 text-gray-500" strokeWidth={1.75} />
-              <h2 className="text-[13px] font-semibold text-gray-900">Documents</h2>
-            </div>
+          {/* Close Button */}
+          <div className="flex justify-end mb-3">
             <button
               onClick={closeSidebar}
-              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
+              className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
               aria-label="Close sidebar"
             >
               <X className="w-4 h-4" strokeWidth={1.5} />
             </button>
+          </div>
+
+          {/* Drag and Drop Upload Area */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={handleUploadAreaClick}
+            className={`relative cursor-pointer transition-all duration-200 ${
+              isDragOver ? 'opacity-90' : ''
+            } ${pendingFiles.length > 0 ? 'mb-0' : 'mb-4'}`}
+          >
+            <div
+              className={`w-full bg-white p-8 flex flex-col items-center justify-center transition-all duration-200 ${
+                isDragOver
+                  ? 'bg-gray-50'
+                  : 'hover:bg-gray-50/50'
+              } ${pendingFiles.length > 0 ? 'border-b border-gray-200 rounded-none' : 'rounded-none'}`}
+              style={{ minHeight: '160px' }}
+            >
+              {/* Document Icon */}
+              <div className="mb-4 flex items-center justify-center">
+                <img 
+                  src="/FILEUPLOAD.png" 
+                  alt="Upload files" 
+                  className="w-56 h-auto"
+                />
+              </div>
+
+              {/* Instructional Text */}
+              <p className="text-sm text-gray-600 text-center mb-1">
+                Drop files here or{' '}
+                <button
+                  type="button"
+                  className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
+                  style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleUploadAreaClick();
+                  }}
+                >
+                  browse
+                </button>
+              </p>
+
+              {/* Supported Formats */}
+              <p className="text-xs text-gray-400 mt-2">PDF, Word, Excel, CSV</p>
+            </div>
+
+            {/* Hidden File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".xlsx,.xls,.csv,.pdf,.doc,.docx"
+              onChange={handleFileInputChange}
+              className="hidden"
+            />
+          </div>
+
+          {/* Pending Files Section */}
+          {pendingFiles.length > 0 && (
+            <div className="mb-4">
+              <div>
+                <div className="bg-gray-50 border border-gray-200 border-t-0 rounded-b-lg p-2 space-y-1">
+                  {pendingFiles.map((file, index) => (
+                    <PendingFileItem
+                      key={`${file.name}-${index}`}
+                      file={file}
+                      index={index}
+                      onRemove={handleRemovePendingFile}
+                      getFileIcon={getFileIcon}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="mt-3">
+                <div className="flex items-center gap-2 relative" ref={propertySelectorRef}>
+                  {/* Property Selector */}
+                  <div className="relative flex-1 min-w-0">
+                    <button
+                      onClick={() => setShowPropertySelector(!showPropertySelector)}
+                      className="w-full px-3 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-900 text-xs font-medium rounded transition-colors flex items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <MapPin className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                        <span className="truncate">
+                          {selectedPropertyForUpload 
+                            ? selectedPropertyForUpload.address 
+                            : 'Link to property or folder'}
+                        </span>
+                      </div>
+                      <ChevronDown className={`w-3.5 h-3.5 text-gray-500 flex-shrink-0 transition-transform ${showPropertySelector ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                  
+                  {/* Property Dropdown - Full Width */}
+                  <AnimatePresence>
+                    {showPropertySelector && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-sm shadow-lg max-h-64 overflow-hidden"
+                      >
+                          {/* Search Input */}
+                          <div className="p-2 border-b border-gray-200">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                              <input
+                                type="text"
+                                placeholder="Search properties..."
+                                value={propertySearchQuery}
+                                onChange={(e) => setPropertySearchQuery(e.target.value)}
+                                className="w-full pl-8 pr-2 py-1.5 text-xs border border-gray-200 rounded-none focus:outline-none focus:ring-1 focus:ring-gray-300"
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+                          </div>
+                          
+                          {/* Property and Folder List */}
+                          <div className="max-h-48 overflow-y-auto">
+                            {/* Properties */}
+                            {(() => {
+                              const filteredProperties = availableProperties.filter(p => {
+                                const address = p?.address || p?.formatted_address || p?.property?.formatted_address || p?.property_details?.property_address || '';
+                                return address.toLowerCase().includes(propertySearchQuery.toLowerCase());
+                              });
+                              const filteredFolders = folders.filter(f => 
+                                f.name.toLowerCase().includes(propertySearchQuery.toLowerCase())
+                              );
+                              
+                              return (
+                                <>
+                                  {filteredProperties.map((property) => {
+                                // Extract property ID and address - handle nested structure
+                                const propertyId = property?.property?.id || property?.id;
+                                const address = property?.address || property?.formatted_address || property?.property?.formatted_address || property?.property_details?.property_address || 'Unknown address';
+                                
+                                // Count documents for this property
+                                const docCount = documents.filter(doc => {
+                                  const propId = documentToPropertyHubMap.get(doc.id) || doc.property_id;
+                                  return propId === propertyId;
+                                }).length;
+                                
+                                return (
+                                  <button
+                                    key={`property-${propertyId}`}
+                                    onClick={() => {
+                                      setSelectedPropertyForUpload({
+                                        id: propertyId,
+                                        address: address,
+                                        type: 'property'
+                                      });
+                                      setShowPropertySelector(false);
+                                      setPropertySearchQuery('');
+                                    }}
+                                    className={`w-full px-2.5 py-2.5 text-left text-xs hover:bg-gray-50 transition-colors border-b border-gray-100 ${
+                                      selectedPropertyForUpload?.id === propertyId && selectedPropertyForUpload?.type === 'property' ? 'bg-blue-50' : ''
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2.5">
+                                      <img 
+                                        src="/houseicon.png" 
+                                        alt="Property" 
+                                        className="w-3.5 h-3.5 object-contain flex-shrink-0"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                          {address}
+                                        </div>
+                                      </div>
+                                      <span className="text-xs text-gray-500 flex-shrink-0 font-medium">
+                                        {docCount}
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            
+                              {/* Folders */}
+                              {filteredFolders.map((folder) => (
+                                <button
+                                  key={`folder-${folder.id}`}
+                                  onClick={() => {
+                                    setSelectedPropertyForUpload({
+                                      id: folder.id,
+                                      address: folder.name,
+                                      type: 'folder'
+                                    });
+                                    setShowPropertySelector(false);
+                                    setPropertySearchQuery('');
+                                  }}
+                                  className={`w-full px-3 py-2 text-left text-xs hover:bg-gray-50 transition-colors border-b border-gray-100 ${
+                                    selectedPropertyForUpload?.id === folder.id && selectedPropertyForUpload?.type === 'folder' ? 'bg-blue-50' : ''
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2.5">
+                                    <Folder className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                                    <span className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                      {folder.name}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                                </>
+                              );
+                            })()}
+                            
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  
+                  {/* Upload Button */}
+                  <button
+                    onClick={handleUploadPendingFiles}
+                    disabled={isLoading}
+                    className={`px-4 py-2 text-xs font-medium rounded-none transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 flex-shrink-0 relative ${
+                      pendingFiles.length > 0
+                        ? 'border border-green-300 text-green-800'
+                        : 'bg-white hover:bg-gray-50/50 border border-gray-300 text-gray-900'
+                    }`}
+                  >
+                    {pendingFiles.length > 0 && (
+                      <span 
+                        className="absolute inset-0 bg-green-50"
+                        style={{ 
+                          animation: 'openai-pulse 3s ease-in-out infinite',
+                          zIndex: 0
+                        }}
+                      />
+                    )}
+                    <style>{`
+                      @keyframes openai-pulse {
+                        0%, 100% {
+                          background-color: rgb(240, 253, 244);
+                          opacity: 1;
+                        }
+                        50% {
+                          background-color: rgb(220, 252, 231);
+                          opacity: 0.8;
+                        }
+                      }
+                    `}</style>
+                    <span className="relative z-10 flex items-center gap-1.5">
+                      <Upload className="w-3.5 h-3.5" />
+                      Upload
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Divider between upload area and file listing */}
+          <div className="my-8">
+            <div className="h-px bg-gray-200"></div>
           </div>
 
           {/* Search Bar */}
@@ -1230,7 +1810,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               placeholder="Search documents..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-gray-300 transition-all"
+              className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-none text-[13px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-gray-300 transition-all"
             />
           </div>
 
@@ -1240,7 +1820,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
             <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5">
               <button
                 onClick={() => setViewMode('global')}
-                className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
+                className={`px-2.5 py-1 text-[12px] font-medium rounded-none transition-all duration-150 ${
                   viewMode === 'global'
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
@@ -1250,7 +1830,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               </button>
               <button
                 onClick={() => setViewMode('property')}
-                className={`px-2.5 py-1 text-[12px] font-medium rounded-md transition-all duration-150 ${
+                className={`px-2.5 py-1 text-[12px] font-medium rounded-none transition-all duration-150 ${
                   viewMode === 'property'
                     ? 'bg-white text-gray-900 shadow-sm'
                     : 'text-gray-600 hover:text-gray-900'
@@ -1285,12 +1865,19 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     e.stopPropagation();
                     setShowNewMenu(!showNewMenu);
                   }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-gray-50 rounded-md transition-colors"
-                  style={{ boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)' }}
-                  title="New"
+                  className="flex items-center gap-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-none transition-all duration-200"
+                  style={{
+                    padding: '4px 8px',
+                    height: '24px',
+                    minHeight: '24px',
+                    backgroundColor: '#FFFFFF',
+                    opacity: 1,
+                    backdropFilter: 'none'
+                  }}
+                  title="Add"
                 >
-                  <Plus className="w-3.5 h-3.5 text-gray-600" strokeWidth={1.75} />
-                  <span className="text-gray-700 font-medium text-[12px]">New</span>
+                  <Plus className="w-3.5 h-3.5 text-slate-600" strokeWidth={1.5} />
+                  <span className="text-slate-600 text-xs">Add</span>
                 </button>
 
               {/* New Menu Popup - Clean style */}
@@ -1325,12 +1912,13 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                         setShowNewMenu(false);
                         const input = document.createElement('input');
                         input.type = 'file';
-                        input.multiple = false;
+                        input.multiple = true;
                         input.accept = '*/*';
                         input.onchange = async (e) => {
-                          const file = (e.target as HTMLInputElement).files?.[0];
-                          if (!file) return;
-                          await handleFileUpload(file);
+                          const selectedFiles = Array.from((e.target as HTMLInputElement).files || []);
+                          if (selectedFiles.length === 0) return;
+                          // Add files to pending state instead of uploading immediately
+                          setPendingFiles(prev => [...prev, ...selectedFiles]);
                         };
                         input.click();
                       }}
@@ -1564,7 +2152,7 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                       {/* Property Section Header - Premium Container Design */}
                       <div 
                         onClick={() => togglePropertyExpansion(propertyId)}
-                        className={`px-2.5 py-1.5 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 ${
+                        className={`px-3 py-2 cursor-pointer transition-all duration-200 rounded-md border flex items-center gap-2.5 ${
                           isExpanded 
                             ? 'bg-gray-50 border-gray-200/60' 
                             : 'bg-white border-gray-200/60 hover:border-gray-300/80 hover:bg-gray-50/50'
@@ -1854,7 +2442,8 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/20 backdrop-blur-sm z-[20000] flex items-center justify-center p-4"
+              className="fixed inset-0 bg-black/5 z-[20000] flex items-center justify-center p-4"
+              style={{ backdropFilter: 'none' }}
               onClick={() => setDuplicateDialog({ isOpen: false, filename: '', fileSize: 0, existingDocuments: [], file: null, isExactDuplicate: false })}
             >
               <motion.div
@@ -1978,9 +2567,9 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
                     )}
                     <div className="h-px bg-gray-100 my-1" />
                     <button
-                      onClick={() => {
+                      onClick={(e) => {
                         if (item) {
-                          handleDeleteClick(openContextMenuId!, isFolder);
+                          handleDeleteClick(openContextMenuId!, isFolder, e);
                         }
                       }}
                       className="w-full px-3 py-1.5 text-left text-[13px] text-red-600 hover:bg-red-50 transition-colors"
@@ -2025,88 +2614,58 @@ export const FilingSidebar: React.FC<FilingSidebarProps> = ({
           />
         </div>
         
-        {/* Blur overlay when delete dialog is open */}
-        {deleteConfirmDialog.isOpen && (
-          <div 
-            className="absolute inset-0 bg-gray-100/80 backdrop-blur-[1px] z-[10001]"
-            style={{ pointerEvents: 'auto' }}
-          />
-        )}
-        
-        {/* Delete Confirmation Dialog - High quality design */}
+        {/* Delete Confirmation Pop-up - Simple pop-up style */}
         <AnimatePresence>
-          {deleteConfirmDialog.isOpen && (
-            <div className="absolute inset-0 z-[10002] flex items-center justify-center pointer-events-none px-4">
-              {/* Backdrop */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-                className="absolute inset-0 bg-black/50 backdrop-blur-sm pointer-events-auto"
-                onClick={() => setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' })}
-              />
+          {deleteConfirmDialog.isOpen && deleteConfirmDialog.position && (
+            <motion.div
+              ref={deleteConfirmRef}
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.12 }}
+              className="absolute bg-white rounded-lg py-1 z-50"
+              style={{ 
+                left: `${deleteConfirmDialog.position.x + 30}px`,
+                top: `${deleteConfirmDialog.position.y}px`,
+                width: '200px',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Warning message */}
+              <div className="px-3 py-2 border-b border-gray-100">
+                <p className="text-[13px] font-medium text-gray-900 mb-1">
+                  Delete {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?
+                </p>
+                <p className="text-[12px] text-gray-500 truncate">
+                  "{deleteConfirmDialog.itemName}"
+                </p>
+                {deleteConfirmDialog.isFolder && (
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    All contents will be deleted.
+                  </p>
+                )}
+              </div>
               
-              {/* Dialog */}
-              <motion.div
-                initial={{ scale: 0.95, opacity: 0, y: 8 }}
-                animate={{ scale: 1, opacity: 1, y: 0 }}
-                exit={{ scale: 0.95, opacity: 0, y: 8 }}
-                transition={{ 
-                  duration: 0.2,
-                  ease: [0.16, 1, 0.3, 1]
+              {/* Actions */}
+              <button
+                onClick={() => {
+                  setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '', position: null });
                 }}
-                className="pointer-events-auto bg-white rounded-xl w-full relative z-10"
-                style={{ 
-                  maxWidth: 'min(calc(100% - 2rem), 400px)',
-                  minWidth: '320px',
-                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
-                }}
-                onClick={(e) => e.stopPropagation()}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-gray-50 transition-colors text-left"
               >
-                <div className="p-6">
-                  {/* Title */}
-                  <div className="mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                      Delete this {deleteConfirmDialog.isFolder ? 'folder' : 'file'}?
-                    </h3>
-                    <p className="text-sm text-gray-500 break-words leading-relaxed" style={{ wordBreak: 'break-word' }}>
-                      "{deleteConfirmDialog.itemName}"
-                    </p>
-                    {deleteConfirmDialog.isFolder && (
-                      <p className="text-xs text-gray-400 mt-2">
-                        All contents will be deleted.
-                      </p>
-                    )}
-                  </div>
-                  
-                  {/* Actions */}
-                  <div className="flex justify-end gap-3 mt-6">
-                    <button
-                      onClick={() => {
-                        setDeleteConfirmDialog({ isOpen: false, itemId: null, isFolder: false, itemName: '' });
-                      }}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-all duration-200"
-                      style={{
-                        minWidth: '80px'
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleDelete}
-                      className="px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
-                      style={{
-                        minWidth: '80px',
-                        boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)'
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </motion.div>
-            </div>
+                <span className="text-[13px] font-medium text-gray-700">Cancel</span>
+              </button>
+              
+              <div className="h-px bg-gray-100 my-1" />
+              
+              <button
+                onClick={handleDelete}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-red-50 transition-colors text-left"
+              >
+                <span className="text-[13px] font-medium text-red-600">Delete</span>
+              </button>
+            </motion.div>
           )}
         </AnimatePresence>
     </div>

@@ -166,12 +166,45 @@ export const ChatPanel = ({
       return () => document.removeEventListener('click', handleClickOutside);
     }
   }, [openMenuId]);
+
+  // Click outside to close panel
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  
+  React.useEffect(() => {
+    if (!isOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      // Check if click is outside the panel
+      if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
+        // Check if click is on the chat history button (don't close if clicking the button that opens it)
+        const target = event.target as HTMLElement;
+        const isChatHistoryButton = target.closest('button[title="Chat History"]') !== null;
+        
+        // Don't close if clicking the button that opens the panel
+        // The button's onClick will handle toggling, so we skip the click-outside handler
+        if (!isChatHistoryButton) {
+          onToggle?.();
+        }
+      }
+    };
+
+    // Add event listener with a small delay to avoid immediate close when opening
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', handleClickOutside);
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOpen, onToggle]);
   
   return (
     <>
       <AnimatePresence>
         {isOpen && (
-          <motion.div 
+          <motion.div
+            ref={panelRef} 
             initial={{
               opacity: 1,
               scale: 1
@@ -203,10 +236,11 @@ export const ChatPanel = ({
                 onClick={handleNewChat} 
                 whileHover={{ scale: 1.01 }} 
                 whileTap={{ scale: 0.99 }} 
-                className="flex items-center space-x-1.5 px-2.5 py-1.5 border border-slate-200/60 hover:border-slate-300/80 bg-white/70 hover:bg-slate-50/80 rounded-md transition-all duration-200 group"
+                className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 hover:border-slate-300/80 rounded-none transition-all duration-200 group"
+                style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
               >
                 <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                <span className="text-slate-700 group-hover:text-slate-800 font-medium text-xs">
+                <span className="text-slate-600 text-xs">
                   New chat
                 </span>
               </motion.button>

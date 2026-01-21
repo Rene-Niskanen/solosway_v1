@@ -274,6 +274,83 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
     }
   };
+  // Helper function to load house pin icon
+  const loadHousePinIcon = async (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (!map.current) {
+        reject(new Error('Map not available'));
+        return;
+      }
+
+      // Check if image already exists
+      if (map.current.hasImage('house-pin-icon')) {
+        resolve();
+        return;
+      }
+
+      // Create SVG string matching user's specification
+      // Use actual pixel dimensions matching viewBox so icon-size calculations work correctly
+      const svgString = `
+        <svg width="26" height="30" viewBox="0 0 26 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- White interior -->
+          <path
+            d="
+              M3.5 12.5
+              L13 5.5
+              L22.5 12.5
+              V26
+              H3.5
+              V12.5
+              Z
+            "
+            fill="white"
+          />
+          <!-- Black outline -->
+          <path
+            d="
+              M3.5 12.5
+              L13 5.5
+              L22.5 12.5
+              V26
+              H3.5
+              V12.5
+              Z
+            "
+            stroke="black"
+            stroke-width="2"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+          />
+        </svg>
+      `;
+
+      // Convert SVG to data URL
+      const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+
+      // Create image element
+      const img = new Image();
+      img.onload = () => {
+        try {
+          if (map.current && !map.current.hasImage('house-pin-icon')) {
+            map.current.addImage('house-pin-icon', img);
+            console.log('✅ House pin icon loaded');
+          }
+          URL.revokeObjectURL(url);
+          resolve();
+        } catch (error) {
+          URL.revokeObjectURL(url);
+          reject(error);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to load house icon'));
+      };
+      img.src = url;
+    });
+  };
+
   // Helper function to update PropertyTitleCard marker scale based on zoom
   // Always scales with map zoom to maintain geographic size - smaller when zoomed out, larger when zoomed in
   const updateMarkerScale = (marker: mapboxgl.Marker | null, referenceZoom: number) => {
@@ -824,7 +901,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         });
         
         // Also remove the main property layers
-        const mainLayersToRemove = ['property-click-target', 'property-markers', 'property-outer'];
+        const mainLayersToRemove = ['property-click-target', 'property-markers'];
         mainLayersToRemove.forEach(layerId => {
           if (map.current.getLayer(layerId)) {
             console.log(`Removing main layer: ${layerId}`);
@@ -1161,7 +1238,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       });
       
       // Also remove the main property layers
-      const mainLayersToRemove = ['property-click-target', 'property-markers', 'property-outer'];
+      const mainLayersToRemove = ['property-click-target', 'property-markers'];
       mainLayersToRemove.forEach(layerId => {
         if (map.current.getLayer(layerId)) {
           console.log(`Removing main layer: ${layerId}`);
@@ -1230,6 +1307,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       features: []
     };
 
+
     // Optimized: Check if source exists and update it instead of removing/re-adding
     // This is much faster - updating data is instant vs removing/re-adding
     const existingSource = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
@@ -1251,8 +1329,10 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       }
     }
 
+    // Load house icon before adding layers
+    loadHousePinIcon().then(() => {
       // Add layers only if they don't exist (faster - no re-creation)
-      // IMPORTANT: Layers must be added AFTER source is created/updated
+      // IMPORTANT: Layers must be added AFTER source is created/updated and icon is loaded
       const layersToAdd = [
         {
           id: 'property-click-target',
@@ -1271,51 +1351,51 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           }
         },
         {
-          id: 'property-outer',
-          type: 'circle' as const,
-          paint: {
-            'circle-radius': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              10, 8,
-              15, 12,
-              20, 16
-            ],
-            'circle-color': 'rgba(0, 0, 0, 0.08)',
-            'circle-stroke-width': 0
-          }
-        },
-        {
           id: 'property-markers',
-          type: 'circle' as const,
-          paint: {
-            'circle-radius': [
+          type: 'symbol' as const,
+          layout: {
+            'icon-image': 'house-pin-icon',
+            'icon-size': [
               'interpolate',
               ['linear'],
               ['zoom'],
-              10, 6,
-              15, 8,
-              20, 10
+              10, 0.7,   // Larger size for better visibility
+              15, 0.9,   // Larger size for better visibility
+              20, 1.1    // Larger size for better visibility
             ],
-            'circle-color': '#ffffff', // White default
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#000000', // Black border
-            'circle-opacity': 1.0
+            'icon-anchor': 'center'  // Match original circle anchor - center of house aligns with coordinate
           }
         }
       ];
+
+      // Remove existing property-markers layer if it's a circle (to replace with symbol)
+      if (map.current.getLayer('property-markers')) {
+        const existingLayer = map.current.getLayer('property-markers');
+        if (existingLayer && (existingLayer as any).type === 'circle') {
+          map.current.removeLayer('property-markers');
+          console.log('🔄 Removed existing circle layer to replace with symbol');
+        }
+      }
 
       // Batch add layers (faster than individual checks)
       layersToAdd.forEach(layerConfig => {
         if (!map.current.getLayer(layerConfig.id)) {
           try {
-          map.current.addLayer({
-            id: layerConfig.id,
-            type: layerConfig.type,
-            source: 'properties',
-            paint: layerConfig.paint as any // Type assertion for Mapbox paint properties
-          });
+            if (layerConfig.type === 'symbol') {
+              map.current.addLayer({
+                id: layerConfig.id,
+                type: layerConfig.type,
+                source: 'properties',
+                layout: layerConfig.layout as any
+              });
+            } else {
+              map.current.addLayer({
+                id: layerConfig.id,
+                type: layerConfig.type,
+                source: 'properties',
+                paint: layerConfig.paint as any
+              });
+            }
             console.log(`✅ Added layer: ${layerConfig.id}`);
           } catch (error) {
             console.error(`❌ Error adding layer ${layerConfig.id}:`, error);
@@ -1324,6 +1404,36 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           console.log(`⚠️ Layer ${layerConfig.id} already exists, skipping`);
         }
       });
+    }).catch((error) => {
+      console.error('❌ Failed to load house icon:', error);
+      // Fallback: Add circle layer if icon loading fails
+      if (!map.current.getLayer('property-markers')) {
+        try {
+          map.current.addLayer({
+            id: 'property-markers',
+            type: 'circle',
+            source: 'properties',
+            paint: {
+              'circle-radius': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                10, 6,
+                15, 8,
+                20, 10
+              ],
+              'circle-color': '#ffffff',
+              'circle-stroke-width': 2,
+              'circle-stroke-color': '#000000',
+              'circle-opacity': 1.0
+            }
+          });
+          console.log('✅ Added fallback circle layer');
+        } catch (fallbackError) {
+          console.error('❌ Error adding fallback circle layer:', fallbackError);
+        }
+      }
+    });
       
       // Verify source has data
       const source = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
@@ -1732,6 +1842,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             <PropertyTitleCard
               property={property}
               onCardClick={handleCardClick}
+              onDelete={handlePropertyDelete}
             />
           );
           
@@ -1865,32 +1976,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         
         console.log('✅ Property pin clicked - flyTo called with offset:', [horizontalOffset, verticalOffset]);
         
-        // Make the base marker transparent (instead of hiding) so click target remains active
-        // IMPORTANT: property-click-target layer is separate from property-markers and remains fully functional
-        // The property-click-target layer is a map layer (not HTML), so it works even with HTML markers
-        // Since PropertyTitleCard's green pin has pointer-events: none, clicks on it pass through to the map layer
-        // This ensures clicks still work while only showing the PropertyTitleCard's green pin
-        if (map.current.getLayer('property-markers')) {
-          // Set selected property pin to green, others to white
-          map.current.setPaintProperty('property-markers', 'circle-color', [
-            'case',
-            ['==', ['get', 'id'], property.id],
-            '#D1D5DB', // Light grey for selected property
-            '#ffffff' // White for others
-          ]);
-          // Keep selected property visible (green pin) and others visible too
-          map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
-        }
+        // Note: property-markers is now a symbol layer with house icon
+        // Icon color is fixed (white with black outline) - no need to change colors
+        // The property-click-target layer remains fully functional for clicks
         // Note: property-click-target layer remains active and clickable - it's not affected by marker opacity
         
-        // Hide the outer ring for selected property
-        if (map.current && map.current.getLayer('property-outer')) {
-          map.current.setFilter('property-outer', [
-            '!=',
-            ['get', 'id'],
-            property.id
-          ]);
-        }
         
         // Don't create individual marker layers - the unified HTML marker handles everything
         // The HTML marker already includes the green circle pin, so we don't need separate map layers
@@ -1935,7 +2025,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       
       // First check if click is on a property marker - if so, don't deselect (property-click-target handler handles it)
       const features = map.current.queryRenderedFeatures(e.point, {
-        layers: ['property-click-target', 'property-outer', 'property-markers']
+        layers: ['property-click-target', 'property-markers']
       });
       
       // If click is on a property marker, don't deselect (the property-click-target handler will handle it)
@@ -2024,7 +2114,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     map.current.on('click', mapClickHandler);
 
     // Add simple hover effects for property layers
-    const propertyLayers = ['property-click-target', 'property-outer', 'property-markers'];
+    const propertyLayers = ['property-click-target', 'property-markers'];
     
     propertyLayers.forEach(layerId => {
       map.current.on('mouseenter', layerId, () => {
@@ -2074,6 +2164,56 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
     setTitleCardPropertyId(null);
   };
 
+  // Handle property deletion
+  const handlePropertyDelete = React.useCallback(() => {
+    console.log('🗑️ Property deleted, cleaning up...');
+    
+    // Clean up the PropertyTitleCard marker
+    cleanupPropertyTitleCardMarker();
+    
+    // Remove property from propertyMarkers state
+    const deletedPropertyId = titleCardPropertyId;
+    if (deletedPropertyId) {
+      setPropertyMarkers(prevMarkers => {
+        const filtered = prevMarkers.filter(p => {
+          const propId = p.id || p.property_id || p.propertyHub?.property?.id || p.propertyHub?.property_id;
+          return String(propId) !== String(deletedPropertyId);
+        });
+        console.log(`Removed property ${deletedPropertyId} from markers. Remaining: ${filtered.length}`);
+        return filtered;
+      });
+      
+      // Also update currentPropertiesRef
+      currentPropertiesRef.current = currentPropertiesRef.current.filter(p => {
+        const propId = p.id || p.property_id || p.propertyHub?.property?.id || p.propertyHub?.property_id;
+        return String(propId) !== String(deletedPropertyId);
+      });
+      
+      // Remove from preloaded properties cache
+      const preloadedProperties = (window as any).__preloadedProperties;
+      if (preloadedProperties && Array.isArray(preloadedProperties)) {
+        (window as any).__preloadedProperties = preloadedProperties.filter((p: any) => {
+          const propId = p.id || p.property_id;
+          return String(propId) !== String(deletedPropertyId);
+        });
+      }
+      
+      // Refresh markers on the map
+      if (addPropertyMarkersRef.current) {
+        setTimeout(() => {
+          const updatedProperties = currentPropertiesRef.current;
+          addPropertyMarkersRef.current?.(updatedProperties, true);
+        }, 100);
+      }
+    }
+    
+    // Clear selected property if it was the deleted one
+    if (selectedProperty && (selectedProperty.id || selectedProperty.property_id) === deletedPropertyId) {
+      setSelectedProperty(null);
+      setIsLargeCardMode(false);
+    }
+  }, [titleCardPropertyId, selectedProperty]);
+
   // Clear selected property effects
   const clearSelectedPropertyEffects = () => {
     // Remove property name marker if it exists
@@ -2101,18 +2241,14 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
       // Restore base marker layers to show all properties (reset to white and fully visible)
       if (map.current.getLayer('property-markers')) {
         // Reset all pins to white (default color) and fully visible
-        map.current.setPaintProperty('property-markers', 'circle-color', '#ffffff');
-        map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
+        // Note: property-markers is now a symbol layer - no paint properties to reset
         map.current.setFilter('property-markers', null);
-      }
-      if (map.current.getLayer('property-outer')) {
-        map.current.setFilter('property-outer', null);
       }
       
       // Clear all possible property effect layers
       const allLayers = map.current.getStyle().layers;
         allLayers.forEach(layer => {
-          if (layer.id.startsWith('property-') && layer.id !== 'property-markers' && layer.id !== 'property-outer' && layer.id !== 'property-click-target') {
+          if (layer.id.startsWith('property-') && layer.id !== 'property-markers' && layer.id !== 'property-click-target') {
             if (map.current.getLayer(layer.id)) {
               map.current.removeLayer(layer.id);
             }
@@ -2187,7 +2323,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           
           // Check if click is on a property marker
           const features = map.current.queryRenderedFeatures(mapPoint as [number, number], {
-            layers: ['property-click-target', 'property-markers', 'property-outer']
+            layers: ['property-click-target', 'property-markers']
           });
           
           // If no property features were clicked, deselect (clicked on empty map area)
@@ -2989,14 +3125,6 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   ]);
                 }
                 
-                // Hide the outer ring for this property
-                if (map.current.getLayer('property-outer')) {
-                  map.current.setFilter('property-outer', [
-                    '!=',
-                    ['get', 'id'],
-                    finalProperty.id
-                  ]);
-                }
                 
                 // Calculate position for property details panel
                 const point = map.current.project([finalLng, finalLat]);
@@ -3209,12 +3337,13 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
                   // Render PropertyTitleCard component into scalable container (same as pin click)
                   try {
                     const root = createRoot(scalableContainer);
-                  root.render(
-                    <PropertyTitleCard
-                      property={propertyToUse}
-                      onCardClick={handleCardClick}
-                    />
-                  );
+                    root.render(
+                      <PropertyTitleCard
+                        property={propertyToUse}
+                        onCardClick={handleCardClick}
+                        onDelete={handlePropertyDelete}
+                      />
+                    );
                   
                     // Store root reference for cleanup
                     currentPropertyTitleCardRootRef.current = root;
@@ -3897,50 +4026,86 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
             source = map.current.getSource('properties') as mapboxgl.GeoJSONSource;
             console.log('✅ Created properties source for property pin');
             
-            // Also ensure layers exist
-            const layersToAdd = [
-              {
-                id: 'property-click-target',
-                type: 'circle' as const,
-                paint: {
-                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 20, 15, 25, 20, 30],
-                  'circle-color': 'transparent',
-                  'circle-stroke-width': 0
-                }
-              },
-              {
-                id: 'property-outer',
-                type: 'circle' as const,
-                paint: {
-                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 8, 15, 12, 20, 16],
-                  'circle-color': 'rgba(0, 0, 0, 0.08)',
-                  'circle-stroke-width': 0
-                }
-              },
-              {
-                id: 'property-markers',
-                type: 'circle' as const,
-                paint: {
-                  'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 6, 15, 8, 20, 10],
-                  'circle-color': '#D1D5DB',
-                  'circle-stroke-width': 2,
-                  'circle-stroke-color': '#ffffff',
-                  'circle-opacity': 1.0
+            // Load house icon and then ensure layers exist
+            loadHousePinIcon().then(() => {
+              // Remove existing property-markers layer if it's a circle
+              if (map.current.getLayer('property-markers')) {
+                const existingLayer = map.current.getLayer('property-markers');
+                if (existingLayer && (existingLayer as any).type === 'circle') {
+                  map.current.removeLayer('property-markers');
                 }
               }
-            ];
-            
-            layersToAdd.forEach(layerConfig => {
-              if (!map.current.getLayer(layerConfig.id)) {
+
+              const layersToAdd = [
+                {
+                  id: 'property-click-target',
+                  type: 'circle' as const,
+                  paint: {
+                    'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 20, 15, 25, 20, 30],
+                    'circle-color': 'transparent',
+                    'circle-stroke-width': 0
+                  }
+                },
+                {
+                  id: 'property-markers',
+                  type: 'symbol' as const,
+                  layout: {
+                    'icon-image': 'house-pin-icon',
+                    'icon-size': [
+                      'interpolate',
+                      ['linear'],
+                      ['zoom'],
+                      10, 0.7,   // Larger size for better visibility
+                      15, 0.9,   // Larger size for better visibility
+                      20, 1.1    // Larger size for better visibility
+                    ],
+                    'icon-anchor': 'center'  // Match original circle anchor - center of house aligns with coordinate
+                  }
+                }
+              ];
+              
+              layersToAdd.forEach(layerConfig => {
+                if (!map.current.getLayer(layerConfig.id)) {
+                  try {
+                    if (layerConfig.type === 'symbol') {
+                      map.current.addLayer({
+                        id: layerConfig.id,
+                        type: layerConfig.type,
+                        source: 'properties',
+                        layout: layerConfig.layout as any
+                      });
+                    } else {
+                      map.current.addLayer({
+                        id: layerConfig.id,
+                        type: layerConfig.type,
+                        source: 'properties',
+                        paint: layerConfig.paint as any
+                      });
+                    }
+                  } catch (error) {
+                    console.warn(`⚠️ Error adding layer ${layerConfig.id}:`, error);
+                  }
+                }
+              });
+            }).catch((error) => {
+              console.warn('⚠️ Failed to load house icon, using fallback:', error);
+              // Fallback to circle if icon loading fails
+              if (!map.current.getLayer('property-markers')) {
                 try {
                   map.current.addLayer({
-                    id: layerConfig.id,
-                    type: layerConfig.type,
+                    id: 'property-markers',
+                    type: 'circle',
                     source: 'properties',
-                    paint: layerConfig.paint as any
+                    paint: {
+                      'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 6, 15, 8, 20, 10],
+                      'circle-color': '#D1D5DB',
+                      'circle-stroke-width': 2,
+                      'circle-stroke-color': '#ffffff',
+                      'circle-opacity': 1.0
+                    }
                   });
-                } catch (error) {
-                  console.warn(`⚠️ Error adding layer ${layerConfig.id}:`, error);
+                } catch (fallbackError) {
+                  console.warn('⚠️ Error adding fallback circle layer:', fallbackError);
                 }
               }
             });
@@ -4013,14 +4178,6 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         ]);
       }
       
-      // Also hide the outer ring for this property (same as clicking a pin)
-      if (map.current.getLayer('property-outer')) {
-        map.current.setFilter('property-outer', [
-          '!=',
-          ['get', 'id'],
-          finalProperty.id
-        ]);
-      }
       
       // NEW: Two-step click logic - show title card instead of immediately opening PropertyDetailsPanel
       // PropertyDetailsPanel will open when title card is clicked
@@ -4260,6 +4417,7 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
           <PropertyTitleCard
             property={finalProperty}
             onCardClick={handleCardClick}
+            onDelete={handlePropertyDelete}
           />
         );
         
@@ -4290,32 +4448,11 @@ export const SquareMap = forwardRef<SquareMapRef, SquareMapProps>(({
         // Set up zoom listener - card stays fixed size when zoomed in, scales down when zoomed out
         setupMarkerZoomListener(marker);
         
-        // Make the base marker transparent (instead of hiding) so click target remains active
-        // IMPORTANT: property-click-target layer is separate from property-markers and remains fully functional
-        // The property-click-target layer is a map layer (not HTML), so it works even with HTML markers
-        // Since PropertyTitleCard's green pin has pointer-events: none, clicks on it pass through to the map layer
-        // This ensures clicks still work while only showing the PropertyTitleCard's green pin
-        if (map.current.getLayer('property-markers')) {
-          // Set selected property pin to green, others to white
-          map.current.setPaintProperty('property-markers', 'circle-color', [
-            'case',
-            ['==', ['get', 'id'], finalProperty.id],
-            '#D1D5DB', // Light grey for selected property
-            '#ffffff' // White for others
-          ]);
-          // Keep selected property visible (green pin) and others visible too
-          map.current.setPaintProperty('property-markers', 'circle-opacity', 1.0);
-        }
+        // Note: property-markers is now a symbol layer with house icon
+        // Icon color is fixed (white with black outline) - no need to change colors
+        // The property-click-target layer remains fully functional for clicks
         // Note: property-click-target layer remains active and clickable - it's not affected by marker opacity
         
-        // Hide the outer ring for selected property
-        if (map.current.getLayer('property-outer')) {
-          map.current.setFilter('property-outer', [
-            '!=',
-            ['get', 'id'],
-            finalProperty.id
-          ]);
-        }
         
         // Update state to show title card
         setShowPropertyTitleCard(true);

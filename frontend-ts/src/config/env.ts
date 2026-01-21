@@ -27,6 +27,10 @@ class EnvConfig {
     return import.meta.env.VITE_GOOGLE_GEOCODING_API_KEY;
   }
 
+  get googleClientId(): string | undefined {
+    return import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  }
+
   get anthropicApiKey(): string | undefined {
     return import.meta.env.VITE_ANTHROPIC_API_KEY;
   }
@@ -78,6 +82,7 @@ class EnvConfig {
     console.log('Mapbox Token:', this.mapboxToken ? '✅ Set' : '❌ Missing');
     console.log('OpenAI API Key:', this.openaiApiKey ? '✅ Set' : '⚠️ Not set (optional)');
     console.log('Google Geocoding API:', this.googleGeocodingApiKey ? '✅ Set' : '⚠️ Not set (optional)');
+    console.log('Google OAuth Client ID:', this.googleClientId ? '✅ Set' : '⚠️ Not set (optional - for Google sign-in)');
     console.log('Anthropic API:', this.anthropicApiKey ? '✅ Set' : '⚠️ Not set (optional)');
     console.log('Cohere API:', this.cohereApiKey ? '✅ Set' : '⚠️ Not set (optional)');
     console.groupEnd();
@@ -95,6 +100,7 @@ class EnvConfig {
       hasMapboxToken: !!this.mapboxToken,
       hasOpenaiKey: !!this.openaiApiKey,
       hasGoogleGeocodingKey: !!this.googleGeocodingApiKey,
+      hasGoogleClientId: !!this.googleClientId,
       hasAnthropicKey: !!this.anthropicApiKey,
       hasCohereKey: !!this.cohereApiKey,
     };

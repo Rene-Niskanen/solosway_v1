@@ -14,6 +14,7 @@ import { PropertyData } from './PropertyResultsDisplay';
 import { ReprocessProgressMonitor } from './ReprocessProgressMonitor';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
 import { CitationActionMenu } from './CitationActionMenu';
+import { usePropertyAccess } from '../hooks/usePropertyAccess';
 import veloraLogo from '/Velora Logo.jpg';
 
 // PDF.js for canvas-based PDF rendering with precise highlight positioning
@@ -1019,6 +1020,9 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   // FilingSidebar integration
   const { openSidebar: openFilingSidebar, setSelectedProperty, setViewMode, width: filingSidebarWidth, isOpen: isFilingSidebarOpen } = useFilingSidebar();
   
+  // Property access control
+  const { accessLevel, canUpload, canDelete, isLoading: isLoadingAccess } = usePropertyAccess(property?.id);
+  
   // Calculate the left position for property details panel
   // When filing sidebar is closed: use chatPanelWidth directly (matches old commit logic)
   // When filing sidebar is open: add filing sidebar width to account for the shift
@@ -1906,6 +1910,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
   }, [documents, addPreviewFile]);
 
   const handleDeleteDocument = async (documentId: string) => {
+    // Check access level
+    if (!canDelete()) {
+      alert('You do not have permission to delete files. Only editors and owners can delete files from this property.');
+      return;
+    }
+
     try {
       const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
       const response = await fetch(`${backendUrl}/api/documents/${documentId}`, {
@@ -2373,6 +2383,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
       return;
     }
 
+    // Check access level
+    if (!canUpload()) {
+      setUploadError('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+      return;
+    }
+
     // Open files modal when upload starts so user can see the file appear
     setIsFilesModalOpen(true);
     isFilesModalOpenRef.current = true;
@@ -2694,6 +2710,12 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                         e.preventDefault();
                         e.stopPropagation();
                         
+                        // Check access level before allowing drop
+                        if (!canUpload()) {
+                          alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+                          return;
+                        }
+                        
                         // Cancel any pending RAF
                         if (rafIdRef.current !== null) {
                           cancelAnimationFrame(rafIdRef.current);
@@ -2948,10 +2970,20 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                                 alert('Please select a property first');
                                 return;
                               }
+                              if (!canUpload()) {
+                                alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+                                return;
+                              }
                               fileInputRef.current?.click();
                             }}
-                            disabled={uploading || !property?.id}
-                            title={!property?.id ? "Please select a property first" : "Upload document"}
+                            disabled={uploading || !property?.id || !canUpload() || isLoadingAccess}
+                            title={
+                              !property?.id 
+                                ? "Please select a property first" 
+                                : !canUpload() 
+                                  ? "You do not have permission to upload files. Only editors and owners can upload files."
+                                  : "Upload document"
+                            }
                           >
                             {uploading ? (
                               <>
@@ -2975,6 +3007,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                           }}
                         >
                         {/* Add New Document Card */}
+                        {canUpload() && (
                         <div
                           className="group relative bg-white border border-gray-200 hover:border-gray-300 hover:shadow-lg cursor-pointer flex flex-col overflow-hidden"
                           style={{
@@ -2982,7 +3015,13 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             height: '213px', // 3:4 aspect ratio (160 * 4/3)
                             aspectRatio: '3/4',
                           }}
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={() => {
+                            if (!canUpload()) {
+                              alert('You do not have permission to upload files. Only editors and owners can upload files to this property.');
+                              return;
+                            }
+                            fileInputRef.current?.click();
+                          }}
                 >
                           {/* Upper Section - Light grey with plus icon (2/3 of card height) */}
                           <div className="flex items-center justify-center flex-[2] border-b border-gray-100 bg-gray-50">
@@ -2997,6 +3036,7 @@ export const PropertyDetailsPanel: React.FC<PropertyDetailsPanelProps> = ({
                             <span className="text-xs font-semibold text-gray-600 text-center">Add Document</span>
                           </div>
                         </div>
+                        )}
 
                         {filteredDocuments.map((doc, index) => {
                           const fileType = (doc as any).file_type || '';

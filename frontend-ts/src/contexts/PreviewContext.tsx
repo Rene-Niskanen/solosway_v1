@@ -122,17 +122,38 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // NEW: Open standalone ExpandedCardView
   // Modified to gate document preview based on chat panel visibility
   const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => {
-    // If chat panel is not visible, queue the document for later (silent background opening)
+    // CRITICAL: For agent-triggered opens, always set expandedCardViewDoc immediately (silent background opening)
+    // This ensures the document is "opened" in state even when chat is hidden
+    // The document won't be visible because isChatPanelVisible is false, but it will be ready when chat becomes visible
+    if (isAgentTriggered) {
+      console.log('📂 [PREVIEW] Agent-triggered document open - opening silently in background:', { 
+        docId, 
+        filename, 
+        chatVisible: isChatPanelVisible,
+        hasHighlight: !!highlight,
+        currentExpandedDoc: expandedCardViewDoc?.docId
+      });
+      setIsAgentOpening(true);
+      // Always set expandedCardViewDoc immediately for agent actions (silent opening)
+      // It won't render until chat becomes visible, but it's already loaded in state
+      setExpandedCardViewDoc({ docId, filename, highlight });
+      console.log('✅ [PREVIEW] expandedCardViewDoc set for agent action - document ready in background');
+      return;
+    }
+    
+    // For user-triggered opens, check chat visibility
+    // If chat is hidden, queue the document (user clicks when in dashboard)
     if (!isChatPanelVisible) {
-      console.log('📋 [PREVIEW] Chat panel hidden - queueing document for later:', { docId, filename });
+      console.log('📋 [PREVIEW] User-triggered document open - chat hidden, queueing for later:', { 
+        docId, 
+        filename 
+      });
       setPendingExpandedCardViewDoc({ docId, filename, highlight });
       return;
     }
     
-    // Chat panel is visible - open normally
-    if (isAgentTriggered) {
-      setIsAgentOpening(true);
-    }
+    // Chat panel is visible - open immediately for user actions
+    console.log('📂 [PREVIEW] User-triggered document open - chat visible, opening immediately:', { docId, filename });
     setExpandedCardViewDoc({ docId, filename, highlight });
   }, [isChatPanelVisible]);
 
@@ -151,13 +172,45 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   // NEW: Effect to open pending document when chat becomes visible
+  // This handles user-triggered documents that were queued when chat was hidden
+  // Agent-triggered documents are already in expandedCardViewDoc state (silent background opening)
   React.useEffect(() => {
     if (isChatPanelVisible && pendingExpandedCardViewDoc) {
-      console.log('📋 [PREVIEW] Chat panel visible - opening queued document:', pendingExpandedCardViewDoc);
+      console.log('📋 [PREVIEW] Chat panel visible - opening queued user-triggered document:', pendingExpandedCardViewDoc);
       setExpandedCardViewDoc(pendingExpandedCardViewDoc);
       setPendingExpandedCardViewDoc(null);
     }
   }, [isChatPanelVisible, pendingExpandedCardViewDoc]);
+  
+  // NEW: Effect to restore agent opening state when chat becomes visible with document already open
+  // This ensures the glow effect appears when user returns to chat with a silently-opened document
+  // Use ref to track which document we've already shown glow for (prevents infinite loop)
+  const glowShownForDocRef = React.useRef<string | null>(null);
+  const prevChatVisibleRef = React.useRef<boolean>(isChatPanelVisible);
+  
+  React.useEffect(() => {
+    const chatJustBecameVisible = !prevChatVisibleRef.current && isChatPanelVisible;
+    prevChatVisibleRef.current = isChatPanelVisible;
+    
+    // Only trigger glow when chat JUST became visible (transition from hidden to visible)
+    // and we haven't already shown glow for this document
+    if (chatJustBecameVisible && expandedCardViewDoc && expandedCardViewDoc.docId !== glowShownForDocRef.current) {
+      // Check if this document was opened silently in the background (likely agent-triggered)
+      // Restore agent opening state to show glow effect
+      console.log('📋 [PREVIEW] Chat panel visible with document already open - restoring agent opening state');
+      glowShownForDocRef.current = expandedCardViewDoc.docId; // Mark that we've shown glow for this doc
+      setIsAgentOpening(true);
+      // Clear after a brief moment (glow effect duration)
+      setTimeout(() => {
+        setIsAgentOpening(false);
+      }, 2000);
+    }
+    
+    // Reset glow tracking when document changes
+    if (expandedCardViewDoc?.docId !== glowShownForDocRef.current && expandedCardViewDoc) {
+      glowShownForDocRef.current = null;
+    }
+  }, [isChatPanelVisible, expandedCardViewDoc]);
 
   // NEW: Effect to open pending preview files when chat becomes visible
   React.useEffect(() => {
@@ -206,12 +259,15 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setIsPreviewOpen(false);
     }
     
-    // Queue expanded card view document when chat becomes hidden
+    // CRITICAL: When chat becomes hidden, keep expandedCardViewDoc in state (don't queue it)
+    // This allows silent background opening - document is already "opened" but not visible
+    // When chat becomes visible again, document is already there and appears immediately
+    // Only reset agent opening state, but keep the document in state
     if (!isChatPanelVisible && expandedCardViewDoc) {
-      console.log('📋 [PREVIEW] Chat panel hidden - queueing expanded card view document:', expandedCardViewDoc);
-      setPendingExpandedCardViewDoc(expandedCardViewDoc);
-      setExpandedCardViewDoc(null);
-      setIsAgentOpening(false); // Reset glow state
+      console.log('📋 [PREVIEW] Chat panel hidden - keeping document in state (silent background, will appear when chat visible):', expandedCardViewDoc);
+      setIsAgentOpening(false); // Reset glow state when chat is hidden
+      // DON'T clear expandedCardViewDoc - keep it in state for silent background opening
+      // DON'T queue it - it's already set, just not visible
     }
   }, [isChatPanelVisible, isPreviewOpen, expandedCardViewDoc]);
 

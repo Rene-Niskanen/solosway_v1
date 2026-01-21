@@ -25,10 +25,35 @@ interface UploadState {
   propertyId?: string; // Track property ID for canceling linking
   processingSteps?: ProcessingStep[];
   currentStep?: string;
+  currentStage?: string; // Current processing stage (parsing, extraction, chunking, embedding, vector_storage)
   chunkCount?: number;
   processingTime?: number;
   startTime?: number;
   reductoJobId?: string;
+  // Enhanced metrics
+  metrics?: {
+    chunks_retrieved?: number;
+    chunks_after_filtering?: number;
+    chunks_filtered?: number;
+    vectors_stored?: number;
+    blocks_count?: number;
+  };
+  // Enhanced errors
+  errors?: Array<{
+    stage: string;
+    error: string;
+    timestamp?: string;
+    details?: Record<string, any>;
+  }>;
+  stageDetails?: {
+    chunks_retrieved?: number;
+    chunks_after_filtering?: number;
+    chunks_filtered?: number;
+    total_blocks?: number;
+    vectors_stored?: number;
+    reducto_job_id?: string;
+    last_error?: string;
+  };
 }
 
 interface DocumentQueueItem {
@@ -109,6 +134,29 @@ export const UploadProgressBar: React.FC = () => {
               step_metadata?: Record<string, any>;
             }>;
             current_step?: string;
+            current_stage?: string;
+            stage_details?: {
+              chunks_retrieved?: number;
+              chunks_after_filtering?: number;
+              chunks_filtered?: number;
+              total_blocks?: number;
+              vectors_stored?: number;
+              reducto_job_id?: string;
+              last_error?: string;
+            };
+            errors?: Array<{
+              stage: string;
+              error: string;
+              timestamp?: string;
+              details?: Record<string, any>;
+            }>;
+            metrics?: {
+              chunks_retrieved?: number;
+              chunks_after_filtering?: number;
+              chunks_filtered?: number;
+              vectors_stored?: number;
+              blocks_count?: number;
+            };
           } 
         };
         const { status, pipeline_progress } = data;
@@ -145,24 +193,33 @@ export const UploadProgressBar: React.FC = () => {
         }
         
         // Determine current step name with better formatting
-        let currentStep = pipeline_progress?.current_step || status;
+        // Use current_stage from API if available, otherwise infer from status/history
+        let currentStep = status;
         
         // Map status to user-friendly messages
         if (status === 'uploaded' || status === 'processing') {
-          // Check if we have active steps
-          const activeStep = steps.find(s => s.status === 'started');
-          if (activeStep) {
-            currentStep = getStepDisplayName(activeStep.name);
-          } else if (steps.length > 0) {
-            // Check last completed step to infer what's next
-            const lastCompleted = steps.filter(s => s.status === 'completed').pop();
-            if (lastCompleted) {
-              currentStep = getNextStepDisplayName(lastCompleted.name);
-            } else {
-              currentStep = 'Initializing extraction...';
-            }
+          // Use current_stage from API if available (PRIORITY 1)
+          if (pipeline_progress?.current_stage) {
+            currentStep = getStageDisplayName(pipeline_progress.current_stage);
+          } else if (pipeline_progress?.current_step) {
+            // Fallback to current_step (PRIORITY 2)
+            currentStep = getStepDisplayName(pipeline_progress.current_step);
           } else {
-            currentStep = 'Starting extraction pipeline...';
+            // Fallback: Check if we have active steps
+            const activeStep = steps.find(s => s.status === 'started');
+            if (activeStep) {
+              currentStep = getStepDisplayName(activeStep.name);
+            } else if (steps.length > 0) {
+              // Check last completed step to infer what's next
+              const lastCompleted = steps.filter(s => s.status === 'completed').pop();
+              if (lastCompleted) {
+                currentStep = getNextStepDisplayName(lastCompleted.name);
+              } else {
+                currentStep = 'Initializing extraction...';
+              }
+            } else {
+              currentStep = 'Starting extraction pipeline...';
+            }
           }
         }
         
@@ -181,16 +238,36 @@ export const UploadProgressBar: React.FC = () => {
             : doc
         ));
         
-        setUploadState(prev => prev ? {
+        // Extract metrics and errors from pipeline_progress
+        const metrics = pipeline_progress?.metrics || {};
+        const errors = pipeline_progress?.errors || [];
+        const stageDetails = pipeline_progress?.stage_details || {};
+        
+        setUploadState(prev => {
+          // Get detailed error message if available
+          let errorMessage = prev?.error;
+          if (isFailed && errors.length > 0) {
+            const latestError = errors[errors.length - 1];
+            errorMessage = `${latestError.stage}: ${latestError.error}`;
+          } else if (isFailed) {
+            errorMessage = 'Processing failed';
+          }
+          
+          return prev ? {
           ...prev,
           status: isComplete ? 'complete' : isFailed ? 'error' : 'processing',
           processingSteps: steps,
           currentStep: currentStep,
+          currentStage: pipeline_progress?.current_stage,
           chunkCount: chunkCount || prev.chunkCount,
           processingTime: processingTime || prev.processingTime,
-          error: isFailed ? 'Processing failed' : prev.error,
-          reductoJobId: reductoJobId || prev.reductoJobId
-        } : null);
+          error: errorMessage,
+          reductoJobId: reductoJobId || prev.reductoJobId,
+          metrics: metrics,
+          errors: errors,
+          stageDetails: stageDetails
+          } : null;
+        });
         
         // Stop polling if complete or failed
         if (isComplete || isFailed) {
@@ -270,6 +347,20 @@ export const UploadProgressBar: React.FC = () => {
     return 'Processing...';
   };
 
+  const getStageDisplayName = (stage: string): string => {
+    const stageLower = stage.toLowerCase();
+    if (stageLower === 'parsing' || stageLower.includes('parse')) return 'Parsing document...';
+    if (stageLower === 'extraction' || stageLower.includes('extract')) return 'Extracting content...';
+    if (stageLower === 'chunking' || stageLower.includes('chunk')) return 'Generating chunks...';
+    if (stageLower === 'embedding' || stageLower.includes('embed')) return 'Generating embeddings...';
+    if (stageLower === 'vector_storage' || stageLower.includes('vector')) return 'Storing vectors...';
+    if (stageLower === 'initializing') return 'Initializing extraction...';
+    if (stageLower === 'completed') return 'Processing complete';
+    if (stageLower === 'failed') return 'Processing failed';
+    if (stageLower === 'processing') return 'Processing...';
+    return stage.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+  };
+
   // Start polling when we have a document ID
   const startPolling = (documentId: string, fileName: string) => {
     // Clear any existing polling
@@ -283,10 +374,10 @@ export const UploadProgressBar: React.FC = () => {
     // Poll immediately
     pollDocumentStatus(documentId, fileName);
     
-    // Then poll every 2 seconds
+    // Poll every 1 second during active processing for more real-time updates
     pollingRef.current = setInterval(() => {
       pollDocumentStatus(documentId, fileName);
-    }, 2000);
+    }, 1000);
   };
 
   // Close queue dropdown when clicking outside
@@ -672,92 +763,104 @@ export const UploadProgressBar: React.FC = () => {
           <div
             style={{
               background: '#FFFFFF',
-              borderRadius: '16px',
-              boxShadow: '0 4px 24px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04)',
+              borderRadius: '0px',
+              boxShadow: 'none',
               overflow: 'hidden',
-              border: '1px solid rgba(229, 231, 235, 0.6)',
+              border: '1px solid #E5E7EB',
               margin: 0,
               padding: 0,
               boxSizing: 'border-box',
             }}
           >
-            {/* Main Content */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-              {/* Icon */}
-              <div
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '8px',
-                  background: `${getProgressColor()}0F`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: getProgressColor(),
-                  flexShrink: 0,
-                  border: `1px solid ${getProgressColor()}20`,
-                }}
-              >
-                {getIcon()}
-              </div>
-
-              {/* Text */}
-              <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Header with Close Button */}
+            <div style={{ 
+              padding: '12px 16px', 
+              borderBottom: '1px solid #F3F4F6',
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'space-between',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                {/* Icon */}
                 <div
                   style={{
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    color: '#111827',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    marginBottom: '2px',
-                    lineHeight: '18px',
-                  }}
-                >
-                  {truncateFileName(uploadState.fileName, 30)}
-                </div>
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: uploadState.status === 'error' ? '#EF4444' : '#6B7280',
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '0px',
+                    background: `${getProgressColor()}0F`,
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                    lineHeight: '16px',
+                    justifyContent: 'center',
+                    color: getProgressColor(),
+                    flexShrink: 0,
+                    border: `1px solid ${getProgressColor()}20`,
                   }}
-                  title={uploadState.status === 'error' && uploadState.error ? uploadState.error : undefined}
                 >
-                  <span style={{ fontWeight: 400 }}>
-                    {uploadState.status === 'error' && uploadState.error 
-                      ? (() => {
-                          const formattedError = formatErrorMessage(uploadState.error);
-                          return formattedError.length > 40 ? formattedError.substring(0, 40) + '...' : formattedError;
-                        })()
-                      : getStatusText()}
-                  </span>
-                  {/* Timer */}
-                  {(uploadState.status === 'uploading' || uploadState.status === 'processing') && (
-                    <span style={{ 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      gap: '4px',
-                      color: '#9CA3AF',
-                      fontSize: '11px',
-                      fontWeight: 400,
-                    }}>
-                      <Clock className="w-3 h-3" strokeWidth={1.5} />
-                      {formatTime(elapsedTime)}
+                  {getIcon()}
+                </div>
+
+                {/* Text */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      color: '#111827',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      marginBottom: '2px',
+                      lineHeight: '18px',
+                    }}
+                  >
+                    {truncateFileName(uploadState.fileName, 30)}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '12px',
+                      color: uploadState.status === 'error' ? '#EF4444' : '#6B7280',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      flexWrap: 'wrap',
+                      lineHeight: '16px',
+                    }}
+                    title={uploadState.status === 'error' && uploadState.error ? uploadState.error : undefined}
+                  >
+                    <span style={{ fontWeight: 400 }}>
+                      {uploadState.status === 'error' && uploadState.error 
+                        ? (() => {
+                            const formattedError = formatErrorMessage(uploadState.error);
+                            return formattedError.length > 40 ? formattedError.substring(0, 40) + '...' : formattedError;
+                          })()
+                        : getStatusText()}
                     </span>
-                  )}
-                  {uploadState.status === 'complete' && uploadState.processingTime && (
-                    <span style={{ color: '#9CA3AF', fontSize: '11px', fontWeight: 400 }}>
-                      · {uploadState.processingTime.toFixed(1)}s
-                    </span>
-                  )}
+                    {/* Timer */}
+                    {(uploadState.status === 'uploading' || uploadState.status === 'processing') && (
+                      <span style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '4px',
+                        color: '#9CA3AF',
+                        fontSize: '11px',
+                        fontWeight: 400,
+                      }}>
+                        <Clock className="w-3 h-3" strokeWidth={1.5} />
+                        {formatTime(elapsedTime)}
+                      </span>
+                    )}
+                    {uploadState.status === 'complete' && uploadState.processingTime && (
+                      <span style={{ color: '#9CA3AF', fontSize: '11px', fontWeight: 400 }}>
+                        · {uploadState.processingTime.toFixed(1)}s
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
+
+              {/* Right side buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
 
               {/* Queue Dropdown Button */}
               {documentQueue.length > 1 && (
@@ -989,16 +1092,15 @@ export const UploadProgressBar: React.FC = () => {
                 </button>
               )}
 
-              {/* Dismiss button */}
-              {(uploadState.status === 'complete' || uploadState.status === 'error') && (
+                {/* Close button - always visible */}
                 <button
                   onClick={handleDismiss}
                   style={{
                     width: '28px',
                     height: '28px',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(229, 231, 235, 0.6)',
-                    background: '#FFFFFF',
+                    borderRadius: '0px',
+                    border: 'none',
+                    background: 'transparent',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
@@ -1006,21 +1108,21 @@ export const UploadProgressBar: React.FC = () => {
                     color: '#9CA3AF',
                     flexShrink: 0,
                     transition: 'all 0.15s ease',
+                    padding: '6px',
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.background = '#F9FAFB';
-                    e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.8)';
+                    e.currentTarget.style.background = '#F3F4F6';
                     e.currentTarget.style.color = '#6B7280';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.background = '#FFFFFF';
-                    e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
+                    e.currentTarget.style.background = 'transparent';
                     e.currentTarget.style.color = '#9CA3AF';
                   }}
+                  title="Close"
                 >
-                  <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <X className="w-4 h-4" strokeWidth={1.5} />
                 </button>
-              )}
+              </div>
             </div>
 
             {/* Progress bar */}
@@ -1075,12 +1177,12 @@ export const UploadProgressBar: React.FC = () => {
                   <div
                     style={{
                       padding: '12px 16px',
-                      borderTop: '1px solid rgba(229, 231, 235, 0.6)',
-                      background: '#FAFAFA',
+                      borderTop: '1px solid #E5E7EB',
+                      background: '#FFFFFF',
                     }}
                   >
                     <div style={{ fontSize: '10px', fontWeight: 500, color: '#9CA3AF', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Extraction Pipeline
+                      EXTRACTION PIPELINE
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {uploadState.processingSteps.map((step, index) => (
@@ -1152,6 +1254,31 @@ export const UploadProgressBar: React.FC = () => {
                             )}
                           </div>
 
+                          {/* Step error details */}
+                          {step.status === 'failed' && step.metadata && (
+                            <div style={{ 
+                              marginTop: '6px', 
+                              padding: '8px', 
+                              background: '#FEF2F2', 
+                              borderRadius: '6px',
+                              border: '1px solid #FEE2E2',
+                              fontSize: '11px',
+                              color: '#991B1B',
+                              lineHeight: '16px'
+                            }}>
+                              {step.metadata.error && (
+                                <div style={{ fontWeight: 500, marginBottom: '4px' }}>
+                                  Error: {step.metadata.error}
+                                </div>
+                              )}
+                              {step.metadata.error_type && (
+                                <div style={{ fontSize: '10px', color: '#DC2626', fontFamily: 'monospace' }}>
+                                  Type: {step.metadata.error_type}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {/* Status indicator */}
                           <div
                             style={{
@@ -1194,6 +1321,153 @@ export const UploadProgressBar: React.FC = () => {
                             Reducto: {uploadState.reductoJobId.slice(0, 8)}...
                           </div>
                         )}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Expanded Metrics and Errors */}
+            <AnimatePresence>
+              {isExpanded && uploadState.status === 'processing' && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  style={{ overflow: 'hidden' }}
+                >
+                  <div
+                    style={{
+                      padding: '12px 16px',
+                      borderTop: '1px solid #E5E7EB',
+                      background: '#FFFFFF',
+                    }}
+                  >
+                    {/* Metrics Section - Always show if processing */}
+                    <div style={{ marginBottom: uploadState.errors?.length ? '16px' : '0' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 500, color: '#9CA3AF', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                        PROCESSING METRICS
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {/* Show current stage */}
+                        {uploadState.currentStage && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                            <span style={{ color: '#6B7280' }}>Current stage:</span>
+                            <span style={{ color: '#111827', fontWeight: 500 }}>{uploadState.currentStep || 'Processing...'}</span>
+                          </div>
+                        )}
+                        {uploadState.stageDetails?.chunks_retrieved !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                              <span style={{ color: '#6B7280' }}>Chunks retrieved:</span>
+                              <span style={{ color: '#111827', fontWeight: 500 }}>{uploadState.stageDetails.chunks_retrieved}</span>
+                            </div>
+                          )}
+                          {uploadState.stageDetails?.chunks_filtered !== undefined && uploadState.stageDetails.chunks_filtered > 0 && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                              <span style={{ color: '#6B7280' }}>Chunks filtered:</span>
+                              <span style={{ color: '#F59E0B', fontWeight: 500 }}>{uploadState.stageDetails.chunks_filtered}</span>
+                            </div>
+                          )}
+                          {uploadState.stageDetails?.chunks_after_filtering !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                              <span style={{ color: '#6B7280' }}>Chunks after filtering:</span>
+                              <span style={{ color: '#111827', fontWeight: 500 }}>{uploadState.stageDetails.chunks_after_filtering}</span>
+                            </div>
+                          )}
+                          {uploadState.stageDetails?.vectors_stored !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                              <span style={{ color: '#6B7280' }}>Vectors stored:</span>
+                              <span style={{ color: uploadState.stageDetails.vectors_stored > 0 ? '#10B981' : '#EF4444', fontWeight: 500 }}>
+                                {uploadState.stageDetails.vectors_stored}
+                              </span>
+                            </div>
+                          )}
+                          {uploadState.stageDetails?.total_blocks !== undefined && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
+                              <span style={{ color: '#6B7280' }}>Total blocks:</span>
+                              <span style={{ color: '#111827', fontWeight: 500 }}>{uploadState.stageDetails.total_blocks}</span>
+                            </div>
+                          )}
+                          {/* Show warning if vectors stored is 0 but chunks were retrieved */}
+                          {uploadState.stageDetails?.chunks_retrieved !== undefined && 
+                           uploadState.stageDetails.chunks_retrieved > 0 && 
+                           uploadState.stageDetails.vectors_stored === 0 && (
+                            <div style={{ 
+                              marginTop: '8px', 
+                              padding: '8px', 
+                              background: '#FEF3C7', 
+                              borderRadius: '6px',
+                              border: '1px solid #FDE68A',
+                              fontSize: '11px',
+                              color: '#92400E',
+                              lineHeight: '16px'
+                            }}>
+                              ⚠️ Document marked 'completed' but 0 vectors were stored. 
+                              {uploadState.stageDetails.chunks_filtered !== undefined && uploadState.stageDetails.chunks_filtered > 0 && (
+                                <div style={{ marginTop: '4px' }}>
+                                  {uploadState.stageDetails.chunks_retrieved} chunks retrieved → {uploadState.stageDetails.chunks_after_filtering || 0} chunks after filtering
+                                  {uploadState.stageDetails.last_error && (
+                                    <div style={{ marginTop: '4px', fontStyle: 'italic' }}>
+                                      Error: {uploadState.stageDetails.last_error}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        {/* Show message if no metrics yet */}
+                        {!uploadState.stageDetails?.chunks_retrieved && 
+                         !uploadState.stageDetails?.vectors_stored && 
+                         uploadState.status === 'processing' && (
+                          <div style={{ fontSize: '11px', color: '#9CA3AF', fontStyle: 'italic', padding: '8px' }}>
+                            Waiting for processing metrics... (checking backend)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Errors Section */}
+                    {uploadState.errors && uploadState.errors.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '10px', fontWeight: 500, color: '#9CA3AF', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Errors
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {uploadState.errors.map((error, index) => (
+                            <div
+                              key={index}
+                              style={{
+                                padding: '10px',
+                                background: '#FEF2F2',
+                                borderRadius: '6px',
+                                border: '1px solid #FEE2E2',
+                                fontSize: '11px',
+                                color: '#991B1B',
+                                lineHeight: '16px'
+                              }}
+                            >
+                              <div style={{ fontWeight: 500, marginBottom: '4px' }}>
+                                {error.stage}: {error.error}
+                              </div>
+                              {error.details && Object.keys(error.details).length > 0 && (
+                                <div style={{ marginTop: '6px', fontSize: '10px', color: '#DC2626' }}>
+                                  {Object.entries(error.details).map(([key, value]) => (
+                                    <div key={key} style={{ marginTop: '2px' }}>
+                                      <span style={{ fontWeight: 500 }}>{key}:</span> {String(value)}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {error.timestamp && (
+                                <div style={{ marginTop: '4px', fontSize: '10px', color: '#9CA3AF' }}>
+                                  {new Date(error.timestamp).toLocaleString()}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

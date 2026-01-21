@@ -800,10 +800,35 @@ class SupabaseVectorService:
         try:
             business_uuid = metadata.get('business_uuid') or metadata.get('business_id')
             if business_uuid:
-                business_uuid = str(business_uuid)
+                # Validate that business_uuid is actually a UUID, not a company name
+                try:
+                    from uuid import UUID
+                    # Try to validate as UUID
+                    UUID(str(business_uuid))
+                    business_uuid = str(business_uuid)
+                except (ValueError, TypeError):
+                    # business_uuid is not a valid UUID (e.g., "SoloSway"), try to get UUID from mapping
+                    logger.warning(f"⚠️ business_uuid '{business_uuid}' is not a UUID, looking up UUID...")
+                    try:
+                        from .supabase_auth_service import SupabaseAuthService
+                        auth_service = SupabaseAuthService()
+                        resolved_uuid = auth_service.get_business_uuid(business_uuid)
+                        if not resolved_uuid:
+                            resolved_uuid = auth_service.ensure_business_uuid(business_uuid)
+                        if resolved_uuid:
+                            business_uuid = str(resolved_uuid)
+                            logger.info(f"✅ Resolved business UUID: {business_uuid}")
+                        else:
+                            logger.error(f"❌ Could not resolve business UUID from '{business_uuid}'")
+                            business_uuid = None
+                    except Exception as lookup_error:
+                        logger.error(f"❌ Failed to lookup business UUID: {lookup_error}")
+                        business_uuid = None
 
             if not chunks:
-                logger.warning("No chunks to store for document")
+                logger.warning("⚠️ No chunks to store for document")
+                logger.warning(f"   Document ID: {document_id}")
+                logger.warning(f"   This may indicate chunks were filtered out or document had no extractable text")
                 return True
             
             # Delete existing vectors first to prevent duplicates
@@ -1221,21 +1246,28 @@ class SupabaseVectorService:
             bbox_count = sum(1 for r in records if r.get('bbox') is not None)
             page_count = sum(1 for r in records if r.get('page_number') is not None)
             both_count = sum(1 for r in records if r.get('bbox') is not None and r.get('page_number') is not None)
+            blocks_count = sum(r.get('block_count', 0) for r in records)
+            vectors_with_blocks = sum(1 for r in records if r.get('block_count', 0) > 0)
             
             logger.info(f"📊 Vector storage summary for {document_id}:")
-            logger.info(f"   Total vectors: {len(records)}")
-            logger.info(f"   Vectors with bbox: {bbox_count} ({bbox_count/len(records)*100:.1f}%)")
-            logger.info(f"   Vectors with page_number: {page_count} ({page_count/len(records)*100:.1f}%)")
-            logger.info(f"   Vectors with both: {both_count} ({both_count/len(records)*100:.1f}%)")
+            logger.info(f"   Chunks processed: {len(chunks)}")
+            logger.info(f"   Total vectors to store: {len(records)}")
+            logger.info(f"   Vectors with bbox: {bbox_count} ({bbox_count/len(records)*100:.1f}% if len(records) > 0 else 0:.1f}%)")
+            logger.info(f"   Vectors with page_number: {page_count} ({page_count/len(records)*100:.1f}% if len(records) > 0 else 0:.1f}%)")
+            logger.info(f"   Vectors with both: {both_count} ({both_count/len(records)*100:.1f}% if len(records) > 0 else 0:.1f}%)")
+            logger.info(f"   Vectors with blocks: {vectors_with_blocks} ({vectors_with_blocks/len(records)*100:.1f}% if len(records) > 0 else 0:.1f}%)")
+            logger.info(f"   Total blocks across all vectors: {blocks_count}")
             
             # Insert into Supabase
             result = self.supabase.table(self.document_vectors_table).insert(records).execute()
             
             if result.data:
-                logger.info(f"✅ Stored {len(records)} document vectors (bbox: {bbox_count}, page: {page_count}, both: {both_count})")
+                logger.info(f"✅ Stored {len(records)} document vectors (bbox: {bbox_count}, page: {page_count}, blocks: {blocks_count})")
                 return True
             else:
-                logger.error(f"Failed to store document vectors: {result}")
+                logger.error(f"❌ Failed to store document vectors: {result}")
+                logger.error(f"   Chunks processed: {len(chunks)}")
+                logger.error(f"   Records prepared: {len(records)}")
                 return False
                 
         except Exception as e:

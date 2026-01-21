@@ -12,6 +12,9 @@ interface ImportMetaEnv {
   readonly VITE_GOOGLE_GEOCODING_API_KEY?: string;
   readonly VITE_ANTHROPIC_API_KEY?: string;
   readonly VITE_COHERE_API_KEY?: string;
+  
+  // Google OAuth (optional)
+  readonly VITE_GOOGLE_CLIENT_ID?: string;
 }
 
 interface ImportMeta {

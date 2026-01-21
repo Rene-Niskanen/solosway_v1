@@ -7,6 +7,8 @@ from .services.supabase_auth_service import SupabaseAuthService
 import logging
 import os
 from uuid import UUID, uuid4
+import requests
+import json
 
 auth = Blueprint('auth', __name__)
 logger = logging.getLogger(__name__)
@@ -200,6 +202,131 @@ def api_signup():
             'success': False,
             'error': 'Failed to create account. Please try again.'
         }), 500
+
+@auth.route('/api/auth/google', methods=['POST'])
+def api_google_auth():
+    """Handle Google OAuth authentication"""
+    try:
+        data = request.get_json()
+        if not data or not data.get('credential'):
+            return jsonify({'success': False, 'error': 'No credential provided'}), 400
+        
+        credential = data.get('credential')
+        
+        # Verify the token with Google
+        google_client_id = os.environ.get('GOOGLE_CLIENT_ID')
+        if not google_client_id:
+            logger.error("GOOGLE_CLIENT_ID not configured")
+            return jsonify({'success': False, 'error': 'Google authentication not configured'}), 500
+        
+        # Verify token with Google
+        try:
+            verify_url = 'https://oauth2.googleapis.com/tokeninfo'
+            response = requests.get(verify_url, params={'id_token': credential}, timeout=10)
+            response.raise_for_status()
+            token_info = response.json()
+            
+            # Verify the token is for our client
+            if token_info.get('aud') != google_client_id:
+                logger.warning(f"Token audience mismatch: {token_info.get('aud')} != {google_client_id}")
+                return jsonify({'success': False, 'error': 'Invalid token'}), 401
+            
+            # Extract user information
+            email = token_info.get('email')
+            first_name = token_info.get('given_name', '')
+            last_name = token_info.get('family_name', '')
+            name = token_info.get('name', '')
+            picture = token_info.get('picture')
+            
+            if not email:
+                return jsonify({'success': False, 'error': 'No email in Google account'}), 400
+            
+            # Use Supabase for user management
+            auth_service = SupabaseAuthService()
+            user_data = auth_service.get_user_by_email(email)
+            
+            if user_data:
+                # User exists - log them in
+                business_uuid = user_data.get('business_uuid')
+                if not business_uuid:
+                    legacy_business = user_data.get('business_id') or user_data.get('company_name')
+                    business_uuid = auth_service.ensure_business_uuid(legacy_business or 'Default Company')
+                    auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+                
+                # Update profile picture if available
+                if picture and not user_data.get('profile_picture_url'):
+                    auth_service.update_user(user_data['id'], {'profile_picture_url': picture})
+                
+                user = User()
+                user.id = user_data['id']
+                user.email = user_data['email']
+                user.first_name = user_data.get('first_name') or first_name
+                user.company_name = user_data.get('company_name') or 'Default Company'
+                user.company_website = user_data.get('company_website')
+                user.role = UserRole.ADMIN if user_data.get('role') == 'admin' else UserRole.USER
+                user.status = UserStatus.ACTIVE if user_data.get('status') == 'active' else UserStatus.INVITED
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                logger.info(f"Google login successful for existing user: {email}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Logged in successfully'
+                }), 200
+            else:
+                # New user - create account
+                # Extract company name from email domain or use default
+                email_domain = email.split('@')[1] if '@' in email else 'default'
+                company_name = email_domain.split('.')[0].title() if '.' in email_domain else 'Default Company'
+                
+                business_uuid = auth_service.ensure_business_uuid(company_name)
+                
+                user_data = {
+                    'email': email,
+                    'first_name': first_name or name.split()[0] if name else 'User',
+                    'last_name': last_name or ' '.join(name.split()[1:]) if name and len(name.split()) > 1 else '',
+                    'company_name': company_name,
+                    'business_uuid': business_uuid,
+                    'business_id': business_uuid,
+                    'role': 'user',
+                    'status': 'active',
+                    'profile_picture_url': picture,
+                    'created_at': 'now()',
+                    'updated_at': 'now()'
+                }
+                
+                new_user_data = auth_service.create_user(user_data)
+                if not new_user_data:
+                    return jsonify({'success': False, 'error': 'Failed to create user'}), 500
+                
+                user = User()
+                user.id = new_user_data['id']
+                user.email = new_user_data['email']
+                user.first_name = new_user_data.get('first_name', first_name)
+                user.company_name = new_user_data.get('company_name', company_name)
+                user.role = UserRole.USER
+                user.status = UserStatus.ACTIVE
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                logger.info(f"Google signup successful for new user: {email}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Account created and logged in successfully'
+                }), 201
+                
+        except requests.RequestException as e:
+            logger.error(f"Error verifying Google token: {e}")
+            return jsonify({'success': False, 'error': 'Failed to verify Google token'}), 401
+        except Exception as verify_error:
+            logger.error(f"Error processing Google token: {verify_error}")
+            return jsonify({'success': False, 'error': 'Invalid token'}), 401
+            
+    except Exception as e:
+        logger.error(f"Google auth error: {str(e)}")
+        return jsonify({'success': False, 'error': 'Server error'}), 500
 
 @auth.route('/logout', methods=['GET', 'POST'])
 @login_required

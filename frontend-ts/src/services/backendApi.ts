@@ -349,6 +349,12 @@ class BackendApiService {
       });
 
       if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        console.error('❌ backendApi: HTTP error:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorText: errorText.substring(0, 500)
+        });
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -356,8 +362,11 @@ class BackendApiService {
       const decoder = new TextDecoder();
 
       if (!reader) {
+        console.error('❌ backendApi: Response body is not readable');
         throw new Error('Response body is not readable');
       }
+      
+      console.log('✅ backendApi: Stream reader created, starting to read...');
 
       let buffer = '';
       let accumulatedText = '';
@@ -378,9 +387,18 @@ class BackendApiService {
         
         const { done, value } = await reader.read();
         
-        if (done) break;
+        if (done) {
+          console.log('✅ backendApi: Stream finished (done=true)');
+          break;
+        }
 
-        buffer += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        // Log first chunk for debugging
+        if (buffer.length < 200) {
+          console.log('📦 backendApi: Received chunk:', chunk.substring(0, 100));
+        }
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
@@ -424,6 +442,10 @@ class BackendApiService {
                 case 'token':
                   accumulatedText += data.token;
                   onToken(data.token);
+                  // Log first few tokens for debugging
+                  if (accumulatedText.length < 100) {
+                    console.log('📝 backendApi: Received token:', data.token.substring(0, 50));
+                  }
                   break;
                 case 'documents_found':
                   onStatus?.(`Found ${data.count} relevant document(s)`);
@@ -452,6 +474,15 @@ class BackendApiService {
                   }
                   break;
                 case 'complete':
+                  console.log('✅ backendApi: Received complete event:', {
+                    hasData: !!data.data,
+                    dataKeys: data.data ? Object.keys(data.data) : [],
+                    hasSummary: !!data.data?.summary,
+                    summaryLength: data.data?.summary?.length || 0,
+                    summaryPreview: data.data?.summary?.substring(0, 100) || 'N/A',
+                    citationsCount: data.data?.citations ? Object.keys(data.data.citations).length : 0,
+                    fullData: data.data // Include full data for debugging
+                  });
                   onComplete(data.data);
                   return;
                 case 'error':
@@ -459,7 +490,10 @@ class BackendApiService {
                   return;
               }
             } catch (e) {
-              console.warn('Failed to parse SSE data:', line, e);
+              console.warn('⚠️ backendApi: Failed to parse SSE data:', {
+                line: line.substring(0, 200),
+                error: e instanceof Error ? e.message : String(e)
+              });
             }
           }
         }
@@ -467,8 +501,13 @@ class BackendApiService {
     } catch (error) {
       // Don't call onError if it was aborted (user cancelled)
       if (error instanceof Error && error.message === 'Request aborted') {
+        console.log('ℹ️ backendApi: Request aborted by user');
         return; // Silently return on abort
       }
+      console.error('❌ backendApi: Error in queryDocumentsStreamFetch:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
       onError(error instanceof Error ? error.message : 'Unknown error');
     }
   }
@@ -813,6 +852,12 @@ class BackendApiService {
 
   async deletePropertyImage(propertyId: string, imageId: string): Promise<ApiResponse<any>> {
     return this.fetchApi(`/api/properties/${propertyId}/images/${imageId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async deleteProperty(propertyId: string): Promise<ApiResponse<any>> {
+    return this.fetchApi(`/api/properties/${propertyId}`, {
       method: 'DELETE',
     });
   }
@@ -1578,11 +1623,19 @@ class BackendApiService {
     email: string;
     password: string;
     firstName: string;
+    lastName?: string;
     companyName: string;
   }) {
     return this.fetchApi('/api/signup', {
       method: 'POST',
       body: JSON.stringify(userData),
+    });
+  }
+
+  async signInWithGoogle(credential: string) {
+    return this.fetchApi('/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
     });
   }
 

@@ -782,6 +782,28 @@ def process_document_classification(self, document_id, file_content, original_fi
                 logger.info(f"📸 Found {len(image_urls)} images")
                 logger.info(f"📦 Extracted {len(chunks)} section-based chunks")
                 
+                # Calculate total blocks count
+                total_blocks = sum(len(chunk.get('blocks', [])) for chunk in chunks)
+                chunks_with_blocks = sum(1 for chunk in chunks if chunk.get('blocks'))
+                logger.info(f"📊 Chunk details: {chunks_with_blocks}/{len(chunks)} chunks have blocks, {total_blocks} total blocks")
+                
+                # Log to processing history
+                try:
+                    history_service.log_step_completion(
+                        history_id=history_id,
+                        step_message=f"Parsing completed: {len(chunks)} chunks, {total_blocks} blocks",
+                        step_metadata={
+                            'reducto_job_id': job_id,
+                            'chunks_count': len(chunks),
+                            'chunks_with_blocks': chunks_with_blocks,
+                            'total_blocks': total_blocks,
+                            'text_length': len(document_text),
+                            'images_count': len(image_urls)
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"⚠️ Failed to log parsing completion: {log_error}")
+                
                 # Store job_id and image URLs in metadata (Supabase document_summary JSONB)
                 # Use helper function to safely parse document_summary
                 document_summary = get_document_summary_safe(document)
@@ -890,7 +912,14 @@ def process_document_classification(self, document_id, file_content, original_fi
                     )
                 
             except Exception as e:
-                logger.error(f"Reducto extraction failed: {e}")
+                logger.error(f"❌ Reducto parsing/extraction failed: {e}")
+                logger.error(f"   Document ID: {document_id}")
+                logger.error(f"   Filename: {original_filename}")
+                logger.error(f"   File size: {len(file_content)} bytes")
+                logger.error(f"   Error type: {type(e).__name__}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                
                 # Use fallback text extraction
                 document_text = f"Document: {original_filename}\nSize: {len(file_content)} bytes"
                 # Store fallback text in Supabase
@@ -908,11 +937,12 @@ def process_document_classification(self, document_id, file_content, original_fi
                         step_message=f"Text extraction completed with fallback: {len(document_text)} characters",
                         step_metadata={
                             'text_length': len(document_text),
-                        'fallback_used': True,
-                        'extraction_error': str(e),
-                        'provider': 'reducto'
-                    }
-                )
+                            'fallback_used': True,
+                            'extraction_error': str(e),
+                            'error_type': type(e).__name__,
+                            'provider': 'reducto'
+                        }
+                    )
             
                 # If Reducto failed, we still need classification_result for error handling
                 if classification_result is None:
@@ -1313,7 +1343,20 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
             logger.info("🔄 Starting document vector embedding for minimal extraction...")
             
             document_vectors_stored = 0
-            business_uuid = business_id  # Use business_id directly (already UUID format)
+            # Handle business_id that might be a company name (legacy) or UUID
+            try:
+                business_uuid = str(UUID(str(business_id))) if business_id else None
+            except (ValueError, TypeError):
+                # business_id is not a UUID (e.g., "SoloSway"), try to get UUID from mapping
+                try:
+                    from .services.supabase_auth_service import SupabaseAuthService
+                    auth_service = SupabaseAuthService()
+                    business_uuid = auth_service.get_business_uuid(business_id)
+                    if not business_uuid:
+                        business_uuid = auth_service.ensure_business_uuid(business_id)
+                except Exception as lookup_error:
+                    logger.warning(f"Failed to lookup business UUID: {lookup_error}")
+                    business_uuid = None
             
             try:
                 from .services.vector_service import SupabaseVectorService
@@ -1372,14 +1415,36 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                             # Extract chunk texts for embedding (use embed if available, fallback to content)
                             chunk_texts = []
                             chunk_metadata_list = []
+                            chunks_filtered_count = 0
+                            total_blocks_count = 0
                             
-                            for chunk in reducto_chunks:
+                            logger.info(f"🔄 Processing {len(reducto_chunks)} chunks for embedding...")
+                            
+                            for i, chunk in enumerate(reducto_chunks):
                                 # Prefer embed (optimized for embeddings), fallback to content
                                 embed_text = chunk.get('embed', '')
                                 content_text = chunk.get('content', '')
                                 
                                 # Choose text to embed
                                 text_to_embed = embed_text if embed_text else content_text
+                                
+                                # Track blocks
+                                blocks = chunk.get('blocks', [])
+                                total_blocks_count += len(blocks)
+                                
+                                # FALLBACK: If chunk has no embed/content, extract text from blocks
+                                if not text_to_embed:
+                                    if blocks:
+                                        # Extract text from all blocks
+                                        block_texts = []
+                                        for block in blocks:
+                                            if isinstance(block, dict):
+                                                block_text = block.get('text', '') or block.get('content', '')
+                                                if block_text:
+                                                    block_texts.append(block_text)
+                                        if block_texts:
+                                            text_to_embed = ' '.join(block_texts)
+                                            logger.info(f"✅ Extracted text from {len(block_texts)} blocks for chunk {i+1} (chunk had no embed/content)")
                                 
                                 if text_to_embed:
                                     chunk_texts.append(text_to_embed)
@@ -1395,7 +1460,7 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                                     
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
-                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
+                                        'blocks': blocks,  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
                                     
@@ -1407,9 +1472,16 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                                         chunk_meta['has_section_header'] = False
                                     
                                     chunk_metadata_list.append(chunk_meta)
+                                else:
+                                    chunks_filtered_count += 1
+                                    logger.warning(f"⚠️ Chunk {i+1} filtered out - no embed/content text and no block text")
+                                    logger.info(f"   Chunk has blocks: {bool(blocks)}, block count: {len(blocks)}")
                             
                             chunks = chunk_texts
                             logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
+                            if chunks_filtered_count > 0:
+                                logger.warning(f"⚠️ Filtered out {chunks_filtered_count} chunks (no text content)")
+                            logger.info(f"📊 Chunk processing summary: {len(reducto_chunks)} retrieved → {len(chunks)} chunks with text, {total_blocks_count} total blocks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
                             chunks = vector_service.chunk_text(document_text, chunk_size=1200, overlap=None)
@@ -1426,24 +1498,104 @@ def process_document_minimal_extraction(self, document_id, file_content, origina
                         }
                         
                         # Store document vectors with immediate embedding (same as full extraction)
-                        success = vector_service.store_document_vectors(
-                            str(document_id), 
-                            chunks, 
-                            metadata,
-                            chunk_metadata_list=chunk_metadata_list,
-                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
-                        )
-                        
-                        if success:
-                            document_vectors_stored = len(chunks)
-                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
+                        if chunks:
+                            logger.info(f"🚀 Generating embeddings for {len(chunks)} chunks...")
+                            success = vector_service.store_document_vectors(
+                                str(document_id), 
+                                chunks, 
+                                metadata,
+                                chunk_metadata_list=chunk_metadata_list,
+                                lazy_embedding=False  # Immediate embedding - generates embeddings right away
+                            )
+                            
+                            if success:
+                                document_vectors_stored = len(chunks)
+                                logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
+                                
+                                # Log to processing history with metrics
+                                try:
+                                    doc_storage.log_processing_step(
+                                        document_id=str(document_id),
+                                        step_name='vector_storage',
+                                        step_status='completed',
+                                        step_message=f"Stored {document_vectors_stored} vectors with embeddings",
+                                        step_metadata={
+                                            'chunks_processed': len(chunks),
+                                            'vectors_stored': document_vectors_stored,
+                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                            'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else 0,
+                                            'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0
+                                        },
+                                        business_id=business_id
+                                    )
+                                except Exception as log_error:
+                                    logger.warning(f"⚠️ Failed to log vector storage step: {log_error}")
+                            else:
+                                logger.error(f"❌ Failed to store document vectors")
+                                # Log failure to processing history
+                                try:
+                                    doc_storage.log_processing_step(
+                                        document_id=str(document_id),
+                                        step_name='vector_storage',
+                                        step_status='failed',
+                                        step_message="Failed to store document vectors",
+                                        step_metadata={
+                                            'chunks_processed': len(chunks),
+                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                            'error': 'Vector storage returned False'
+                                        },
+                                        business_id=business_id
+                                    )
+                                except Exception as log_error:
+                                    logger.warning(f"⚠️ Failed to log vector storage failure: {log_error}")
                         else:
-                            logger.error(f"❌ Failed to store document vectors")
+                            logger.warning(f"⚠️ No chunks to store for document - chunks were filtered out or empty")
+                            logger.warning(f"   Retrieved chunks: {len(reducto_chunks) if reducto_chunks else 0}")
+                            logger.warning(f"   Chunks with text: 0")
+                            # Log this as a warning step
+                            try:
+                                doc_storage.log_processing_step(
+                                    document_id=str(document_id),
+                                    step_name='vector_storage',
+                                    step_status='failed',
+                                    step_message="No chunks to store - all chunks were filtered out (no text content)",
+                                    step_metadata={
+                                        'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                        'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else len(reducto_chunks) if reducto_chunks else 0,
+                                        'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0,
+                                        'error': 'No chunks had embed/content text or extractable block text'
+                                    },
+                                    business_id=business_id
+                                )
+                            except Exception as log_error:
+                                logger.warning(f"⚠️ Failed to log vector storage warning: {log_error}")
                             
                     except Exception as e:
-                        logger.error(f"⚠️ Error chunking/storing document vectors: {e}")
+                        logger.error(f"❌ Error chunking/storing document vectors: {e}")
+                        logger.error(f"   Document ID: {document_id}")
+                        logger.error(f"   Chunks retrieved: {len(reducto_chunks) if reducto_chunks else 0}")
+                        logger.error(f"   Chunks with text: {len(chunks) if 'chunks' in locals() else 0}")
+                        logger.error(f"   Error type: {type(e).__name__}")
                         import traceback
-                        traceback.print_exc()
+                        logger.error(f"   Traceback: {traceback.format_exc()}")
+                        
+                        # Log to processing history
+                        try:
+                            doc_storage.log_processing_step(
+                                document_id=str(document_id),
+                                step_name='vector_storage',
+                                step_status='failed',
+                                step_message=f"Error chunking/storing vectors: {str(e)}",
+                                step_metadata={
+                                    'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                    'chunks_processed': len(chunks) if 'chunks' in locals() else 0,
+                                    'error': str(e),
+                                    'error_type': type(e).__name__
+                                },
+                                business_id=business_id
+                            )
+                        except Exception as log_error:
+                            logger.warning(f"⚠️ Failed to log vector storage error: {log_error}")
                 else:
                     logger.warning("⚠️ No document text available for chunking/embedding")
                     
@@ -1569,7 +1721,27 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 f.write(file_content)
             
             print(f"Successfully saved direct content to {temp_file_path}")
-            business_uuid = str(UUID(str(business_id))) if business_id else None
+            # Handle business_id that might be a company name (legacy) or UUID
+            try:
+                business_uuid = str(UUID(str(business_id))) if business_id else None
+            except (ValueError, TypeError):
+                # business_id is not a UUID (e.g., "SoloSway"), try to get UUID from mapping
+                print(f"⚠️  business_id '{business_id}' is not a UUID, looking up UUID...")
+                try:
+                    from .services.supabase_auth_service import SupabaseAuthService
+                    auth_service = SupabaseAuthService()
+                    business_uuid = auth_service.get_business_uuid(business_id)
+                    if not business_uuid:
+                        # Try ensure_business_uuid which creates mapping if needed
+                        business_uuid = auth_service.ensure_business_uuid(business_id)
+                    print(f"✅ Found business UUID: {business_uuid}")
+                except Exception as lookup_error:
+                    print(f"❌ Failed to lookup business UUID: {lookup_error}")
+                    business_uuid = None
+            
+            if not business_uuid:
+                raise ValueError(f"Could not determine business UUID from business_id: {business_id}")
+            
             print(f"Processing document for business_id: {business_uuid}")
             print(f"Image extraction directory: {temp_image_dir}")
         
@@ -1878,9 +2050,33 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                 else:
                     logger.info(f"ℹ️ No images to process")
                 
-                extraction = future_extraction.result()
-                extracted_data = extraction['data']
-                logger.info(f"✅ Parallel extraction completed")
+                try:
+                    extraction = future_extraction.result()
+                    extracted_data = extraction['data']
+                    logger.info(f"✅ Parallel extraction completed")
+                except Exception as e:
+                    logger.error(f"❌ Reducto extraction failed: {e}")
+                    logger.error(f"   Job ID: {job_id}")
+                    logger.error(f"   Schema: {classification_type}")
+                    logger.error(f"   Document ID: {document_id}")
+                    # Log extraction failure to processing history
+                    try:
+                        doc_storage.log_processing_step(
+                            document_id=str(document_id),
+                            step_name='extraction',
+                            step_status='failed',
+                            step_message=f"Reducto extraction failed: {str(e)}",
+                            step_metadata={
+                                'reducto_job_id': job_id,
+                                'classification_type': classification_type,
+                                'error': str(e),
+                                'error_type': type(e).__name__
+                            },
+                            business_id=business_id
+                        )
+                    except Exception as log_error:
+                        logger.warning(f"⚠️ Failed to log extraction error: {log_error}")
+                    raise  # Re-raise to trigger fallback handling
             
             # Transform to match existing structure
             # Reducto returns: {'data': {'subject_property': {...}}}
@@ -2332,13 +2528,35 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                             
                             MAX_CHUNK_SIZE = 30000  # ~7500 tokens, safe margin
                             
-                            for chunk in reducto_chunks:
+                            chunks_filtered_count = 0
+                            total_blocks_count = 0
+                            logger.info(f"🔄 Processing {len(reducto_chunks)} chunks for embedding...")
+                            
+                            for i, chunk in enumerate(reducto_chunks):
                                 # Prefer embed (optimized for embeddings), fallback to content
                                 embed_text = chunk.get('embed', '')
                                 content_text = chunk.get('content', '')
                                 
                                 # Choose text to embed
                                 text_to_embed = embed_text if embed_text else content_text
+                                
+                                # Track blocks
+                                blocks = chunk.get('blocks', [])
+                                total_blocks_count += len(blocks)
+                                
+                                # FALLBACK: If chunk has no embed/content, extract text from blocks
+                                if not text_to_embed:
+                                    if blocks:
+                                        # Extract text from all blocks
+                                        block_texts = []
+                                        for block in blocks:
+                                            if isinstance(block, dict):
+                                                block_text = block.get('text', '') or block.get('content', '')
+                                                if block_text:
+                                                    block_texts.append(block_text)
+                                        if block_texts:
+                                            text_to_embed = ' '.join(block_texts)
+                                            logger.info(f"✅ Extracted text from {len(block_texts)} blocks for chunk {i+1} (chunk had no embed/content)")
                                 
                                 if text_to_embed:
                                     chunk_texts.append(text_to_embed)
@@ -2354,7 +2572,7 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                     
                                     chunk_meta = {
                                         'bbox': chunk_bbox,  # Chunk-level bbox
-                                        'blocks': chunk.get('blocks', []),  # All blocks with bbox
+                                        'blocks': blocks,  # All blocks with bbox
                                         'page': chunk_page  # Robustly extracted page number
                                     }
                                     
@@ -2366,9 +2584,16 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                                         chunk_meta['has_section_header'] = False
                                     
                                     chunk_metadata_list.append(chunk_meta)
+                                else:
+                                    chunks_filtered_count += 1
+                                    logger.warning(f"⚠️ Chunk {i+1} filtered out - no embed/content text and no block text")
+                                    logger.info(f"   Chunk has blocks: {bool(blocks)}, block count: {len(blocks)}")
                             
                             chunks = chunk_texts
                             logger.info(f"✅ Using Reducto section-based chunks with bbox metadata: {len(chunks)} chunks")
+                            if chunks_filtered_count > 0:
+                                logger.warning(f"⚠️ Filtered out {chunks_filtered_count} chunks (no text content)")
+                            logger.info(f"📊 Chunk processing summary: {len(reducto_chunks)} retrieved → {len(chunks)} chunks with text, {total_blocks_count} total blocks")
                         else:
                             # Fallback: Chunk the document text manually (no bbox metadata)
                             # Use dynamic overlap (None = auto-calculate based on content density)
@@ -2387,22 +2612,104 @@ def process_document_with_dual_stores(self, document_id, file_content, original_
                         
                         # Store document vectors with bbox metadata and generate embeddings immediately
                         # Immediate embedding: generates embeddings synchronously for simpler RAG architecture
-                        success = vector_service.store_document_vectors(
-                            str(document_id), 
-                            chunks, 
-                            metadata,
-                            chunk_metadata_list=chunk_metadata_list,
-                            lazy_embedding=False  # Immediate embedding - generates embeddings right away
-                        )
-                        
-                        if success:
-                            document_vectors_stored = len(chunks)
-                            logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
+                        if chunks:
+                            logger.info(f"🚀 Generating embeddings for {len(chunks)} chunks...")
+                            success = vector_service.store_document_vectors(
+                                str(document_id), 
+                                chunks, 
+                                metadata,
+                                chunk_metadata_list=chunk_metadata_list,
+                                lazy_embedding=False  # Immediate embedding - generates embeddings right away
+                            )
+                            
+                            if success:
+                                document_vectors_stored = len(chunks)
+                                logger.info(f"✅ Stored {document_vectors_stored} document vectors with embeddings (immediate mode)")
+                                
+                                # Log to processing history with metrics
+                                try:
+                                    doc_storage.log_processing_step(
+                                        document_id=str(document_id),
+                                        step_name='vector_storage',
+                                        step_status='completed',
+                                        step_message=f"Stored {document_vectors_stored} vectors with embeddings",
+                                        step_metadata={
+                                            'chunks_processed': len(chunks),
+                                            'vectors_stored': document_vectors_stored,
+                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                            'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else 0,
+                                            'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0
+                                        },
+                                        business_id=business_id
+                                    )
+                                except Exception as log_error:
+                                    logger.warning(f"⚠️ Failed to log vector storage step: {log_error}")
+                            else:
+                                logger.error(f"❌ Failed to store document vectors")
+                                # Log failure to processing history
+                                try:
+                                    doc_storage.log_processing_step(
+                                        document_id=str(document_id),
+                                        step_name='vector_storage',
+                                        step_status='failed',
+                                        step_message="Failed to store document vectors",
+                                        step_metadata={
+                                            'chunks_processed': len(chunks),
+                                            'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                            'error': 'Vector storage returned False'
+                                        },
+                                        business_id=business_id
+                                    )
+                                except Exception as log_error:
+                                    logger.warning(f"⚠️ Failed to log vector storage failure: {log_error}")
+                        else:
+                            logger.warning(f"⚠️ No chunks to store for document - chunks were filtered out or empty")
+                            logger.warning(f"   Retrieved chunks: {len(reducto_chunks) if reducto_chunks else 0}")
+                            logger.warning(f"   Chunks with text: 0")
+                            # Log this as a warning step
+                            try:
+                                doc_storage.log_processing_step(
+                                    document_id=str(document_id),
+                                    step_name='vector_storage',
+                                    step_status='failed',
+                                    step_message="No chunks to store - all chunks were filtered out (no text content)",
+                                    step_metadata={
+                                        'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                        'chunks_filtered': chunks_filtered_count if 'chunks_filtered_count' in locals() else len(reducto_chunks) if reducto_chunks else 0,
+                                        'total_blocks': total_blocks_count if 'total_blocks_count' in locals() else 0,
+                                        'error': 'No chunks had embed/content text or extractable block text'
+                                    },
+                                    business_id=business_id
+                                )
+                            except Exception as log_error:
+                                logger.warning(f"⚠️ Failed to log vector storage warning: {log_error}")
                             
                     except Exception as e:
-                        print(f"⚠️ Error chunking/storing document vectors: {e}")
+                        logger.error(f"❌ Error chunking/storing document vectors: {e}")
+                        logger.error(f"   Document ID: {document_id}")
+                        logger.error(f"   Chunks retrieved: {len(reducto_chunks) if reducto_chunks else 0}")
+                        logger.error(f"   Chunks with text: {len(chunks) if 'chunks' in locals() else 0}")
+                        logger.error(f"   Error type: {type(e).__name__}")
                         import traceback
-                        traceback.print_exc()
+                        logger.error(f"   Traceback: {traceback.format_exc()}")
+                        
+                        # Log to processing history
+                        try:
+                            doc_storage.log_processing_step(
+                                document_id=str(document_id),
+                                step_name='vector_storage',
+                                step_status='failed',
+                                step_message=f"Error chunking/storing vectors: {str(e)}",
+                                step_metadata={
+                                    'chunks_retrieved': len(reducto_chunks) if reducto_chunks else 0,
+                                    'chunks_processed': len(chunks) if 'chunks' in locals() else 0,
+                                    'error': str(e),
+                                    'error_type': type(e).__name__
+                                },
+                                business_id=business_id
+                            )
+                        except Exception as log_error:
+                            logger.warning(f"⚠️ Failed to log vector storage error: {log_error}")
                 
                 print(f"✅ Document vector embedding completed: {document_vectors_stored} vectors stored")
                 

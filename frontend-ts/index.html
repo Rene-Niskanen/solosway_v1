@@ -2,8 +2,9 @@
 <html lang="en">
   <head>
     <!-- react-grab dev tool - allows grabbing UI elements for Cursor/Claude -->
+    <!-- Note: SES warnings may appear from browser extensions or this library -->
     <script
-      src="//unpkg.com/react-grab/dist/index.global.js"
+      src="//unpkg.com/react-grab@0.1.0-beta.11/dist/index.global.js"
       crossorigin="anonymous"
       data-enabled="true"
     ></script>
@@ -28,6 +29,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+    <!-- Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
 
   <body>

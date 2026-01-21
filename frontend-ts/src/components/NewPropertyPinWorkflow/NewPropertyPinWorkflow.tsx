@@ -23,6 +23,11 @@ interface UploadedFile {
   thumbnailUrl?: string; // For PDF/document previews
 }
 
+interface TeamMember {
+  email: string;
+  accessLevel: 'viewer' | 'editor';
+}
+
 interface NewPropertyPinWorkflowProps {
   isVisible: boolean;
   onClose: () => void;
@@ -62,12 +67,17 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const [defaultPreviewUrl, setDefaultPreviewUrl] = useState<string | null>(null);
   const [lightPreviewUrl, setLightPreviewUrl] = useState<string | null>(null);
-  const [teamMemberEmails, setTeamMemberEmails] = useState<string[]>([]);
+  const [teamMemberEmails, setTeamMemberEmails] = useState<TeamMember[]>([]);
   const [teamMemberEmailInput, setTeamMemberEmailInput] = useState<string>('');
+  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
+  const [popupScale, setPopupScale] = useState<number>(1);
   const defaultPreviewMap = useRef<mapboxgl.Map | null>(null);
   const lightPreviewMap = useRef<mapboxgl.Map | null>(null);
   const defaultPreviewContainer = useRef<HTMLDivElement>(null);
   const lightPreviewContainer = useRef<HTMLDivElement>(null);
+  const popupElementRef = useRef<HTMLDivElement | null>(null);
+  const popupZoomListenerRef = useRef<(() => void) | null>(null);
+  const referenceZoomRef = useRef<number | null>(null);
 
   // Animated placeholder names
   const placeholderNames = [
@@ -104,6 +114,15 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       setTeamMemberEmails([]);
       setTeamMemberEmailInput('');
       setIsSuccess(false);
+      setPopupScale(1); // Reset scale to default
+      referenceZoomRef.current = null;
+      
+      // Clean up zoom listener when popup closes
+      if (popupZoomListenerRef.current) {
+        popupZoomListenerRef.current();
+        popupZoomListenerRef.current = null;
+      }
+      popupElementRef.current = null;
     }
   }, [isVisible]);
 
@@ -223,24 +242,77 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     };
   }, [isVisible, mapboxToken]);
 
+  // Helper function to update popup scale based on zoom (same logic as PropertyTitleCard)
+  const updatePopupScale = useCallback((referenceZoom: number) => {
+    if (!map.current) return;
+    
+    const currentZoom = map.current.getZoom();
+    
+    // Same scaling formula as PropertyTitleCard
+    // At referenceZoom, scale is 1.0 (normal size)
+    // When zoomed OUT (currentZoom < referenceZoom): scale < 1.0 (popup gets smaller)
+    // When zoomed IN (currentZoom > referenceZoom): scale > 1.0 (popup gets larger)
+    let scale = Math.pow(2, currentZoom - referenceZoom);
+    
+    // Clamp scale to reasonable bounds (same as PropertyTitleCard)
+    // Min: 0.05 (5% of original size) - allows popup to become very small when zoomed out far
+    // Max: 2.0 (200% of original size) - prevents popup from becoming too large when zoomed in
+    scale = Math.max(0.05, Math.min(2.0, scale));
+    
+    // Update state so framer-motion can apply the transform
+    setPopupScale(scale);
+  }, []);
+
   // Update marker when location changes
   useEffect(() => {
-    if (!map.current || !selectedLocation) return;
+    if (!map.current || !selectedLocation) {
+      setPopupPosition(null);
+      return;
+    }
 
     if (marker.current) {
       marker.current.remove();
     }
 
     const markerElement = document.createElement('div');
+    markerElement.style.cssText = `
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,0.3));
+    `;
     markerElement.innerHTML = `
-      <div style="
-        width: 14px;
-        height: 14px;
-        background: #18181B;
-        border-radius: 50%;
-        border: 2px solid white;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-      "></div>
+      <svg width="26" height="30" viewBox="0 0 26 30" fill="none" xmlns="http://www.w3.org/2000/svg" style="display: block;">
+        <!-- White interior -->
+        <path
+          d="
+            M3.5 12.5
+            L13 5.5
+            L22.5 12.5
+            V26
+            H3.5
+            V12.5
+            Z
+          "
+          fill="white"
+        />
+        <!-- Black outline -->
+        <path
+          d="
+            M3.5 12.5
+            L13 5.5
+            L22.5 12.5
+            V26
+            H3.5
+            V12.5
+            Z
+          "
+          stroke="black"
+          stroke-width="2"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+      </svg>
     `;
 
     marker.current = new mapboxgl.Marker({
@@ -250,12 +322,140 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       .setLngLat([selectedLocation.lng, selectedLocation.lat])
       .addTo(map.current);
 
+    // Position pin lower on screen to make room for popup above
+    // Offset center north (higher lat) so pin appears lower on screen relative to viewport center
+    // At zoom 18, ~0.0001 degrees ≈ 11 meters ≈ 150-200 pixels
+    // Moderate offset to position pin lower in viewport so popup has more space at top when many files
+    const baseLatOffset = 0.00045; // ~50 meters north - positions pin slightly lower to give more space for popup
+    
+    const referenceZoom = 18;
     map.current.flyTo({
-      center: [selectedLocation.lng, selectedLocation.lat],
-      zoom: 18,
+      center: [selectedLocation.lng, selectedLocation.lat + baseLatOffset],
+      zoom: referenceZoom,
       duration: 800
     });
-  }, [selectedLocation]);
+
+    // Set reference zoom for scaling and initialize scale
+    referenceZoomRef.current = referenceZoom;
+    updatePopupScale(referenceZoom);
+
+    // Clean up existing zoom listener if any
+    if (popupZoomListenerRef.current) {
+      popupZoomListenerRef.current();
+      popupZoomListenerRef.current = null;
+    }
+
+    // Set up zoom event listeners for popup scaling
+    const zoomHandler = () => {
+      if (referenceZoomRef.current !== null) {
+        updatePopupScale(referenceZoomRef.current);
+      }
+    };
+
+    const zoomEndHandler = () => {
+      if (referenceZoomRef.current !== null) {
+        updatePopupScale(referenceZoomRef.current);
+      }
+    };
+
+    // Listen to both 'zoom' (during animation) and 'zoomend' (after animation) events
+    map.current.on('zoom', zoomHandler);
+    map.current.on('zoomend', zoomEndHandler);
+
+    // Store cleanup function
+    popupZoomListenerRef.current = () => {
+      if (map.current) {
+        map.current.off('zoom', zoomHandler);
+        map.current.off('zoomend', zoomEndHandler);
+      }
+    };
+
+    // Cleanup function for this effect
+    return () => {
+      if (popupZoomListenerRef.current) {
+        popupZoomListenerRef.current();
+        popupZoomListenerRef.current = null;
+      }
+    };
+  }, [selectedLocation, updatePopupScale]);
+
+  // Calculate pop-up position above pin
+  useEffect(() => {
+    if (!map.current || !selectedLocation) {
+      setPopupPosition(null);
+      return;
+    }
+
+    const updatePopupPosition = () => {
+      if (!map.current || !selectedLocation) return;
+      
+      const point = map.current.project([selectedLocation.lng, selectedLocation.lat]);
+      const containerRect = map.current.getContainer().getBoundingClientRect();
+      
+      // Use estimated width for positioning (will be adjusted based on actual content)
+      // The popup uses fit-content, so we estimate based on content
+      const estimatedPopupWidth = uploadedFiles.length > 0 ? 280 : 250;
+      const spacing = 30; // Pin radius (10px) + gap above pin (20px) = 30px above pin center (matches PropertyTitleCard)
+      
+      // Calculate base position (centered above pin)
+      const pinX = containerRect.left + point.x;
+      const pinY = containerRect.top + point.y;
+      let x = pinX;
+      let y = pinY - spacing; // Popup bottom edge position (before transform)
+      
+      // Constrain horizontal position to keep popup on screen
+      // Use estimated width for initial positioning, actual element will be measured
+      const minX = estimatedPopupWidth / 2; // Left edge constraint
+      const maxX = window.innerWidth - (estimatedPopupWidth / 2); // Right edge constraint
+      x = Math.max(minX, Math.min(maxX, x));
+      
+      // If popup element exists, use its actual width for more accurate positioning
+      if (popupElementRef.current) {
+        const actualWidth = popupElementRef.current.offsetWidth;
+        if (actualWidth > 0) {
+          const actualMinX = actualWidth / 2;
+          const actualMaxX = window.innerWidth - (actualWidth / 2);
+          x = Math.max(actualMinX, Math.min(actualMaxX, x));
+        }
+      }
+      
+      // Constrain vertical position to keep popup on screen
+      // Popup uses transform: translate(-50%, -100%), so bottom edge ends up at y
+      // Minimum: popup bottom edge at top of viewport (y >= spacing)
+      // Maximum: popup bottom edge at pin position (y <= pinY to stay above pin)
+      const minY = spacing; // Don't go above viewport top
+      const maxY = pinY; // Don't go below pin center
+      y = Math.max(minY, Math.min(maxY, y));
+      
+      setPopupPosition({
+        x,
+        y
+      });
+    };
+
+    // Initial position calculation
+    updatePopupPosition();
+    
+    // Update position when map moves or zooms
+    map.current.on('moveend', updatePopupPosition);
+    map.current.on('zoomend', updatePopupPosition);
+    map.current.on('move', updatePopupPosition);
+    
+    // Update position when window is resized to keep popup on screen
+    const handleResize = () => {
+      updatePopupPosition();
+    };
+    window.addEventListener('resize', handleResize);
+    
+    return () => {
+      if (map.current) {
+        map.current.off('moveend', updatePopupPosition);
+        map.current.off('zoomend', updatePopupPosition);
+        map.current.off('move', updatePopupPosition);
+      }
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [selectedLocation, uploadedFiles.length]);
 
   // Initialize both preview maps for button and popup thumbnails
   useEffect(() => {
@@ -473,7 +673,6 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     };
 
     setUploadedFiles(prev => [...prev, newFile]);
-    setUploading(true);
 
     // Generate thumbnail immediately for PDFs (before upload completes)
     const isPDF = file.type === 'application/pdf' || 
@@ -531,8 +730,6 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       setUploadedFiles(prev => prev.map(f =>
         f.id === fileId ? { ...f, uploadStatus: 'error' } : f
       ));
-    } finally {
-      setUploading(false);
     }
   }, []);
 
@@ -548,17 +745,27 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    for (const file of droppedFiles) {
-      await handleFileAdd(file);
+    
+    // Only allow file upload if address is selected
+    if (!selectedLocation) {
+      return;
     }
+    
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    // Upload all files simultaneously
+    await Promise.allSettled(droppedFiles.map(file => handleFileAdd(file)));
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []);
-    for (const file of selectedFiles) {
-      await handleFileAdd(file);
+    // Only allow file upload if address is selected
+    if (!selectedLocation) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
     }
+    
+    const selectedFiles = Array.from(e.target.files || []);
+    // Upload all files simultaneously
+    await Promise.allSettled(selectedFiles.map(file => handleFileAdd(file)));
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -631,9 +838,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     }, 500);
     
     // Fly to location with higher zoom for better property detail
+    // Offset center north to position pin lower on screen
     if (map.current) {
+      const baseLatOffset = 0.00045; // ~50 meters north - positions pin slightly lower to give more space for popup
       map.current.flyTo({
-        center: [lng, lat],
+        center: [lng, lat + baseLatOffset],
         zoom: 18,
         duration: 800
       });
@@ -691,11 +900,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
       // Add team member access
       if (teamMemberEmails.length > 0) {
-        const accessPromises = teamMemberEmails.map(async (email) => {
+        const accessPromises = teamMemberEmails.map(async (member) => {
           try {
-            await backendApi.addPropertyAccess(newPropertyId, email, 'viewer');
+            await backendApi.addPropertyAccess(newPropertyId, member.email, member.accessLevel);
           } catch (error) {
-            console.error(`Failed to add access for ${email}:`, error);
+            console.error(`Failed to add access for ${member.email}:`, error);
             // Continue even if some emails fail
           }
         });
@@ -746,11 +955,11 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   // Handle team member addition
   const handleAddTeamMember = useCallback(() => {
     const email = teamMemberEmailInput.trim().toLowerCase();
-    if (email && !teamMemberEmails.includes(email)) {
+    if (email && !teamMemberEmails.some(member => member.email === email)) {
       // Basic email validation
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (emailRegex.test(email)) {
-        setTeamMemberEmails(prev => [...prev, email]);
+        setTeamMemberEmails(prev => [...prev, { email, accessLevel: 'viewer' }]);
         setTeamMemberEmailInput('');
       }
     }
@@ -758,7 +967,14 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
   // Handle team member removal
   const handleRemoveTeamMember = useCallback((email: string) => {
-    setTeamMemberEmails(prev => prev.filter(e => e !== email));
+    setTeamMemberEmails(prev => prev.filter(member => member.email !== email));
+  }, []);
+
+  // Handle access level change
+  const handleAccessLevelChange = useCallback((email: string, accessLevel: 'viewer' | 'editor') => {
+    setTeamMemberEmails(prev => prev.map(member => 
+      member.email === email ? { ...member, accessLevel } : member
+    ));
   }, []);
 
   const formatFileSize = (bytes: number) => {
@@ -767,7 +983,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
-  const canCreate = selectedLocation !== null && !isCreating;
+  const canCreate = selectedLocation !== null && uploadedFiles.length > 0 && propertyTitle.trim().length > 0 && !isCreating;
 
   if (!isVisible) return null;
 
@@ -821,10 +1037,10 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
             <X className="w-4 h-4 text-[#6B6B6B]" strokeWidth={2} />
           </button>
           
-          {/* Location Selection - Two Column Layout */}
-          <div className="w-full h-full flex" style={{ backgroundColor: '#F1F1F1' }}>
-              {/* Left Column: Map with Overlay Search Bar */}
-              <div className="relative" style={{ width: '68%', height: '100%' }}>
+          {/* Location Selection - Full Width Map */}
+          <div className="w-full h-full relative" style={{ backgroundColor: '#F1F1F1' }}>
+              {/* Map Container - Full Width */}
+              <div className="relative" style={{ width: '100%', height: '100%' }}>
                 {/* Map Container */}
                 <div ref={mapContainer} className="absolute inset-0" style={{ width: '100%', height: '100%' }}>
                   {!mapboxToken && (
@@ -943,8 +1159,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                 <div 
                   className="absolute"
                   style={{ 
-                    top: '16px',
-                    left: '32px',
+                    top: '24px',
+                    left: '24px',
                     zIndex: 50,
                     pointerEvents: 'none',
                     width: 'clamp(300px, 40vw, 500px)',
@@ -967,7 +1183,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                     <div 
                       className="relative flex items-center"
                       style={{
-                        background: '#FFFFFF',
+                        background: '#FCFCFC',
                         border: '1px solid rgba(82, 101, 128, 0.35)',
                         // Add a subtle divider line when suggestions are visible
                         borderBottom: showSuggestions && suggestions.length > 0 
@@ -1088,8 +1304,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                           left: 0,
                           right: 0,
                           width: '100%',
-                          background: '#FFFFFF',
-                          backgroundColor: '#FFFFFF', // Ensure solid white, no transparency
+                          background: '#FCFCFC',
+                          backgroundColor: '#FCFCFC', // Ensure solid color, no transparency
                           border: '1px solid rgba(82, 101, 128, 0.35)',
                           borderTop: 'none',
                           borderRadius: '0 0 24px 24px',
@@ -1137,585 +1353,448 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                 </div>
               </div>
 
-              {/* Right Column: Address + Project Name + Attachments */}
-              <div 
-                className="flex flex-col custom-scrollbar relative" 
-                style={{ 
-                  width: '32%', 
-                  height: '100%', 
-                  backgroundColor: '#F1F1F1',
-                  overflowY: 'auto',
-                  scrollbarWidth: 'thin',
-                  scrollbarColor: 'rgba(0, 0, 0, 0.2) transparent',
-                  padding: '12px',
-                }}
-              >
-                <style>{`
-                  .custom-scrollbar::-webkit-scrollbar {
-                    width: 6px;
-                  }
-                  .custom-scrollbar::-webkit-scrollbar-track {
-                    background: transparent;
-                  }
-                  .custom-scrollbar::-webkit-scrollbar-thumb {
-                    background-color: rgba(0, 0, 0, 0.2);
-                    border-radius: 3px;
-                  }
-                  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                    background-color: rgba(0, 0, 0, 0.3);
-                  }
-                `}</style>
-                  {/* Success Overlay Animation */}
-                  <AnimatePresence>
-                    {isSuccess && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="absolute inset-0 flex flex-col items-center justify-center z-10"
-                        style={{ 
-                          backgroundColor: 'rgba(241, 241, 241, 0.98)',
-                          borderRadius: '0',
-                        }}
-                      >
+              {/* Pop-up Above Pin - Only shows when address is selected */}
+              {selectedLocation && popupPosition && (
+                <AnimatePresence>
+                  <div
+                    className="fixed z-[100]"
+                    style={{
+                      left: `${popupPosition.x}px`,
+                      top: `${popupPosition.y}px`, // Position already calculated with spacing (30px) in updatePopupPosition
+                      transform: 'translate(-50%, -100%)',
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    <motion.div
+                      ref={popupElementRef}
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0, scale: popupScale }}
+                      exit={{ opacity: 0, y: -10 }}
+                      transition={{ scale: { duration: 0 } }}
+                      className="bg-white rounded-lg shadow-lg"
+                      style={{
+                        width: 'fit-content',
+                        minWidth: uploadedFiles.length > 0 ? '280px' : '250px',
+                        maxWidth: uploadedFiles.length > 0 ? '350px' : '350px',
+                        maxHeight: '70vh',
+                        overflowY: 'auto',
+                        padding: '20px',
+                        pointerEvents: 'auto',
+                        transformOrigin: 'center bottom'
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                    {/* Success Overlay Animation */}
+                    <AnimatePresence>
+                      {isSuccess && (
                         <motion.div
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ 
-                            type: 'spring', 
-                            damping: 15, 
-                            stiffness: 300,
-                            delay: 0.1 
-                          }}
-                          style={{
-                            width: '80px',
-                            height: '80px',
-                            borderRadius: '50%',
-                            backgroundColor: 'rgba(16, 163, 127, 0.1)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-white rounded-lg"
                         >
                           <motion.div
                             initial={{ scale: 0 }}
                             animate={{ scale: 1 }}
                             transition={{ 
                               type: 'spring', 
-                              damping: 12, 
-                              stiffness: 400,
-                              delay: 0.2 
+                              damping: 15, 
+                              stiffness: 300,
+                              delay: 0.1 
+                            }}
+                            style={{
+                              width: '80px',
+                              height: '80px',
+                              borderRadius: '50%',
+                              backgroundColor: 'rgba(16, 163, 127, 0.1)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
                             }}
                           >
-                            <Check className="w-10 h-10 text-[#10A37F]" strokeWidth={2.5} />
-                          </motion.div>
-                        </motion.div>
-                        <motion.p
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.35 }}
-                          style={{ 
-                            fontSize: '18px', 
-                            fontWeight: 600, 
-                            color: '#1A1A1A', 
-                            marginTop: '20px',
-                            letterSpacing: '-0.02em',
-                          }}
-                        >
-                          Project created!
-                        </motion.p>
-                        <motion.p
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 0.45 }}
-                          style={{ 
-                            fontSize: '14px', 
-                            color: '#6B6B6B', 
-                            marginTop: '8px',
-                          }}
-                        >
-                          Taking you there now...
-                        </motion.p>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  {/* Address Display as Removable Pill */}
-                  {selectedLocation && (
-                    <div style={{ marginBottom: '16px' }}>
-                      <div
-                        className="inline-flex items-center gap-2 relative transition-all duration-200"
-                        style={{
-                          padding: '8px 14px',
-                          backgroundColor: '#F7F7F8',
-                          border: 'none',
-                          borderRadius: '0',
-                          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-                          fontSize: '12px',
-                          color: '#1a1a1a',
-                          lineHeight: '1.4',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.transform = 'translateY(-1px)';
-                          e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.08)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.transform = 'translateY(0)';
-                          e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
-                        }}
-                      >
-                        <MapPin className="w-4 h-4 text-[#10A37F] flex-shrink-0" strokeWidth={1.5} />
-                        <span style={{ maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {selectedLocation.address}
-                        </span>
-                        <button
-                          onClick={handleAddressRemove}
-                          className="flex items-center justify-center flex-shrink-0 ml-1 transition-all duration-150"
-                          style={{
-                            width: '18px',
-                            height: '18px',
-                            borderRadius: '50%',
-                            backgroundColor: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: 0,
-                            marginLeft: '4px',
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
-                            const icon = e.currentTarget.querySelector('svg');
-                            if (icon) icon.style.color = '#EF4444';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                            const icon = e.currentTarget.querySelector('svg');
-                            if (icon) icon.style.color = '#9CA3AF';
-                          }}
-                        >
-                          <X className="w-3 h-3 text-[#9CA3AF] transition-colors duration-150" strokeWidth={2.5} />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Project name input */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <p style={{ fontSize: '12px', color: '#1A1A1A', marginBottom: '8px', fontWeight: 600, letterSpacing: '-0.02em' }}>
-                      Project name
-                    </p>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={propertyTitle}
-                        onChange={(e) => setPropertyTitle(e.target.value)}
-                        onFocus={(e) => {
-                          setIsInputFocused(true);
-                          e.currentTarget.style.borderColor = '#10A37F';
-                          e.currentTarget.style.boxShadow = '0 0 0 2px rgba(16, 163, 127, 0.15)';
-                        }}
-                        onBlur={(e) => {
-                          setIsInputFocused(false);
-                          e.currentTarget.style.borderColor = '#E9E9EB';
-                          e.currentTarget.style.boxShadow = 'none';
-                        }}
-                        onMouseEnter={(e) => {
-                          if (document.activeElement !== e.currentTarget) {
-                            e.currentTarget.style.borderColor = '#D1D1D1';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (document.activeElement !== e.currentTarget) {
-                            e.currentTarget.style.borderColor = '#E9E9EB';
-                          }
-                        }}
-                        className="w-full transition-all duration-150 focus:outline-none"
-                        style={{
-                          padding: '8px 10px',
-                          fontSize: '12px',
-                          fontWeight: 400,
-                          color: '#1a1a1a',
-                          backgroundColor: '#ffffff',
-                          border: '1px solid #E9E9EB',
-                          borderRadius: '0',
-                          letterSpacing: '-0.01em',
-                        }}
-                        placeholder={!isInputFocused ? displayedPlaceholder : ''}
-                      />
-                      <style>{`
-                        input::placeholder {
-                          color: #6B6B6B;
-                        }
-                      `}</style>
-                    </div>
-                  </div>
-
-                  {/* Files section */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <p style={{ fontSize: '12px', color: '#1A1A1A', marginBottom: '8px', fontWeight: 600, letterSpacing: '-0.02em' }}>
-                      Attachments
-                    </p>
-                    
-                    {/* Upload input field style */}
-                    <div
-                      onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-                      onDragLeave={(e) => { e.preventDefault(); setIsDragOver(false); }}
-                      onDrop={handleDrop}
-                      onClick={() => fileInputRef.current?.click()}
-                      className="cursor-pointer transition-all duration-200 relative"
-                      style={{
-                        padding: '16px 12px',
-                        borderRadius: '0',
-                        backgroundColor: isDragOver ? 'rgba(16, 163, 127, 0.04)' : '#F9F9F9',
-                        border: isDragOver ? '2px dashed #10A37F' : '2px dashed #E9E9EB',
-                        boxShadow: isDragOver ? '0 0 0 4px rgba(16, 163, 127, 0.08)' : 'none',
-                        marginBottom: uploadedFiles.length > 0 ? '12px' : '0',
-                        minHeight: '120px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isDragOver) {
-                          e.currentTarget.style.borderColor = '#10A37F';
-                          e.currentTarget.style.backgroundColor = 'rgba(16, 163, 127, 0.04)';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isDragOver) {
-                          e.currentTarget.style.borderColor = '#E9E9EB';
-                          e.currentTarget.style.backgroundColor = '#F9F9F9';
-                        }
-                      }}
-                    >
-                      <div className="flex flex-col items-center" style={{ gap: '10px' }}>
-                        <Upload className="w-6 h-6 text-[#9CA3AF] flex-shrink-0" strokeWidth={1.5} />
-                        <span style={{ fontSize: '12px', color: '#6B6B6B', fontWeight: 400, letterSpacing: '-0.01em' }}>
-                          Drop files here or <span style={{ color: '#10A37F', fontWeight: 500 }}>browse</span>
-                        </span>
-                      </div>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        onChange={handleFileSelect}
-                        className="hidden"
-                      />
-                    </div>
-
-                    {/* File List - Pill-based display */}
-                    {uploadedFiles.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {uploadedFiles.map((uploadedFile) => {
-                          const isImage = uploadedFile.file.type.startsWith('image/');
-                          const isPDF = uploadedFile.file.type === 'application/pdf' || 
-                                      uploadedFile.file.type === 'application/x-pdf' ||
-                                      uploadedFile.file.name.toLowerCase().endsWith('.pdf');
-                          
-                          return (
-                            <div
-                              key={uploadedFile.id}
-                              className="inline-flex items-center gap-2 relative transition-all duration-200"
-                              style={{
-                                padding: '8px 14px',
-                                height: '36px',
-                                backgroundColor: '#F7F7F8',
-                                border: 'none',
-                                borderRadius: '0',
-                                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-                                fontSize: '12px',
-                                color: '#1a1a1a',
-                                lineHeight: '1.4',
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.transform = 'translateY(-1px)';
-                                e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08)';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.transform = 'translateY(0)';
-                                e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04)';
+                            <motion.div
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              transition={{ 
+                                type: 'spring', 
+                                damping: 12, 
+                                stiffness: 400,
+                                delay: 0.2 
                               }}
                             >
-                              {/* File icon/thumbnail */}
-                              <div className="flex-shrink-0" style={{ width: '18px', height: '18px' }}>
-                                {isImage && uploadedFile.file.type.startsWith('image/') ? (
-                                  <img
-                                    src={URL.createObjectURL(uploadedFile.file)}
-                                    alt={uploadedFile.file.name}
-                                    style={{
-                                      width: '18px',
-                                      height: '18px',
-                                      objectFit: 'cover',
-                                      borderRadius: '4px',
-                                    }}
-                                  />
-                                ) : uploadedFile.thumbnailUrl ? (
-                                  <img
-                                    src={uploadedFile.thumbnailUrl}
-                                    alt={uploadedFile.file.name}
-                                    style={{
-                                      width: '18px',
-                                      height: '18px',
-                                      objectFit: 'cover',
-                                      borderRadius: '4px',
-                                    }}
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = 'none';
-                                    }}
-                                  />
-                                ) : (
-                                  <FileText className="w-4 h-4 text-[#6B6B6B]" strokeWidth={1.5} />
-                                )}
-                              </div>
-                              
-                              {/* Filename */}
-                              <span 
-                                style={{ 
-                                  maxWidth: '150px', 
-                                  overflow: 'hidden', 
-                                  textOverflow: 'ellipsis', 
-                                  whiteSpace: 'nowrap' 
-                                }}
-                              >
-                                {uploadedFile.file.name}
-                              </span>
-                              
-                              {/* Upload progress indicator */}
-                              {uploadedFile.uploadStatus === 'uploading' && (
-                                <div className="flex-shrink-0">
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#10A37F]" />
-                                </div>
-                              )}
-                              
-                              {/* Remove button */}
-                              <button
-                                onClick={(e) => { 
-                                  e.stopPropagation(); 
-                                  handleFileRemove(uploadedFile.id); 
-                                }}
-                                className="flex items-center justify-center flex-shrink-0 ml-1 transition-all duration-150"
-                                style={{
-                                  width: '18px',
-                                  height: '18px',
-                                  borderRadius: '50%',
-                                  backgroundColor: 'transparent',
-                                  border: 'none',
-                                  cursor: 'pointer',
-                                  padding: 0,
-                                  marginLeft: '4px',
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
-                                  const icon = e.currentTarget.querySelector('svg');
-                                  if (icon) icon.style.color = '#EF4444';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.backgroundColor = 'transparent';
-                                  const icon = e.currentTarget.querySelector('svg');
-                                  if (icon) icon.style.color = '#9CA3AF';
-                                }}
-                              >
-                                <X className="w-3 h-3 text-[#9CA3AF] transition-colors duration-150" strokeWidth={2.5} />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                              <Check className="w-10 h-10 text-[#10A37F]" strokeWidth={2.5} />
+                            </motion.div>
+                          </motion.div>
+                          <motion.p
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.35 }}
+                            style={{ 
+                              fontSize: '18px', 
+                              fontWeight: 600, 
+                              color: '#1A1A1A', 
+                              marginTop: '20px',
+                              letterSpacing: '-0.02em',
+                            }}
+                          >
+                            Project created!
+                          </motion.p>
+                          <motion.p
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.45 }}
+                            style={{ 
+                              fontSize: '14px', 
+                              color: '#6B6B6B', 
+                              marginTop: '8px',
+                            }}
+                          >
+                            Taking you there now...
+                          </motion.p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
 
-                  {/* Team members section */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <p style={{ fontSize: '12px', color: '#1A1A1A', marginBottom: '8px', fontWeight: 600, letterSpacing: '-0.02em' }}>
-                      Team members
-                    </p>
-                    
-                    {/* Email input with Add button */}
-                    <div className="flex gap-2" style={{ marginBottom: teamMemberEmails.length > 0 ? '12px' : '0' }}>
-                      <input
-                        type="email"
-                        value={teamMemberEmailInput}
-                        onChange={(e) => setTeamMemberEmailInput(e.target.value)}
-                        onKeyPress={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddTeamMember();
-                          }
+                    {/* Files section - Always visible when pin is placed */}
+                    <div style={{ marginBottom: uploadedFiles.length > 0 ? '16px' : '0' }}>
+                      {/* Drag and Drop Upload Area - Matching FilingSidebar design */}
+                      <div
+                        onDragOver={(e) => { 
+                          e.preventDefault(); 
+                          setIsDragOver(true); 
                         }}
-                        placeholder="Enter email address"
-                        onFocus={(e) => {
-                          e.currentTarget.style.borderColor = '#10A37F';
-                          e.currentTarget.style.boxShadow = '0 0 0 2px rgba(16, 163, 127, 0.15)';
+                        onDragLeave={(e) => { 
+                          e.preventDefault(); 
+                          setIsDragOver(false); 
                         }}
-                        onBlur={(e) => {
-                          e.currentTarget.style.borderColor = '#E9E9EB';
-                          e.currentTarget.style.boxShadow = 'none';
-                        }}
-                        onMouseEnter={(e) => {
-                          if (document.activeElement !== e.currentTarget) {
-                            e.currentTarget.style.borderColor = '#D1D1D1';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (document.activeElement !== e.currentTarget) {
-                            e.currentTarget.style.borderColor = '#E9E9EB';
-                          }
-                        }}
-                        className="flex-1 transition-all duration-150 focus:outline-none"
-                        style={{
-                          padding: '8px 10px',
-                          fontSize: '12px',
-                          fontWeight: 400,
-                          color: '#1a1a1a',
-                          backgroundColor: '#ffffff',
-                          border: '1px solid #E9E9EB',
-                          borderRadius: '0',
-                          letterSpacing: '-0.01em',
-                        }}
-                      />
-                      <button
-                        onClick={handleAddTeamMember}
-                        disabled={!teamMemberEmailInput.trim()}
-                        className="px-3 py-2 text-xs font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
-                        style={{
-                          backgroundColor: '#F7F7F8',
-                          color: '#1A1A1A',
-                          border: '1px solid #E9E9EB',
-                          borderRadius: '0',
-                        }}
-                        onMouseEnter={(e) => {
-                          if (teamMemberEmailInput.trim()) {
-                            e.currentTarget.style.backgroundColor = '#EFEFEF';
-                            e.currentTarget.style.transform = 'translateY(-1px)';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#F7F7F8';
-                          e.currentTarget.style.transform = 'translateY(0)';
-                        }}
+                        onDrop={handleDrop}
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`relative cursor-pointer transition-all duration-200 ${
+                          isDragOver ? 'opacity-90' : ''
+                        } ${uploadedFiles.length > 0 ? 'mb-0' : 'mb-0'}`}
                       >
-                        Add
-                      </button>
+                        <div
+                          className={`w-full bg-white flex flex-col items-center justify-center transition-all duration-200 ${
+                            isDragOver
+                              ? 'bg-gray-50'
+                              : 'hover:bg-gray-50/50'
+                          } ${uploadedFiles.length > 0 ? 'border border-gray-200 border-b-0 rounded-t-lg p-4' : 'p-6'}`}
+                          style={{ minHeight: uploadedFiles.length > 0 ? '100px' : '140px' }}
+                        >
+                          {/* Document Icon - Matching FilingSidebar */}
+                          <div className={`flex items-center justify-center ${uploadedFiles.length > 0 ? 'mb-2' : 'mb-3'}`}>
+                            <img 
+                              src="/FILEUPLOAD.png" 
+                              alt="Upload files" 
+                              className={uploadedFiles.length > 0 ? 'w-20 h-auto' : 'w-32 h-auto'}
+                            />
+                          </div>
+
+                          {/* Instructional Text - Matching FilingSidebar */}
+                          <p className={`text-gray-600 text-center ${uploadedFiles.length > 0 ? 'text-sm mb-1' : 'text-base mb-2'}`}>
+                            Drop files here or{' '}
+                            <button
+                              type="button"
+                              className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
+                              style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                fileInputRef.current?.click();
+                              }}
+                            >
+                              browse
+                            </button>
+                          </p>
+
+                          {/* Supported Formats - Matching FilingSidebar */}
+                          <p className={uploadedFiles.length > 0 ? 'text-xs text-gray-400 mt-0.5' : 'text-sm text-gray-400 mt-1'}>PDF, Word, Excel, CSV</p>
+                        </div>
+
+                        {/* Hidden File Input */}
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          multiple
+                          accept=".xlsx,.xls,.csv,.pdf,.doc,.docx"
+                          onChange={handleFileSelect}
+                          className="hidden"
+                        />
+                      </div>
+
+                      {/* Files List - Vertical layout matching FilingSidebar */}
+                      {uploadedFiles.length > 0 && (
+                        <div className="mb-4">
+                          <style>{`
+                            .file-list-scrollable::-webkit-scrollbar {
+                              display: none; /* Chrome, Safari, Opera */
+                            }
+                            .file-list-scrollable {
+                              scrollbar-width: none; /* Firefox */
+                              -ms-overflow-style: none; /* IE and Edge */
+                            }
+                          `}</style>
+                          <div 
+                            className="file-list-scrollable bg-gray-50 border border-gray-200 border-t-0 rounded-b-lg p-2 space-y-1"
+                            style={{
+                              maxHeight: uploadedFiles.length > 4 ? '200px' : 'none',
+                              overflowY: uploadedFiles.length > 4 ? 'auto' : 'visible',
+                              overflowX: 'hidden'
+                            }}
+                          >
+                            {uploadedFiles.map((uploadedFile) => {
+                                // Get file icon based on extension
+                                const getFileIcon = () => {
+                                  const filename = uploadedFile.file.name.toLowerCase();
+                                  if (filename.endsWith('.pdf')) {
+                                    return <img src="/PDF.png" alt="PDF" className="w-4 h-4 object-contain" />;
+                                  } else if (filename.endsWith('.doc') || filename.endsWith('.docx')) {
+                                    return <FileText className="w-4 h-4 text-blue-600" />;
+                                  } else if (filename.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+                                    return <FileText className="w-4 h-4 text-green-600" />;
+                                  }
+                                  return <FileText className="w-4 h-4 text-gray-600" />;
+                                };
+                                
+                                return (
+                                  <div
+                                    key={uploadedFile.id}
+                                    className="flex items-center gap-2.5 px-3 py-2 bg-white border border-gray-200/60 hover:border-gray-300/80 rounded-lg transition-all duration-200 group"
+                                  >
+                                    <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
+                                      {getFileIcon()}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-xs font-normal text-gray-900 truncate" style={{ fontFamily: 'system-ui, -apple-system, sans-serif', letterSpacing: '-0.01em' }}>
+                                        {uploadedFile.file.name}
+                                      </div>
+                                    </div>
+                                    {/* Upload progress indicator */}
+                                    {uploadedFile.uploadStatus === 'uploading' && (
+                                      <div className="flex-shrink-0">
+                                        <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                                      </div>
+                                    )}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleFileRemove(uploadedFile.id);
+                                      }}
+                                      className="p-0.5 hover:bg-gray-100 rounded flex-shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                      title="Remove file"
+                                    >
+                                      <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    {/* Team member pills */}
-                    {teamMemberEmails.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {teamMemberEmails.map((email) => (
-                          <div
-                            key={email}
-                            className="inline-flex items-center gap-2 relative transition-all duration-200"
+                    {/* Property name input - Only show after files are selected */}
+                    {uploadedFiles.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <label className="block mb-1.5" style={{ fontSize: '13px', color: '#63748A', fontWeight: 500, letterSpacing: '-0.01em' }}>
+                          Project name
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={propertyTitle}
+                            onChange={(e) => setPropertyTitle(e.target.value)}
+                            onFocus={(e) => {
+                              setIsInputFocused(true);
+                              e.currentTarget.style.borderColor = '#415C85';
+                              e.currentTarget.style.boxShadow = '0 0 0 2px rgba(65, 92, 133, 0.1)';
+                            }}
+                            onBlur={(e) => {
+                              setIsInputFocused(false);
+                              e.currentTarget.style.borderColor = '#E9E9EB';
+                              e.currentTarget.style.boxShadow = 'none';
+                            }}
+                            className="w-full transition-all duration-150 focus:outline-none"
                             style={{
-                              padding: '8px 14px',
-                              height: '36px',
-                              backgroundColor: '#F7F7F8',
-                              border: 'none',
-                              borderRadius: '0',
-                              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-                              fontSize: '12px',
-                              color: '#1a1a1a',
+                              padding: '10px 12px',
+                              fontSize: '14px',
+                              fontWeight: 400,
+                              color: '#63748A',
+                              backgroundColor: '#ffffff',
+                              border: '1px solid #E9E9EB',
+                              borderRadius: '2px',
+                              letterSpacing: '-0.01em',
                               lineHeight: '1.4',
                             }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.transform = 'translateY(-1px)';
-                              e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08)';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.transform = 'translateY(0)';
-                              e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04)';
-                            }}
-                          >
-                            <UserPlus className="w-4 h-4 text-[#10A37F] flex-shrink-0" strokeWidth={1.5} />
-                            <span style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {email}
-                            </span>
-                            <button
-                              onClick={() => handleRemoveTeamMember(email)}
-                              className="flex items-center justify-center flex-shrink-0 ml-1 transition-all duration-150"
-                              style={{
-                                width: '18px',
-                                height: '18px',
-                                borderRadius: '50%',
-                                backgroundColor: 'transparent',
-                                border: 'none',
-                                cursor: 'pointer',
-                                padding: 0,
-                                marginLeft: '4px',
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
-                                const icon = e.currentTarget.querySelector('svg');
-                                if (icon) icon.style.color = '#EF4444';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.backgroundColor = 'transparent';
-                                const icon = e.currentTarget.querySelector('svg');
-                                if (icon) icon.style.color = '#9CA3AF';
-                              }}
-                            >
-                              <X className="w-3 h-3 text-[#9CA3AF] transition-colors duration-150" strokeWidth={2.5} />
-                            </button>
-                          </div>
-                        ))}
+                            placeholder={!isInputFocused ? displayedPlaceholder : ''}
+                          />
+                          <style>{`
+                            input::placeholder {
+                              color: #6C7180;
+                              font-weight: 400;
+                            }
+                          `}</style>
+                        </div>
                       </div>
                     )}
-                  </div>
 
-                  {/* Action buttons */}
-                  <div className="flex gap-3 items-center" style={{ marginTop: 'auto', paddingTop: '16px' }}>
-                    <button
-                      onClick={handleCreate}
-                      disabled={!canCreate || isCreating}
-                      className="flex-1 flex items-center justify-center gap-2 text-white font-medium transition-all duration-200 disabled:cursor-not-allowed"
-                      style={{
-                        padding: '10px 16px',
-                        fontSize: '12px',
-                        borderRadius: '0',
-                        backgroundColor: canCreate && !isCreating ? '#10A37F' : '#E5E5E5',
-                        color: canCreate && !isCreating ? '#FFFFFF' : '#9CA3AF',
-                        boxShadow: canCreate && !isCreating ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-                        border: 'none',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!canCreate || isCreating) return;
-                        e.currentTarget.style.backgroundColor = '#1AB98A';
-                        e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08)';
-                        e.currentTarget.style.transform = 'translateY(-1px)';
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!canCreate || isCreating) return;
-                        e.currentTarget.style.backgroundColor = '#10A37F';
-                        e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04)';
-                        e.currentTarget.style.transform = 'translateY(0)';
-                      }}
-                    >
-                      {isCreating ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <>
-                          <span>Create project</span>
-                          <ArrowRight className="w-4 h-4" strokeWidth={2} style={{ marginLeft: '8px' }} />
-                        </>
-                      )}
-                    </button>
-                  </div>
+                    {/* Team members section - Only show after files are added */}
+                    {uploadedFiles.length > 0 && (
+                      <div style={{ marginBottom: '12px' }}>
+                        <label className="block mb-1.5" style={{ fontSize: '13px', color: '#63748A', fontWeight: 500, letterSpacing: '-0.01em' }}>
+                          Team members
+                        </label>
+                        
+                        {/* Email input with Add button */}
+                        <div className="flex gap-2" style={{ marginBottom: teamMemberEmails.length > 0 ? '12px' : '0' }}>
+                          <input
+                            type="email"
+                            value={teamMemberEmailInput}
+                            onChange={(e) => setTeamMemberEmailInput(e.target.value)}
+                            onKeyPress={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddTeamMember();
+                              }
+                            }}
+                            placeholder="Enter email address"
+                            onFocus={(e) => {
+                              e.currentTarget.style.borderColor = '#415C85';
+                              e.currentTarget.style.boxShadow = '0 0 0 2px rgba(65, 92, 133, 0.1)';
+                            }}
+                            onBlur={(e) => {
+                              e.currentTarget.style.borderColor = '#E9E9EB';
+                              e.currentTarget.style.boxShadow = 'none';
+                            }}
+                            className="flex-1 transition-all duration-150 focus:outline-none"
+                            style={{
+                              padding: '10px 12px',
+                              fontSize: '14px',
+                              fontWeight: 400,
+                              color: '#63748A',
+                              backgroundColor: '#ffffff',
+                              border: '1px solid #E9E9EB',
+                              borderRadius: '4px',
+                              letterSpacing: '-0.01em',
+                              lineHeight: '1.4',
+                            }}
+                          />
+                          <button
+                            onClick={handleAddTeamMember}
+                            disabled={!teamMemberEmailInput.trim()}
+                            className="px-4 py-2 bg-[#F3F4F6] hover:bg-[#F0F6FF] text-[#415C85] text-sm font-medium transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#F3F4F6]"
+                            style={{ borderRadius: '4px' }}
+                          >
+                            Add
+                          </button>
+                        </div>
 
-                  {/* Error */}
-                  {error && (
-                    <div 
-                      className="mt-4 transition-colors duration-150"
-                      style={{ 
-                        fontSize: '12px', 
-                        color: '#DC2626',
-                        backgroundColor: '#FEF2F2',
-                        border: '1px solid rgba(239, 68, 68, 0.2)',
-                        borderRadius: '0',
-                        padding: '8px 10px',
-                      }}
-                    >
-                      {error}
-                    </div>
-                  )}
-              </div>
+                        {/* Team member pills */}
+                        {teamMemberEmails.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {teamMemberEmails.map((member) => (
+                              <div
+                                key={member.email}
+                                className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#F9F9F9] hover:bg-[#F0F6FF] border border-[#E9E9EB] transition-colors duration-150 group"
+                                style={{
+                                  fontSize: '13px',
+                                  color: '#63748A',
+                                  lineHeight: '1.4',
+                                  borderRadius: '4px',
+                                }}
+                              >
+                                <UserPlus className="w-3 h-3 text-[#6C7180] flex-shrink-0" strokeWidth={1.5} />
+                                <span 
+                                  style={{ 
+                                    maxWidth: '150px', 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis', 
+                                    whiteSpace: 'nowrap',
+                                    fontWeight: 400
+                                  }}
+                                >
+                                  {member.email}
+                                </span>
+                                <select
+                                  value={member.accessLevel}
+                                  onChange={(e) => handleAccessLevelChange(member.email, e.target.value as 'viewer' | 'editor')}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onFocus={(e) => e.target.style.outline = 'none'}
+                                  onBlur={(e) => e.target.style.outline = 'none'}
+                                  className="flex-shrink-0 text-xs bg-white border border-[#E9E9EB] rounded px-1.5 py-0.5 text-[#63748A] transition-colors duration-150"
+                                  style={{
+                                    fontSize: '11px',
+                                    minWidth: '70px',
+                                    cursor: 'pointer',
+                                    outline: 'none',
+                                    boxShadow: 'none',
+                                  }}
+                                >
+                                  <option value="viewer">Viewer</option>
+                                  <option value="editor">Editor</option>
+                                </select>
+                                <button
+                                  onClick={() => handleRemoveTeamMember(member.email)}
+                                  className="flex items-center justify-center flex-shrink-0 ml-1 p-0.5 hover:bg-[#F3F4F6] transition-colors duration-150 opacity-0 group-hover:opacity-100"
+                                  style={{ borderRadius: '2px' }}
+                                  title="Remove"
+                                >
+                                  <X className="w-2.5 h-2.5 text-[#6C7180]" strokeWidth={2} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Action buttons - Only show after project is named */}
+                    {uploadedFiles.length > 0 && propertyTitle.trim() && (
+                      <div className="flex gap-3 items-center" style={{ marginTop: 'auto', paddingTop: '16px' }}>
+                        <button
+                          onClick={handleCreate}
+                          disabled={!canCreate || isCreating}
+                          className={`flex-1 flex items-center justify-center gap-2 text-sm font-normal rounded transition-colors disabled:cursor-not-allowed ${
+                            canCreate && !isCreating 
+                              ? 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300' 
+                              : 'bg-gray-50 text-gray-400 border border-gray-200'
+                          }`}
+                          style={{
+                            padding: '10px 16px',
+                            boxShadow: 'none',
+                          }}
+                        >
+                          {isCreating ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <>
+                              <span>Create project</span>
+                              <ArrowRight className="w-4 h-4" strokeWidth={2} style={{ marginLeft: '6px' }} />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Error */}
+                    {error && (
+                      <div 
+                        className="mt-4 transition-colors duration-150"
+                        style={{ 
+                          fontSize: '12px', 
+                          color: '#DC2626',
+                          backgroundColor: '#FEF2F2',
+                          border: '1px solid rgba(239, 68, 68, 0.2)',
+                          borderRadius: '4px',
+                          padding: '8px 10px',
+                        }}
+                      >
+                        {error}
+                      </div>
+                    )}
+                    </motion.div>
+                  </div>
+                </AnimatePresence>
+              )}
             </div>
         </div>
       </motion.div>

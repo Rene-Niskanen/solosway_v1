@@ -22,7 +22,7 @@ const DashboardLayoutContent = ({
 }: DashboardLayoutProps) => {
   const navigate = useNavigate();
   const { closeSidebar: closeFilingSidebar } = useFilingSidebar();
-  const [selectedBackground, setSelectedBackground] = React.useState<string>('background5');
+  const [selectedBackground, setSelectedBackground] = React.useState<string>('default-background');
 
   // Load saved background on mount - check for custom uploaded background first
   React.useEffect(() => {
@@ -35,6 +35,10 @@ const DashboardLayoutContent = ({
         const saved = localStorage.getItem('dashboardBackground');
         if (saved) {
           setSelectedBackground(saved);
+        } else {
+          // Set default background if nothing is saved
+          setSelectedBackground('default-background');
+          localStorage.setItem('dashboardBackground', 'default-background');
         }
       }
     }
@@ -53,10 +57,16 @@ const DashboardLayoutContent = ({
   }, []);
 
   // Get background image URL based on selected background
+  // Returns null for default-background (which uses solid color instead)
   const getBackgroundImage = () => {
     // Check if it's a custom uploaded background (data URL)
     if (selectedBackground.startsWith('data:image')) {
       return selectedBackground;
+    }
+
+    // Default background uses solid color, not an image
+    if (selectedBackground === 'default-background') {
+      return null;
     }
 
     const backgroundMap: { [key: string]: string } = {
@@ -68,7 +78,7 @@ const DashboardLayoutContent = ({
       'background6': '/Background6.png',
       'velora-grass': '/VeloraGrassBackground.png',
     };
-    return backgroundMap[selectedBackground] || '/Background5.png';
+    return backgroundMap[selectedBackground] || null;
   };
 
   const [currentView, setCurrentView] = React.useState<string>('search');
@@ -288,27 +298,28 @@ const DashboardLayoutContent = ({
     // CRITICAL: Always set these FIRST to prevent dashboard from showing
     // Set the signal immediately BEFORE any other state changes
     setShouldRestoreActiveChat(true);
-    // Ensure map is visible for fullscreen chat view
+    // Ensure map is visible for fullscreen chat view (MUST be set before view change)
     setIsMapVisible(true);
-    // Set chat mode immediately
+    // Set chat mode immediately (MUST be set before view change)
     setIsInChatMode(true);
     // MainContent will set hasPerformedSearch to true when it receives shouldRestoreActiveChat
     
-    // Only change view if we're not already on search/home (to avoid unnecessary navigation)
-    if (currentView !== 'search' && currentView !== 'home') {
-      setCurrentView('search');
-    }
+    // CRITICAL: Always ensure we're on search view to show chat (never dashboard)
+    // Even if already on search/home, explicitly set it to ensure proper state
+    setCurrentView('search');
     
     if (hasActiveChat) {
       // There's an active chat - restore it
       console.log('🔄 DashboardLayout: Restoring active chat');
-      // Clear the signal after a short delay (MainContent will pick it up and set hasPerformedSearch)
-      setTimeout(() => setShouldRestoreActiveChat(false), 300);
+      // Clear the signal after MainContent has processed it (increased timeout to ensure state updates complete)
+      // MainContent sets isTransitioningToChatRef which prevents dashboard flash during transition
+      setTimeout(() => setShouldRestoreActiveChat(false), 500);
     } else {
       // No active chat - create a new one
       console.log('🔄 DashboardLayout: Creating new chat');
-      // Clear the signal after a short delay (MainContent will pick it up and set hasPerformedSearch)
-      setTimeout(() => setShouldRestoreActiveChat(false), 300);
+      // Clear the signal after MainContent has processed it (increased timeout to ensure state updates complete)
+      // MainContent sets isTransitioningToChatRef which prevents dashboard flash during transition
+      setTimeout(() => setShouldRestoreActiveChat(false), 500);
       // Also reset chat state for a fresh start
       setCurrentChatId(null);
       currentChatIdRef.current = null;
@@ -352,42 +363,49 @@ const DashboardLayoutContent = ({
       className={`flex h-screen w-full overflow-hidden relative border-l border-r border-t border-b border-[#e9edf1] ${className || ''}`}
       style={{ backgroundColor: 'transparent' }}
     >
-      {/* Dashboard Background Image - Behind everything except search bar, logo, and recent projects */}
+      {/* Dashboard Background - Behind everything except search bar, logo, and recent projects */}
       {/* Hide when map view is active */}
-      {!isMapVisible && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            width: '100vw',
-            height: '100vh',
-            // Use both 100vh and 100% to ensure full coverage across all browsers
-            minHeight: '100vh',
-            minWidth: '100vw',
-            backgroundImage: `url(${getBackgroundImage()})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            backgroundRepeat: 'no-repeat',
-            // Removed backgroundAttachment: 'fixed' to prevent rendering issues and cut-off
-            filter: 'blur(8px)', // Sharper, more pronounced blur effect
-            WebkitFilter: 'blur(8px)', // Safari support
-            zIndex: 0, // Base layer - everything else should be above
-            pointerEvents: 'none', // Don't block interactions
-            // Ensure background extends fully and renders properly
-            transform: 'translateZ(0)', // Force hardware acceleration
-            willChange: 'transform', // Optimize for performance
-            // Ensure background covers entire viewport including any potential overflow
-            margin: 0,
-            padding: 0,
-            boxSizing: 'border-box',
-            // Ensure background always fills the viewport, even on resize
-            overflow: 'hidden'
-          }}
-        />
-      )}
+      {!isMapVisible && (() => {
+        const backgroundImage = getBackgroundImage();
+        const isDefaultBackground = selectedBackground === 'default-background' || !backgroundImage;
+        
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              width: '100vw',
+              height: '100vh',
+              // Use both 100vh and 100% to ensure full coverage across all browsers
+              minHeight: '100vh',
+              minWidth: '100vw',
+              // Use solid color for default background, image for others
+              backgroundColor: isDefaultBackground ? '#FCFCF9' : undefined,
+              backgroundImage: backgroundImage ? `url(${backgroundImage})` : undefined,
+              backgroundSize: backgroundImage ? 'cover' : undefined,
+              backgroundPosition: backgroundImage ? 'center' : undefined,
+              backgroundRepeat: backgroundImage ? 'no-repeat' : undefined,
+              // Only apply blur to image backgrounds, not solid colors
+              filter: backgroundImage ? 'blur(8px)' : undefined,
+              WebkitFilter: backgroundImage ? 'blur(8px)' : undefined,
+              zIndex: 0, // Base layer - everything else should be above
+              pointerEvents: 'none', // Don't block interactions
+              // Ensure background extends fully and renders properly
+              transform: 'translateZ(0)', // Force hardware acceleration
+              willChange: 'transform', // Optimize for performance
+              // Ensure background covers entire viewport including any potential overflow
+              margin: 0,
+              padding: 0,
+              boxSizing: 'border-box',
+              // Ensure background always fills the viewport, even on resize
+              overflow: 'hidden'
+            }}
+          />
+        );
+      })()}
       {/* Chat Return Notification */}
       <ChatReturnNotification
         isVisible={showChatNotification}
@@ -484,6 +502,7 @@ const DashboardLayoutContent = ({
         onActiveChatChange={handleActiveChatChange}
         shouldRestoreActiveChat={shouldRestoreActiveChat}
         onChatVisibilityChange={handleChatVisibilityChange}
+        onOpenChatHistory={handleChatPanelToggle}
       />
     </div>
   );

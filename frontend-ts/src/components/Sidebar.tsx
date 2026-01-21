@@ -210,8 +210,15 @@ export const Sidebar = ({
     } else if (item.action === 'toggleFiling') {
       toggleFilingSidebar();
     } else if (item.action === 'openChat') {
-      // Open chat - either restore active chat or start new one
-      onRestoreActiveChat?.();
+      // CRITICAL: Chat button should ONLY open fullscreen chat, never route to dashboard
+      // Always call onRestoreActiveChat - this ensures fullscreen chat view, never dashboard
+      if (onRestoreActiveChat) {
+        onRestoreActiveChat();
+      } else {
+        console.warn('onRestoreActiveChat not available - chat button cannot open chat');
+      }
+      // Explicitly return to prevent any fallback navigation
+      return;
     } else if (item.id === 'home') {
       handleItemClick('home');
     } else if (item.id === 'settings') {
@@ -299,18 +306,21 @@ export const Sidebar = ({
     const active = isItemActive(item);
     const isChat = item.action === 'openChat';
     const showChatIndicator = isChat && hasActiveChat;
+    const isSettings = item.id === 'settings';
 
     return (
       <button
         key={item.id}
         onClick={() => handleNavClick(item)}
         className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
-          active 
+          active && !isSettings
             ? 'bg-white text-gray-900 border-gray-300' 
+            : active && isSettings
+            ? 'text-gray-900 border-transparent'
             : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
         }`}
         style={{
-          boxShadow: active ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
+          boxShadow: active && !isSettings ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
           transition: 'background-color 75ms, color 75ms, border-color 75ms',
           boxSizing: 'border-box'
         }}
@@ -399,7 +409,7 @@ export const Sidebar = ({
                 <button
                   ref={brandButtonRef}
                   onClick={() => setIsBrandDropdownOpen(!isBrandDropdownOpen)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors duration-75 text-left ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 transition-colors duration-75 text-left ${
                     isBrandDropdownOpen 
                       ? 'bg-white' 
                       : 'hover:bg-white/60'
@@ -447,47 +457,23 @@ export const Sidebar = ({
                       transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                       className="overflow-hidden"
                     >
-                      <div className="mt-1 bg-white rounded-lg border border-gray-200/60 shadow-sm">
+                      <div className="mt-1 bg-white border border-gray-200/60 shadow-sm">
                         {/* Menu Items */}
-                        <div className="py-1">
+                        <div className="py-0.5">
                           {/* Profile */}
                           <button
                             onClick={() => {
                               setIsBrandDropdownOpen(false);
                               onNavigate?.('profile');
                             }}
-                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                            className="w-full px-2 py-1.5 flex items-center gap-2 hover:bg-gray-50 transition-colors text-left group"
                           >
-                            <User className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[13px] text-gray-900 font-normal">Profile</span>
-                          </button>
-
-                          {/* Settings */}
-                          <button
-                            onClick={() => {
-                              setIsBrandDropdownOpen(false);
-                              onNavigate?.('settings');
-                            }}
-                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
-                          >
-                            <Settings className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[13px] text-gray-900 font-normal">Settings</span>
-                          </button>
-
-                          {/* Send Feedback */}
-                          <button
-                            onClick={() => {
-                              setIsBrandDropdownOpen(false);
-                              console.log('Send feedback clicked');
-                            }}
-                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
-                          >
-                            <MessageCircle className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[13px] text-gray-900 font-normal">Send feedback</span>
+                            <User className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[12px] text-gray-900 font-normal">Profile</span>
                           </button>
 
                           {/* Divider */}
-                          <div className="border-t border-gray-200/60 my-1" />
+                          <div className="border-t border-gray-200/60 my-0.5" />
 
                           {/* Sign Out */}
                           <button
@@ -495,10 +481,10 @@ export const Sidebar = ({
                               setIsBrandDropdownOpen(false);
                               onSignOut?.();
                             }}
-                            className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors text-left group"
+                            className="w-full px-2 py-1.5 flex items-center gap-2 hover:bg-gray-50 transition-colors text-left group"
                           >
-                            <LogOut className="w-4 h-4 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
-                            <span className="text-[13px] text-gray-900 font-normal">Sign out</span>
+                            <LogOut className="w-3.5 h-3.5 text-gray-600 group-hover:text-gray-900 transition-colors" strokeWidth={1.75} />
+                            <span className="text-[12px] text-gray-900 font-normal">Sign out</span>
                           </button>
                         </div>
                       </div>
@@ -523,34 +509,6 @@ export const Sidebar = ({
 
             {/* Divider */}
             <div className="mx-4 my-4 h-px bg-gray-200/80" />
-
-            {/* Chat History Button */}
-            <div className="px-3">
-              <button
-                onClick={() => {
-                  // Close filing sidebar when opening chat history
-                  if (isFilingSidebarOpen) {
-                    closeFilingSidebar();
-                  }
-                  onChatToggle?.();
-                }}
-                className={`w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-colors duration-75 ${
-                  isChatPanelOpen && !isFilingSidebarOpen
-                    ? 'bg-white text-gray-900' 
-                    : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
-                }`}
-                style={{
-                  boxShadow: isChatPanelOpen && !isFilingSidebarOpen ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-                  transition: 'background-color 75ms, color 75ms'
-                }}
-              >
-                <MessageSquare 
-                  className="w-[18px] h-[18px] flex-shrink-0" 
-                  strokeWidth={1.75} 
-                />
-                <span className="text-[13px] font-normal">Chat History</span>
-              </button>
-            </div>
 
             {/* Spacer */}
             <div className="flex-1" />
@@ -728,7 +686,7 @@ export const Sidebar = ({
           // Match sidebar background for seamless look
           background: '#F1F1F1',
           pointerEvents: 'auto',
-          transition: 'left 0.2s ease-out'
+          transition: 'left 0s ease-out' // Instant transition to prevent gaps
         }}
       >
         {/* Subtle hover indicator */}

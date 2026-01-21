@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Bed, Bath, Ruler, ChevronDown, ChevronUp, FileText, Home } from "lucide-react";
+import { Bed, Bath, Ruler, ChevronDown, ChevronUp, FileText, Home, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { backendApi } from "@/services/backendApi";
 
@@ -31,6 +31,7 @@ export interface PropertyTitleCardProps {
     document_count?: number;
   };
   onCardClick?: () => void;
+  onDelete?: () => void;
 }
 
 // Helper function to format price
@@ -112,7 +113,8 @@ export const formatAddress = (address: string, propertyName: string, maxLength: 
 
 export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
   property,
-  onCardClick
+  onCardClick,
+  onDelete
 }) => {
   // State for editing property name
   const [isEditingName, setIsEditingName] = React.useState(false);
@@ -120,6 +122,8 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
   const [isSaving, setIsSaving] = React.useState(false);
   const [isExpanded, setIsExpanded] = React.useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   
   // Extract property data with fallbacks
   const initialPropertyName = getPropertyName(property.address || "", property.property_type) || "Property";
@@ -334,6 +338,47 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
     setIsExpanded(!isExpanded);
   };
 
+  const handleDeleteClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    if (!showDeleteConfirm) {
+      setShowDeleteConfirm(true);
+      return;
+    }
+    
+    if (!propertyId) {
+      console.error("Cannot delete property: property ID not found");
+      return;
+    }
+    
+    setIsDeleting(true);
+    
+    try {
+      const result = await backendApi.deleteProperty(String(propertyId));
+      
+      if (result.success) {
+        console.log("Property deleted successfully");
+        // Call the onDelete callback to notify parent component
+        onDelete?.();
+      } else {
+        console.error("Failed to delete property:", result.error);
+        alert(`Failed to delete property: ${result.error || 'Unknown error'}`);
+        setIsDeleting(false);
+        setShowDeleteConfirm(false);
+      }
+    } catch (error) {
+      console.error("Error deleting property:", error);
+      alert(`Error deleting property: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  const handleCancelDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowDeleteConfirm(false);
+  };
+
   return (
     <div
       onClick={handleCardClick}
@@ -439,6 +484,95 @@ export const PropertyTitleCard: React.FC<PropertyTitleCardProps> = ({
             overflow: "visible",
           }}
         >
+          {/* Delete Button - Top Right */}
+          {onDelete && (
+            <div
+              style={{
+                position: "absolute",
+                top: "8px",
+                right: "8px",
+                zIndex: 10002,
+              }}
+            >
+              {showDeleteConfirm ? (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "6px",
+                    alignItems: "center",
+                    background: "rgba(0, 0, 0, 0.8)",
+                    padding: "4px 8px",
+                    borderRadius: "6px",
+                    fontSize: "11px",
+                  }}
+                >
+                  <button
+                    onClick={handleDeleteClick}
+                    disabled={isDeleting}
+                    style={{
+                      background: isDeleting ? "#6B7280" : "#EF4444",
+                      color: "#FFFFFF",
+                      border: "none",
+                      borderRadius: "4px",
+                      padding: "2px 8px",
+                      cursor: isDeleting ? "not-allowed" : "pointer",
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      opacity: isDeleting ? 0.6 : 1,
+                    }}
+                  >
+                    {isDeleting ? "Deleting..." : "Confirm"}
+                  </button>
+                  <button
+                    onClick={handleCancelDelete}
+                    disabled={isDeleting}
+                    style={{
+                      background: "transparent",
+                      color: "#9CA3AF",
+                      border: "1px solid #4B5563",
+                      borderRadius: "4px",
+                      padding: "2px 8px",
+                      cursor: isDeleting ? "not-allowed" : "pointer",
+                      fontSize: "11px",
+                      fontWeight: 500,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleDeleteClick}
+                  disabled={isDeleting}
+                  style={{
+                    background: "rgba(0, 0, 0, 0.6)",
+                    border: "none",
+                    borderRadius: "6px",
+                    padding: "4px",
+                    cursor: isDeleting ? "not-allowed" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: isDeleting ? 0.5 : 1,
+                    transition: "background 0.2s, opacity 0.2s",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isDeleting) {
+                      e.currentTarget.style.background = "rgba(239, 68, 68, 0.8)";
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isDeleting) {
+                      e.currentTarget.style.background = "rgba(0, 0, 0, 0.6)";
+                    }
+                  }}
+                >
+                  <Trash2 size={14} color="#FFFFFF" />
+                </button>
+              )}
+            </div>
+          )}
+          
           {/* Property Title in Tab */}
             {isEditingName ? (
               <input

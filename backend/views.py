@@ -17,7 +17,7 @@ import time
 import re
 import math
 import queue
-from .tasks import process_document_task, process_document_fast_task
+from .tasks import process_document_task, process_document_fast_task, process_document_with_dual_stores
 # NOTE: DeletionService is deprecated - use UnifiedDeletionService instead
 # from .services.deletion_service import DeletionService
 from sqlalchemy import text
@@ -3038,19 +3038,25 @@ def proxy_upload():
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
         
+        # Get current user ID
+        user_id = str(current_user.id) if current_user.is_authenticated else None
+        if not user_id:
+            return jsonify({'error': 'User not authenticated'}), 401
+        
         existing_docs = supabase.table('documents')\
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', user_id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename, business, user, and size)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {user_id}")
                 return jsonify({
                     'success': False,
                     'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
@@ -3233,8 +3239,14 @@ def proxy_upload():
 @login_required
 def check_duplicate_document():
     """
-    Check if a document with the same filename and size already exists.
+    Check if a document with the same filename, business ID, and user ID already exists.
     Returns information about potential duplicates.
+    
+    Duplicate criteria:
+    - Same original_filename
+    - Same business_uuid (business_id)
+    - Same uploaded_by_user_id (user_id)
+    - Same file_size (for exact duplicates)
     """
     # Handle CORS preflight
     if request.method == 'OPTIONS':
@@ -3263,11 +3275,17 @@ def check_duplicate_document():
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
         
-        # Query for documents with same filename and business
+        # Get current user ID
+        user_id = str(current_user.id) if current_user.is_authenticated else None
+        if not user_id:
+            return jsonify({'error': 'User not authenticated'}), 401
+        
+        # Query for documents with same filename, business, AND user
         result = supabase.table('documents')\
             .select('id, original_filename, file_size, created_at')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', user_id)\
             .execute()
         
         if result.data and len(result.data) > 0:
@@ -3583,19 +3601,25 @@ def upload_document():
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
         
+        # Get current user ID
+        user_id = str(current_user.id) if current_user.is_authenticated else None
+        if not user_id:
+            return jsonify({'error': 'User not authenticated'}), 401
+        
         existing_docs = supabase.table('documents')\
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', user_id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename, business, user, and size)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {user_id}")
                 return jsonify({
                     'success': False,
                     'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
@@ -4027,6 +4051,190 @@ def get_document_processing_history(document_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@views.route('/api/documents/<uuid:document_id>/status/stream', methods=['GET'])
+@login_required
+def stream_document_status(document_id):
+    """
+    Server-Sent Events endpoint for real-time document processing status updates.
+    Streams status changes, stage transitions, errors, and metrics.
+    """
+    from flask import Response, stream_with_context
+    import time
+    
+    def generate():
+        """Generator function for SSE stream"""
+        try:
+            from .services.supabase_document_service import SupabaseDocumentService
+            from .services.processing_history_service import ProcessingHistoryService
+            from .services.supabase_client_factory import get_supabase_client
+            import json
+            
+            doc_service = SupabaseDocumentService()
+            history_service = ProcessingHistoryService()
+            supabase = get_supabase_client()
+            
+            last_status = None
+            last_history_count = 0
+            poll_interval = 1.0  # Poll every 1 second during active processing
+            max_polls = 600  # Max 10 minutes of polling
+            
+            for poll_count in range(max_polls):
+                # Get current document status
+                document = doc_service.get_document_by_id(str(document_id))
+                if not document:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Document not found'})}\n\n"
+                    break
+                
+                # Check authorization
+                doc_business_id = document.get('business_id')
+                doc_business_uuid = document.get('business_uuid')
+                user_business_id = str(current_user.business_id) if current_user.business_id else None
+                user_company_name = current_user.company_name
+                
+                is_authorized = (
+                    (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+                    (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+                    (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+                )
+                
+                if not is_authorized:
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Unauthorized'})}\n\n"
+                    break
+                
+                current_status = document.get('status', 'unknown')
+                
+                # Get processing history
+                progress = history_service.get_pipeline_progress(str(document_id))
+                history = progress.get('history', [])
+                current_history_count = len(history)
+                
+                # Get document_summary for metrics
+                document_summary = document.get('document_summary')
+                if isinstance(document_summary, str):
+                    try:
+                        document_summary = json.loads(document_summary)
+                    except:
+                        document_summary = {}
+                elif document_summary is None:
+                    document_summary = {}
+                
+                # Extract metrics
+                reducto_chunks = document_summary.get('reducto_chunks', [])
+                chunks_retrieved = len(reducto_chunks) if reducto_chunks else 0
+                total_blocks = sum(len(chunk.get('blocks', [])) for chunk in reducto_chunks) if reducto_chunks else 0
+                
+                # Get vector count
+                vectors_result = supabase.table('document_vectors')\
+                    .select('id', count='exact')\
+                    .eq('document_id', str(document_id))\
+                    .execute()
+                vectors_stored = vectors_result.count if hasattr(vectors_result, 'count') else 0
+                
+                # Extract errors
+                errors = []
+                for step in history:
+                    if step.get('step_status', '').lower() == 'failed':
+                        errors.append({
+                            'stage': step.get('step_name', 'unknown'),
+                            'error': step.get('step_message', 'Unknown error'),
+                            'timestamp': step.get('completed_at') or step.get('started_at'),
+                            'details': step.get('step_metadata', {})
+                        })
+                
+                # Determine current stage
+                current_stage = 'unknown'
+                if current_status == 'processing':
+                    started_steps = [s for s in history if s.get('step_status', '').lower() == 'started']
+                    completed_steps = [s for s in history if s.get('step_status', '').lower() == 'completed']
+                    
+                    if started_steps:
+                        current_stage = started_steps[-1].get('step_name', 'unknown')
+                    elif completed_steps:
+                        last_completed = completed_steps[-1].get('step_name', '').lower()
+                        if 'classification' in last_completed:
+                            current_stage = 'extraction'
+                        elif 'extraction' in last_completed:
+                            current_stage = 'chunking'
+                        elif 'chunk' in last_completed or 'parse' in last_completed:
+                            current_stage = 'embedding'
+                        elif 'embed' in last_completed or 'vector' in last_completed:
+                            current_stage = 'vector_storage'
+                        else:
+                            current_stage = 'processing'
+                    else:
+                        current_stage = 'initializing'
+                elif current_status == 'completed':
+                    current_stage = 'completed'
+                elif current_status == 'failed':
+                    current_stage = 'failed'
+                
+                # Build stage_details
+                vector_storage_step = next((s for s in history if s.get('step_name') == 'vector_storage'), None)
+                chunks_after_filtering = 0
+                chunks_filtered = 0
+                if vector_storage_step and vector_storage_step.get('step_metadata'):
+                    metadata = vector_storage_step['step_metadata']
+                    chunks_after_filtering = metadata.get('chunks_processed', 0)
+                    chunks_filtered = metadata.get('chunks_filtered', 0)
+                else:
+                    chunks_after_filtering = vectors_stored
+                    chunks_filtered = chunks_retrieved - vectors_stored if chunks_retrieved > vectors_stored else 0
+                
+                stage_details = {
+                    'chunks_retrieved': chunks_retrieved,
+                    'chunks_after_filtering': chunks_after_filtering,
+                    'chunks_filtered': chunks_filtered,
+                    'total_blocks': total_blocks,
+                    'vectors_stored': vectors_stored,
+                    'reducto_job_id': document_summary.get('reducto_job_id'),
+                    'last_error': errors[-1]['error'] if errors else None
+                }
+                
+                # Send update if status changed or new history entry
+                if current_status != last_status or current_history_count > last_history_count:
+                    update_data = {
+                        'type': 'status_update',
+                        'status': current_status,
+                        'current_stage': current_stage,
+                        'stage_details': stage_details,
+                        'errors': errors,
+                        'metrics': {
+                            'chunks_retrieved': chunks_retrieved,
+                            'chunks_after_filtering': chunks_after_filtering,
+                            'chunks_filtered': chunks_filtered,
+                            'vectors_stored': vectors_stored,
+                            'blocks_count': total_blocks
+                        },
+                        'pipeline_progress': progress
+                    }
+                    yield f"data: {json.dumps(update_data)}\n\n"
+                    
+                    last_status = current_status
+                    last_history_count = current_history_count
+                
+                # Stop if completed or failed
+                if current_status in ['completed', 'failed', 'processed']:
+                    yield f"data: {json.dumps({'type': 'complete', 'status': current_status})}\n\n"
+                    break
+                
+                time.sleep(poll_interval)
+            
+            # Send final complete event
+            yield f"data: {json.dumps({'type': 'complete', 'status': 'timeout'})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Error in status stream: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
 @views.route('/api/documents/<uuid:document_id>/status', methods=['GET'])
 @login_required
 def get_document_status(document_id):
@@ -4057,10 +4265,106 @@ def get_document_status(document_id):
             logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
             return jsonify({'error': 'Unauthorized'}), 403
         
-        # Get processing history (still from PostgreSQL for now)
+        # Get processing history from Supabase
         from .services.processing_history_service import ProcessingHistoryService
         history_service = ProcessingHistoryService()
         progress = history_service.get_pipeline_progress(str(document_id))
+        
+        # Get document_summary for metrics
+        import json
+        document_summary = document.get('document_summary')
+        if isinstance(document_summary, str):
+            try:
+                document_summary = json.loads(document_summary)
+            except:
+                document_summary = {}
+        elif document_summary is None:
+            document_summary = {}
+        
+        # Extract metrics from document_summary
+        reducto_chunks = document_summary.get('reducto_chunks', [])
+        chunks_retrieved = len(reducto_chunks) if reducto_chunks else 0
+        total_blocks = sum(len(chunk.get('blocks', [])) for chunk in reducto_chunks) if reducto_chunks else 0
+        
+        # Get vector count from document_vectors table
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        vectors_result = supabase.table('document_vectors')\
+            .select('id', count='exact')\
+            .eq('document_id', str(document_id))\
+            .execute()
+        vectors_stored = vectors_result.count if hasattr(vectors_result, 'count') else 0
+        
+        # Extract errors from processing history
+        errors = []
+        if progress.get('history'):
+            for step in progress['history']:
+                if step.get('step_status', '').lower() == 'failed':
+                    errors.append({
+                        'stage': step.get('step_name', 'unknown'),
+                        'error': step.get('step_message', 'Unknown error'),
+                        'timestamp': step.get('completed_at') or step.get('started_at'),
+                        'details': step.get('step_metadata', {})
+                    })
+        
+        # Determine current stage based on status and history
+        current_stage = 'unknown'
+        stage_details = {}
+        
+        if document.get('status') == 'processing':
+            # Determine stage from last completed step
+            if progress.get('history'):
+                completed_steps = [s for s in progress['history'] if s.get('step_status', '').lower() == 'completed']
+                started_steps = [s for s in progress['history'] if s.get('step_status', '').lower() == 'started']
+                
+                if started_steps:
+                    current_stage = started_steps[-1].get('step_name', 'unknown')
+                elif completed_steps:
+                    last_completed = completed_steps[-1].get('step_name', '')
+                    # Infer next stage
+                    if 'classification' in last_completed.lower():
+                        current_stage = 'extraction'
+                    elif 'extraction' in last_completed.lower():
+                        current_stage = 'chunking'
+                    elif 'chunk' in last_completed.lower() or 'parse' in last_completed.lower():
+                        current_stage = 'embedding'
+                    elif 'embed' in last_completed.lower() or 'vector' in last_completed.lower():
+                        current_stage = 'vector_storage'
+                    else:
+                        current_stage = 'processing'
+                else:
+                    current_stage = 'initializing'
+            else:
+                current_stage = 'initializing'
+        elif document.get('status') == 'completed':
+            current_stage = 'completed'
+        elif document.get('status') == 'failed':
+            current_stage = 'failed'
+        
+        # Build stage_details from metrics
+        stage_details = {
+            'chunks_retrieved': chunks_retrieved,
+            'total_blocks': total_blocks,
+            'vectors_stored': vectors_stored,
+            'reducto_job_id': document_summary.get('reducto_job_id'),
+            'last_error': errors[-1]['error'] if errors else None
+        }
+        
+        # Calculate chunks_after_filtering from processing history
+        vector_storage_step = None
+        if progress.get('history'):
+            for step in progress['history']:
+                if step.get('step_name') == 'vector_storage' and step.get('step_metadata'):
+                    vector_storage_step = step
+                    break
+        
+        if vector_storage_step and vector_storage_step.get('step_metadata'):
+            metadata = vector_storage_step['step_metadata']
+            stage_details['chunks_after_filtering'] = metadata.get('chunks_processed', 0)
+            stage_details['chunks_filtered'] = metadata.get('chunks_filtered', 0)
+        else:
+            stage_details['chunks_after_filtering'] = vectors_stored  # Best guess
+            stage_details['chunks_filtered'] = chunks_retrieved - vectors_stored if chunks_retrieved > vectors_stored else 0
         
         response_data = {
             'success': True,
@@ -4068,7 +4372,19 @@ def get_document_status(document_id):
                 'status': document.get('status', 'unknown'),
                 'classification_type': document.get('classification_type'),
                 'classification_confidence': document.get('classification_confidence'),
-                'pipeline_progress': progress
+                'pipeline_progress': {
+                    **progress,
+                    'current_stage': current_stage,
+                    'stage_details': stage_details,
+                    'errors': errors,
+                    'metrics': {
+                        'chunks_retrieved': chunks_retrieved,
+                        'chunks_after_filtering': stage_details.get('chunks_after_filtering', 0),
+                        'chunks_filtered': stage_details.get('chunks_filtered', 0),
+                        'vectors_stored': vectors_stored,
+                        'blocks_count': total_blocks
+                    }
+                }
             }
         }
         
@@ -4535,6 +4851,121 @@ def _perform_document_deletion(document_id):
     
     return jsonify(response_data), result.http_status
 
+@views.route('/api/properties/<uuid:property_id>', methods=['DELETE', 'OPTIONS'])
+def delete_property_standard(property_id):
+    """
+    Standardized deletion endpoint for properties.
+    Matches RESTful pattern: /api/properties/<id> (DELETE)
+    Deletes a property and all associated data from Supabase.
+    """
+    # Handle CORS preflight - MUST be first, before authentication check
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    # Require login for actual DELETE request
+    if not current_user.is_authenticated:
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 401
+    
+    logger.info(f"🗑️ DELETE /api/properties/{property_id} called by {current_user.email}")
+    
+    try:
+        # Get business_id from session
+        business_id = _ensure_business_uuid()
+        if not business_id:
+            response = jsonify({
+                'success': False,
+                'error': 'User not associated with a business'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Verify property exists and belongs to user's business
+        from .services.supabase_client_factory import get_supabase_client
+        supabase = get_supabase_client()
+        
+        property_result = supabase.table('properties').select('id, business_id').eq('id', str(property_id)).execute()
+        
+        if not property_result.data or len(property_result.data) == 0:
+            response = jsonify({
+                'success': False,
+                'error': 'Property not found'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        property_data = property_result.data[0]
+        property_business_id = property_data.get('business_id')
+        
+        # Check authorization - property can have business_id (varchar) or business_uuid (uuid)
+        user_business_id = str(current_user.business_id) if current_user.business_id else None
+        user_company_name = current_user.company_name
+        
+        is_authorized = (
+            (property_business_id and user_company_name and str(property_business_id) == str(user_company_name)) or
+            (property_business_id and user_business_id and str(property_business_id) == user_business_id) or
+            (property_business_id and str(property_business_id) == business_id)
+        )
+        
+        if not is_authorized:
+            logger.warning(f"Unauthorized access to property {property_id}: property_business_id={property_business_id}, user_business_id={user_business_id}, user_company_name={user_company_name}")
+            response = jsonify({
+                'success': False,
+                'error': 'Unauthorized'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 403
+        
+        # Use UnifiedDeletionService for property deletion
+        from .services.unified_deletion_service import UnifiedDeletionService
+        deletion_service = UnifiedDeletionService()
+        
+        result = deletion_service.delete_property_complete(
+            property_id=str(property_id),
+            business_id=business_id
+        )
+        
+        # Build response
+        response_data = result.to_dict()
+        response_data['property_id'] = str(property_id)
+        response_data['results'] = result.operations  # For backwards compatibility
+        
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        
+        return response, result.http_status
+        
+    except Exception as e:
+        logger.error(f"❌ Error deleting property {property_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 500
+
 @views.route('/api/upload-file', methods=['POST'])
 @login_required
 def upload_file_to_gateway():
@@ -4698,6 +5129,102 @@ def process_document(document_id):
         
     except Exception as e:
         return jsonify({'error': f'Failed to start processing: {str(e)}'}), 500
+
+@views.route('/api/documents/<uuid:document_id>/reprocess', methods=['POST', 'OPTIONS'])
+@login_required
+def reprocess_document(document_id):
+    """
+    Reprocess a document to regenerate embeddings and BBOX data.
+    Supports 'full' (re-embed + bbox) or 'bbox_only' (update bbox, preserve embeddings) modes.
+    """
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        mode = data.get('mode', 'full')  # 'full' or 'bbox_only'
+        
+        document = Document.query.get(document_id)
+        if not document:
+            response = jsonify({'success': False, 'error': 'Document not found'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        if str(document.business_id) != str(current_user.business_id):
+            response = jsonify({'success': False, 'error': 'Unauthorized'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 403
+        
+        logger.info(f"🔄 Reprocessing document {document_id} in {mode} mode")
+        
+        # Get file content from S3
+        try:
+            aws_access_key = os.environ['AWS_ACCESS_KEY_ID']
+            aws_secret_key = os.environ['AWS_SECRET_ACCESS_KEY']
+            aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+            invoke_url = os.environ['API_GATEWAY_INVOKE_URL']
+            bucket_name = os.environ['S3_UPLOAD_BUCKET']
+            
+            # Download file from S3
+            final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
+            auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
+            response = requests.get(final_url, auth=auth, timeout=300)
+            response.raise_for_status()
+            file_content = response.content
+            
+        except Exception as e:
+            logger.error(f"Failed to download file for reprocessing: {e}")
+            response = jsonify({'success': False, 'error': f'Failed to download file: {str(e)}'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
+        
+        # Trigger reprocessing task
+        try:
+            from backend.tasks import process_document_with_dual_stores
+            
+            # For 'bbox_only' mode, we'd need a different task, but for now use full reprocess
+            # TODO: Implement bbox_only mode that preserves embeddings
+            task = process_document_with_dual_stores.delay(
+                document_id=str(document.id),
+                file_content=file_content,
+                original_filename=document.original_filename,
+                business_id=str(document.business_id)
+            )
+            
+            result = jsonify({
+                'success': True,
+                'message': f'Document reprocessing started in {mode} mode',
+                'task_id': task.id,
+                'document_id': str(document_id),
+                'mode': mode
+            })
+            result.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            result.headers.add('Access-Control-Allow-Credentials', 'true')
+            return result, 200
+            
+        except Exception as e:
+            logger.error(f"Failed to start reprocessing: {e}")
+            response = jsonify({'success': False, 'error': f'Failed to start reprocessing: {str(e)}'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
+            
+    except Exception as e:
+        logger.error(f"Error in reprocess_document: {e}")
+        response = jsonify({'success': False, 'error': str(e)})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
 
 # ============================================================================
 # PROPERTY LINKING ENDPOINTS (Additional endpoints for property node management)
