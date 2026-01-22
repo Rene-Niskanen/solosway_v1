@@ -67,7 +67,7 @@ class Document(db.Model):
     classification_confidence = db.Column(db.Float)
     classification_reasoning = db.Column(db.Text, nullable=True)  # Classification reasoning (may not exist in all DB schemas)
     classification_timestamp = db.Column(db.DateTime(timezone=True))
-    parsed_text = db.Column(db.Text)  # Store full LlamaParse output
+    parsed_text = db.Column(db.Text)  # Store full Reducto parse output
     extracted_json = db.Column(db.Text)  # Store extracted data as JSON
     metadata_json = db.Column(db.Text)  # Store additional metadata (e.g., filename address)
     

@@ -1,7 +1,5 @@
-from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
-from backend.llm.retrievers.bm25_retriever import BM25DocumentRetriever
-from backend.llm.retrievers.hybrid_retriever import HybridDocumentRetriever
+# Removed deprecated retrievers: vector_retriever, bm25_retriever, hybrid_retriever
+# New two-level RAG uses tools: document_retriever_tool and chunk_retriever_tool
 from backend.llm.retrievers.cohere_reranker import CohereReranker
-# SQLDocumentRetriever is not fully implemented yet. Export it only when ready.
 
-__all__ = ["VectorDocumentRetriever", "BM25DocumentRetriever", "HybridDocumentRetriever", "CohereReranker"]
+__all__ = ["CohereReranker"]

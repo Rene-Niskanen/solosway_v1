@@ -111,3 +111,4 @@ htmlcov/
 *.backup
 *~
 
+.create_user.py 

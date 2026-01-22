@@ -72,10 +72,69 @@ const DashboardLayoutContent = ({
 
   const [currentView, setCurrentView] = React.useState<string>('search');
   const [isChatPanelOpen, setIsChatPanelOpen] = React.useState<boolean>(false);
-  const [isInChatMode, setIsInChatMode] = React.useState<boolean>(false);
-  const [currentChatData, setCurrentChatData] = React.useState<any>(null);
-  const [currentChatId, setCurrentChatId] = React.useState<string | null>(null);
-  const currentChatIdRef = React.useRef<string | null>(null);
+  
+  // Initialize chat state from localStorage (restore last session)
+  const [isInChatMode, setIsInChatMode] = React.useState<boolean>(() => {
+    try {
+      const storedHistory = localStorage.getItem('solosway-chat-history');
+      if (storedHistory) {
+        const chatHistory = JSON.parse(storedHistory);
+        // If there's chat history, start in chat mode to show ChatInterface
+        return chatHistory && chatHistory.length > 0;
+      }
+    } catch (error) {
+      console.warn('⚠️ [DASHBOARD] Could not check chat history:', error);
+    }
+    return false;
+  });
+  
+  const [currentChatData, setCurrentChatData] = React.useState<any>(() => {
+    try {
+      const storedHistory = localStorage.getItem('solosway-chat-history');
+      if (storedHistory) {
+        const chatHistory = JSON.parse(storedHistory);
+        if (chatHistory && chatHistory.length > 0) {
+          // Get the most recent chat
+          const sortedChats = [...chatHistory].sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+          const lastChat = sortedChats[0];
+          console.log(`♻️ [DASHBOARD] Restoring chat data for session: ${lastChat.id}`);
+          return {
+            query: lastChat.preview || '',
+            messages: lastChat.messages || [],
+            isFromHistory: true
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ [DASHBOARD] Could not restore chat data:', error);
+    }
+    return null;
+  });
+  
+  const [currentChatId, setCurrentChatId] = React.useState<string | null>(() => {
+    try {
+      const storedHistory = localStorage.getItem('solosway-chat-history');
+      if (storedHistory) {
+        const chatHistory = JSON.parse(storedHistory);
+        if (chatHistory && chatHistory.length > 0) {
+          // Get the most recent chat
+          const sortedChats = [...chatHistory].sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+          const lastChat = sortedChats[0];
+          console.log(`♻️ [DASHBOARD] Restoring session ID: ${lastChat.id}`);
+          return lastChat.id;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ [DASHBOARD] Could not restore session ID:', error);
+    }
+    return null;
+  });
+  
+  const currentChatIdRef = React.useRef<string | null>(currentChatId);
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState(false);
   const [showChatNotification, setShowChatNotification] = React.useState(false);
   const [previousChatData, setPreviousChatData] = React.useState<any>(null);
@@ -253,18 +312,35 @@ const DashboardLayoutContent = ({
   }, [isSidebarCollapsed]);
 
   const handleNewChat = React.useCallback(() => {
-    setCurrentChatId(null);
-    currentChatIdRef.current = null;
+    // Generate new session ID
+    const newSessionId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    console.log(`🆕 [SESSION] Creating new chat session: ${newSessionId}`);
+    
+    // Update state
+    setCurrentChatId(newSessionId);
+    currentChatIdRef.current = newSessionId;
     setCurrentChatData(null);
-    setPreviousChatData(null); // Clear previous chat data when starting new chat
+    setPreviousChatData(null);
     setHasPerformedSearch(false);
     setIsInChatMode(true);
     setCurrentView('search');
     setIsChatPanelOpen(false);
+    setIsMapVisible(false); // ✅ Hide map to ensure ChatInterface renders
+    
     // Trigger reset in SearchBar
     setResetTrigger(prev => prev + 1);
-    // Do NOT create chat history yet; wait for first submitted query
-  }, [handleChatModeChange]);
+    
+    // Create new chat entry in history
+    addChatToHistory({
+      title: 'New Chat',
+      timestamp: new Date().toISOString(),
+      preview: '',
+      messages: []
+    });
+    
+    console.log(`✅ [SESSION] New chat session created and added to history`);
+  }, [addChatToHistory]);
 
   const handleReturnToChat = React.useCallback(() => {
     if (previousChatData) {

@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
+import json
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
@@ -18,7 +19,9 @@ from backend.llm.prompts import get_summary_human_content, get_citation_extracti
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
 from backend.llm.tools.agent_actions import create_agent_action_tools
-from backend.llm.nodes.retrieval_nodes import detect_query_characteristics
+from backend.llm.utils.query_characteristics import detect_query_characteristics
+from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
+from backend.llm.tools.chunk_retriever_tool import create_chunk_retrieval_tool
 
 logger = logging.getLogger(__name__)
 
@@ -1467,12 +1470,21 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     Latency: ~1-2 seconds for LLM call
     """
 
-    doc_outputs = state['document_outputs']
+    doc_outputs = state.get('document_outputs', []) or []
     user_query = state.get('user_query', '')
+    
+    # REMOVED: Document type filtering - we trust the retrieval system's ranking.
+    # If agent node found chunks, they're for the current query.
+    # State is reset in views.py for each new query, preventing stale documents.
+    
+    # Check agent mode BEFORE returning hard-coded response
+    is_agent_mode = state.get('is_agent_mode', False)
 
-    if not doc_outputs:
-        logger.warning("[SUMMARIZE_RESULTS] No document outputs to summarize")
-        # Provide a helpful message when no documents are found
+    # CRITICAL FIX: Don't return hard-coded response if agent mode is enabled
+    # The LLM should use tools to find documents instead
+    if not doc_outputs and not is_agent_mode:
+        logger.warning("[SUMMARIZE_RESULTS] No document outputs to summarize and agent mode disabled")
+        # Only provide hard-coded message in reader mode (no tools available)
         return {
             "final_summary": f"I couldn't find any documents that directly match your query: \"{user_query}\".\n\n"
             "This could be because:\n"
@@ -1483,6 +1495,17 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             "- \"bedrooms and bathrooms\"\n"
             "- \"property specifications\"\n"
             "- \"property details\""
+        }
+    
+    # CRITICAL: If agent mode is enabled but no doc_outputs, DO NOT generate a response
+    # The LLM should not hallucinate - we need to go to no_results_node instead
+    if not doc_outputs and is_agent_mode:
+        logger.error("[SUMMARIZE_RESULTS] ⚠️ CRITICAL: No document outputs but agent mode enabled - LLM should NOT generate response without documents!")
+        logger.error("[SUMMARIZE_RESULTS] This indicates chunk retrieval failed. Returning empty response to trigger no_results_node.")
+        return {
+            "final_summary": None,  # Signal to go to no_results_node
+            "document_outputs": [],
+            "agent_actions": []
         }
 
     if config.simple_mode:
@@ -1785,12 +1808,32 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     # AGENT MODE: Check if we should bind agent action tools
     is_agent_mode = state.get('is_agent_mode', False)
+    
+    # REMOVED: Don't force agent mode - respect the state
+    # If agent mode is False, it means frontend/user wants reader mode
+    # The LLM should only use tools when agent mode is explicitly enabled
+    route_decision = state.get('route_decision')
+    
+    logger.info(f"[SUMMARIZE_RESULTS] Agent mode: {is_agent_mode} (route_decision: {route_decision}, doc_outputs: {len(doc_outputs) if doc_outputs else 0})")
+    
+    if not is_agent_mode and not doc_outputs:
+        logger.warning(
+            "[SUMMARIZE_RESULTS] Agent mode is disabled and no documents found - "
+            "LLM cannot use retrieval tools. Consider enabling agent mode for document searches."
+        )
+    
     agent_action_instance = None
     
     if is_agent_mode:
         # Create agent action tools for proactive document display
+        # NOTE: Retrieval tools (retrieve_documents, retrieve_chunks) are now handled by
+        # the unified agent node in the graph.
+        # This node only needs UI action tools (open_document, navigate_to_property_by_name).
         agent_tools, agent_action_instance = create_agent_action_tools()
-        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools")
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools (UI actions only)")
+        # NOTE: Using "auto" allows LLM to choose when to use tools
+        # The fallback mechanism below will handle cases where LLM only makes tool calls without text
         answer_llm = ChatOpenAI(
             api_key=config.openai_api_key,
             model=config.openai_model,
@@ -1819,25 +1862,88 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     
     answer_messages = [system_msg, HumanMessage(content=answer_prompt)]
     
+    # NOTE: Retrieval is now handled by the unified agent node
+    # This node assumes document_outputs is already populated from agent node.
+    # We only need to handle UI action tools (open_document, navigate_to_property_by_name) if in agent mode.
+    
     try:
-        logger.info(f"[SUMMARIZE_RESULTS] Phase 2: Generating answer... (agent_mode={is_agent_mode})")
+        # CRITICAL: Do not generate response if there are no documents
+        if not doc_outputs or len(doc_outputs) == 0:
+            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ CRITICAL: Attempted to generate answer with 0 document outputs!")
+            logger.error(f"[SUMMARIZE_RESULTS] This will cause hallucinations. Returning empty response.")
+            return {
+                "final_summary": None,  # Signal to go to no_results_node
+                "document_outputs": [],
+                "agent_actions": []
+            }
+        
+        logger.info(f"[SUMMARIZE_RESULTS] Generating answer from {len(doc_outputs)} document outputs (agent_mode={is_agent_mode})")
+        
+        # DEBUG: Log the prompt length and document outputs count
+        logger.debug(f"[SUMMARIZE_RESULTS] Prompt length: {len(answer_prompt)} chars, Document outputs: {len(doc_outputs)}")
+        if doc_outputs:
+            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output keys: {list(doc_outputs[0].keys()) if doc_outputs[0] else 'empty'}")
+            logger.debug(f"[SUMMARIZE_RESULTS] First doc_output output length: {len(str(doc_outputs[0].get('output', ''))) if doc_outputs[0] else 0} chars")
+        
+        # Single LLM call - no iterative tool calling for retrieval
         answer_response = await answer_llm.ainvoke(answer_messages)
-        logger.info("[SUMMARIZE_RESULTS] Phase 2 complete")
+        
+        # DEBUG: Log LLM response details
+        logger.debug(f"[SUMMARIZE_RESULTS] LLM response type: {type(answer_response)}")
+        if hasattr(answer_response, 'content'):
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content type: {type(answer_response.content)}, length: {len(str(answer_response.content)) if answer_response.content else 0} chars")
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response content (first 200 chars): {str(answer_response.content)[:200] if answer_response.content else 'None'}...")
+        if hasattr(answer_response, 'tool_calls'):
+            logger.debug(f"[SUMMARIZE_RESULTS] LLM response tool_calls: {len(answer_response.tool_calls) if answer_response.tool_calls else 0}")
+        
+        # Process UI action tool calls if any (open_document, navigate_to_property_by_name)
+        # These are handled after getting the answer
+        if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+            logger.info(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} UI action tool call(s)")
+            # UI action tools are processed below in the agent action processing section
+        
+        # Extract answer text
+        summary = ''
+        if hasattr(answer_response, 'content'):
+            summary = str(answer_response.content).strip() if answer_response.content else ''
+            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from content: {len(summary)} chars")
+            if not summary:
+                logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM returned empty content! Response content was: {repr(answer_response.content)}")
+                # CRITICAL: If LLM made tool calls but no text, we need to force it to generate text
+                # This happens when LLM only makes tool calls without generating an answer
+                if hasattr(answer_response, 'tool_calls') and answer_response.tool_calls:
+                    logger.warning(f"[SUMMARIZE_RESULTS] LLM made {len(answer_response.tool_calls)} tool calls but no text content - forcing text generation")
+                    # Re-invoke LLM with explicit instruction to generate text
+                    force_text_prompt = answer_prompt + "\n\n**CRITICAL**: You must provide a complete answer in text. Use tools for UI actions, but also write the full answer in your response."
+                    force_text_messages = [system_msg, HumanMessage(content=force_text_prompt)]
+                    try:
+                        force_text_response = await answer_llm.ainvoke(force_text_messages)
+                        if hasattr(force_text_response, 'content') and force_text_response.content:
+                            summary = str(force_text_response.content).strip()
+                            logger.info(f"[SUMMARIZE_RESULTS] Generated summary after forcing text: {len(summary)} chars")
+                            # Still process tool calls from original response
+                            if hasattr(force_text_response, 'tool_calls') and force_text_response.tool_calls:
+                                # Merge tool calls if needed
+                                if not hasattr(answer_response, 'tool_calls') or not answer_response.tool_calls:
+                                    answer_response.tool_calls = force_text_response.tool_calls
+                        else:
+                            logger.error(f"[SUMMARIZE_RESULTS] ⚠️ Even after forcing text, LLM returned empty content!")
+                    except Exception as force_error:
+                        logger.error(f"[SUMMARIZE_RESULTS] Error forcing text generation: {force_error}", exc_info=True)
+        elif isinstance(answer_response, str):
+            summary = answer_response.strip()
+            logger.debug(f"[SUMMARIZE_RESULTS] Extracted summary from string: {len(summary)} chars")
+        else:
+            logger.warning(f"[SUMMARIZE_RESULTS] ⚠️ LLM response has unexpected type: {type(answer_response)}, no content found")
+        
     except Exception as llm_error:
-        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {llm_error}", exc_info=True)
+        logger.error(f"[SUMMARIZE_RESULTS] Error during answer generation: {llm_error}", exc_info=True)
         return {
             "final_summary": "I encountered an error generating the response. Please try again.",
             "citations": citations_from_state,
             "document_outputs": doc_outputs,
             "relevant_documents": state.get('relevant_documents', [])
         }
-    
-    # Extract answer text
-    summary = ''
-    if hasattr(answer_response, 'content'):
-        summary = str(answer_response.content).strip() if answer_response.content else ''
-    elif isinstance(answer_response, str):
-        summary = answer_response.strip()
     
     # AGENT MODE: Process agent action tool calls (open_document, navigate_to_property)
     agent_actions = []

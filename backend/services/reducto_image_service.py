@@ -62,7 +62,9 @@ class ReductoImageService:
         # By default we now upload every image we can successfully download.
         # (This matches product expectation: "pull every image it can".)
         if include_all_images:
-            images_to_upload = [img for img in downloaded_images if img.get('success')]
+            # _download_images_parallel already filters out failed downloads,
+            # so all items in downloaded_images are successful
+            images_to_upload = downloaded_images
             filter_result = {
                 'filtered_images': images_to_upload,
                 'filtered_count': len(images_to_upload),
@@ -88,14 +90,26 @@ class ReductoImageService:
             image_data = img_item['image_data']
             image_url = img_item['image_url']
             original_index = img_item['index']
+            block_metadata = img_item.get('block_metadata', {})
             
             try:
-                # Determine image format from URL or content
-                image_ext = 'jpg'
-                if '.png' in image_url.lower():
-                    image_ext = 'png'
-                elif '.gif' in image_url.lower():
-                    image_ext = 'gif'
+                # Determine image format using PIL (more reliable than URL parsing)
+                try:
+                    from PIL import Image
+                    import io
+                    img = Image.open(io.BytesIO(image_data))
+                    image_ext = img.format.lower() if img.format else 'jpg'
+                    # Handle common formats
+                    if image_ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+                        image_ext = 'jpg'  # Default fallback
+                except Exception as e:
+                    logger.warning(f"Could not detect image format for image {original_index}, using URL fallback: {e}")
+                    # Fallback to URL-based detection
+                    image_ext = 'jpg'
+                    if '.png' in image_url.lower():
+                        image_ext = 'png'
+                    elif '.gif' in image_url.lower():
+                        image_ext = 'gif'
 
                 # Generate storage path 
                 image_filename = f"document_{document_id}_image_{original_index}.{image_ext}"
@@ -110,6 +124,12 @@ class ReductoImageService:
                 )
 
                 if upload_result.get('success'):
+                    # Extract bbox and page_number from block_metadata
+                    bbox = block_metadata.get('bbox') if block_metadata else None
+                    page_number = None
+                    if bbox and isinstance(bbox, dict):
+                        page_number = bbox.get('page') or bbox.get('original_page')
+                    
                     processed_images.append({
                         'url': upload_result['url'],
                         'document_id': document_id,
@@ -118,9 +138,13 @@ class ReductoImageService:
                         'image_index': original_index,
                         'size_bytes': len(image_data),
                         'storage_provider': upload_result.get('storage_provider', 'supabase'),
-                        'filter_score': img_item.get('score', 0)
+                        'filter_score': img_item.get('score', 0),
+                        'bbox': bbox,  # ADD: Bbox coordinates for citation
+                        'page_number': page_number,  # ADD: Page number for citation
+                        'original_image_url': image_url,  # ADD: Original Reducto URL
+                        'block_type': block_metadata.get('type') if block_metadata else None  # ADD: Block type (Figure/Table)
                     })
-                    logger.info(f"✅ Uploaded image {original_index} (score: {img_item.get('score', 0):.1f})")
+                    logger.info(f"✅ Uploaded image {original_index} (score: {img_item.get('score', 0):.1f}, page: {page_number})")
                 else:
                     errors.append(f"Failed to upload image {original_index}: {upload_result.get('error', 'unknown error')}")
                 

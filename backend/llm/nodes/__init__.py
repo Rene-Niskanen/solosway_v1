@@ -1,15 +1,8 @@
-from backend.llm.nodes.retrieval_nodes import (
-    route_query,
-    query_vector_documents,
-    query_structured_documents,
-    combine_and_deduplicate,
-    clarify_relevant_docs
-)
+# Removed deprecated retrieval_nodes imports
+# route_query is now in routing_nodes.py
+from backend.llm.nodes.routing_nodes import route_query
+
 __all__ = [
     'route_query',
-    'query_vector_documents',
-    'query_structured_documents',
-    'combine_and_deduplicate',
-    'clarify_relevant_docs'
 ]
 

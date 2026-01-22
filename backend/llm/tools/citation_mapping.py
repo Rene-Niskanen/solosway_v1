@@ -895,9 +895,9 @@ You are in Phase 1: Citation Extraction. You MUST call this tool for EVERY factu
 
 **⚠️ CRITICAL FOR VALUATION QUERIES:**
 If the user is asking about "value" or "valuation", you MUST cite:
-- Primary Market Value (e.g., "Market Value: £2,300,000")
-- ALL reduced marketing period values (e.g., "90-day value: £1,950,000", "180-day value: £2,050,000")
-- Market Rent (e.g., "Market Rent: £6,000 per calendar month")
+- Primary Market Value (e.g., "Market Value: £X,XXX,XXX")
+- ALL reduced marketing period values (e.g., "90-day value: £X,XXX,XXX", "180-day value: £X,XXX,XXX")
+- Market Rent (e.g., "Market Rent: £X,XXX per calendar month")
 - **DO NOT** skip any valuation scenarios - search through ALL document extracts, including later pages (28-30+)
 
 **HOW TO USE:**
@@ -909,15 +909,15 @@ If the user is asking about "value" or "valuation", you MUST cite:
    - cited_text: The factual claim (exact text or your paraphrase)
 
 **EXAMPLES:**
-- cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £2,300,000")
-  - ✅ CORRECT: Block 42 contains "Market Value: £2,300,000"
-- cite_source(block_id="BLOCK_CITE_ID_15", citation_number=2, cited_text="Valuation date: 12th February 2024")
-  - ✅ CORRECT: Block 15 contains "12th February 2024"
-- cite_source(block_id="BLOCK_CITE_ID_7", citation_number=3, cited_text="Valuer: Sukhbir Tiwana MRICS")
-  - ✅ CORRECT: Block 7 contains "Sukhbir Tiwana MRICS"
-- cite_source(block_id="BLOCK_CITE_ID_531", citation_number=3, cited_text="90-day value: £1,950,000")
-  - ❌ WRONG: Block 531 contains "under offer at £2,400,000" (different value!)
-  - ✅ CORRECT: Find the block that contains "£1,950,000" and "90-day" and use that block_id instead
+- cite_source(block_id="BLOCK_CITE_ID_42", citation_number=1, cited_text="Market Value: £X,XXX,XXX")
+  - ✅ CORRECT: Block 42 contains "Market Value: £X,XXX,XXX"
+- cite_source(block_id="BLOCK_CITE_ID_15", citation_number=2, cited_text="Valuation date: DD Month YYYY")
+  - ✅ CORRECT: Block 15 contains "DD Month YYYY"
+- cite_source(block_id="BLOCK_CITE_ID_7", citation_number=3, cited_text="Valuer: Example Valuer MRICS")
+  - ✅ CORRECT: Block 7 contains "Example Valuer MRICS"
+- cite_source(block_id="BLOCK_CITE_ID_531", citation_number=3, cited_text="90-day value: £X,XXX,XXX")
+  - ❌ WRONG: Block 531 contains "under offer at £X,XXX,XXX" (different value!)
+  - ✅ CORRECT: Find the block that contains "£X,XXX,XXX" and "90-day" and use that block_id instead
 
 **CRITICAL:**
 - You MUST call this tool multiple times (minimum 3-5 calls for most queries)

@@ -148,18 +148,6 @@ The services directory contains all business logic and external service integrat
 - Uploads images to S3
 - **When to modify**: When changing image processing logic or S3 upload settings
 
-#### `classification_service.py`
-**Purpose**: Document classification service
-- Classifies document types (valuation_report, lease, etc.)
-- Uses LLM for classification
-- **When to modify**: When adding new document types or changing classification logic
-
-#### `extraction_service.py`
-**Purpose**: Structured data extraction from documents
-- Extracts property data using LLM
-- Uses extraction schemas
-- **When to modify**: When changing extraction logic or adding new extraction fields
-
 #### `extraction_schemas.py`
 **Purpose**: Pydantic schemas for data extraction
 - Defines extraction schemas for different document types
@@ -318,11 +306,6 @@ The services directory contains all business logic and external service integrat
 
 ### Deletion Services
 
-#### `deletion_service.py`
-**Purpose**: Document and property deletion (DEPRECATED)
-- **Status**: Deprecated - use `unified_deletion_service.py` instead
-- **When to modify**: Should not be modified - will be removed
-
 #### `unified_deletion_service.py`
 **Purpose**: Unified deletion service for documents and properties
 - Deletes documents and related data
@@ -475,12 +458,11 @@ The LLM directory contains the LangGraph-based RAG (Retrieval Augmented Generati
    - Triggers `process_document_task`
 
 2. **Classification** (`tasks.py` → `process_document_classification`)
-   - Uses `classification_service.py`
+   - Uses `reducto_service.py` for parsing and classification
    - Stores classification in `document_summary`
 
 3. **Extraction** (`tasks.py` → `process_document_with_dual_stores`)
-   - Uses `reducto_service.py` for parsing
-   - Uses `extraction_service.py` for structured extraction
+   - Uses `reducto_service.py` for parsing and extraction
    - Uses `reducto_image_service.py` for images
    - Stores data via `document_storage_service.py`
 
@@ -517,7 +499,7 @@ The LLM directory contains the LangGraph-based RAG (Retrieval Augmented Generati
 
 ### Adding a New Document Type
 1. Update `services/extraction_schemas.py` - Add new schema
-2. Update `services/classification_service.py` - Add classification logic
+2. Update `services/reducto_service.py` - Add classification schema in `classify_document()` method
 3. Update `tasks.py` - Add extraction logic if needed
 
 ### Changing Bbox Storage

@@ -13,7 +13,7 @@ interface ChatHistoryContextType {
   chatHistory: ChatHistoryEntry[];
   addChatToHistory: (chat: Omit<ChatHistoryEntry, 'id'>) => string;
   updateChatInHistory: (chatId: string, messages: any[]) => void;
-  removeChatFromHistory: (chatId: string) => void;
+  removeChatFromHistory: (chatId: string) => Promise<void>; // Updated to async for backend deletion
   updateChatTitle: (chatId: string, newTitle: string) => void;
   archiveChat: (chatId: string) => void;
   unarchiveChat: (chatId: string) => void;
@@ -215,8 +215,31 @@ export function ChatHistoryProvider({
     ));
   }, []);
 
-  const removeChatFromHistory = React.useCallback((chatId: string) => {
+  const removeChatFromHistory = React.useCallback(async (chatId: string) => {
+    // Delete from frontend (localStorage)
     setChatHistory(prev => prev.filter(chat => chat.id !== chatId));
+    
+    // Also delete from backend checkpointer
+    try {
+      const response = await fetch(`/api/llm/sessions/${chatId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          console.log(`✅ [CHAT_HISTORY] Deleted session ${chatId} from backend (${data.deleted_checkpoints} checkpoints removed)`);
+        } else {
+          console.warn(`⚠️ [CHAT_HISTORY] Backend deletion returned success=false for ${chatId}:`, data.error);
+        }
+      } else {
+        console.warn(`⚠️ [CHAT_HISTORY] Backend deletion failed for ${chatId}: HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.error(`⚠️ [CHAT_HISTORY] Error deleting session ${chatId} from backend:`, error);
+      // Don't throw - frontend deletion succeeded, backend is optional
+    }
   }, []);
 
   const updateChatTitle = React.useCallback((chatId: string, newTitle: string) => {

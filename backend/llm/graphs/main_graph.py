@@ -25,25 +25,34 @@ except ImportError:
     logger.warning("langgraph.checkpoint.postgres not available - checkpointer features disabled")
 
 from backend.llm.types import MainWorkflowState
-from backend.llm.nodes.routing_nodes import route_query, fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
-from backend.llm.nodes.retrieval_nodes import (
-    rewrite_query_with_context,
-    check_cached_documents,
-    expand_query_for_retrieval,
-    query_vector_documents,
-    clarify_relevant_docs
-)
-from backend.llm.nodes.detail_level_detector import determine_detail_level
+from backend.llm.nodes.routing_nodes import fetch_direct_document_chunks, handle_citation_query, handle_attachment_fast, handle_navigation_action
 from backend.llm.nodes.processing_nodes import process_documents
 from backend.llm.nodes.summary_nodes import summarize_results
 from backend.llm.nodes.formatting_nodes import format_response
-# from backend.llm.nodes.query_classifier import classify_query_intent  # Replaced by combined node
-from backend.llm.nodes.combined_query_preparation import classify_and_prepare_query  # OPTIMIZED: Combined classification + detail + expansion
-from backend.llm.nodes.text_context_detector import detect_and_extract_text
-from backend.llm.nodes.general_query_node import handle_general_query
-from backend.llm.nodes.text_transformation_node import transform_text
-from backend.llm.nodes.follow_up_query_node import handle_follow_up_query
+# NEW: Unified agent node (replaces query_analysis_node, document_retrieval_node, chunk_retrieval_node, classify_and_prepare_query, check_cached_documents, determine_detail_level)
+from backend.llm.nodes.agent_node import agent_node
+from backend.llm.nodes.no_results_node import no_results_node
+# NEW: Context manager for automatic summarization
+from backend.llm.nodes.context_manager_node import context_manager_node
+# LangGraph prebuilt components
+from langgraph.prebuilt import ToolNode
+from langgraph.types import RetryPolicy
 from typing import Literal
+from langchain_core.messages import SystemMessage
+
+# NEW: Middleware for context management and retry logic
+try:
+    from langchain.agents.middleware import (
+        SummarizationMiddleware,
+        ToolRetryMiddleware
+    )
+    MIDDLEWARE_AVAILABLE = True
+    logger.info("✅ LangChain middleware available")
+except ImportError as e:
+    MIDDLEWARE_AVAILABLE = False
+    SummarizationMiddleware = None
+    ToolRetryMiddleware = None
+    logger.warning(f"⚠️ LangChain middleware not available: {e}")
 
 async def create_checkpointer_for_current_loop():
     """
@@ -161,6 +170,58 @@ async def create_checkpointer_for_current_loop():
         logger.error(f"Error creating checkpointer for event loop: {e}", exc_info=True)
         return None
 
+def create_middleware_config() -> list:
+    """
+    Create middleware configuration for the agent.
+    Returns list of middleware instances or empty list if unavailable.
+    
+    Middleware includes:
+    1. SummarizationMiddleware - Automatically summarizes old messages when token count exceeds 8k
+    2. ToolRetryMiddleware - Automatically retries failed tool calls with exponential backoff
+    """
+    if not MIDDLEWARE_AVAILABLE:
+        logger.warning("Middleware not available - returning empty list")
+        return []
+    
+    middleware = []
+    
+    # 1. Summarization Middleware (prevent token overflow)
+    try:
+        summarization = SummarizationMiddleware(
+            model="gpt-4o-mini",  # Cheap model for summaries
+            trigger=("tokens", 8000),  # FIXED: Use tuple not dict
+            keep=("messages", 6),  # FIXED: Use tuple not dict
+            summary_prompt="""Summarize the conversation history concisely.
+
+Focus on:
+1. User's primary questions and goals
+2. Key facts discovered (property addresses, valuations, dates)
+3. Documents referenced and their relevance
+4. Open questions or unresolved issues
+
+Keep the summary under 300 words. Be specific and factual."""
+        )
+        middleware.append(summarization)
+        logger.info("✅ Added SummarizationMiddleware (trigger: 8k tokens, keep: 6 msgs)")
+    except Exception as e:
+        logger.error(f"❌ Failed to create SummarizationMiddleware: {e}")
+    
+    # 2. Tool Retry Middleware (auto-retry failures)
+    try:
+        tool_retry = ToolRetryMiddleware(
+            max_retries=2,  # Retry up to 2 times (3 total attempts)
+            backoff_factor=1.5,  # FIXED: Use backoff_factor not backoff
+            initial_delay=1.0,  # Start with 1s delay
+            max_delay=10.0,  # Cap at 10s
+            jitter=True  # Add randomness to prevent thundering herd
+        )
+        middleware.append(tool_retry)
+        logger.info("✅ Added ToolRetryMiddleware (max_retries: 2, backoff_factor: 1.5x)")
+    except Exception as e:
+        logger.error(f"❌ Failed to create ToolRetryMiddleware: {e}")
+    
+    return middleware
+
 async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=None):
     """
     Build and compile the main LangGraph orchestration with intelligent routing.
@@ -190,74 +251,16 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # Create the state graph 
     builder = StateGraph(MainWorkflowState)
 
-    # SPEED OPTIMIZATION: Check Cached Documents FIRST (our improvement)
-    builder.add_node("check_cached_documents", check_cached_documents)
-    """
-    Node 0: Check Cached Documents (Performance Optimization)
-    - Input: user_query, conversation_history, relevant_documents (from checkpointer)
-    - Checks if documents were already retrieved in previous conversation turns
-    - If property context matches, reuses cached documents (much faster)
-    - If property context differs or no cache, proceeds with classification
-    - Output: cached relevant_documents (if applicable) or empty to proceed
-    """
+    # REMOVED: check_cached_documents, classify_and_prepare_query
+    # These nodes pre-processed queries and stole the agent's first thought.
+    # Agent now decides its own strategy inline.
     
-    # COMBINED: Query Classification + Detail Level + Expansion in ONE LLM call
-    builder.add_node("classify_and_prepare_query", classify_and_prepare_query)
-    """
-    Node 0.25: Combined Query Preparation (OPTIMIZED - saves ~1-1.5s)
-    - Input: user_query, conversation_history, document_ids, relevant_documents
-    - Does ALL of these in ONE LLM call:
-      1. Classifies query as: general_query, text_transformation, document_search, follow_up, or hybrid
-      2. Determines detail_level (concise vs detailed)
-      3. Generates query_variations for better retrieval (if needed)
-    - Output: query_category, detail_level, query_variations, skip_expansion=True
-    - PERFORMANCE: Replaces 3 separate LLM calls with 1 (~1-1.5s faster)
-    """
+    # REMOVED: detect_and_extract_text, handle_general_query, transform_text, handle_follow_up_query
+    # These specialized handlers are no longer needed - agent handles all query types.
     
-    # NEW: Context Detection (for text transformation)
-    builder.add_node("detect_and_extract_text", detect_and_extract_text)
-    """
-    Node 0.3: Detect and Extract Text (NEW)
-    - Input: user_query, conversation_history
-    - Detects what text user wants to transform AND extracts it
-    - Output: text_to_transform, transformation_instruction
-    """
-    
-    # NEW: General Query Handler
-    builder.add_node("handle_general_query", handle_general_query)
-    """
-    Node 0.4: Handle General Query (NEW)
-    - Input: user_query, conversation_history
-    - Answers general knowledge questions
-    - Output: final_summary, conversation_history, citations
-    """
-    
-    # NEW: Text Transformation Handler
-    builder.add_node("transform_text", transform_text)
-    """
-    Node 0.45: Transform Text (NEW)
-    - Input: text_to_transform, transformation_instruction, user_query
-    - Transforms text based on user instruction
-    - Output: final_summary, conversation_history, citations
-    """
-    
-    # NEW: Follow-up Query Handler
-    builder.add_node("handle_follow_up_query", handle_follow_up_query)
-    """
-    Node 0.5: Handle Follow-up Query (NEW)
-    - Input: user_query, conversation_history
-    - Handles queries asking for more detail on previous document search responses
-    - Output: final_summary, conversation_history, citations
-    """
-    
-    # ROUTER NODES (from citation-mapping - Performance Optimization)
-    builder.add_node("route_query", route_query)
-    """
-    Node 0.5: Route Query (Performance Optimization)
-    - Analyzes query complexity and context
-    - Determines which workflow path to use (direct/simple/complex)
-    - Sets optimization flags (skip_expansion, skip_clarify, etc.)
-    """
+    # REMOVED: route_query
+    # Routing is now handled by simple_route() which only handles fast paths.
+    # Everything else goes directly to agent.
 
     builder.add_node("fetch_direct_chunks", fetch_direct_document_chunks)
     """
@@ -285,6 +288,55 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - ~5-10x faster than normal pipeline
     """
     
+    # NEW: Context Manager Node (automatic summarization to prevent token overflow)
+    builder.add_node("context_manager", context_manager_node)
+    logger.info("✅ Added context_manager node (auto-summarize at 8k tokens)")
+    
+    # NEW: Unified Agent Node (replaces query_analysis_node, document_retrieval_node, chunk_retrieval_node)
+    builder.add_node("agent", agent_node)
+    """
+    Unified Agent Node
+    - Handles query analysis (inline)
+    - Calls retrieve_documents() and retrieve_chunks() tools autonomously
+    - Handles semantic retries (LLM decides when to retry)
+    - Generates final answer from chunks
+    - Output: messages (for tools_node), retrieved_documents, document_outputs, or final_summary
+    """
+    
+    # Create tools for agent
+    from backend.llm.tools.document_retriever_tool import create_document_retrieval_tool
+    from backend.llm.tools.chunk_retriever_tool import create_chunk_retrieval_tool
+    
+    retrieval_tools = [
+        create_document_retrieval_tool(),
+        create_chunk_retrieval_tool(),
+    ]
+    
+    # Add tools node with retry policy for execution failures
+    builder.add_node(
+        "tools",
+        ToolNode(tools=retrieval_tools),
+        retry_policy=RetryPolicy(
+            max_attempts=3,
+            retry_on=(ConnectionError, TimeoutError, Exception)
+        )
+    )
+    """
+    Tools Node
+    - Executes tool calls from agent (retrieve_documents, retrieve_chunks)
+    - Handles execution failures (timeouts, DB errors) via RetryPolicy
+    - Returns ToolMessages to agent for processing
+    - Does NOT handle semantic retries (that's agent's job)
+    """
+    
+    builder.add_node("no_results_node", no_results_node)
+    """
+    NEW: No Results Node (Shared Failure Handler)
+    - Generates helpful failure messages when retries are exhausted
+    - Explains what was searched, suggests rephrasing
+    - Output: final_summary with helpful failure message
+    """
+    
     builder.add_node("handle_navigation_action", handle_navigation_action)
     """
     INSTANT Path Node: Navigation Action Handler (~0.1s)
@@ -295,55 +347,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     """
 
     # EXISTING NODES (Full Pipeline)
-    builder.add_node("rewrite_query", rewrite_query_with_context)
-    """
-    Node 1: Query Rewriting
-    - Input: user_query, conversation_history
-    - Rewrites vague queries to be self-contained using conversation context
-    - Example: "What's the price?" → "What's the price for Highlands property?"
-    - Output: rewritten user_query (or original if no history)
-    """
+    # REMOVED: rewrite_query, expand_query, query_vector_documents, clarify_relevant_docs
+    # These are replaced by agent tools in summarize_results node (retrieve_documents + retrieve_chunks)
 
-    builder.add_node("determine_detail_level", determine_detail_level)
-    """
-    Node 1.5: Detail Level Detection (NEW - Intelligent Classification)
-    - Input: user_query, conversation_history (optional)
-    - Uses fast LLM (gpt-4o-mini) to classify query complexity
-    - Determines if query needs detailed RICS-level answer or concise factual answer
-    - Skips detection if detail_level already set (manual override from API)
-    - Output: detail_level ("concise" or "detailed")
-    - Performance: ~0.5-1s with gpt-4o-mini
-    """
-
-    builder.add_node("expand_query", expand_query_for_retrieval)
-    """
-    Node 2: Query Expansion (Accuracy Improvement)
-    - Input: user_query (potentially rewritten)
-    - Generates 2 query variations with synonyms and rephrasing
-    - Example: "foundation issues" → ["foundation issues", "foundation damage", "concrete defects"]
-    - Output: query_variations list
-    - Improves recall by 15-30% by catching different phrasings
-    """
-
-    builder.add_node("query_vector_documents", query_vector_documents)
-    """
-    Node 3: Vector Search with Multi-Query (Uses query variations)
-    - Input: query_variations (from expand_query), business_id
-    - Embeds each query variation and searches Supabase pgvector
-    - Merges results with Reciprocal Rank Fusion (RRF)
-    - Uses HNSW index with optimized parameters
-    - Output: vector results (merged, deduplicated by RRF)
-    """
-
-    builder.add_node("clarify_relevant_docs", clarify_relevant_docs)
-    """
-    Node 4: Clarify/Re-rank
-    - Input: relevant_documents, conversation_history
-    - Groups chunks by doc_id into unique documents
-    - LLM re-ranks documents by relevance to user query
-    - Considers conversation context for follow-up questions
-    - Output: deduplicated and sorted relevant_documents
-    """
+    # REMOVED: determine_detail_level
+    # Agent decides detail level based on query context.
 
     builder.add_node("process_documents", process_documents)
     """
@@ -376,171 +384,71 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     """
     
     # ROUTING LOGIC FUNCTIONS
-    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "direct_document", "simple_search", "complex_search"]:
+    # REMOVED: should_route() and should_use_cached_documents()
+    # These old routing functions are replaced by simple_route() which handles fast paths only.
+    # Everything else goes directly to the agent.
+
+    # BUILD GRAPH EDGES - SIMPLIFIED ROUTING
+    # START → simple router (only handles fast paths, everything else → context_manager → agent)
+    def simple_route(state: MainWorkflowState) -> Literal["handle_navigation_action", "handle_citation_query", "handle_attachment_fast", "fetch_direct_chunks", "context_manager"]:
         """
-        Conditional routing - makes decision based on initial state.
+        Simplified routing from START.
         
-        NOTE: This function receives state BEFORE route_query's return is merged,
-        so we must duplicate the routing logic here instead of reading route_decision.
+        Fast paths (skip agent):
+        - Navigation actions
+        - Citation queries
+        - Attachment fast mode
+        - Direct document access (document_ids provided)
         
-        CRITICAL: Attachment/citation checks ONLY run if values exist AND have content.
-        Normal queries use the original routing logic unchanged.
+        Everything else → agent (agent decides its own strategy)
         """
-        user_query = state.get("user_query", "").lower().strip()
-        document_ids = state.get("document_ids", [])
-        property_id = state.get("property_id")
+        # Check for fast paths
+        query_type = state.get("query_type")
         citation_context = state.get("citation_context")
-        attachment_context = state.get("attachment_context")
-        response_mode = state.get("response_mode")
-        is_agent_mode = state.get("is_agent_mode", False)
+        attached_document = state.get("attached_document")
+        fast_mode = state.get("fast_mode", False)
+        document_ids = state.get("document_ids")
         
-        # DEBUG: Log is_agent_mode and query for navigation detection
-        logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, query='{user_query[:60]}...'")
+        # Navigation action
+        if query_type == "navigation_action":
+            logger.info("[GRAPH] Fast path: navigation_action")
+            return "handle_navigation_action"
         
-        # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
-        # When user wants to navigate to a property on the map
-        # Only in agent mode - reader mode doesn't have navigation tools
-        if is_agent_mode:
-            # Explicit navigation phrases - must be very specific
-            # Include variations with "please" and other polite words
-            navigation_patterns = [
-                "take me to the", "take me to ", "please take me to", "please take me to the",
-                "go to the map", "navigate to the", "please navigate to", "please navigate to the",
-                "show me on the map", "show on map", "find on map", "open the map",
-                "go to map", "click on the", "select the pin", "click the pin",
-                "please show me", "please go to", "please find"
-            ]
-            
-            # Pin-specific patterns - strong indicator of navigation
-            pin_patterns = [" pin", "property pin", "map pin"]
-            
-            # Information query keywords - these should NOT trigger navigation
-            info_keywords = ["value", "price", "cost", "worth", "valuation", "report", 
-                           "inspection", "document", "tell me about", "what is", "how much",
-                           "summary", "details", "information", "data"]
-            
-            # Check if this looks like an information query (NOT navigation)
-            is_info_query = any(keyword in user_query for keyword in info_keywords)
-            
-            # Only check navigation if NOT an info query
-            if not is_info_query:
-                has_navigation_intent = any(pattern in user_query for pattern in navigation_patterns)
-                has_pin_intent = any(pattern in user_query for pattern in pin_patterns)
-                
-                if has_navigation_intent or has_pin_intent:
-                    logger.info(f"⚡ [ROUTER] should_route → navigation_action (navigation intent detected: '{user_query}')")
-                    return "navigation_action"
+        # Citation query (citation click)
+        if citation_context or query_type == "citation_query":
+            logger.info("[GRAPH] Fast path: citation_query")
+            return "handle_citation_query"
         
-        # PATH 0: CITATION QUERY (ULTRA-FAST ~2s)
-        # When user clicked on a citation and asked a question about it
-        if citation_context and isinstance(citation_context, dict):
-            cited_text = citation_context.get("cited_text", "")
-            if cited_text and len(str(cited_text).strip()) > 0:
-                logger.info("⚡ [ROUTER] should_route → citation_query (citation_context provided)")
-                return "citation_query"
+        # Attachment fast mode
+        if attached_document and fast_mode:
+            logger.info("[GRAPH] Fast path: attachment_fast")
+            return "handle_attachment_fast"
         
-        # ORIGINAL ROUTING LOGIC - Restored from HEAD to match working version
-        # NOTE: Citation and attachment routing handled in route_query node, not here
-        # FIX: Ensure document_ids is always a list (safety check)
-        if document_ids and not isinstance(document_ids, list):
-            document_ids = [str(document_ids)]
-        elif not document_ids:
-            document_ids = []
+        # Direct document access (document_ids provided)
+        if document_ids:
+            logger.info(f"[GRAPH] Fast path: direct_document (doc_ids={document_ids})")
+            return "fetch_direct_chunks"
         
-        logger.info(
-            f"[ROUTER] should_route called - Query: '{user_query[:50]}...', "
-            f"Docs: {document_ids} (count: {len(document_ids)}), "
-            f"Property: {property_id[:8] if property_id else 'None'}"
-        )
-        
-        # PATH 1: DIRECT DOCUMENT (FASTEST ~2s)
-        if document_ids and len(document_ids) > 0:
-            logger.info("🟢 [ROUTER] should_route → direct_document (document_ids provided)")
-            return "direct_document"
-        
-        # PATH 2: PROPERTY CONTEXT (treat as simple_search for now)
-        if property_id and any(word in user_query for word in [
-            "report", "document", "inspection", "appraisal", "valuation", 
-            "lease", "contract", "the document", "this document", "that document"
-        ]):
-            logger.info("🟡 [ROUTER] should_route → simple_search (property-specific query)")
-            return "simple_search"
-        
-        # PATH 3: SIMPLE QUERY (MEDIUM ~6s)
-        # FIX: Match route_query logic exactly - use OR not AND, same keywords
-        word_count = len(user_query.split())
-        simple_keywords = [
-            "what is", "what's", "how much", "how many", "price", "cost", 
-            "value", "when", "where", "who"
-        ]
-        
-        if word_count <= 8 or any(kw in user_query for kw in simple_keywords):
-            logger.info("🟡 [ROUTER] should_route → simple_search (simple query)")
-            return "simple_search"
-        
-        # PATH 4: COMPLEX QUERY (FULL PIPELINE ~12s)
-        logger.info("🔴 [ROUTER] should_route → complex_search (complex query, full pipeline)")
-        return "complex_search"
-
-    def should_use_cached_documents(state: MainWorkflowState) -> Literal["process_documents", "route_query"]:
-        """
-        Conditional routing after cache check (RESTORED FROM HEAD).
-        If documents are cached, skip directly to processing.
-        If not cached, proceed directly to route_query.
-        """
-        cached_docs = state.get("relevant_documents", [])
-        if cached_docs and len(cached_docs) > 0:
-            logger.info(f"[GRAPH] Using {len(cached_docs)} cached documents - skipping to process")
-            return "process_documents"
-        logger.info("[GRAPH] No cached documents - proceeding to routing (HEAD behavior)")
-        return "route_query"
-
-    def should_skip_expansion(state: MainWorkflowState) -> Literal["expand_query", "query_vector_documents"]:
-        """Skip expansion if route_decision says so"""
-        if state.get("skip_expansion"):
-            return "query_vector_documents"
-        return "expand_query"
-
-    def should_skip_clarify(state: MainWorkflowState) -> Literal["clarify_relevant_docs", "process_documents"]:
-        """Skip clarification for simple queries or direct documents"""
-        if state.get("skip_clarify"):
-            return "process_documents"
-        # Also skip if only 1-2 documents (fast path)
-        relevant_docs = state.get("relevant_documents", [])
-        if len(relevant_docs) <= 2:
-            return "process_documents"
-        return "clarify_relevant_docs"
-
-    # BUILD GRAPH EDGES
-    # START → Check Cached Documents (our speed improvement)
-    builder.add_edge(START, "check_cached_documents")
-    logger.debug("Edge: START -> check_cached_documents")
-
-    # Cache Check → Conditional: Use cached or route (RESTORED FROM HEAD)
+        # Everything else goes to context_manager → agent
+        logger.info("[GRAPH] Routing to context_manager (check tokens before agent)")
+        return "context_manager"
+    
     builder.add_conditional_edges(
-        "check_cached_documents",
-        should_use_cached_documents,
+        START,
+        simple_route,
         {
-            "process_documents": "process_documents",  # Cached - skip to process
-            "route_query": "route_query"  # Not cached - go directly to route_query (HEAD behavior)
+            "navigation_action": "handle_navigation_action",
+            "citation_query": "handle_citation_query",
+            "handle_attachment_fast": "handle_attachment_fast",
+            "fetch_direct_chunks": "fetch_direct_chunks",
+            "context_manager": "context_manager"
         }
     )
-    logger.debug("Conditional: check_cached_documents -> [process_documents|route_query] (RESTORED FROM HEAD)")
-
-    # Router → Conditional routing (ORIGINAL - restored from HEAD)
-    # NOTE: Citation routing is handled by should_route based on citation_context
-    builder.add_conditional_edges(
-        "route_query",
-        should_route,
-        {
-            "navigation_action": "handle_navigation_action",  # INSTANT: Map navigation
-            "citation_query": "handle_citation_query",  # ULTRA-FAST: Citation click query
-            "direct_document": "fetch_direct_chunks",
-            "simple_search": "query_vector_documents",  # Skip expand/clarify
-            "complex_search": "rewrite_query"  # Full pipeline
-        }
-    )
-    logger.debug("Conditional: route_query -> [navigation_action|citation_query|direct_document|simple_search|complex_search]")
+    logger.debug("START -> [navigation_action|citation_query|attachment_fast|direct_chunks|context_manager]")
+    
+    # Context manager → agent (always - after checking/summarizing tokens)
+    builder.add_edge("context_manager", "agent")
+    logger.debug("Edge: context_manager -> agent (after token check/summarization)")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
@@ -558,57 +466,246 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     builder.add_edge("fetch_direct_chunks", "process_documents")
     logger.debug("Edge: fetch_direct_chunks -> process_documents")
 
-    # SIMPLE PATH: vector → process → summarize (no clarify, ~6s)
-    # Note: This edge is conditional below, but we also need direct edge for simple path
-    # The conditional will handle routing after query_vector_documents
+    # Helper node to extract final answer from messages for API response
+    def extract_final_answer(state: MainWorkflowState) -> MainWorkflowState:
+        """
+        Extract final answer from agent's last message.
+        
+        This is NOT manual extraction of tool results - it's just formatting
+        the final output for the API response.
+        """
+        messages = state.get("messages", [])
+        
+        if messages:
+            last_message = messages[-1]
+            if hasattr(last_message, 'content') and last_message.content:
+                logger.info(f"[EXTRACT_FINAL] Extracted final answer ({len(last_message.content)} chars)")
+                return {"final_summary": last_message.content}
+        
+        logger.warning("[EXTRACT_FINAL] No final answer found in messages")
+        return {"final_summary": "I apologize, but I couldn't generate a response."}
+    
+    builder.add_node("extract_final_answer", extract_final_answer)
 
-    # COMPLEX PATH: rewrite → vector → clarify (conditional) → process
-    # NOTE: detail_level and query_variations are already set by classify_and_prepare_query!
-    # We skip determine_detail_level and expand_query nodes for document searches
-    builder.add_edge("rewrite_query", "query_vector_documents")
-    logger.debug("Edge: rewrite_query -> query_vector_documents (OPTIMIZED: skips detail_level + expand)")
+    # Helper functions for Phase 2: Chunk presence detection
+    def check_chunks_retrieved(messages: list) -> bool:
+        """
+        Check if retrieve_chunks was called and returned content.
+        
+        Returns True if chunks were retrieved with actual content, False otherwise.
+        """
+        for msg in messages:
+            # Check if this is a ToolMessage from retrieve_chunks
+            if hasattr(msg, 'type') and msg.type == 'tool':
+                if hasattr(msg, 'name') and msg.name == 'retrieve_chunks':
+                    # Check if content is non-empty
+                    if msg.content:
+                        try:
+                            import json
+                            # Parse content (could be string or already parsed)
+                            content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                            # Check if it's a list with items
+                            if isinstance(content, list) and len(content) > 0:
+                                # Verify it has actual chunk data (not just empty dicts)
+                                if any(chunk.get('chunk_text') or chunk.get('chunk_text_clean') for chunk in content if isinstance(chunk, dict)):
+                                    logger.debug("[GRAPH] ✅ Chunks detected in message history")
+                                    return True
+                        except (json.JSONDecodeError, AttributeError, TypeError) as e:
+                            logger.debug(f"[GRAPH] Error parsing chunk content: {e}")
+                            # If parsing fails but content exists, assume chunks are present
+                            if msg.content and len(str(msg.content)) > 10:
+                                return True
+        logger.debug("[GRAPH] ❌ No chunks detected in message history")
+        return False
 
-    # Keep these nodes for backwards compatibility (may be used by other paths)
-    # builder.add_edge("determine_detail_level", "expand_query")
-    # builder.add_edge("expand_query", "query_vector_documents")
+    def check_documents_retrieved(messages: list) -> bool:
+        """
+        Check if retrieve_documents was called and returned results.
+        
+        Returns True if documents were found, False otherwise.
+        """
+        for msg in messages:
+            # Check if this is a ToolMessage from retrieve_documents
+            if hasattr(msg, 'type') and msg.type == 'tool':
+                if hasattr(msg, 'name') and msg.name == 'retrieve_documents':
+                    # Check if content is non-empty
+                    if msg.content:
+                        try:
+                            import json
+                            # Parse content (could be string or already parsed)
+                            content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                            # Check if it's a list with items
+                            if isinstance(content, list) and len(content) > 0:
+                                logger.debug(f"[GRAPH] ✅ Documents detected in message history ({len(content)} documents)")
+                                return True
+                        except (json.JSONDecodeError, AttributeError, TypeError) as e:
+                            logger.debug(f"[GRAPH] Error parsing document content: {e}")
+                            # If parsing fails but content exists, assume documents are present
+                            if msg.content and len(str(msg.content)) > 10:
+                                return True
+        logger.debug("[GRAPH] ❌ No documents detected in message history")
+        return False
 
-    # Conditional: Skip clarification for simple queries
+    def force_chunk_retrieval_node(state: MainWorkflowState):
+        """
+        Inject a system message forcing the agent to retrieve chunks.
+        
+        This is called when documents were found but no chunks retrieved.
+        The system message will force the agent to call retrieve_chunks before answering.
+        """
+        messages = state.get("messages", [])
+        
+        # Find the last document retrieval to get document IDs
+        document_ids = []
+        for msg in reversed(messages):
+            if hasattr(msg, 'type') and msg.type == 'tool':
+                if hasattr(msg, 'name') and msg.name == 'retrieve_documents':
+                    try:
+                        import json
+                        content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                        if isinstance(content, list):
+                            document_ids = [doc.get('document_id') for doc in content if doc.get('document_id')]
+                            if document_ids:
+                                break
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        pass
+        
+        # Create system message forcing chunk retrieval
+        if document_ids:
+            doc_ids_str = str(document_ids[:3])  # Show first 3 IDs
+            force_message = SystemMessage(content=f"""🚨 CRITICAL VIOLATION DETECTED:
+
+You have identified {len(document_ids)} relevant document(s) but you have NOT retrieved any document text.
+
+**YOU ARE NOT ALLOWED TO ANSWER DOCUMENT-BASED QUESTIONS WITHOUT RETRIEVING CHUNKS.**
+
+**YOU MUST IMMEDIATELY:**
+1. Call retrieve_chunks(document_ids={doc_ids_str}, query="...") with the document IDs you found
+2. Wait for the chunk text to be returned
+3. THEN answer based on the chunk content
+
+**REMEMBER:**
+- Document metadata (filenames, IDs, scores) is NOT sufficient evidence
+- Chunk text is the ONLY source of truth for answering questions
+- You cannot answer without chunk content
+
+Proceed immediately with chunk retrieval.""")
+        else:
+            # Fallback if we can't find document IDs
+            force_message = SystemMessage(content="""🚨 CRITICAL: You have identified documents but NOT retrieved chunks.
+
+You MUST call retrieve_chunks() before answering any document-based question.
+
+Document metadata is NOT sufficient. You need actual chunk text to answer.
+
+Proceed immediately with chunk retrieval.""")
+        
+        logger.warning(f"[GRAPH] ⚠️ FORCING chunk retrieval - {len(document_ids)} documents found but no chunks retrieved")
+        
+        return {"messages": [force_message]}
+    
+    # NEW: Agent-driven retrieval path (SIMPLIFIED)
+    # Agent → tools → agent (loop) → extract_final_answer → END
+    def should_continue(state: MainWorkflowState) -> Literal["tools", "force_chunks", "extract_final_answer"]:
+        """
+        Determine next step after agent node.
+        
+        ENHANCED ROUTING (Phase 2):
+        - If agent made tool calls → execute them
+        - If NO tool calls AND documents found BUT no chunks → force chunk retrieval
+        - Else → extract final answer from messages
+        
+        This ensures chunks are ALWAYS retrieved before answering document questions.
+        """
+        messages = state.get("messages", [])
+        
+        if not messages:
+            logger.warning("[GRAPH] No messages in state, routing to extract_final_answer")
+            return "extract_final_answer"
+        
+        # Check last message for tool calls
+        last_message = messages[-1]
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            logger.debug(f"[GRAPH] Agent made {len(last_message.tool_calls)} tool call(s), routing to tools")
+            return "tools"
+        
+        # No tool calls - check if chunks were retrieved
+        has_documents = check_documents_retrieved(messages)
+        has_chunks = check_chunks_retrieved(messages)
+        
+        # Add debug logging
+        logger.info(f"[GRAPH] should_continue check: has_documents={has_documents}, has_chunks={has_chunks}")
+        
+        # If documents found but no chunks → FORCE chunk retrieval
+        if has_documents and not has_chunks:
+            logger.warning("[GRAPH] ⚠️ Documents retrieved but NO chunks - routing to force_chunks")
+            return "force_chunks"
+        
+        # Chunks exist or no documents needed - allow final answer
+        if has_chunks:
+            logger.info("[GRAPH] ✅ Chunks detected - allowing final answer extraction")
+        logger.debug("[GRAPH] Agent finished (no tool calls), routing to extract_final_answer")
+        return "extract_final_answer"
+    
     builder.add_conditional_edges(
-        "query_vector_documents",
-        should_skip_clarify,
+        "agent",
+        should_continue,
         {
-            "clarify_relevant_docs": "clarify_relevant_docs",
-            "process_documents": "process_documents"
+            "tools": "tools",
+            "force_chunks": "force_chunks",  # ← NEW: Force chunk retrieval path
+            "extract_final_answer": "extract_final_answer"
         }
     )
-    logger.debug("Conditional: query_vector_documents -> [clarify_relevant_docs|process_documents]")
+    logger.debug("Conditional: agent -> [tools|force_chunks|extract_final_answer]")
 
-    # Clarify → Process
-    builder.add_edge("clarify_relevant_docs", "process_documents")
-    logger.debug("Edge: clarify_relevant_docs -> process_documents")
+    # Add force_chunks node
+    builder.add_node("force_chunks", force_chunk_retrieval_node)
+    logger.debug("Node: force_chunks (forces chunk retrieval)")
+    
+    # Force_chunks always routes back to agent (so agent can call retrieve_chunks)
+    builder.add_edge("force_chunks", "agent")
+    logger.debug("Edge: force_chunks -> agent (loop back for chunk retrieval)")
+    
+    # Tools → Agent (loop back)
+    builder.add_edge("tools", "agent")
+    logger.debug("Edge: tools -> agent (loop back)")
+    
+    # Extract final answer → END
+    builder.add_edge("extract_final_answer", END)
+    logger.debug("Edge: extract_final_answer -> END")
+    
+    # Format response → END (for fast paths that go through format_response)
+    builder.add_edge("format_response", END)
+    logger.debug("Edge: format_response -> END")
 
     # ALL PATHS CONVERGE HERE
     builder.add_edge("process_documents", "summarize_results")
     logger.debug("Edge: process_documents -> summarize_results")
 
-    # OPTIMIZATION: Skip format_response (saves ~6.5s) - summary is already well-formatted
-    # Go directly to END from summarize_results
-    builder.add_edge("summarize_results", END)
-    logger.debug("Edge: summarize_results -> END (OPTIMIZED: skipped format_response)")
+    # Conditional edge from summarize_results: route to no_results_node if no documents
+    def should_route_to_no_results(state: MainWorkflowState) -> Literal["no_results_node", "END"]:
+        """Route to no_results_node if final_summary is None (no documents found)."""
+        final_summary = state.get("final_summary")
+        doc_outputs = state.get("document_outputs", []) or []
+        
+        if final_summary is None or (not doc_outputs and final_summary is None):
+            logger.debug("[GRAPH] summarize_results returned None - routing to no_results_node")
+            return "no_results_node"
+        else:
+            logger.debug(f"[GRAPH] summarize_results has summary ({len(final_summary) if final_summary else 0} chars) - routing to END")
+            return "END"
     
-    # NEW: General Query Path: handle_general_query → END (skip format_response)
-    builder.add_edge("handle_general_query", END)
-    logger.debug("Edge: handle_general_query -> END (OPTIMIZED: skipped format_response)")
+    builder.add_conditional_edges(
+        "summarize_results",
+        should_route_to_no_results,
+        {
+            "no_results_node": "no_results_node",  # No documents - go to failure handler
+            "END": END  # Success - end graph
+        }
+    )
+    logger.debug("Conditional: summarize_results -> [no_results_node|END]")
     
-    # NEW: Text Transformation Path: detect_and_extract_text → transform_text → END
-    builder.add_edge("detect_and_extract_text", "transform_text")
-    logger.debug("Edge: detect_and_extract_text -> transform_text")
-    builder.add_edge("transform_text", END)
-    logger.debug("Edge: transform_text -> END (OPTIMIZED: skipped format_response)")
-    
-    # NEW: Follow-up Query Path: handle_follow_up_query → END (skip format_response)
-    builder.add_edge("handle_follow_up_query", END)
-    logger.debug("Edge: handle_follow_up_query -> END (OPTIMIZED: skipped format_response)")
+    # REMOVED: Edges for removed nodes (handle_general_query, detect_and_extract_text, transform_text, handle_follow_up_query)
 
     # Add checkpointer setup
     checkpointer = None 
@@ -626,10 +723,36 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
                 main_graph = builder.compile()
                 return main_graph, None
 
-        # Compile with checkpointer (subgraphs will inherit it automatically)
+        # NEW: Create middleware config
+        middleware = create_middleware_config()
+        
+        if middleware:
+            logger.info(f"📦 Compiling graph with checkpointer + {len(middleware)} middleware")
+            
+            # Check if StateGraph.compile() accepts middleware parameter
+            import inspect
+            compile_sig = inspect.signature(builder.compile)
+            
+            if 'middleware' in compile_sig.parameters:
+                # Direct middleware support
+                main_graph = builder.compile(
+                    checkpointer=checkpointer,
+                    middleware=middleware
+                )
+                logger.info("✅ Graph compiled with checkpointer + middleware (direct)")
+            else:
+                # Fallback: compile without middleware parameter
+                # NOTE: LangGraph's StateGraph may not directly support middleware in compile()
+                # Middleware is typically applied through create_agent() wrapper
+                logger.warning("⚠️ StateGraph.compile() doesn't accept middleware parameter")
+                logger.warning("   Compiling with checkpointer only - middleware will not be active")
+                logger.warning("   Consider using create_agent() wrapper for full middleware support")
+                main_graph = builder.compile(checkpointer=checkpointer)
+        else:
+            logger.info("📦 Compiling graph with checkpointer only (no middleware)")
         main_graph = builder.compile(checkpointer=checkpointer)
-        logger.info("Graph compiled with checkpointer")
 
+        logger.info("Graph compiled successfully")
         return main_graph, checkpointer
 
     else:

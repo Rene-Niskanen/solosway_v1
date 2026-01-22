@@ -421,7 +421,11 @@ class ProcessingHistoryService:
     def get_pipeline_progress(self, document_id: str) -> dict:
         """Get progress of document through its pipeline"""
         try:
-            from ..models import Document
+            # Use Supabase directly instead of SQLAlchemy model
+            # This avoids the classification_reasoning column issue
+            if not self.use_supabase:
+                logger.warning("⚠️ Supabase not available, cannot get pipeline progress")
+                return {'error': 'Supabase not available'}
             
             # Define pipeline steps
             PIPELINE_STEPS = {
@@ -438,26 +442,40 @@ class ProcessingHistoryService:
                 ]
             }
             
-            document = Document.query.get(document_id)
-            if not document:
+            # Get document from Supabase (not SQLAlchemy)
+            doc_result = self.supabase.table('documents').select(
+                'id, status, classification_type, document_summary'
+            ).eq('id', document_id).execute()
+            
+            if not doc_result.data:
                 return {'error': 'Document not found'}
+            
+            document = doc_result.data[0]
                 
             history = self.get_document_processing_history(document_id)
             
             # Determine pipeline type based on classification
-            pipeline_type = 'full' if document.classification_type in ['valuation_report', 'market_appraisal'] else 'minimal'
+            classification_type = document.get('classification_type')
+            pipeline_type = 'full' if classification_type in ['valuation_report', 'market_appraisal'] else 'minimal'
             steps = PIPELINE_STEPS[pipeline_type]
             
             # Calculate progress
-            completed_steps = [h for h in history if h['step_status'].lower() == 'completed']
-            failed_steps = [h for h in history if h['step_status'].lower() == 'failed']
+            completed_steps = [h for h in history if h.get('step_status', '').lower() == 'completed']
+            failed_steps = [h for h in history if h.get('step_status', '').lower() == 'failed']
+            
+            # Get status - handle both string and enum values
+            current_status = document.get('status', 'unknown')
+            if isinstance(current_status, dict):
+                current_status = current_status.get('value', 'unknown')
+            elif hasattr(current_status, 'value'):
+                current_status = current_status.value
             
             return {
                 'pipeline_type': pipeline_type,
                 'total_steps': len(steps),
                 'completed_steps': len(completed_steps),
                 'failed_steps': len(failed_steps),
-                'current_step': document.status.value if document.status else 'unknown',
+                'current_step': current_status,
                 'steps': steps,
                 'history': history
             }

@@ -69,7 +69,7 @@ class SearchPropertyInput(BaseModel):
         description=(
             "REQUIRED. The search term to find a property. "
             "Can be a property name, address, or partial match. "
-            "Examples: 'highlands', 'berden road', '123 main street'"
+            "Examples: 'example property', 'example street', '123 main street'"
         )
     )
 
@@ -98,7 +98,7 @@ class SelectPropertyPinInput(BaseModel):
         description=(
             "REQUIRED. A concise explanation (10-20 words) of why selecting this pin helps the user. "
             "Focus on what the user will see. "
-            "Good: 'Selects Highlands property pin to show property card' "
+            "Good: 'Selects Example Property pin to show property card' "
             "Bad: 'Clicking pin' (too vague)"
         )
     )
@@ -110,13 +110,13 @@ class NavigateToPropertyByNameInput(BaseModel):
         description=(
             "REQUIRED. The property name or address to navigate to. "
             "Use the name/address as the user mentioned it. "
-            "Examples: 'highlands', 'berden road', 'the cottage', '123 main street'"
+            "Examples: 'example property', 'example street', 'the cottage', '123 main street'"
         )
     )
     reason: str = Field(
         description=(
             "REQUIRED. A concise explanation (10-20 words) of why navigating helps the user. "
-            "Good: 'Navigating to Highlands property as requested' "
+            "Good: 'Navigating to Example Property as requested' "
             "Bad: 'Going there' (too vague)"
         )
     )
@@ -311,10 +311,10 @@ Parse the query to find the PRIMARY object/information requested. IGNORE context
 - User asks for "email for the company" → PRIMARY is "email"
   → Your ACTUAL response: "Company: MJ Group[1]. Email: info@...[2]" → Use citation_number=2 (NOT [1])
 - User asks for "value" or "valuation" or "price" → PRIMARY is "value"
-  → Your ACTUAL response: "Property: Highlands[1]. Market Value: £2,300,000[2]" → Use citation_number=2 (NOT [1])
-- User asks ONLY "company" or "who valued" (no other primary request) → PRIMARY is "company" → Start with "Company: MJ Group[1]..."
+  → Your ACTUAL response: "Property: Example Property[1]. Market Value: £X,XXX,XXX[2]" → Use citation_number=2 (NOT [1])
+- User asks ONLY "company" or "who valued" (no other primary request) → PRIMARY is "company" → Start with "Company: Example Company[1]..."
 - User asks for "date" → PRIMARY is "date"
-  → Your ACTUAL response: "Property: Highlands[1]. Date: 12th February 2024[2]" → Use citation_number=2 (NOT [1])
+  → Your ACTUAL response: "Property: Example Property[1]. Date: DD Month YYYY[2]" → Use citation_number=2 (NOT [1])
 
 ⚠️ KEY RULE: Match the citation number to where the PRIMARY information ACTUALLY appears in your response.
   Example: "phone number of the company" → PRIMARY = "phone number" → ACTUAL Response: "Company: MJ Group[1]. Phone: +44...[3]" → Use citation_number=3 (NOT [1])
@@ -335,7 +335,7 @@ Parse the query to find the PRIMARY object/information requested. IGNORE context
 - 10-20 word explanation of what the user will see
 - MUST describe the visual evidence being shown
 - Good examples:
-  * "Displays the valuation certificate showing £2,300,000 market value"
+  * "Displays the valuation certificate showing £X,XXX,XXX market value"
   * "Shows page 3 with the surveyor's signature and credentials"
   * "Opens the title deed section confirming freehold ownership"
 - Bad examples:
@@ -347,26 +347,26 @@ Parse the query to find the PRIMARY object/information requested. IGNORE context
 
 ### Example 1: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "What is the property valued at?"
-Your response: "The property has a Market Value of £2,300,000[1] as of 12th February 2024[2]..."
+Your response: "The property has a Market Value of £X,XXX,XXX[1] as of DD Month YYYY[2]..."
 → CALL: open_document(citation_number=1, reason="Displays the official valuation figure from the RICS report")
   ✓ Information retrieval query with citations → automatically open
 
 ### Example 2: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "What is the 90-day value?"
-Your response: "The 90-day marketing period value is £1,950,000[3]..."
+Your response: "The 90-day marketing period value is £X,XXX,XXX[3]..."
 → CALL: open_document(citation_number=3, reason="Shows the reduced value section with 90-day assumptions")
   ✓ Information retrieval query with citations → automatically open
 
 ### Example 3: General Information Retrieval (AUTOMATIC - No keywords needed)
 User: "Who conducted the valuation?"
-Your response: "The valuation was conducted by Sukhbir Tiwana MRICS[4]..."
+Your response: "The valuation was conducted by Example Valuer MRICS[4]..."
 → CALL: open_document(citation_number=4, reason="Shows the valuer's name and RICS credentials on the report")
   ✓ Information retrieval query with citations → automatically open
 
 ### Example 4: Address Query (AUTOMATIC - Information retrieval)
 User: "What is the address of the company?"
 → PRIMARY: "address" (ignore "company" - it's context)
-Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place, London[2]. Phone: +44 203 463 8725[3]..."
+Your ACTUAL response: "Company: Example Company Ltd[1]. Address: 123 Example Street, City[2]. Phone: +44 XXX XXX XXXX[3]..."
 → CALL: open_document(citation_number=2, reason="Highlights the company address on the document")
   ✓ Information retrieval query with citations → automatically open
   ✓ PRIMARY info (address) is at [2] in ACTUAL response → use citation_number=2
@@ -374,15 +374,15 @@ Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfre
 ### Example 5: Phone Number Query (AUTOMATIC - Information retrieval)
 User: "What is the phone number?"
 → PRIMARY: "phone number"
-Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 203 463 8725[3]..."
+Your ACTUAL response: "Company: Example Company Ltd[1]. Address: 123 Example Street[2]. Phone Number: +44 XXX XXX XXXX[3]..."
 → CALL: open_document(citation_number=3, reason="Shows the contact phone number on the document")
   ✓ Information retrieval query with citations → automatically open
   ✓ PRIMARY info (phone) is at [3] in ACTUAL response → use citation_number=3
 
 ### Example 6: Complex Query with Context Words (AUTOMATIC - Information retrieval)
-User: "please show me the phone number of the company that valued the highlands property"
-→ PRIMARY REQUEST: "phone number" (ignore "company", "valued", "highlands", "property" - these are context)
-Your ACTUAL response: "Company: MJ Group International Ltd[1]. Address: 15 Alfred Place[2]. Phone Number: +44 (0) 203 463 8725[3]..."
+User: "please show me the phone number of the company that valued the example property"
+→ PRIMARY REQUEST: "phone number" (ignore "company", "valued", "example", "property" - these are context)
+Your ACTUAL response: "Company: Example Company Ltd[1]. Address: 123 Example Street[2]. Phone Number: +44 (0) XXX XXX XXXX[3]..."
 → CALL: open_document(citation_number=3, reason="Shows the phone number the user requested on the document")
   ✓ Information retrieval query with citations → automatically open
   ✓ PRIMARY info (phone number) is at [3] in ACTUAL response → use citation_number=3
@@ -430,7 +430,7 @@ Follow this decision tree IN ORDER:
 
 2. IS THE USER ASKING ABOUT A SPECIFIC PROPERTY'S POSITION?
    Examples:
-   - "Where is Highlands property?"
+   - "Where is Example Property?"
    - "Show me where 123 Main Street is"
    - "Can you display this property on the map?"
    → YES = CALL navigate_to_property
@@ -459,7 +459,7 @@ Follow this decision tree IN ORDER:
 - 10-20 word explanation of what the user will see on the map
 - MUST describe the map action being performed
 - Good examples:
-  * "Centers map on Highlands property showing its location in Bishop's Stortford"
+  * "Centers map on Example Property showing its location in Example City"
   * "Zooms to the property pin at 123 Main Street"
   * "Displays the property location the user requested"
 - Bad examples:
@@ -478,11 +478,11 @@ Context: property_id = "993a4c9c-e759-4a44-9f6a-8e7f78c8b370"
 )
 
 ### Example 2: Location Query
-User: "Where is the Highlands property located?"
+User: "Where is the Example Property located?"
 Context: property_id = "abc-123-def-456"
 → CALL: navigate_to_property(
     property_id="abc-123-def-456",
-    reason="Displays property location on map for Highlands, Berden Road"
+    reason="Displays property location on map for Example Property, Example Street"
 )
 
 ### Example 3: Document Query (DO NOT CALL)
@@ -518,7 +518,7 @@ Context: No specific property_id available
     
     search_property_description = """
 ## PURPOSE
-Searches for properties by name or address. Use this tool when the user mentions a property by name (like "highlands property") rather than by UUID. This tool finds the property and returns its ID so you can then navigate to it or select its pin.
+Searches for properties by name or address. Use this tool when the user mentions a property by name (like "example property") rather than by UUID. This tool finds the property and returns its ID so you can then navigate to it or select its pin.
 
 ## DECISION FRAMEWORK: Should I call search_property?
 
@@ -526,9 +526,9 @@ Follow this decision tree IN ORDER:
 
 1. DID THE USER MENTION A PROPERTY BY NAME?
    Check if query contains phrases like:
-   - "highlands property", "berden road property"
+   - "example property", "example street property"
    - "the property at 123 Main Street"
-   - "that highlands place", "the cottage"
+   - "that example place", "the cottage"
    → YES to any = CALL search_property with the property name/address
 
 2. DO I ALREADY HAVE THE PROPERTY_ID?
@@ -552,19 +552,19 @@ Follow this decision tree IN ORDER:
 ### query (string, REQUIRED)
 - The search term to find the property
 - Use the property name or address as the user mentioned it
-- Examples: "highlands", "berden road", "123 main street", "the cottage"
+- Examples: "example property", "example street", "123 main street", "the cottage"
 - Keep it simple - just the key identifying words
 
 ## CONCRETE EXAMPLES
 
 ### Example 1: Property Navigation Request
-User: "Take me to the highlands property"
-→ CALL: search_property(query="highlands")
+User: "Take me to the example property"
+→ CALL: search_property(query="example property")
 Then use the returned property_id for show_map_view and select_property_pin
 
 ### Example 2: Property Location Query
-User: "Show me where the berden road property is"
-→ CALL: search_property(query="berden road")
+User: "Show me where the example street property is"
+→ CALL: search_property(query="example street")
 Then use results for navigation
 
 ### Example 3: Already Have Property ID (DO NOT CALL)
@@ -611,7 +611,7 @@ Follow this decision tree IN ORDER:
 
 2. IS THE USER ASKING TO GO TO A PROPERTY PIN?
    Examples:
-   - "Take me to the highlands property pin"
+   - "Take me to the example property pin"
    - "Show me the property location"
    - "Navigate to this property"
    → YES = CALL show_map_view FIRST, then select_property_pin
@@ -635,7 +635,7 @@ Follow this decision tree IN ORDER:
 - Focus on what the user will see
 - Good examples:
   * "Opens map to show property location the user requested"
-  * "Displays map view to navigate to highlands property"
+  * "Displays map view to navigate to example property"
   * "Shows interactive map for property exploration"
 - Bad examples:
   * "Opening map" (too vague)
@@ -644,8 +644,8 @@ Follow this decision tree IN ORDER:
 ## CONCRETE EXAMPLES
 
 ### Example 1: Property Navigation Request
-User: "Take me to the highlands property"
-→ CALL: show_map_view(reason="Opens map to navigate to highlands property location")
+User: "Take me to the example property"
+→ CALL: show_map_view(reason="Opens map to navigate to example property location")
 
 ### Example 2: Map View Request
 User: "Show me the map"
@@ -720,7 +720,7 @@ Follow this decision tree IN ORDER:
 - 10-20 word explanation of why selecting this pin helps the user
 - Focus on what the user will see
 - Good examples:
-  * "Selects highlands property pin to show property card and location"
+  * "Selects example property pin to show property card and location"
   * "Centers map on requested property and displays details"
   * "Clicks property pin to reveal property information"
 - Bad examples:
@@ -730,12 +730,12 @@ Follow this decision tree IN ORDER:
 ## CONCRETE EXAMPLES
 
 ### Example 1: Complete Property Navigation
-User: "Take me to the highlands property pin"
-1. search_property(query="highlands") → property_id="993a4c9c..."
+User: "Take me to the example property pin"
+1. search_property(query="example property") → property_id="993a4c9c..."
 2. show_map_view(reason="Opens map for property navigation")
 3. select_property_pin(
     property_id="993a4c9c-e759-4a44-9f6a-8e7f78c8b370",
-    reason="Selects highlands property pin to show details"
+    reason="Selects example property pin to show details"
 )
 
 ### Example 2: Pin Selection with Known ID
@@ -748,12 +748,12 @@ Context: property_id = "abc-123-def-456"
 )
 
 ### Example 3: Location Query
-User: "Where is the berden road property?"
-1. search_property(query="berden road") → property_id="xyz..."
+User: "Where is the example street property?"
+1. search_property(query="example street") → property_id="xyz..."
 2. show_map_view(reason="Opens map for location display")
 3. select_property_pin(
     property_id="xyz...",
-    reason="Shows berden road property location on map"
+    reason="Shows example street property location on map"
 )
 
 ## RESULT
@@ -801,10 +801,10 @@ Use this ONE tool instead of calling search_property, show_map_view, and select_
 - User asks "where is [property name]" (and wants to see it on map)
 
 **EXAMPLE TRIGGERS:**
-- "take me to the highlands property"
-- "go to the highlands pin"
-- "show me highlands on the map"
-- "navigate to berden road"
+- "take me to the example property"
+- "go to the example pin"
+- "show me example property on the map"
+- "navigate to example street"
 - "find the cottage on the map"
 
 ## PARAMETERS
@@ -812,24 +812,24 @@ Use this ONE tool instead of calling search_property, show_map_view, and select_
 ### property_name (string, REQUIRED)
 - The property name or address as the user mentioned it
 - Use keywords from the user's query
-- Examples: "highlands", "berden road", "the cottage", "123 main street"
+- Examples: "example property", "example street", "the cottage", "123 main street"
 
 ### reason (string, REQUIRED)
 - Brief explanation of what you're doing
-- Example: "Navigating to Highlands property as requested"
+- Example: "Navigating to Example Property as requested"
 
 ## EXAMPLES
 
-### User: "take me to the highlands pin"
+### User: "take me to the example pin"
 → CALL: navigate_to_property_by_name(
-    property_name="highlands",
-    reason="Navigating to Highlands property as requested"
+    property_name="example property",
+    reason="Navigating to Example Property as requested"
 )
 
-### User: "show me the berden road property on the map"
+### User: "show me the example street property on the map"
 → CALL: navigate_to_property_by_name(
-    property_name="berden road",
-    reason="Showing Berden Road property on map as requested"
+    property_name="example street",
+    reason="Showing Example Street property on map as requested"
 )
 
 ### User: "go to the cottage"
@@ -840,7 +840,7 @@ Use this ONE tool instead of calling search_property, show_map_view, and select_
 
 ## IMPORTANT
 - This is a ONE-CALL solution - don't also call search_property, show_map_view, or select_property_pin
-- Provide a brief text response before calling: "I'll take you to the Highlands property on the map."
+- Provide a brief text response before calling: "I'll take you to the Example Property on the map."
 - The backend will handle the full workflow automatically
 """
     

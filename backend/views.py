@@ -25,6 +25,9 @@ from sqlalchemy.exc import OperationalError, ProgrammingError, DatabaseError
 import json
 from uuid import UUID
 # Citations are now stored directly in graph state with bbox coordinates - no processing needed
+# SessionManager for LangGraph checkpointer thread_id management
+from backend.llm.utils.session_manager import session_manager
+
 def _ensure_business_uuid():
     """Ensure the current user has a business UUID and return it as a string."""
     existing = getattr(current_user, "business_id", None)
@@ -68,17 +71,6 @@ def _normalize_uuid_str(value):
     except (ValueError, TypeError):
         return None
 
-
-# DEPRECATED: This function has been moved to UnifiedDeletionService._cleanup_orphan_properties()
-# Kept here for reference during migration. Can be removed after testing.
-# def _cleanup_orphan_supabase_properties(property_ids: set[str] | set) -> list[str]:
-#     """
-#     Remove Supabase property hub records when no documents remain linked to a property.
-#     Returns list of property IDs that were fully removed from Supabase.
-#     
-#     NOTE: This functionality is now handled by UnifiedDeletionService._cleanup_orphan_properties()
-#     """
-#     pass
 
 views = Blueprint('views', __name__)
 
@@ -458,11 +450,26 @@ def query_documents_stream():
         property_id = data.get('propertyId')
         document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
         message_history = data.get('messageHistory', [])
-        session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+        
+        # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+        # This ensures consistent session identification between frontend and backend
+        frontend_session_id = data.get('sessionId')  # Chat ID from frontend (e.g., "chat-1234567890-xyz")
+        business_id = _ensure_business_uuid()
+        
+        # Generate thread_id using SessionManager (resumes conversation if session_id provided)
+        session_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",  # Fallback if business not found
+            session_id=frontend_session_id
+        )
+        
         citation_context = data.get('citationContext')  # NEW: Get structured citation metadata (hidden from user)
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
-        is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
+        is_agent_mode = data.get('isAgentMode', True)  # AGENT MODE: Enable LLM tool-based actions (default to True for new architecture)
+        
+        # CRITICAL: Log agent mode setting for debugging
+        logger.info(f"🔑 [STREAM] isAgentMode from request: {data.get('isAgentMode', 'not provided')}, final is_agent_mode: {is_agent_mode}")
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
         # Frontend sends undefined which becomes null in JSON, but we want None in Python
@@ -569,6 +576,14 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    # Reset retry counts and refined query for new queries (prevents stale state)
+                    "document_retry_count": 0,
+                    "chunk_retry_count": 0,
+                    "refined_query": None,  # Reset refined_query to use original user_query
+                    "retrieved_documents": [],  # Reset retrieved_documents
+                    "document_outputs": [],  # Reset document_outputs
+                    "last_document_failure_reason": None,
+                    "last_chunk_failure_reason": None,
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
@@ -772,33 +787,8 @@ def query_documents_stream():
                     
                     timing.mark("intent_extracted")
                     
-                    # Always emit "Planning next moves" first
-                    planning_reasoning = {
-                        'type': 'reasoning_step',
-                        'step': 'initial',
-                        'action_type': 'planning',
-                        'message': 'Planning next moves',
-                        'timestamp': time.time(),
-                        'details': {'original_query': query}
-                    }
-                    planning_reasoning_json = json.dumps(planning_reasoning)
-                    yield f"data: {planning_reasoning_json}\n\n"
-                    logger.info(f"🟡 [REASONING] Emitted planning reasoning step: {planning_reasoning_json}")
-                    
-                    # If it's a data query (not navigation), switch to "Searching for information"
-                    if not is_navigation_query:
-                        intent_message = extract_query_intent(query)
-                        searching_reasoning = {
-                            'type': 'reasoning_step',
-                            'step': 'searching',
-                        'action_type': 'searching',
-                        'message': intent_message,
-                            'timestamp': time.time() + 0.001,  # Slightly after planning step
-                        'details': {'original_query': query}
-                    }
-                        searching_reasoning_json = json.dumps(searching_reasoning)
-                        yield f"data: {searching_reasoning_json}\n\n"
-                        logger.info(f"🟡 [REASONING] Emitted searching reasoning step: {searching_reasoning_json}")
+                    # REMOVED: Hardcoded fake reasoning steps ("Planning next moves", "Searching for information")
+                    # These were just noise - the agent's real reasoning is visible through tool calls and responses.
                 
                 # Detect if user wants agent to perform UI actions (show me, save, navigate)
                 action_intent = detect_action_intent(query)
@@ -1348,10 +1338,23 @@ def query_documents_stream():
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
                                     
                                     # MERGE state updates from each node (don't overwrite!)
+                                    # CRITICAL: This captures final_summary from extract_final_answer and other nodes
                                     if state_update:
                                         if final_result is None:
                                             final_result = {}
                                         final_result.update(state_update)  # Merge instead of overwrite
+                                        
+                                        # Log important captures for debugging
+                                        if node_name == "extract_final_answer" and state_update.get("final_summary"):
+                                            logger.info(f"🟢 [STREAM] Captured final_summary from extract_final_answer ({len(state_update.get('final_summary', ''))} chars)")
+                                        elif node_name == "agent" and state_update.get("messages"):
+                                            logger.info(f"🟢 [STREAM] Captured messages from agent node ({len(state_update.get('messages', []))} messages)")
+                                    # Also try output field as fallback
+                                    elif output and isinstance(output, dict):
+                                        if final_result is None:
+                                            final_result = {}
+                                        final_result.update(output)
+                                        logger.info(f"🟢 [STREAM] Captured state from {node_name} output field")
                         except Exception as exec_error:
                             error_msg = str(exec_error)
                             # Handle connection timeout errors during graph execution
@@ -1518,9 +1521,18 @@ def query_documents_stream():
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
                                         
-                                        # Store the state from the last event
+                                        # Store the state from ALL node completions (especially extract_final_answer)
+                                        # CRITICAL: This captures the final_summary from extract_final_answer node
                                         if state_update:
                                             final_result = state_update
+                                            if node_name == "extract_final_answer":
+                                                logger.info(f"🟢 [STREAM] Captured final state from extract_final_answer node")
+                                        # Also try output field as fallback
+                                        elif event_data.get("output"):
+                                            output = event_data.get("output", {})
+                                            if isinstance(output, dict):
+                                                final_result = output
+                                                logger.info(f"🟢 [STREAM] Captured final state from {node_name} output")
                             else:
                                 # Re-raise unexpected errors
                                 raise
@@ -1529,38 +1541,45 @@ def query_documents_stream():
                         # Get the final state from checkpointer (fast - graph already executed)
                         if final_result is None:
                             logger.warning("🟡 [STREAM] No final state from events, reading from checkpointer...")
-                            try:
-                                # Read the latest checkpoint which contains the final state
-                                from langgraph.checkpoint.base import Checkpoint
-                                latest_checkpoint = None
-                                async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
-                                    if isinstance(checkpoint_tuple, tuple):
-                                        checkpoint, checkpoint_id = checkpoint_tuple
-                                    else:
-                                        checkpoint = checkpoint_tuple
+                            # Check if checkpointer exists (might be None in stateless mode)
+                            if checkpointer is None:
+                                logger.warning("🟡 [STREAM] No checkpointer available (stateless mode) - using initial_state")
+                                final_result = initial_state
+                            else:
+                                try:
+                                    # Read the latest checkpoint which contains the final state
+                                    from langgraph.checkpoint.base import Checkpoint
+                                    latest_checkpoint = None
+                                    async for checkpoint_tuple in checkpointer.alist(config_dict, limit=1):
+                                        if isinstance(checkpoint_tuple, tuple):
+                                            checkpoint, checkpoint_id = checkpoint_tuple
+                                        else:
+                                            checkpoint = checkpoint_tuple
+                                        
+                                        if hasattr(checkpoint, 'channel_values'):
+                                            latest_checkpoint = checkpoint.channel_values
+                                        elif isinstance(checkpoint, dict):
+                                            latest_checkpoint = checkpoint.get('channel_values', checkpoint)
+                                        break
                                     
-                                    if hasattr(checkpoint, 'channel_values'):
-                                        latest_checkpoint = checkpoint.channel_values
-                                    elif isinstance(checkpoint, dict):
-                                        latest_checkpoint = checkpoint.get('channel_values', checkpoint)
-                                    break
-                                
-                                if latest_checkpoint:
-                                    # Checkpointer returns (state, config) tuple or just state
-                                    if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
-                                        final_result, _ = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                    if latest_checkpoint:
+                                        # Checkpointer returns (state, config) tuple or just state
+                                        if isinstance(latest_checkpoint, tuple) and len(latest_checkpoint) == 2:
+                                            final_result, _ = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (tuple)")
+                                        else:
+                                            # Single value returned
+                                            final_result = latest_checkpoint
+                                            logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
                                     else:
-                                        # Single value returned
-                                        final_result = latest_checkpoint
-                                        logger.info("🟡 [STREAM] Retrieved final state from checkpointer (single value)")
-                                else:
-                                    # Fallback: use ainvoke (will be fast since graph already executed)
-                                    logger.warning("🟡 [STREAM] No checkpoint found, using ainvoke...")
-                                    final_result = await graph.ainvoke(initial_state, config_dict)
-                            except Exception as e:
-                                logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using ainvoke...")
-                                final_result = await graph.ainvoke(initial_state, config_dict)
+                                        # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                        # Instead use initial_state (graph already executed via astream_events)
+                                        logger.warning("🟡 [STREAM] No checkpoint found, using initial_state (graph already executed)")
+                                        final_result = initial_state
+                                except Exception as e:
+                                    # ❌ REMOVED: Don't invoke graph again - causes duplicate messages!
+                                    logger.warning(f"🟡 [STREAM] Could not read checkpointer: {e}, using initial_state")
+                                    final_result = initial_state
                         else:
                             logger.info("🟡 [STREAM] Using final state captured from events")
                         
@@ -1597,8 +1616,8 @@ def query_documents_stream():
                                 yield f"data: {json.dumps({'type': 'error', 'message': 'No relevant documents found'})}\n\n"
                                 return
                             else:
-                                logger.warning("🟡 [STREAM] No final_summary found in result, generating fallback")
-                                full_summary = "I couldn't generate a summary from the retrieved documents. Please try rephrasing your query."
+                                logger.warning("🟡 [STREAM] No final_summary found in result")
+                                full_summary = ""  # Let agent handle empty responses naturally
                         
                         # Send document count (use doc_outputs if available, otherwise relevant_docs)
                         doc_count = len(doc_outputs) if doc_outputs else len(relevant_docs)
@@ -2217,6 +2236,477 @@ def query_documents_stream():
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 500
 
+@views.route('/api/llm/sessions/<session_id>', methods=['DELETE', 'OPTIONS'])
+@login_required
+def delete_session(session_id):
+    """
+    Delete all checkpoint data for a session.
+    
+    This allows users to:
+    - Start fresh conversations (clear polluted history)
+    - Clean up old/abandoned sessions
+    - Free up database space
+    
+    Args:
+        session_id: Session ID from frontend chat history (e.g., "chat-1234567890-xyz")
+    
+    Returns:
+        JSON response with success status and deleted thread_id
+    
+    Example:
+        DELETE /api/llm/sessions/chat-1234567890-xyz
+        
+        Response:
+        {
+            "success": true,
+            "message": "Session deleted successfully",
+            "thread_id": "user_1_biz_abc123_sess_chat-1234567890-xyz",
+            "deleted_checkpoints": 5
+        }
+    """
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        return response, 200
+    
+    try:
+        logger.info(f"🗑️ [SESSION_DELETE] ========== DELETE SESSION REQUEST ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session ID from frontend: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] User ID: {current_user.id}")
+        
+        # Build thread_id from session components
+        business_id = _ensure_business_uuid()
+        logger.info(f"🗑️ [SESSION_DELETE] Business ID: {business_id}")
+        
+        thread_id = session_manager.build_thread_id_for_session(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=session_id
+        )
+        
+        logger.info(f"🗑️ [SESSION_DELETE] Built thread_id: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Starting deletion process...")
+        
+        # Delete from checkpoints tables using Supabase
+        supabase = get_supabase_client()
+        logger.info(f"🗑️ [SESSION_DELETE] Supabase client obtained")
+        
+        # Count checkpoints before deletion (for response)
+        logger.info(f"🗑️ [SESSION_DELETE] Counting checkpoints...")
+        checkpoints_count = supabase.table('checkpoints')\
+            .select('id', count='exact')\
+            .eq('thread_id', thread_id)\
+            .execute()
+        
+        num_checkpoints = checkpoints_count.count if hasattr(checkpoints_count, 'count') else 0
+        logger.info(f"🗑️ [SESSION_DELETE] Found {num_checkpoints} checkpoints to delete")
+        
+        # Delete checkpoints
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoints...")
+        checkpoints_result = supabase.table('checkpoints')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints deleted: {len(checkpoints_result.data) if checkpoints_result.data else 0} rows")
+        
+        # Delete checkpoint writes
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting checkpoint_writes...")
+        writes_result = supabase.table('checkpoint_writes')\
+            .delete()\
+            .eq('thread_id', thread_id)\
+            .execute()
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoint writes deleted: {len(writes_result.data) if writes_result.data else 0} rows")
+        
+        # Delete from chat_sessions table (if exists)
+        logger.info(f"🗑️ [SESSION_DELETE] Deleting from chat_sessions table...")
+        try:
+            chat_sessions_result = supabase.table('chat_sessions')\
+                .delete()\
+                .eq('id', session_id)\
+                .eq('user_id', current_user.id)\
+                .execute()
+            logger.info(f"🗑️ [SESSION_DELETE] Chat sessions deleted: {len(chat_sessions_result.data) if chat_sessions_result.data else 0} rows")
+        except Exception as chat_session_error:
+            # Non-fatal - checkpoints are more important
+            logger.warning(f"🗑️ [SESSION_DELETE] Could not delete from chat_sessions: {chat_session_error}")
+        
+        logger.info(f"🗑️ [SESSION_DELETE] ✅ ========== DELETE COMPLETE ==========")
+        logger.info(f"🗑️ [SESSION_DELETE] Session: {session_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Thread ID: {thread_id}")
+        logger.info(f"🗑️ [SESSION_DELETE] Checkpoints removed: {num_checkpoints}")
+        logger.info(f"🗑️ [SESSION_DELETE] ==========================================")
+        
+        response = jsonify({
+            'success': True,
+            'message': f'Session {session_id} deleted successfully',
+            'thread_id': thread_id,
+            'deleted_checkpoints': num_checkpoints
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_DELETE] ❌ Error deleting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['POST', 'OPTIONS'])
+@login_required
+def create_session():
+    """
+    Create a new chat session record in chat_sessions table.
+    
+    This creates metadata for tracking conversations, including:
+    - Session name/title
+    - Message count
+    - Creation and last message timestamps
+    - Links to checkpointer thread_id
+    
+    Request body:
+        - session_name: Optional name for the session (default: "New Chat")
+        - session_id: Optional frontend session ID (will be auto-generated if not provided)
+    
+    Returns:
+        JSON response with created session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        session_name = data.get('session_name', 'New Chat')
+        frontend_session_id = data.get('session_id')
+        
+        # Build thread_id
+        business_id = _ensure_business_uuid()
+        thread_id = session_manager.get_thread_id(
+            user_id=current_user.id,
+            business_id=business_id or "no_business",
+            session_id=frontend_session_id
+        )
+        
+        # Extract session_id from thread_id for consistency
+        # thread_id format: "user_{user_id}_business_{business_id}_session_{session_id}"
+        parts = thread_id.split('_session_')
+        actual_session_id = parts[1] if len(parts) > 1 else frontend_session_id
+        
+        logger.info(f"[SESSION_CREATE] Creating session for user {current_user.id}: {actual_session_id}")
+        
+        # Create session record in Supabase
+        supabase = get_supabase_client()
+        
+        session_data = {
+            'id': actual_session_id,
+            'user_id': current_user.id,
+            'business_uuid': business_id or "no_business",
+            'thread_id': thread_id,
+            'session_name': session_name,
+            'message_count': 0,
+            'is_archived': False,
+            'created_at': datetime.utcnow().isoformat(),
+            'last_message_at': datetime.utcnow().isoformat()
+        }
+        
+        result = supabase.table('chat_sessions').insert(session_data).execute()
+        
+        logger.info(f"[SESSION_CREATE] ✅ Created session {actual_session_id} in chat_sessions table")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0] if result.data else session_data,
+            'session_id': actual_session_id,
+            'thread_id': thread_id
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 201
+        
+    except Exception as e:
+        logger.error(f"[SESSION_CREATE] ❌ Error creating session: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions', methods=['GET', 'OPTIONS'])
+@login_required
+def list_sessions():
+    """
+    List all chat sessions for the current user.
+    
+    Query parameters:
+        - include_archived: Include archived sessions (default: false)
+        - limit: Max number of sessions to return (default: 50)
+        - offset: Pagination offset (default: 0)
+    
+    Returns:
+        JSON response with array of session records sorted by last_message_at (desc)
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        # Get query parameters
+        include_archived = request.args.get('include_archived', 'false').lower() == 'true'
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        
+        logger.info(f"[SESSION_LIST] Fetching sessions for user {current_user.id} (archived: {include_archived})")
+        
+        # Query chat_sessions from Supabase
+        supabase = get_supabase_client()
+        
+        query = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('user_id', current_user.id)\
+            .order('last_message_at', desc=True)\
+            .limit(limit)\
+            .range(offset, offset + limit - 1)
+        
+        if not include_archived:
+            query = query.eq('is_archived', False)
+        
+        result = query.execute()
+        
+        logger.info(f"[SESSION_LIST] ✅ Found {len(result.data)} sessions for user {current_user.id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data,
+            'count': len(result.data),
+            'limit': limit,
+            'offset': offset
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_LIST] ❌ Error listing sessions: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['GET', 'OPTIONS'])
+@login_required
+def get_session(session_id):
+    """
+    Get a specific chat session with its metadata and optionally load conversation history.
+    
+    Query parameters:
+        - include_messages: Load conversation from checkpointer (default: false)
+    
+    Returns:
+        JSON response with session metadata and optionally messages
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        return response, 200
+    
+    try:
+        include_messages = request.args.get('include_messages', 'false').lower() == 'true'
+        
+        logger.info(f"[SESSION_GET] Fetching session {session_id} for user {current_user.id}")
+        
+        # Get session from Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .select('*')\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_GET] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        session_data = result.data[0]
+        response_data = {
+            'success': True,
+            'data': session_data
+        }
+        
+        # Optionally load messages from checkpointer
+        if include_messages:
+            try:
+                # Load conversation from checkpointer
+                from backend.llm.graphs.main_graph import main_graph, checkpointer
+                
+                if checkpointer:
+                    thread_id = session_data['thread_id']
+                    config = {"configurable": {"thread_id": thread_id}}
+                    
+                    # Get latest checkpoint
+                    checkpoint_tuple = checkpointer.get_tuple(config)
+                    
+                    if checkpoint_tuple and checkpoint_tuple.checkpoint:
+                        channel_values = checkpoint_tuple.checkpoint.get('channel_values', {})
+                        messages = channel_values.get('messages', [])
+                        
+                        # Convert messages to serializable format
+                        serialized_messages = []
+                        for msg in messages:
+                            msg_dict = {
+                                'type': msg.__class__.__name__,
+                                'content': getattr(msg, 'content', None)
+                            }
+                            serialized_messages.append(msg_dict)
+                        
+                        response_data['messages'] = serialized_messages
+                        logger.info(f"[SESSION_GET] Loaded {len(serialized_messages)} messages for session {session_id}")
+                else:
+                    logger.warning("[SESSION_GET] Checkpointer not available, cannot load messages")
+            except Exception as msg_error:
+                logger.warning(f"[SESSION_GET] Could not load messages: {msg_error}")
+                response_data['messages_error'] = str(msg_error)
+        
+        response = jsonify(response_data)
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_GET] ❌ Error getting session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
+@views.route('/api/llm/sessions/<session_id>', methods=['PUT', 'OPTIONS'])
+@login_required
+def update_session(session_id):
+    """
+    Update a chat session's metadata (name, archive status, etc.).
+    
+    Request body (all optional):
+        - session_name: New name for the session
+        - is_archived: Archive/unarchive the session
+        - message_count: Update message count (usually handled automatically)
+    
+    Returns:
+        JSON response with updated session record
+    """
+    # Handle OPTIONS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'PUT, OPTIONS')
+        return response, 200
+    
+    try:
+        data = request.get_json() or {}
+        
+        logger.info(f"[SESSION_UPDATE] Updating session {session_id} for user {current_user.id}")
+        
+        # Build update data
+        update_data = {}
+        
+        if 'session_name' in data:
+            update_data['session_name'] = data['session_name']
+        
+        if 'is_archived' in data:
+            update_data['is_archived'] = data['is_archived']
+        
+        if 'message_count' in data:
+            update_data['message_count'] = data['message_count']
+        
+        if not update_data:
+            response = jsonify({
+                'success': False,
+                'error': 'No update fields provided'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Add updated timestamp
+        update_data['last_message_at'] = datetime.utcnow().isoformat()
+        
+        # Update session in Supabase
+        supabase = get_supabase_client()
+        
+        result = supabase.table('chat_sessions')\
+            .update(update_data)\
+            .eq('id', session_id)\
+            .eq('user_id', current_user.id)\
+            .execute()
+        
+        if not result.data or len(result.data) == 0:
+            logger.warning(f"[SESSION_UPDATE] Session {session_id} not found for user {current_user.id}")
+            response = jsonify({
+                'success': False,
+                'error': 'Session not found or access denied'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 404
+        
+        logger.info(f"[SESSION_UPDATE] ✅ Updated session {session_id}")
+        
+        response = jsonify({
+            'success': True,
+            'data': result.data[0]
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+        
+    except Exception as e:
+        logger.error(f"[SESSION_UPDATE] ❌ Error updating session {session_id}: {e}", exc_info=True)
+        response = jsonify({
+            'success': False,
+            'error': str(e)
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 500
+
 @views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
 def query_documents():
     """
@@ -2273,7 +2763,16 @@ def query_documents():
     property_id = data.get('propertyId')  # From property attachment
     document_ids = data.get('documentIds') or data.get('document_ids', [])  # NEW: Get attached document IDs
     message_history = data.get('messageHistory', [])
-    session_id = data.get('sessionId', f"session_{request.remote_addr}_{int(time.time())}")
+    
+    # NEW: Use SessionManager to generate thread_id for LangGraph checkpointer
+    frontend_session_id = data.get('sessionId')
+    business_id = _ensure_business_uuid()
+    session_id = session_manager.get_thread_id(
+        user_id=current_user.id,
+        business_id=business_id or "no_business",
+        session_id=frontend_session_id
+    )
+    
     citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
     response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
     attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
@@ -2395,12 +2894,7 @@ def query_documents():
         # Format response for frontend
         final_summary = result.get("final_summary", "")
         
-        # If summary is empty or generic, provide a better fallback
-        if not final_summary or final_summary == "I found some information for you.":
-            if result.get("relevant_documents"):
-                final_summary = f"I found {len(result.get('relevant_documents', []))} relevant document(s), but couldn't extract a specific answer. Please try rephrasing your query."
-            else:
-                final_summary = f"I couldn't find any documents matching your query: \"{query}\". Try using more general terms or rephrasing your question."
+        # Let agent handle empty responses naturally - no hard-coded fallbacks
         
         response_data = {
             "query": query,
@@ -3034,6 +3528,7 @@ def proxy_upload():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
@@ -3042,18 +3537,19 @@ def proxy_upload():
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [PROXY-UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -3254,15 +3750,17 @@ def check_duplicate_document():
             return jsonify({'error': 'User is not associated with a business'}), 400
         
         # Check for duplicates in Supabase
+        # Only check for duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
         
-        # Query for documents with same filename and business
+        # Query for documents with same filename, business, AND user
         result = supabase.table('documents')\
             .select('id, original_filename, file_size, created_at')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if result.data and len(result.data) > 0:
@@ -3270,7 +3768,7 @@ def check_duplicate_document():
             exact_duplicate = next((doc for doc in result.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                # Exact duplicate - same filename and size
+                # Exact duplicate - same filename and size from same user
                 return jsonify({
                     'is_duplicate': True,
                     'is_exact_duplicate': True,
@@ -3287,7 +3785,7 @@ def check_duplicate_document():
                     'is_duplicate': True,
                     'is_exact_duplicate': False,
                     'existing_documents': result.data,
-                    'message': f'A document with the name "{filename}" already exists with a different file size.'
+                    'message': f'You already have a document named "{filename}" with a different file size.'
                 }), 200
         
         # No duplicates found
@@ -3574,6 +4072,7 @@ def upload_document():
         filename = secure_filename(file.filename)
         
         # Check for exact duplicates before uploading (safety net - frontend should catch this first)
+        # Only block duplicates from the SAME user AND business
         from .services.supabase_document_service import SupabaseDocumentService
         doc_service = SupabaseDocumentService()
         supabase = doc_service.supabase
@@ -3582,18 +4081,19 @@ def upload_document():
             .select('id, original_filename, file_size')\
             .eq('original_filename', filename)\
             .eq('business_uuid', business_uuid_str)\
+            .eq('uploaded_by_user_id', current_user.id)\
             .execute()
         
         if existing_docs.data:
-            # Check for exact duplicate (same filename and size)
+            # Check for exact duplicate (same filename and size from same user)
             file_size = file.content_length or 0
             exact_duplicate = next((doc for doc in existing_docs.data if doc.get('file_size') == file_size), None)
             
             if exact_duplicate:
-                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes)")
+                logger.warning(f"🛑 [UPLOAD] Blocked exact duplicate: {filename} ({file_size} bytes) for user {current_user.id}")
                 return jsonify({
                     'success': False,
-                    'error': f'A document with the same name and size already exists: "{filename}". Please rename the file or delete the existing document first.',
+                    'error': f'You already have a document with the same name and size: "{filename}". Please rename the file or delete your existing document first.',
                     'is_duplicate': True,
                     'existing_document_id': exact_duplicate['id']
                 }), 409  # 409 Conflict
@@ -4067,11 +4567,12 @@ def get_document_status(document_id):
             }
         }
         
-        # 🔍 DEBUG: Log what we're sending to frontend
-        logger.info(f"📤 STATUS API RESPONSE for {document_id}:")
-        logger.info(f"   status: '{document.get('status')}' (type: {type(document.get('status')).__name__})")
-        logger.info(f"   classification: {document.get('classification_type')}")
-        logger.info(f"   Full response: {response_data}")
+        # Minimal logging - only log if status is not completed (reduces log noise)
+        # Completed documents are polled frequently by frontend, so we skip logging them
+        doc_status = document.get('status', 'unknown')
+        if doc_status != 'completed':
+            logger.info(f"📊 Document {document_id} status: {doc_status}")
+        # Completed documents: no logging (frontend will stop polling soon)
         
         return jsonify(response_data), 200
         
@@ -4336,9 +4837,11 @@ def api_dashboard():
         # Get user's properties (still from PostgreSQL for now)
         properties = []
         try:
+            # Convert UUID to string for text column comparison
+            business_id_str = str(business_uuid) if business_uuid else None
             properties = (
                 Property.query
-                .filter_by(business_id=business_uuid)
+                .filter_by(business_id=business_id_str)
                 .order_by(Property.created_at.desc())
                 .limit(10)
                 .all()

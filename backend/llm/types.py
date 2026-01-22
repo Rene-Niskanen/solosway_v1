@@ -2,8 +2,9 @@
 Shared TypedDict definitions for LangGraph state management.
 """
 
-from typing import TypedDict, Optional, Annotated, Any
+from typing import TypedDict, Optional, Annotated, Any, List
 import operator
+from langchain_core.messages import BaseMessage
 
 class RetrievedDocument(TypedDict):
     """Result from vector or SQL retrieval"""
@@ -55,7 +56,7 @@ class DocumentProcessingResult(TypedDict, total=False):
 class MainWorkflowState(TypedDict, total=False):
     """Main orchestration graph state"""
     user_query: str
-    query_intent: str
+    query_intent: Optional[dict]  # NEW: Structured intent from query analysis node (search_goal, query_type, document_types, domain_terms, retry_budget)
     query_variations: list[str]  # NEW: Query expansion for better recall
     # FIXED: Remove operator.add so clarify_relevant_docs REPLACES chunks with merged docs
     relevant_documents: list[RetrievedDocument]
@@ -65,7 +66,16 @@ class MainWorkflowState(TypedDict, total=False):
     business_id: str
     conversation_history: Annotated[list[dict], operator.add]  # New: stores Q&A history
     session_id: str  # New: unique chat session identifier
-    document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results
+    document_ids: Optional[list[str]]  # Optional list of document IDs to filter search results (DEPRECATED: use retrieved_documents instead)
+    # NEW: Query rewriting and retry tracking
+    refined_query: Optional[str]  # Rewritten query for retries
+    document_retry_count: int  # Track document retrieval retries (default: 0, max: 3)
+    chunk_retry_count: int  # Track chunk retrieval retries (default: 0, max: 3)
+    last_document_failure_reason: Optional[str]  # Why document retrieval failed (e.g., "no documents above threshold")
+    last_chunk_failure_reason: Optional[str]  # Why chunk retrieval failed (e.g., "no chunks above threshold")
+    retrieved_documents: Optional[list[dict]]  # NEW: Full document metadata from Level 1 retrieval (replaces document_ids)
+    # Structure: [{"document_id": str, "score": float, "document_type": str, "filename": str, "summary": str}]
+    search_hint: Optional[str]  # NEW: Search mode hint for chunk retrieval ("numeric" | "section" | "literal")
     detail_level: Optional[str]  # NEW: "concise" (default) or "detailed" - controls number of chunks/docs processed
     citations: Annotated[list[Citation], operator.add]  # NEW: Accumulate citations in graph state (with bbox coordinates)
     query_category: Optional[str]  # NEW: "general_query", "text_transformation", "document_search", "hybrid"
@@ -76,6 +86,7 @@ class MainWorkflowState(TypedDict, total=False):
     attachment_context: Optional[dict]  # NEW: Extracted text from attached files (texts, pageTexts, filenames)
     is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
+    messages: Annotated[List[BaseMessage], operator.add]  # NEW: Message history for agent conversation (includes tool calls and responses)
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

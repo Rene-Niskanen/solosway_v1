@@ -545,20 +545,40 @@ const StreamingResponseText: React.FC<{
               wordBreak: 'break-word'
             }}>{processChildrenWithCitations(children)}</h1>;
           },
-          h2: () => null, 
-          h3: () => null,
+          h2: ({ children }) => {
+            return <h2 style={{ 
+              fontSize: '15px', 
+              fontWeight: 600, 
+              margin: '10px 0 6px 0', 
+              color: '#111827',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</h2>;
+          },
+          h3: ({ children }) => {
+            return <h3 style={{ 
+              fontSize: '14px', 
+              fontWeight: 600, 
+              margin: '8px 0 4px 0', 
+              color: '#111827',
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              wordBreak: 'break-word'
+            }}>{processChildrenWithCitations(children)}</h3>;
+          },
           ul: ({ children }) => <ul style={{ 
             margin: '8px 0', 
-            paddingLeft: 0, 
-            listStylePosition: 'inside',
+            paddingLeft: '20px',
+            listStyleType: 'disc',
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
           }}>{children}</ul>,
           ol: ({ children }) => <ol style={{ 
             margin: '8px 0', 
-            paddingLeft: 0, 
-            listStylePosition: 'inside',
+            paddingLeft: '20px',
+            listStyleType: 'decimal',
             wordWrap: 'break-word',
             overflowWrap: 'break-word',
             wordBreak: 'break-word'
@@ -607,6 +627,33 @@ const StreamingResponseText: React.FC<{
             wordBreak: 'break-word'
           }}>{children}</blockquote>,
           hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+          img: ({ src, alt }) => {
+            return (
+              <img 
+                src={src || ''} 
+                alt={alt || 'Document image'} 
+                style={{ 
+                  maxWidth: '100%', 
+                  height: 'auto', 
+                  borderRadius: '8px', 
+                  margin: '12px 0',
+                  border: '1px solid #e5e7eb',
+                  boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)',
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  // Open image in new tab on click
+                  if (src) window.open(src, '_blank');
+                }}
+                loading="lazy"
+                onError={(e) => {
+                  // Fallback if image fails to load
+                  (e.target as HTMLImageElement).style.display = 'none';
+                  console.error('Failed to load image:', src);
+                }}
+              />
+            );
+          },
         }}
       >
         {textWithCitationPlaceholders}
@@ -2360,6 +2407,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     attachedFilesRef.current = attachedFiles;
   }, [attachedFiles]);
 
+  // NEW: Use chat history context for session management (declared early so functions can use it)
+  const chatHistoryContext = useChatHistory();
+
   // Function to stop streaming query
   const handleStopQuery = React.useCallback(() => {
     if (abortControllerRef.current) {
@@ -2395,6 +2445,73 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
     }
   }, [isBotPaused]);
+  
+  // NEW: Handle new chat session - generates new sessionId and clears messages
+  const handleNewChatSession = React.useCallback(() => {
+    console.log(`🆕 [SESSION] Creating new chat session...`);
+    
+    // Clear messages first
+    setChatMessages([]);
+    setSubmittedQueries([]);
+    
+    // Add to chat history (this returns the auto-generated ID)
+    const newChatId = chatHistoryContext.addChatToHistory({
+      title: 'New Chat',
+      timestamp: new Date().toISOString(),
+      preview: '',
+      messages: []
+    });
+    
+    console.log(`🆕 [SESSION] New chat ID: ${newChatId}`);
+    
+    // Update sessionId to match the chat history ID
+    setSessionId(newChatId);
+    
+    toast({
+      title: "New chat started",
+      description: "Previous conversation has been saved to history.",
+    });
+  }, [chatHistoryContext]);
+  
+  // NEW: Delete chat session from both frontend and backend
+  const handleDeleteChatWithBackend = React.useCallback(async (chatId: string) => {
+    try {
+      console.log(`🗑️ [SESSION] Deleting chat ${chatId}...`);
+      
+      // Delete from frontend (localStorage)
+      chatHistoryContext.removeChatFromHistory(chatId);
+      
+      // Delete from backend (checkpointer)
+      const response = await fetch(`/api/llm/sessions/${chatId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log(`✅ [SESSION] Deleted chat ${chatId} - removed ${data.deleted_checkpoints} checkpoints`);
+        toast({
+          title: "Chat deleted",
+          description: `Removed ${data.deleted_checkpoints} conversation checkpoints from backend.`,
+        });
+      } else {
+        console.error(`❌ [SESSION] Error deleting chat ${chatId}:`, data.error);
+        toast({
+          title: "Error deleting chat",
+          description: data.error,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error(`❌ [SESSION] Error deleting chat ${chatId}:`, error);
+      toast({
+        title: "Error deleting chat",
+        description: "Failed to delete chat from backend. Please try again.",
+        variant: "destructive"
+      });
+    }
+  }, [chatHistoryContext]);
   
   // Expose getAttachments method via ref
   React.useImperativeHandle(ref, () => ({
@@ -2530,8 +2647,55 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
-  // Persistent sessionId for conversation continuity (reused across all messages in this chat session)
-  const [sessionId] = React.useState<string>(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  
+  // Persistent sessionId for conversation continuity
+  // This ensures frontend chat history and backend checkpointer use the SAME ID
+  const [sessionId, setSessionId] = React.useState<string>(() => {
+    // Try to restore the last active chat from localStorage
+    try {
+      const storedHistory = localStorage.getItem('solosway-chat-history');
+      if (storedHistory) {
+        const chatHistory = JSON.parse(storedHistory);
+        if (chatHistory && chatHistory.length > 0) {
+          // Get the most recent chat (sorted by timestamp)
+          const sortedChats = [...chatHistory].sort((a, b) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+          const lastChat = sortedChats[0];
+          console.log(`♻️ [SESSION] Restoring last active chat: ${lastChat.id}`);
+          console.log(`♻️ [SESSION] Chat has ${lastChat.messages?.length || 0} messages`);
+          return lastChat.id;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ [SESSION] Could not restore last chat:', error);
+    }
+    
+    // No existing chat found - create new session
+    const newId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    console.log(`🆕 [SESSION] No previous chat found, creating new session: ${newId}`);
+    return newId;
+  });
+  
+  // Restore chat messages for resumed sessions (on mount only)
+  React.useEffect(() => {
+    if (sessionId && !sessionId.startsWith('chat-' + Date.now().toString().slice(0, 10))) {
+      // This is a resumed session (not just created), load its messages
+      try {
+        const storedHistory = localStorage.getItem('solosway-chat-history');
+        if (storedHistory) {
+          const chatHistory = JSON.parse(storedHistory);
+          const currentChat = chatHistory.find((chat: any) => chat.id === sessionId);
+          if (currentChat && currentChat.messages && currentChat.messages.length > 0) {
+            console.log(`♻️ [SESSION] Restoring ${currentChat.messages.length} messages for session ${sessionId}`);
+            setChatMessages(currentChat.messages);
+          }
+        }
+      } catch (error) {
+        console.error('❌ [SESSION] Error restoring chat messages:', error);
+      }
+    }
+  }, []); // Run only on mount
   
   // File choice flow state - tracks pending file choice when attachments have extracted text
   const pendingFileChoiceRef = React.useRef<{
@@ -4451,7 +4615,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
       
       // Don't re-initialize if we already have messages (to preserve property attachments)
+      // CRITICAL: This prevents clearing messages that were just added via handleSubmit
       if (chatMessages.length > 0) {
+        console.log('⏭️ SideChatPanel: Skipping re-init - already have messages:', chatMessages.length);
         return;
       }
       
@@ -5461,8 +5627,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   };
 
   const handleSubmit = (e: React.FormEvent) => {
+    console.log('🚀 [SUBMIT] handleSubmit called!');
+    console.log('🚀 [SUBMIT] inputValue:', inputValue);
+    console.log('🚀 [SUBMIT] inputValue.trim():', inputValue.trim());
+    
     e.preventDefault();
     const submitted = inputValue.trim();
+    
+    console.log('🚀 [SUBMIT] submitted:', submitted);
+    console.log('🚀 [SUBMIT] isSubmitted:', isSubmitted);
+    console.log('🚀 [SUBMIT] onQuerySubmit:', !!onQuerySubmit);
+    console.log('🚀 [SUBMIT] attachedFiles.length:', attachedFiles.length);
+    console.log('🚀 [SUBMIT] propertyAttachments.length:', propertyAttachments.length);
     
     // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
     if (isAgentMode) {
@@ -5484,7 +5660,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       attachedFilesRef.current = initialAttachedFiles;
     }
     
+    const conditionCheck = {
+      hasContent: submitted || attachedFiles.length > 0 || propertyAttachments.length > 0,
+      notSubmitted: !isSubmitted,
+      hasCallback: !!onQuerySubmit,
+      overall: (submitted || attachedFiles.length > 0 || propertyAttachments.length > 0) && !isSubmitted && onQuerySubmit
+    };
+    console.log('🚀 [SUBMIT] Condition check:', conditionCheck);
+    
     if ((submitted || attachedFiles.length > 0 || propertyAttachments.length > 0) && !isSubmitted && onQuerySubmit) {
+      console.log('✅ [SUBMIT] Condition passed - proceeding to add messages');
       setIsSubmitted(true);
       
       // Create a copy of attachments to store with the query
@@ -5564,9 +5749,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setChatMessages(prev => {
         const updated = [...prev, newQueryMessage];
         persistedChatMessagesRef.current = updated;
-        console.log('📋 SideChatPanel: Updated chatMessages:', updated);
+        console.log('📋 SideChatPanel: Updated chatMessages with query:', updated);
+        console.log('📋 SideChatPanel: Query message details:', newQueryMessage);
         return updated;
       });
+      
+      // Force scroll to bottom to show user's message
+      setTimeout(() => {
+        if (contentAreaRef.current) {
+          contentAreaRef.current.scrollTop = contentAreaRef.current.scrollHeight;
+          console.log('📜 Scrolled to show user query message');
+        }
+      }, 50);
       
       // Add loading response message
         // CRITICAL: Use performance.now() + random to ensure uniqueness even if called multiple times rapidly
@@ -5581,6 +5775,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       setChatMessages(prev => {
         const updated = [...prev, loadingMessage];
         persistedChatMessagesRef.current = updated;
+        console.log('📋 SideChatPanel: Added loading message, total messages:', updated.length);
         return updated;
       });
       
@@ -6333,6 +6528,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         inputRef.current.style.overflowY = '';
         inputRef.current.style.overflow = '';
       }
+    } else {
+      console.log('❌ [SUBMIT] Condition failed - messages NOT added');
+      console.log('❌ [SUBMIT] This is why your messages aren\'t appearing!');
     }
   };
   
@@ -6341,17 +6539,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
   const renderedMessages = useMemo(() => {
+    console.log('🔍 SideChatPanel: useMemo triggered, chatMessages:', chatMessages);
+    console.log('🔍 SideChatPanel: chatMessages.length:', chatMessages.length);
+    console.log('🔍 SideChatPanel: chatMessages array:', JSON.stringify(chatMessages, null, 2));
+    
     const validMessages = (Array.isArray(chatMessages) ? chatMessages : [])
       .map((message, idx) => ({ message, idx }))
       .filter(({ message }) => message && typeof message === 'object');
     
-    if (validMessages.length === 0) return [];
+    console.log('🎨 SideChatPanel: Rendering messages, total:', validMessages.length, 'messages:', validMessages.map(v => ({ type: v.message.type, id: v.message.id, text: v.message.text?.substring(0, 50) })));
+    
+    if (validMessages.length === 0) {
+      console.log('⚠️ SideChatPanel: No valid messages to render');
+      console.log('⚠️ SideChatPanel: Raw chatMessages was:', chatMessages);
+      return [];
+    }
     
     return validMessages.map(({ message, idx }) => {
       const finalKey = message.id || `msg-${idx}`;
       const isRestored = message.id && restoredMessageIdsRef.current.has(message.id);
       
       if (message.type === 'query') {
+        console.log('📝 Rendering query message:', { id: message.id, text: message.text?.substring(0, 50) });
         // Truncate query text if from citation
         const containerWidth = contentAreaRef.current?.clientWidth || 600;
         const { truncatedText, isTruncated } = message.fromCitation && message.text
@@ -6569,15 +6778,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <ReactMarkdown components={{
                     p: ({ children }) => <p style={{ margin: 0, padding: 0, display: 'block', wordWrap: 'break-word', overflowWrap: 'break-word' }}>{children}</p>,
                     h1: ({ children }) => <h1 style={{ fontSize: '16px', fontWeight: 600, margin: '12px 0 8px 0' }}>{children}</h1>,
-                    h2: () => null, h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
-                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ul>,
-                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px' }}>{children}</ol>,
+                    h2: ({ children }) => <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 6px 0', color: '#111827' }}>{children}</h2>,
+                    h3: ({ children }) => <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px 0' }}>{children}</h3>,
+                    ul: ({ children }) => <ul style={{ margin: '8px 0', paddingLeft: '20px', listStyleType: 'disc' }}>{children}</ul>,
+                    ol: ({ children }) => <ol style={{ margin: '8px 0', paddingLeft: '20px', listStyleType: 'decimal' }}>{children}</ol>,
                     li: ({ children }) => <li style={{ marginBottom: '4px' }}>{children}</li>,
                     strong: ({ children }) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
                     em: ({ children }) => <em style={{ fontStyle: 'italic' }}>{children}</em>,
                     code: ({ children }) => <code style={{ backgroundColor: '#f3f4f6', padding: '2px 4px', borderRadius: '3px', fontSize: '12px', fontFamily: 'monospace' }}>{children}</code>,
                     blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #d1d5db', paddingLeft: '12px', margin: '8px 0', color: '#6b7280' }}>{children}</blockquote>,
                     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0' }} />,
+                    img: ({ src, alt }) => {
+                      return (
+                        <img 
+                          src={src || ''} 
+                          alt={alt || 'Document image'} 
+                          style={{ 
+                            maxWidth: '100%', 
+                            height: 'auto', 
+                            borderRadius: '8px', 
+                            margin: '12px 0',
+                            border: '1px solid #e5e7eb',
+                            boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1)',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => {
+                            if (src) window.open(src, '_blank');
+                          }}
+                          loading="lazy"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      );
+                    },
                     }}>{truncatedText}</ReactMarkdown>
                   </div>
                 </div>
@@ -7019,6 +7253,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 margin: '0 auto' // Center the content wrapper
               }}>
               <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
+                {/* DEBUG: Show message count */}
+                {chatMessages.length === 0 && (
+                  <div style={{ padding: '20px', color: '#999', textAlign: 'center', fontSize: '14px' }}>
+                    No messages yet (chatMessages.length = {chatMessages.length})
+                  </div>
+                )}
                 <AnimatePresence>
                   {renderedMessages}
                 </AnimatePresence>

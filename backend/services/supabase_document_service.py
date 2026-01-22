@@ -97,3 +97,92 @@ class SupabaseDocumentService:
         except Exception as e:
             logger.error(f"Error updating document status in Supabase: {e}")
             return False
+    
+    def get_document_chunks(self, document_id: str) -> list:
+        """
+        Get all chunks for a document from document_vectors table.
+        
+        Args:
+            document_id: Document UUID
+            
+        Returns:
+            List of chunk dictionaries with:
+            - id: Chunk UUID
+            - chunk_text: Original chunk text
+            - chunk_text_clean: Cleaned chunk text (for embedding)
+            - chunk_index: Index of chunk in document
+            - page_number: Page number where chunk appears
+            - metadata: Additional chunk metadata (JSONB)
+        """
+        try:
+            result = (
+                self.supabase
+                .table('document_vectors')
+                .select('id, chunk_text, chunk_text_clean, chunk_index, page_number, metadata')
+                .eq('document_id', document_id)
+                .order('chunk_index', desc=False)  # Order by chunk_index ascending
+                .execute()
+            )
+            
+            chunks = result.data if result.data else []
+            logger.debug(f"Retrieved {len(chunks)} chunks for document {document_id[:8]}...")
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Error fetching document chunks from Supabase: {e}")
+            return []
+    
+    def get_documents_without_embeddings(
+        self, 
+        business_id: str = None, 
+        limit: int = None
+    ) -> list:
+        """
+        Get documents that need backfilling (missing document_embedding or summary_text).
+        
+        Args:
+            business_id: Optional business UUID to filter by
+            limit: Optional limit on number of documents to return
+            
+        Returns:
+            List of document dictionaries that need backfilling
+        """
+        try:
+            query = (
+                self.supabase
+                .table('documents')
+                .select('*')
+                .or_('document_embedding.is.null,summary_text.is.null')
+            )
+            
+            # Filter by business_id if provided
+            if business_id:
+                # Check if business_id is UUID format
+                try:
+                    from uuid import UUID
+                    UUID(business_id)
+                    # It's a UUID, use business_uuid field
+                    query = query.eq('business_uuid', business_id)
+                except (ValueError, TypeError):
+                    # Not a UUID, use business_id field
+                    query = query.eq('business_id', business_id)
+            
+            # Order by created_at (oldest first for backfilling)
+            query = query.order('created_at', desc=False)
+            
+            # Apply limit if provided
+            if limit:
+                query = query.limit(limit)
+            
+            result = query.execute()
+            documents = result.data if result.data else []
+            
+            logger.info(
+                f"Found {len(documents)} documents without embeddings"
+                f"{f' for business {business_id[:8]}...' if business_id else ''}"
+            )
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error fetching documents without embeddings from Supabase: {e}")
+            return []
