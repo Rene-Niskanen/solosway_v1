@@ -464,6 +464,16 @@ def query_documents_stream():
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
         is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
+        # RESEARCH AGENT: Model-driven tool choice
+        # Use request value if explicitly set, otherwise fall back to config default
+        use_research_agent = data.get('useResearchAgent')
+        if use_research_agent is None:
+            from backend.llm.config import config as llm_config
+            use_research_agent = llm_config.research_agent_enabled
+        # PLAN MODE: Generate plan before execution
+        plan_mode = data.get('planMode', False)
+        build_confirmed = data.get('buildConfirmed', False)
+        existing_plan = data.get('existingPlan', None)  # For plan updates
         model_preference = data.get('model', 'gpt-4o-mini')  # MODEL SELECTION: User-selected LLM model
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
@@ -572,6 +582,9 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    "use_research_agent": use_research_agent,  # RESEARCH AGENT: Model-driven tool choice
+                    "plan_mode": plan_mode,  # PLAN MODE: Generate plan before execution
+                    "build_confirmed": build_confirmed,  # PLAN MODE: User confirmed to build/execute the plan
                     "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM model
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
@@ -600,12 +613,18 @@ def query_documents_stream():
                 logger.info(
                     f"🟢 [STREAM] Initial state built: query='{query[:30]}...', "
                     f"business_id={business_id}, "
-                    f"document_ids={len(document_ids) if document_ids else 0}"
+                    f"document_ids={len(document_ids) if document_ids else 0}, "
+                    f"plan_mode={plan_mode}, build_confirmed={build_confirmed}"
                 )
                 
-                # Send initial status and FIRST reasoning step immediately
-                logger.info("🟢 [STREAM] Yielding initial status message")
-                yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
+                # PLAN MODE: Check early and generate plan BEFORE any reasoning steps
+                # We need to handle this in the async function, but skip reasoning steps if plan mode
+                should_skip_reasoning = plan_mode and not build_confirmed
+                
+                # Send initial status and FIRST reasoning step immediately (only if not in plan mode)
+                if not should_skip_reasoning:
+                    logger.info("🟢 [STREAM] Yielding initial status message")
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents...'})}\n\n"
                 
                 # Extract intent from query for contextual reasoning step
                 # Simple heuristic: identify what user is looking for and where
@@ -744,11 +763,14 @@ def query_documents_stream():
                 # The keywords were too broad ('why', 'how', 'can you') and matched most questions
                 
                 # Skip reasoning steps ONLY for citation queries (user clicked on citation text)
-                is_fast_path = is_citation_query
+                # OR for plan mode (plan will be generated instead)
+                is_fast_path = is_citation_query or should_skip_reasoning
                 
                 if is_fast_path:
-                    # Skip initial reasoning step - go straight to LLM (citation queries only)
-                    logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
+                    if should_skip_reasoning:
+                        logger.info("📋 [PLAN_MODE] Skipping reasoning steps - will generate plan instead")
+                    else:
+                        logger.info("⚡ [CITATION_QUERY] Skipping initial reasoning step - ultra-fast path")
                     timing.mark("intent_extracted")
                 else:
                     # Detect if this is a navigation query (similar to should_route logic)
@@ -813,6 +835,131 @@ def query_documents_stream():
                     """Run LangGraph and stream the final summary with reasoning steps"""
                     try:
                         logger.info("🟡 [STREAM] run_and_stream() async function started")
+                        
+                        # PLAN MODE: Generate and stream plan if planMode=True and not buildConfirmed
+                        if plan_mode and not build_confirmed:
+                            # Check if this is a plan UPDATE (existingPlan provided) or new plan
+                            is_plan_update = existing_plan is not None and len(existing_plan) > 0
+                            
+                            if is_plan_update:
+                                logger.info("📋 [PLAN_MODE] Updating existing plan...")
+                                from backend.llm.agents.research_agent import update_research_plan
+                            else:
+                                logger.info("📋 [PLAN_MODE] Generating new research plan...")
+                                from backend.llm.agents.research_agent import generate_research_plan
+                            
+                            # Collect chunks as they arrive
+                            plan_chunks = []
+                            
+                            async def collect_and_stream_chunk(chunk: str):
+                                """Callback that collects chunks and yields them immediately"""
+                                plan_chunks.append(chunk)
+                                # Yield chunk immediately for real-time streaming
+                                plan_data = {
+                                    'type': 'plan_chunk',
+                                    'content': chunk
+                                }
+                                yield f"data: {json.dumps(plan_data)}\n\n"
+                            
+                            try:
+                                # Generate or update plan with streaming callback
+                                # Note: We need to handle the async generator properly
+                                plan_content = ""
+                                plan_id = None
+                                
+                                # Create a simple callback that collects chunks
+                                collected_chunks = []
+                                async def simple_collect(chunk: str):
+                                    collected_chunks.append(chunk)
+                                
+                                if is_plan_update:
+                                    # Emit "Planning next moves..." reasoning step immediately
+                                    planning_step = {
+                                        'type': 'reasoning_step',
+                                        'step': '1',
+                                        'action_type': 'planning',
+                                        'message': 'Planning next moves...',
+                                        'details': {'update_instruction': query}
+                                    }
+                                    yield f"data: {json.dumps(planning_step)}\n\n"
+                                    
+                                    # Emit "Applying adjustments..." before LLM starts
+                                    applying_step = {
+                                        'type': 'reasoning_step',
+                                        'step': '2',
+                                        'action_type': 'analysing',
+                                        'message': 'Applying adjustments to plan...',
+                                        'details': {}
+                                    }
+                                    yield f"data: {json.dumps(applying_step)}\n\n"
+                                    
+                                    # Update existing plan
+                                    plan_content, plan_id = await update_research_plan(
+                                        {"user_query": query, "model_preference": model_preference},
+                                        existing_plan=existing_plan,
+                                        update_instruction=query,  # The follow-up query is the update instruction
+                                        on_plan_chunk=simple_collect
+                                    )
+                                else:
+                                    # Generate new plan
+                                    # Emit "Planning next moves..." reasoning step immediately
+                                    planning_step = {
+                                        'type': 'reasoning_step',
+                                        'step': '1',
+                                        'action_type': 'planning',
+                                        'message': 'Planning next moves...',
+                                        'details': {'query': query}
+                                    }
+                                    yield f"data: {json.dumps(planning_step)}\n\n"
+                                    
+                                    # Emit "Generating Plan..." before LLM starts
+                                    generating_step = {
+                                        'type': 'reasoning_step',
+                                        'step': '2',
+                                        'action_type': 'planning',
+                                        'message': 'Generating Plan...',
+                                        'details': {}
+                                    }
+                                    yield f"data: {json.dumps(generating_step)}\n\n"
+                                    
+                                    plan_content, plan_id = await generate_research_plan(
+                                        {"user_query": query, "model_preference": model_preference},
+                                        on_plan_chunk=simple_collect
+                                    )
+                                
+                                # Stream all collected chunks
+                                for chunk in collected_chunks:
+                                    plan_data = {
+                                        'type': 'plan_chunk',
+                                        'content': chunk
+                                    }
+                                    yield f"data: {json.dumps(plan_data)}\n\n"
+                                
+                                # Emit "Plan complete" reasoning step
+                                complete_step = {
+                                    'type': 'reasoning_step',
+                                    'step': '3',
+                                    'action_type': 'complete',
+                                    'message': 'Plan complete',
+                                    'details': {'plan_id': plan_id}
+                                }
+                                yield f"data: {json.dumps(complete_step)}\n\n"
+                                
+                                # Send plan_complete
+                                complete_data = {
+                                    'type': 'plan_complete',
+                                    'plan_id': plan_id,
+                                    'full_plan': plan_content,
+                                    'is_update': is_plan_update  # Include metadata about update vs new
+                                }
+                                yield f"data: {json.dumps(complete_data)}\n\n"
+                                action = "updated" if is_plan_update else "generated"
+                                logger.info(f"📋 [PLAN_MODE] Plan {action}: id={plan_id[:8] if plan_id else 'unknown'}, length={len(plan_content)}")
+                                return  # Exit without running the full graph
+                            except Exception as plan_error:
+                                logger.error(f"📋 [PLAN_MODE] Plan generation failed: {plan_error}", exc_info=True)
+                                yield f"data: {json.dumps({'type': 'error', 'message': str(plan_error)})}\n\n"
+                                return
                         
                         # Create a new checkpointer and graph for current event loop.
                         # This avoids "Lock bound to different event loop" errors.
@@ -911,6 +1058,12 @@ def query_documents_stream():
                                 'action_type': 'planning',
                                 'message': 'Preparing response',
                                 'details': {}
+                            },
+                            # Research Agent: Model-driven tool choice
+                            'research_agent': {
+                                'action_type': 'planning',
+                                'message': 'Planning research strategy',
+                                'details': {}
                             }
                         }
                         
@@ -974,6 +1127,36 @@ def query_documents_stream():
                                     event_data = event.get("data", {})
                                     state_update = event_data.get("data", {})  # Full state update
                                     output = event_data.get("output", {})  # Node output only
+                                    
+                                    # Handle research_agent node - emit stored tool events as reasoning steps
+                                    # The research_agent stores tool call events in _agent_tool_events
+                                    if node_name == "research_agent" and not is_fast_path:
+                                        state_data = state_update if state_update else output
+                                        agent_tool_events = state_data.get("_agent_tool_events", [])
+                                        if agent_tool_events:
+                                            logger.info(f"🤖 [RESEARCH_AGENT] Emitting {len(agent_tool_events)} tool call events")
+                                            for event_item in agent_tool_events:
+                                                # Build reasoning step from agent tool event
+                                                reasoning_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': f"agent_{event_item.get('tool_name', 'unknown')}",
+                                                    'action_type': event_item.get('action_type', 'analysing'),
+                                                    'message': event_item.get('message', ''),
+                                                    'details': {
+                                                        'tool_name': event_item.get('tool_name'),
+                                                        'tool_input': event_item.get('tool_input'),
+                                                        'tool_output': event_item.get('tool_output'),
+                                                        'status': event_item.get('status', 'complete')
+                                                    }
+                                                }
+                                                reasoning_json = json.dumps(reasoning_data)
+                                                yield f"data: {reasoning_json}\n\n"
+                                                logger.info(f"🤖 [RESEARCH_AGENT] Emitted tool step: {event_item.get('tool_name')} - {event_item.get('message')}")
+                                        
+                                        # Check if agent had an error
+                                        agent_error = state_data.get("_agent_error")
+                                        if agent_error:
+                                            logger.warning(f"🤖 [RESEARCH_AGENT] Agent error: {agent_error}")
                                     
                                     # Update details based on node output
                                     # SKIP reasoning step emissions for citation queries (ultra-fast path)
@@ -2613,6 +2796,240 @@ def query_documents_stream():
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         return response, 500
+
+
+@views.route('/api/llm/build-plan', methods=['POST', 'OPTIONS'])
+def build_plan():
+    """
+    Build/Execute a previously generated research plan.
+    
+    This endpoint is called when the user clicks "Build" in the Plan Viewer.
+    It executes the research agent with buildConfirmed=True to perform
+    the actual document retrieval and answer generation.
+    
+    Accepts:
+    - planId: ID of the plan to execute
+    - sessionId: Session ID for conversation persistence
+    - query: The original user query
+    - buildConfirmed: Should be True
+    
+    Returns:
+    - SSE stream with reasoning_steps and tokens (same as query/stream)
+    """
+    logger.info("🔵 [BUILD_PLAN] Received request to /api/llm/build-plan")
+    
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        origin = request.headers.get('Origin', '*')
+        response.headers.add('Access-Control-Allow-Origin', origin)
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    # Require login - only check after OPTIONS is handled
+    try:
+        if not current_user.is_authenticated:
+            response = jsonify({
+                'success': False,
+                'error': 'Authentication required'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            return response, 401
+    except (AttributeError, RuntimeError):
+        # current_user not available or not in request context
+        response = jsonify({
+            'success': False,
+            'error': 'Authentication required'
+        })
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response, 401
+    
+    try:
+        data = request.get_json()
+        plan_id = data.get('planId')
+        session_id = data.get('sessionId')
+        query = data.get('query', '')
+        
+        if not plan_id or not query:
+            response = jsonify({
+                'success': False,
+                'error': 'planId and query are required'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 400
+        
+        # Get business_id using the same method as query/stream endpoint
+        business_id = _ensure_business_uuid()
+        logger.info(f"🔵 [BUILD_PLAN] Business ID: {business_id}")
+        
+        if not business_id:
+            response = jsonify({
+                'success': False,
+                'error': 'Business ID not available'
+            })
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 401
+        
+        # CRITICAL: Capture user info BEFORE entering the thread (Flask context not available in thread)
+        user_id = str(current_user.id) if current_user.is_authenticated else "anonymous"
+        model_preference = data.get('model', 'gpt-4o-mini')
+        
+        def generate():
+            """Generator that streams plan execution via SSE"""
+            import asyncio
+            from queue import Queue
+            import threading
+            
+            chunk_queue = Queue()
+            error_occurred = threading.Event()
+            error_message = [None]
+            
+            async def run_build():
+                """Execute the plan with the research agent"""
+                try:
+                    from backend.llm.graphs.main_graph import build_main_graph
+                    
+                    # Emit initial reasoning step
+                    chunk_queue.put(f"data: {json.dumps({'type': 'reasoning_step', 'step': '1', 'action_type': 'planning', 'message': 'Executing research plan', 'details': {'query': query}})}\n\n")
+                    
+                    # Build graph
+                    graph, _ = await build_main_graph(use_checkpointer=False)
+                    
+                    # Initial state with buildConfirmed=True
+                    # NOTE: user_id, business_id, session_id, model_preference captured from outer scope (request context)
+                    initial_state = {
+                        "user_query": query,
+                        "user_id": user_id,
+                        "business_id": business_id,
+                        "session_id": session_id,
+                        "use_research_agent": True,
+                        "plan_mode": False,  # Not plan mode - we're executing
+                        "build_confirmed": True,  # Confirm build
+                        "model_preference": model_preference,
+                        "_stream_queue": chunk_queue,  # Pass queue for real-time event streaming
+                    }
+                    
+                    # Run the graph and stream results
+                    config_dict = {"configurable": {"thread_id": session_id}}
+                    
+                    final_summary = ""
+                    final_citations = []
+                    step_count = 2
+                    
+                    async for event in graph.astream_events(initial_state, config_dict, version="v2"):
+                        event_type = event.get('event')
+                        node_name = event.get("name", "")
+                        
+                        # Emit reasoning steps for key nodes
+                        if event_type == "on_chain_start":
+                            if node_name in ["query_vector_documents", "retrieve_documents", "hybrid_search"]:
+                                chunk_queue.put(f"data: {json.dumps({'type': 'reasoning_step', 'step': str(step_count), 'action_type': 'searching', 'message': 'Searching documents', 'details': {}})}\n\n")
+                                step_count += 1
+                            elif node_name in ["process_documents", "answer_question"]:
+                                chunk_queue.put(f"data: {json.dumps({'type': 'reasoning_step', 'step': str(step_count), 'action_type': 'analysing', 'message': 'Analyzing retrieved content', 'details': {}})}\n\n")
+                                step_count += 1
+                            elif node_name in ["summarize_results", "format_response"]:
+                                chunk_queue.put(f"data: {json.dumps({'type': 'reasoning_step', 'step': str(step_count), 'action_type': 'summarizing', 'message': 'Generating response', 'details': {}})}\n\n")
+                                step_count += 1
+                        
+                        if event_type == "on_chain_end":
+                            event_data = event.get("data", {})
+                            output = event_data.get("output", {})
+                            
+                            # Check for documents found
+                            if node_name in ["query_vector_documents", "retrieve_documents"]:
+                                docs = output.get("matched_documents", []) or output.get("documents", [])
+                                if docs:
+                                    doc_count = len(docs)
+                                    chunk_queue.put(f"data: {json.dumps({'type': 'reasoning_step', 'step': str(step_count), 'action_type': 'found', 'message': f'Found {doc_count} relevant document(s)', 'details': {'count': doc_count}})}\n\n")
+                                    step_count += 1
+                            
+                            # NOTE: Agent tool events are now emitted in REAL-TIME directly from research_agent.py
+                            # via _emit_to_stream_queue(). The batch emission is no longer needed.
+                            
+                            # Capture final summary and citations
+                            if node_name in ["research_agent", "summarize_results", "format_response"]:
+                                summary = output.get("final_summary", "") or output.get("summary", "")
+                                citations = output.get("citations", [])
+                                if summary:
+                                    final_summary = summary
+                                    final_citations = citations
+                                    # Stream summary character by character for smooth typing effect
+                                    for i in range(0, len(summary), 3):  # Stream 3 chars at a time for balance
+                                        chunk = summary[i:i+3]
+                                        chunk_queue.put(f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n")
+                    
+                    # If we got a summary, send complete with citations
+                    if final_summary:
+                        complete_data = {'summary': final_summary}
+                        if final_citations:
+                            complete_data['citations'] = final_citations
+                        chunk_queue.put(f"data: {json.dumps({'type': 'complete', 'data': complete_data})}\n\n")
+                    else:
+                        # Fallback - check if no summary was captured
+                        chunk_queue.put(f"data: {json.dumps({'type': 'complete', 'data': {'summary': 'Research completed but no summary was generated. Please try again.'}})}\n\n")
+                    
+                    chunk_queue.put(None)  # Signal completion
+                    
+                except Exception as e:
+                    logger.error(f"[BUILD_PLAN] Error: {e}", exc_info=True)
+                    error_message[0] = str(e)
+                    error_occurred.set()
+                    chunk_queue.put(None)
+            
+            def run_async():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(run_build())
+                finally:
+                    loop.close()
+            
+            # Run async code in thread
+            thread = threading.Thread(target=run_async)
+            thread.start()
+            
+            # Yield chunks from queue
+            while True:
+                chunk = chunk_queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+            
+            thread.join()
+            
+            if error_occurred.is_set():
+                yield f"data: {json.dumps({'type': 'error', 'message': error_message[0]})}\n\n"
+        
+        response = Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Access-Control-Allow-Origin': request.headers.get('Origin', '*'),
+                'Access-Control-Allow-Credentials': 'true'
+            }
+        )
+        return response
+        
+    except Exception as e:
+        logger.error(f"[BUILD_PLAN] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 
 @views.route('/api/llm/query', methods=['POST', 'OPTIONS'])
 def query_documents():

@@ -78,6 +78,19 @@ class MainWorkflowState(TypedDict, total=False):
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
     navigation_intent: Optional[dict]  # LLM-based navigation intent detection result (is_navigation, property_name, reason)
     model_preference: Optional[str]  # User-selected LLM model ('gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus')
+    # RESEARCH AGENT: Model-driven tool choice
+    use_research_agent: Optional[bool]  # Enable research agent for document searches (model-driven tool choice)
+    _agent_tool_events: Optional[list[dict]]  # Internal: Tool call events for streaming
+    _agent_error: Optional[str]  # Internal: Error message if agent failed
+    _agent_iterations: Optional[int]  # Internal: Number of agent iterations
+    _agent_documents_read: Optional[list[str]]  # Internal: Document IDs read by agent
+    # PLAN MODE: Cursor-style plan viewer
+    plan_mode: Optional[bool]  # Enable plan mode to generate plan before execution
+    plan_content: Optional[str]  # The generated research plan content
+    plan_id: Optional[str]  # Unique ID for the plan
+    awaiting_build: Optional[bool]  # True if waiting for user to click Build
+    build_confirmed: Optional[bool]  # True after user clicks Build to execute
+    _stream_queue: Optional[Any]  # Internal: Queue for real-time SSE event streaming
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""

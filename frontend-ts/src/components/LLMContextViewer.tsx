@@ -166,7 +166,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
             border: 1px solid #E5E7EB;
             border-radius: 8px;
             overflow: hidden;
-            background: #FFFFFF;
+            background: transparent;
             margin-top: 4px;
             max-width: 100%;
           }
@@ -176,7 +176,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
             align-items: center;
             gap: 8px;
             padding: 8px 12px;
-            background: #FFFFFF;
+            background: transparent;
             border-bottom: 1px solid #E5E7EB;
             font-size: 12px;
             color: #374151;
@@ -232,7 +232,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
             font-size: 11px;
             line-height: 1.5;
             color: #6B7280;
-            background: #FAFAFA;
+            background: transparent;
             max-height: 60px;
             overflow: hidden;
             transition: max-height 0.3s ease;
@@ -243,7 +243,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
             font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
             font-size: 11px;
             line-height: 1.5;
-            background: #FFFFFF;
+            background: transparent;
             max-height: 400px;
             overflow-y: auto;
             overflow-x: hidden;
@@ -300,11 +300,11 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
           }
 
           .llm-context-expanded-line.chunk-even {
-            background: #FFFFFF;
+            background: transparent;
           }
 
           .llm-context-expanded-line.chunk-odd {
-            background: #FAFBFC;
+            background: rgba(0, 0, 0, 0.02);
           }
 
           .expanded-line-number {
@@ -394,7 +394,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
           border: 1px solid #E5E7EB;
           border-radius: 8px;
           overflow: hidden;
-          background: #FFFFFF;
+          background: transparent;
           margin-top: 4px;
           max-width: 100%;
         }
@@ -404,7 +404,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
           align-items: center;
           gap: 8px;
           padding: 8px 12px;
-          background: #FFFFFF;
+          background: transparent;
           border-bottom: 1px solid #E5E7EB;
           font-size: 12px;
           color: #374151;
@@ -438,7 +438,7 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
         }
 
         .llm-context-content {
-          height: 200px; /* Compact fixed height - Cursor style */
+          height: 150px; /* Compact fixed height - Cursor style */
           overflow-y: auto;
           font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
           font-size: 11px;
@@ -508,11 +508,11 @@ export const LLMContextViewer: React.FC<LLMContextViewerProps> = ({
 
         /* Alternating chunk backgrounds for visual distinction */
         .llm-context-line.chunk-even {
-          background: #FFFFFF;
+          background: transparent;
         }
 
         .llm-context-line.chunk-odd {
-          background: #FAFBFC;
+          background: rgba(0, 0, 0, 0.02);
         }
 
         .line-number {

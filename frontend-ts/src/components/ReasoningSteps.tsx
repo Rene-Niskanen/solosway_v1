@@ -63,6 +63,11 @@ export interface ReasoningStep {
     }>;
     // Thinking step content (streamed from LLM reasoning)
     thinking_content?: string;
+    // RESEARCH AGENT: Tool call details (Cursor-style agentic steps)
+    tool_name?: string;           // "search_documents", "read_document", etc.
+    tool_input?: Record<string, any>;   // Tool input parameters
+    tool_output?: Record<string, any>;  // Tool output/results
+    status?: 'running' | 'complete' | 'error' | 'read' | 'reading';  // Execution status (includes legacy reading statuses)
     [key: string]: any;
   };
   timestamp?: number;
@@ -597,6 +602,77 @@ const StepRenderer: React.FC<{
   // PERFORMANCE OPTIMIZATION: Reduced animation delay for faster UI
   // REAL-TIME: No animation delays - show steps immediately when received
   const revealDelay = 0;
+  
+  // RESEARCH AGENT: Check if this is a tool call step from the research agent
+  // Tool call steps have tool_name in details and show input/output
+  const isToolCallStep = step.details?.tool_name;
+  const toolStatus = step.details?.status; // 'running' | 'complete' | 'error'
+  
+  // Render tool call step in Cursor-style format
+  if (isToolCallStep) {
+    const toolName = step.details?.tool_name;
+    const toolInput = step.details?.tool_input;
+    const toolOutput = step.details?.tool_output;
+    const isRunning = toolStatus === 'running';
+    const isError = toolStatus === 'error';
+    
+    // Icon based on tool type
+    const ToolIcon = () => {
+      if (toolName === 'search_documents') {
+        return <Search style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />;
+      } else if (toolName === 'read_document' || toolName === 'read_multiple_documents') {
+        return <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />;
+      } else if (toolName === 'planning' || toolName === 'generate_answer') {
+        return <Sparkle style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />;
+      }
+      return <Play style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0, marginTop: '2px' }} />;
+    };
+    
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+          {isRunning ? (
+            <div style={{ width: '14px', height: '14px', flexShrink: 0, marginTop: '2px' }}>
+              <div className="reasoning-loading-spinner" style={{
+                width: '14px',
+                height: '14px',
+                border: '2px solid #e5e7eb',
+                borderTopColor: '#6b7280',
+                borderRadius: '50%'
+              }} />
+            </div>
+          ) : (
+            <ToolIcon />
+          )}
+          <span style={{ color: isError ? '#ef4444' : DETAIL_COLOR }}>
+            {step.message}
+          </span>
+        </div>
+        
+        {/* Show tool input/output for search results in compact format */}
+        {toolName === 'search_documents' && toolOutput?.documents && (
+          <div style={{ paddingLeft: '20px', fontSize: '11px', color: '#6b7280' }}>
+            {toolOutput.documents.slice(0, 3).map((doc: any, i: number) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ color: '#9ca3af' }}>•</span>
+                <span>{doc.filename || doc.classification_type || 'Document'}</span>
+                {doc.relevance_score && (
+                  <span style={{ color: '#9ca3af', fontSize: '10px' }}>
+                    ({Math.round(doc.relevance_score * 100)}%)
+                  </span>
+                )}
+              </div>
+            ))}
+            {toolOutput.documents.length > 3 && (
+              <div style={{ color: '#9ca3af', fontStyle: 'italic' }}>
+                +{toolOutput.documents.length - 3} more
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Component for "Found X documents:" (no animation)
   const FoundDocumentsText: React.FC<{ prefix: string; actionStyle: React.CSSProperties }> = ({ prefix, actionStyle }) => {
@@ -1903,7 +1979,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           left: 0;
           width: 100%;
           height: 100%;
-          background: white;
+          background: inherit;
           /* Gradient: mostly black (hides text) with very wide, gradual blur transition zone */
           /* Very wide transition (60% to 100%) creates soft fade with no definitive boundary */
           /* Much larger mask-size creates smoother, more gradual transition across text */
@@ -1947,7 +2023,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           left: 0;
           width: 100%;
           height: 100%;
-          background: white;
+          background: inherit;
           /* Gradient: mostly black (hides content) with wide, gradual blur transition zone */
           mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);
           -webkit-mask-image: linear-gradient(90deg, black 0%, black 60%, transparent 100%);

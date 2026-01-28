@@ -43,6 +43,7 @@ from backend.llm.nodes.text_context_detector import detect_and_extract_text
 from backend.llm.nodes.general_query_node import handle_general_query
 from backend.llm.nodes.text_transformation_node import transform_text
 from backend.llm.nodes.follow_up_query_node import handle_follow_up_query
+from backend.llm.agents.research_agent import research_agent_node
 from typing import Literal
 
 async def create_checkpointer_for_current_loop():
@@ -382,8 +383,19 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     - Output: formatted final_summary
     """
     
+    # NEW: Research Agent Node (Model-driven tool choice)
+    builder.add_node("research_agent", research_agent_node)
+    """
+    Node 8: Research Agent (MODEL-DRIVEN TOOL CHOICE)
+    - Input: user_query, business_id, model_preference
+    - LLM decides which tools to call (search_documents, read_document)
+    - Agent loops until it has enough context to answer
+    - Output: final_summary, citations, agent_actions
+    - Replaces fixed simple_search/complex_search pipelines when enabled
+    """
+    
     # ROUTING LOGIC FUNCTIONS
-    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "direct_document", "simple_search", "complex_search"]:
+    def should_route(state: MainWorkflowState) -> Literal["navigation_action", "citation_query", "direct_document", "simple_search", "complex_search", "research_agent"]:
         """
         Conditional routing - makes decision based on initial state.
         
@@ -392,6 +404,9 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         
         CRITICAL: Attachment/citation checks ONLY run if values exist AND have content.
         Normal queries use the original routing logic unchanged.
+        
+        NEW: If use_research_agent=True, routes document searches to research_agent
+        for model-driven tool choice instead of fixed pipelines.
         """
         user_query = state.get("user_query", "").lower().strip()
         document_ids = state.get("document_ids", [])
@@ -400,9 +415,10 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         attachment_context = state.get("attachment_context")
         response_mode = state.get("response_mode")
         is_agent_mode = state.get("is_agent_mode", False)
+        use_research_agent = state.get("use_research_agent", False)
         
         # DEBUG: Log is_agent_mode and query for navigation detection
-        logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, query='{user_query[:60]}...'")
+        logger.info(f"🧭 [ROUTER DEBUG] is_agent_mode={is_agent_mode}, use_research_agent={use_research_agent}, query='{user_query[:60]}...'")
         
         # PATH -1: NAVIGATION ACTION (INSTANT - NO DOCUMENT RETRIEVAL)
         # Uses LLM-based detection from navigation_intent state (set by detect_navigation_intent_node)
@@ -438,6 +454,13 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
         if document_ids and len(document_ids) > 0:
             logger.info("🟢 [ROUTER] should_route → direct_document (document_ids provided)")
             return "direct_document"
+        
+        # NEW: RESEARCH AGENT PATH (MODEL-DRIVEN TOOL CHOICE)
+        # If use_research_agent is enabled, route document searches to the agent
+        # The agent will decide which tools to call (search, read, etc.)
+        if use_research_agent:
+            logger.info("🤖 [ROUTER] should_route → research_agent (model-driven tool choice enabled)")
+            return "research_agent"
         
         # PATH 2: PROPERTY CONTEXT (treat as simple_search for now)
         if property_id and any(word in user_query for word in [
@@ -514,6 +537,7 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
 
     # Router → Conditional routing (ORIGINAL - restored from HEAD)
     # NOTE: Citation routing is handled by should_route based on citation_context
+    # NEW: research_agent path for model-driven tool choice
     builder.add_conditional_edges(
         "route_query",
         should_route,
@@ -522,10 +546,11 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
             "citation_query": "handle_citation_query",  # ULTRA-FAST: Citation click query
             "direct_document": "fetch_direct_chunks",
             "simple_search": "query_vector_documents",  # Skip expand/clarify
-            "complex_search": "rewrite_query"  # Full pipeline
+            "complex_search": "rewrite_query",  # Full pipeline
+            "research_agent": "research_agent"  # NEW: Model-driven tool choice
         }
     )
-    logger.debug("Conditional: route_query -> [navigation_action|citation_query|direct_document|simple_search|complex_search]")
+    logger.debug("Conditional: route_query -> [navigation_action|citation_query|direct_document|simple_search|complex_search|research_agent]")
     
     # NAVIGATION PATH: handle → format (INSTANT, skips ALL retrieval - just emits agent actions)
     builder.add_edge("handle_navigation_action", "format_response")
@@ -594,6 +619,10 @@ async def build_main_graph(use_checkpointer: bool = True, checkpointer_instance=
     # NEW: Follow-up Query Path: handle_follow_up_query → END (skip format_response)
     builder.add_edge("handle_follow_up_query", END)
     logger.debug("Edge: handle_follow_up_query -> END (OPTIMIZED: skipped format_response)")
+    
+    # NEW: Research Agent Path: research_agent → END (model-driven tool choice)
+    builder.add_edge("research_agent", END)
+    logger.debug("Edge: research_agent -> END (MODEL-DRIVEN: agent handles all retrieval)")
 
     # Add checkpointer setup
     checkpointer = None 

@@ -55,6 +55,13 @@ class LLMConfig(BaseSettings):
     
     # Developer/testing helpers
     simple_mode: bool = os.getenv("LLM_SIMPLE_MODE", "false").lower() == "true"
+    
+    # Research Agent (Model-driven tool choice)
+    # When enabled, document searches use the research agent which decides
+    # which tools to call (search, read, etc.) based on the query
+    research_agent_enabled: bool = os.getenv("RESEARCH_AGENT_ENABLED", "false").lower() == "true"
+    research_agent_max_iterations: int = int(os.getenv("RESEARCH_AGENT_MAX_ITERATIONS", "10"))
+    research_agent_timeout_seconds: int = int(os.getenv("RESEARCH_AGENT_TIMEOUT_SECONDS", "120"))
 
 
 config = LLMConfig()

@@ -381,7 +381,7 @@ export const DocumentPreviewCard: React.FC<DocumentPreviewCardProps> = ({
                   margin: '0 8px 8px 8px',
                   borderRadius: '6px',
                   overflow: 'hidden',
-                  backgroundColor: '#FAFAFA',
+                  backgroundColor: 'transparent',
                   cursor: onClick ? 'pointer' : 'default',
                   boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.04)',
                   border: '1px solid rgba(0, 0, 0, 0.04)'

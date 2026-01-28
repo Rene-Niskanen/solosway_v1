@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronUp, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
@@ -37,6 +37,11 @@ import { useModel } from '../contexts/ModelContext';
 import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { BotStatusOverlay } from './BotStatusOverlay';
 import { WebSearchPill } from './SelectedModePill';
+import { PlanViewer, PlanBuildStatus } from './PlanViewer';
+import { ExpandedPlanViewer } from './ExpandedPlanViewer';
+import { AdjustmentBlock, AdjustmentBlockData } from './AdjustmentBlock';
+import { PlanReasoningSteps, ReasoningStep as PlanReasoningStep } from './PlanReasoningSteps';
+import { diffLines } from 'diff';
 
 // ============================================================================
 // CHAT PANEL WIDTH CONSTANTS
@@ -2546,6 +2551,79 @@ export interface SideChatPanelRef {
   isResizing: boolean;
 }
 
+// Utility function for computing adjustments from diff (extracted for incremental diff)
+function extractAdjustmentsFromDiff(previousPlan: string, currentPlan: string): AdjustmentBlockData[] {
+  const changes = diffLines(previousPlan, currentPlan);
+  const lines: Array<{ type: 'added' | 'removed' | 'unchanged'; content: string }> = [];
+  
+  for (const change of changes) {
+    const contentLines = change.value.split('\n');
+    for (let i = 0; i < contentLines.length; i++) {
+      const content = contentLines[i];
+      if (content === '' && i === contentLines.length - 1 && contentLines.length > 1) continue;
+      
+      if (change.added) {
+        lines.push({ type: 'added', content });
+      } else if (change.removed) {
+        lines.push({ type: 'removed', content });
+      } else {
+        lines.push({ type: 'unchanged', content });
+      }
+    }
+  }
+  
+  const adjustments: AdjustmentBlockData[] = [];
+  let currentSection = 'Changes';
+  let adjustmentId = 0;
+  let i = 0;
+  
+  while (i < lines.length) {
+    if (lines[i].type === 'unchanged' && lines[i].content.startsWith('##')) {
+      currentSection = lines[i].content.replace(/^#+\s*/, '');
+    }
+    
+    if (lines[i].type !== 'unchanged') {
+      const removedLines: string[] = [];
+      const addedLines: string[] = [];
+      
+      while (i < lines.length && lines[i].type !== 'unchanged') {
+        if (lines[i].type === 'removed') removedLines.push(lines[i].content);
+        else if (lines[i].type === 'added') addedLines.push(lines[i].content);
+        i++;
+      }
+      
+      if (removedLines.length > 0 || addedLines.length > 0) {
+        adjustmentId++;
+        let sectionName = currentSection;
+        if (removedLines.length > 0 && addedLines.length > 0) sectionName = `Updated ${currentSection}`;
+        else if (addedLines.length > 0) sectionName = `Added to ${currentSection}`;
+        else sectionName = `Removed from ${currentSection}`;
+        
+        adjustments.push({
+          id: `adjustment-${adjustmentId}`,
+          sectionName,
+          linesAdded: addedLines.length,
+          linesRemoved: removedLines.length,
+          removedLines,
+          addedLines,
+          scrollTargetId: `diff-line-${adjustmentId}`,
+        });
+      }
+    } else {
+      i++;
+    }
+  }
+  
+  return adjustments;
+}
+
+// Utility to check if a new section header has appeared (indicates section completion)
+function isSectionComplete(planContent: string, previousContent: string): boolean {
+  const prevSections = (previousContent.match(/^###\s+.+$/gm) || []).length;
+  const currSections = (planContent.match(/^###\s+.+$/gm) || []).length;
+  return currSections > prevSections;
+}
+
 export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelProps>(({
   isVisible,
   query,
@@ -2707,9 +2785,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Pattern matches: [CHUNK:0], [CHUNK:1], [CHUNK:123], [CHUNK:0:PAGE:1], etc.
     cleaned = cleaned.replace(/\[CHUNK:\d+(?::PAGE:\d+)?\]/g, '');
     
-    // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)" or "BLOCK_CITE_ID_136")
-    // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, or any variation
-    cleaned = cleaned.replace(/\s*\(?BLOCK_CITE_ID_\d+\)?\s*/g, ' ');
+    // Remove BLOCK_CITE_ID references (e.g., "(BLOCK_CITE_ID_136)", "BLOCK_CITE_ID_136", "[BLOCK_CITE_ID_136]")
+    // Pattern matches: (BLOCK_CITE_ID_123), BLOCK_CITE_ID_123, [BLOCK_CITE_ID_123], or any variation
+    cleaned = cleaned.replace(/\s*[\[\(]?BLOCK_CITE_ID_\d+[\]\)]?\s*/g, ' ');
     
     // Remove partial CHUNK markers that might appear during streaming
     // These appear at the end of the string as tokens arrive incrementally
@@ -3680,11 +3758,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth } = useFilingSidebar();
   // Note: useChatPanel hook is declared earlier in the component for use in width calculations
   
-  // Agent mode (reader vs agent)
-  const { mode: agentMode, isAgentMode } = useMode();
+  // Agent mode (reader vs agent vs plan)
+  const { mode: agentMode, isAgentMode, isPlanMode } = useMode();
   
   // Model selection (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
   const { model: selectedModel } = useModel();
+  
+  // Plan mode state - for Cursor-style plan viewer
+  const [planContent, setPlanContent] = React.useState<string>('');
+  const [planId, setPlanId] = React.useState<string | null>(null);
+  const [planBuildStatus, setPlanBuildStatus] = React.useState<PlanBuildStatus>('ready');
+  const [planQueryText, setPlanQueryText] = React.useState<string>('');
+  const [showPlanViewer, setShowPlanViewer] = React.useState<boolean>(false);
+  const isPlanModeRef = React.useRef(isPlanMode);
+  
+  // Plan generation reasoning steps (shown before/during plan generation)
+  const [planGenerationReasoningSteps, setPlanGenerationReasoningSteps] = React.useState<PlanReasoningStep[]>([]);
+  
+  // Expanded plan panel state - for View Plan button
+  const [isPlanPanelExpanded, setIsPlanPanelExpanded] = React.useState<boolean>(false);
+  const [previousPlanContent, setPreviousPlanContent] = React.useState<string>('');
+  const [isUpdatingPlan, setIsUpdatingPlan] = React.useState<boolean>(false);
+  const [adjustmentQuery, setAdjustmentQuery] = React.useState<string>('');
+  const [visibleAdjustmentCount, setVisibleAdjustmentCount] = React.useState<number>(0);
+  const [isAdjustmentsExpanded, setIsAdjustmentsExpanded] = React.useState<boolean>(false);
+  
+  // Incremental diff state for real-time adjustment detection during streaming
+  const [incrementalAdjustments, setIncrementalAdjustments] = React.useState<AdjustmentBlockData[]>([]);
+  const lastDiffCheckRef = React.useRef<{ content: string; timestamp: number; chunkCount: number }>({
+    content: '',
+    timestamp: Date.now(),
+    chunkCount: 0
+  });
+  const seenAdjustmentIdsRef = React.useRef<Set<string>>(new Set());
   
   // Ref to track current agent mode (avoids closure issues in streaming callbacks)
   const isAgentModeRef = React.useRef(isAgentMode);
@@ -3693,12 +3799,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const selectedModelRef = React.useRef(selectedModel);
   React.useEffect(() => {
     isAgentModeRef.current = isAgentMode;
+    isPlanModeRef.current = isPlanMode;
     selectedModelRef.current = selectedModel;
     // Hide bot overlay when switching from agent mode to reader mode
     if (!isAgentMode) {
       setIsBotActive(false);
     }
-  }, [isAgentMode, selectedModel]);
+    // NOTE: Plan state is intentionally NOT cleared when switching modes
+    // The plan should remain visible so users can reference it while in other modes
+  }, [isAgentMode, isPlanMode, selectedModel]);
   
   // Ref to track current fullscreen mode (avoids closure issues in streaming callbacks)
   const isFullscreenModeRef = React.useRef(isFullscreenMode);
@@ -5006,6 +5115,174 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     if (query && query.trim() && query !== lastProcessedQueryRef.current && !isProcessingQueryRef.current && !isActuallySwitchingChats && !alreadyProcessedForThisChat && !isRestoringDifferentChat) {
       const queryText = query.trim();
+      
+      // PLAN MODE: Intercept query and show plan viewer instead of normal flow
+      if (isPlanModeRef.current) {
+        // CRITICAL: Capture current plan content BEFORE clearing it
+        const currentPlanContent = planContent;
+        const isFollowUpQuery = showPlanViewer && currentPlanContent.length > 0;
+        
+        // Mark as processed to prevent re-processing
+        lastProcessedQueryRef.current = queryText;
+        isProcessingQueryRef.current = true;
+        
+        // If this is a follow-up (updating existing plan), set up update state
+        if (isFollowUpQuery) {
+          setPreviousPlanContent(currentPlanContent);
+          setIsUpdatingPlan(true);  // Set IMMEDIATELY for instant reasoning steps
+          setAdjustmentQuery(queryText);  // Set IMMEDIATELY
+          // Reset incremental diff state
+          setIncrementalAdjustments([]);
+          seenAdjustmentIdsRef.current.clear();
+          lastDiffCheckRef.current = { content: '', timestamp: Date.now(), chunkCount: 0 };
+        } else {
+          setPreviousPlanContent('');
+          setIsUpdatingPlan(false);
+          setAdjustmentQuery('');
+        }
+        
+        // Store query text for later use
+        setPlanQueryText(queryText);
+        setPlanBuildStatus('streaming');
+        // Only clear content and hide viewer for NEW queries, not follow-ups
+        if (!isFollowUpQuery) {
+          setPlanContent(''); // Only clear for new queries
+          setShowPlanViewer(false); // Only hide for new queries
+        }
+        setPlanGenerationReasoningSteps([]); // Clear previous reasoning steps
+        
+        // Only add query to chat messages for NEW queries (not follow-ups)
+        // Follow-up queries are rendered below the plan viewer using adjustmentQuery
+        if (!isFollowUpQuery) {
+          const queryMessageId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const queryMessage: ChatMessage = {
+            id: queryMessageId,
+            type: 'query',
+            text: queryText
+          };
+          setChatMessages(prev => [...prev, queryMessage]);
+        }
+        
+        // Call API with planMode=true
+        (async () => {
+          let accumulatedPlan = '';
+          try {
+            await backendApi.queryDocumentsStreamFetch(
+              queryText,
+              undefined,
+              [],
+              sessionId,
+              () => {}, // onToken - not used for plan mode
+              () => {
+                // onComplete - plan streaming done via onPlanComplete
+                isProcessingQueryRef.current = false;
+              },
+              (error) => {
+                console.error('📋 [PLAN_MODE] Error:', error);
+                setPlanBuildStatus('error');
+                isProcessingQueryRef.current = false;
+              },
+              undefined, // onStatus
+              undefined, // abortSignal
+              undefined, // documentIds
+              (step: { step: string; message: string; details: any; action_type?: string }) => {
+                // Handle reasoning steps during plan generation
+                console.log('📋 [PLAN_MODE] Reasoning step during generation:', step);
+                
+                // Don't show "complete" steps - the plan viewer will appear instead
+                if (step.action_type === 'complete') {
+                  return;
+                }
+                
+                const newStep: PlanReasoningStep = {
+                  icon: step.action_type === 'planning' ? 'planning' : 'loading',
+                  message: step.message,
+                  detail: step.details?.query || undefined,
+                  isActive: true
+                };
+                
+                setPlanGenerationReasoningSteps(prev => [...prev, newStep]);
+              }, // onReasoningStep
+              undefined, // onReasoningContext
+              undefined, // onCitation
+              undefined, // citationContext
+              undefined, // responseMode
+              undefined, // attachmentContext
+              undefined, // onAgentAction
+              false, // isAgentMode
+              selectedModel, // model
+              undefined, // onThinkingChunk
+              undefined, // onThinkingComplete
+              // Plan mode callbacks
+              (chunk: string) => {
+                accumulatedPlan += chunk;
+                setPlanContent(accumulatedPlan);
+                
+                // Incremental diff logic (only for follow-up/update queries)
+                if (isFollowUpQuery && currentPlanContent) {
+                  const check = lastDiffCheckRef.current;
+                  check.chunkCount++;
+                  const timeSinceLastCheck = Date.now() - check.timestamp;
+                  const contentGrowth = accumulatedPlan.length - check.content.length;
+                  
+                  const shouldCheck = 
+                    isSectionComplete(accumulatedPlan, check.content) ||
+                    contentGrowth > 500 ||
+                    check.chunkCount >= 10 ||
+                    timeSinceLastCheck > 2000;
+                  
+                  if (shouldCheck && check.content !== accumulatedPlan) {
+                    const allAdjustments = extractAdjustmentsFromDiff(currentPlanContent, accumulatedPlan);
+                    const newAdjustments = allAdjustments.filter(adj => !seenAdjustmentIdsRef.current.has(adj.id));
+                    
+                    if (newAdjustments.length > 0) {
+                      newAdjustments.forEach(adj => seenAdjustmentIdsRef.current.add(adj.id));
+                      setIncrementalAdjustments(allAdjustments);
+                      setVisibleAdjustmentCount(allAdjustments.length);
+                    }
+                    
+                    check.content = accumulatedPlan;
+                    check.timestamp = Date.now();
+                    check.chunkCount = 0;
+                  }
+                }
+              },
+              (planIdReceived: string, fullPlan: string, isUpdate?: boolean) => {
+                console.log('📋 [PLAN_MODE] Plan complete:', { planId: planIdReceived, planLength: fullPlan.length, isUpdate });
+                setPlanId(planIdReceived);
+                setPlanContent(fullPlan);
+                setPlanBuildStatus('ready');
+                isProcessingQueryRef.current = false;
+                
+                // Clear reasoning steps and show plan viewer now that plan is ready
+                setPlanGenerationReasoningSteps([]);
+                setShowPlanViewer(true);
+                
+                // Final diff to ensure all adjustments captured
+                if (isUpdate && currentPlanContent) {
+                  const finalAdjustments = extractAdjustmentsFromDiff(currentPlanContent, fullPlan);
+                  setIncrementalAdjustments(finalAdjustments);
+                  // Don't reset visibleAdjustmentCount here - let staggered reveal handle it
+                }
+                
+                // Track if this was an update (keep for backwards compat, but isUpdatingPlan already set)
+                if (isUpdate) {
+                  setIsUpdatingPlan(true);
+                  setAdjustmentQuery(queryText);
+                }
+              },
+              true, // planMode
+              isFollowUpQuery ? currentPlanContent : undefined // existingPlan for updates - use captured value
+            );
+          } catch (error) {
+            console.error('📋 [PLAN_MODE] Failed to generate plan:', error);
+            setPlanBuildStatus('error');
+            isProcessingQueryRef.current = false;
+          }
+        })();
+        
+        return; // Don't continue with normal flow
+      }
       
       // Check if this query is already in chat messages
       const isAlreadyAdded = chatMessages.some(msg => 
@@ -9131,6 +9408,150 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     e.preventDefault();
     const submitted = inputValue.trim();
     
+    // PLAN MODE: Intercept and show plan viewer instead of normal flow
+    if (isPlanModeRef.current && submitted) {
+      // CRITICAL: Capture current plan content BEFORE clearing it
+      const currentPlanContent = planContent;
+      const isFollowUpQuery = showPlanViewer && currentPlanContent.length > 0;
+      
+      // If this is a follow-up (updating existing plan), set up update state
+      if (isFollowUpQuery) {
+        setPreviousPlanContent(currentPlanContent);
+        setIsUpdatingPlan(true);  // Set IMMEDIATELY for instant reasoning steps
+        setAdjustmentQuery(submitted);  // Set IMMEDIATELY
+        // Reset incremental diff state
+        setIncrementalAdjustments([]);
+        seenAdjustmentIdsRef.current.clear();
+        lastDiffCheckRef.current = { content: '', timestamp: Date.now(), chunkCount: 0 };
+      } else {
+        setPreviousPlanContent('');
+        setIsUpdatingPlan(false);
+        setAdjustmentQuery('');
+      }
+      
+      // Store query text for later use
+      setPlanQueryText(submitted);
+      setPlanBuildStatus('streaming');
+      // Only clear content and hide viewer for NEW queries, not follow-ups
+      if (!isFollowUpQuery) {
+        setPlanContent(''); // Only clear for new queries
+        setShowPlanViewer(false); // Only hide for new queries
+      }
+      setPlanGenerationReasoningSteps([]); // Clear previous reasoning steps
+      
+      // Only add query to chat messages for NEW queries (not follow-ups)
+      // Follow-up queries are rendered below the plan viewer using adjustmentQuery
+      if (!isFollowUpQuery) {
+        const queryMessageId = `query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const queryMessage: ChatMessage = {
+          id: queryMessageId,
+          type: 'query',
+          text: submitted
+        };
+        setChatMessages(prev => [...prev, queryMessage]);
+      }
+      
+      // Clear input
+      setInputValue('');
+      
+      // Call API with planMode=true
+      (async () => {
+        let accumulatedPlan = '';
+        try {
+          await backendApi.queryDocumentsStreamFetch(
+            submitted,
+            undefined,
+            [],
+            sessionId,
+            () => {}, // onToken - not used for plan mode
+            () => {}, // onComplete - not used for plan mode
+            (error) => {
+              console.error('📋 [PLAN_MODE] Error:', error);
+              setPlanBuildStatus('error');
+            },
+            undefined, // onStatus
+            undefined, // abortSignal
+            undefined, // documentIds
+            undefined, // onReasoningStep
+            undefined, // onReasoningContext
+            undefined, // onCitation
+            undefined, // citationContext
+            undefined, // responseMode
+            undefined, // attachmentContext
+            undefined, // onAgentAction
+            false, // isAgentMode
+            selectedModel, // model
+            undefined, // onThinkingChunk
+            undefined, // onThinkingComplete
+            // Plan mode callbacks
+            (chunk: string) => {
+              accumulatedPlan += chunk;
+              setPlanContent(accumulatedPlan);
+              
+              // Incremental diff logic (only for follow-up/update queries)
+              if (isFollowUpQuery && currentPlanContent) {
+                const check = lastDiffCheckRef.current;
+                check.chunkCount++;
+                const timeSinceLastCheck = Date.now() - check.timestamp;
+                const contentGrowth = accumulatedPlan.length - check.content.length;
+                
+                const shouldCheck = 
+                  isSectionComplete(accumulatedPlan, check.content) ||
+                  contentGrowth > 500 ||
+                  check.chunkCount >= 10 ||
+                  timeSinceLastCheck > 2000;
+                
+                if (shouldCheck && check.content !== accumulatedPlan) {
+                  const allAdjustments = extractAdjustmentsFromDiff(currentPlanContent, accumulatedPlan);
+                  const newAdjustments = allAdjustments.filter(adj => !seenAdjustmentIdsRef.current.has(adj.id));
+                  
+                  if (newAdjustments.length > 0) {
+                    newAdjustments.forEach(adj => seenAdjustmentIdsRef.current.add(adj.id));
+                    setIncrementalAdjustments(allAdjustments);
+                    setVisibleAdjustmentCount(allAdjustments.length);
+                  }
+                  
+                  check.content = accumulatedPlan;
+                  check.timestamp = Date.now();
+                  check.chunkCount = 0;
+                }
+              }
+            },
+            (planIdReceived: string, fullPlan: string, isUpdate?: boolean) => {
+              console.log('📋 [PLAN_MODE] Plan complete:', { planId: planIdReceived, planLength: fullPlan.length, isUpdate });
+              setPlanId(planIdReceived);
+              setPlanContent(fullPlan);
+              setPlanBuildStatus('ready');
+              
+              // Clear reasoning steps and show plan viewer now that plan is ready
+              setPlanGenerationReasoningSteps([]);
+              setShowPlanViewer(true);
+              
+              // Final diff to ensure all adjustments captured
+              if (isUpdate && currentPlanContent) {
+                const finalAdjustments = extractAdjustmentsFromDiff(currentPlanContent, fullPlan);
+                setIncrementalAdjustments(finalAdjustments);
+                // Don't reset visibleAdjustmentCount here - let staggered reveal handle it
+              }
+              
+              // Track if this was an update (keep for backwards compat, but isUpdatingPlan already set)
+              if (isUpdate) {
+                setIsUpdatingPlan(true);
+                setAdjustmentQuery(submitted);
+              }
+            },
+            true, // planMode
+            isFollowUpQuery ? currentPlanContent : undefined // existingPlan for updates - use captured value
+          );
+        } catch (error) {
+          console.error('📋 [PLAN_MODE] Failed to generate plan:', error);
+          setPlanBuildStatus('error');
+        }
+      })();
+      
+      return; // Don't continue with normal flow
+    }
+    
     // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
     if (isAgentMode) {
       console.log('🤖 [BOT_STATUS] Activating bot status overlay');
@@ -10519,8 +10940,161 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const hasContent = inputValue.trim().length > 0;
   
+  // Compute adjustments from plan diff for the PlanViewer
+  const planAdjustments = React.useMemo<AdjustmentBlockData[]>(() => {
+    if (!isUpdatingPlan || !previousPlanContent || !planContent) return [];
+    
+    const changes = diffLines(previousPlanContent, planContent);
+    const adjustments: AdjustmentBlockData[] = [];
+    let currentSection = 'Changes';
+    let adjustmentId = 0;
+    
+    interface DiffLine {
+      type: 'added' | 'removed' | 'unchanged';
+      content: string;
+    }
+    
+    const lines: DiffLine[] = [];
+    for (const change of changes) {
+      const contentLines = change.value.split('\n');
+      for (let i = 0; i < contentLines.length; i++) {
+        const content = contentLines[i];
+        if (content === '' && i === contentLines.length - 1 && contentLines.length > 1) continue;
+        
+        if (change.added) {
+          lines.push({ type: 'added', content });
+        } else if (change.removed) {
+          lines.push({ type: 'removed', content });
+        } else {
+          lines.push({ type: 'unchanged', content });
+        }
+      }
+    }
+    
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i].type === 'unchanged' && lines[i].content.startsWith('##')) {
+        currentSection = lines[i].content.replace(/^#+\s*/, '');
+      }
+      
+      if (lines[i].type !== 'unchanged') {
+        const removedLines: string[] = [];
+        const addedLines: string[] = [];
+        
+        while (i < lines.length && lines[i].type !== 'unchanged') {
+          if (lines[i].type === 'removed') {
+            removedLines.push(lines[i].content);
+          } else if (lines[i].type === 'added') {
+            addedLines.push(lines[i].content);
+          }
+          i++;
+        }
+        
+        if (removedLines.length > 0 || addedLines.length > 0) {
+          adjustmentId++;
+          let sectionName = currentSection;
+          
+          if (removedLines.length > 0 && addedLines.length > 0) {
+            sectionName = `Updated ${currentSection}`;
+          } else if (addedLines.length > 0) {
+            sectionName = `Added to ${currentSection}`;
+          } else {
+            sectionName = `Removed from ${currentSection}`;
+          }
+          
+          adjustments.push({
+            id: `adjustment-${adjustmentId}`,
+            sectionName,
+            linesAdded: addedLines.length,
+            linesRemoved: removedLines.length,
+            removedLines,
+            addedLines,
+            scrollTargetId: `diff-line-${adjustmentId}`,
+          });
+        }
+      } else {
+        i++;
+      }
+    }
+    
+    return adjustments;
+  }, [isUpdatingPlan, previousPlanContent, planContent]);
+  
+  // Use incremental adjustments during streaming, final planAdjustments after complete
+  const displayedAdjustments = React.useMemo(() => {
+    if (planBuildStatus === 'streaming' && incrementalAdjustments.length > 0) {
+      return incrementalAdjustments;
+    }
+    return planAdjustments;
+  }, [planBuildStatus, incrementalAdjustments, planAdjustments]);
+  
+  // Generate reasoning steps for plan update mode (external to PlanViewer)
+  const planReasoningSteps = React.useMemo<PlanReasoningStep[]>(() => {
+    if (!isUpdatingPlan || !adjustmentQuery) return [];
+    
+    const isStreaming = planBuildStatus === 'streaming';
+    const steps: PlanReasoningStep[] = [
+      {
+        icon: isStreaming ? 'planning' : 'complete',
+        message: 'Planning next moves...',
+        detail: `Received: "${adjustmentQuery}"`,
+        isActive: isStreaming,
+      },
+    ];
+    
+    // Show "Applying X adjustments" step when we have adjustments (during streaming or after)
+    if (displayedAdjustments.length > 0) {
+      steps.push({
+        icon: isStreaming ? 'applying' : 'complete',
+        message: `Applying ${displayedAdjustments.length} adjustments to plan...`,
+        isActive: isStreaming,
+      });
+      
+      if (!isStreaming && visibleAdjustmentCount >= displayedAdjustments.length) {
+        steps.push({
+          icon: 'complete',
+          message: `${displayedAdjustments.length} adjustments applied`,
+        });
+      }
+    }
+    
+    return steps;
+  }, [isUpdatingPlan, adjustmentQuery, displayedAdjustments.length, planBuildStatus, visibleAdjustmentCount]);
+  
+  // Staggered reveal of adjustments (external to PlanViewer)
+  React.useEffect(() => {
+    const isStreaming = planBuildStatus === 'streaming';
+    
+    // During streaming, visibleAdjustmentCount is managed by incremental diff
+    if (isStreaming) {
+      return; // Don't reset - incremental diff handles this
+    }
+    
+    if (!isUpdatingPlan || displayedAdjustments.length === 0) {
+      setVisibleAdjustmentCount(0);
+      return;
+    }
+    
+    // Staggered reveal after streaming completes
+    setVisibleAdjustmentCount(0);
+    
+    const timers: NodeJS.Timeout[] = [];
+    for (let i = 0; i < displayedAdjustments.length; i++) {
+      const timer = setTimeout(() => {
+        setVisibleAdjustmentCount(i + 1);
+      }, i * 350);
+      timers.push(timer);
+    }
+    
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [planBuildStatus, isUpdatingPlan, displayedAdjustments.length]);
+  
   // Track if chat is empty for centered "New Agent" layout
-  const isEmptyChat = chatMessages.length === 0;
+  // IMPORTANT: Force messages layout when showPlanViewer is true, even if no chat messages
+  // This ensures the PlanViewer is visible when generating a research plan
+  const isEmptyChat = chatMessages.length === 0 && !showPlanViewer;
 
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
@@ -10965,22 +11539,216 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             </div>
           )}
           
-          {/* Panel content will go here */}
+          {/* Panel content container - with optional expanded plan panel on left */}
           <div 
-            className="h-full flex flex-col"
             style={{
-              // Hide content briefly when opening in fullscreen to prevent flash
-              // But don't hide when property details is open (50/50 split mode)
-              opacity: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 0 : 1,
-              transition: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'none' : 'opacity 0.05s ease-in',
-              visibility: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'hidden' : 'visible',
-              position: 'relative',
-              backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
-              overflow: 'hidden', // Prevent content from leaking during transitions
+              display: 'flex',
               width: '100%',
-              height: '100%'
+              height: '100%',
+              position: 'relative',
             }}
           >
+            {/* Expanded Plan Panel - LEFT side when View Plan is clicked */}
+            {isPlanPanelExpanded && showPlanViewer && (
+              <div
+                style={{
+                  width: '55%',
+                  minWidth: '400px',
+                  maxWidth: '600px',
+                  height: '100%',
+                  flexShrink: 0,
+                  padding: '20px',
+                  backgroundColor: '#FCFCF9',
+                  overflow: 'hidden',
+                  transition: 'width 0.3s ease',
+                }}
+              >
+                <ExpandedPlanViewer
+                  planContent={planContent}
+                  previousPlanContent={previousPlanContent}
+                  isUpdateMode={isUpdatingPlan}
+                  isStreaming={planBuildStatus === 'streaming'}
+                  onCollapse={() => setIsPlanPanelExpanded(false)}
+                  onAccept={() => {
+                    // Accept the updated plan
+                    setPreviousPlanContent('');
+                    setIsUpdatingPlan(false);
+                    setAdjustmentQuery('');
+                  }}
+                  onReject={() => {
+                    // Reject - restore previous plan
+                    if (previousPlanContent) {
+                      setPlanContent(previousPlanContent);
+                    }
+                    setPreviousPlanContent('');
+                    setIsUpdatingPlan(false);
+                    setAdjustmentQuery('');
+                  }}
+                  onLineUndo={(_lineId, lineContent, type) => {
+                    if (type === 'added') {
+                      const lines = planContent.split('\n');
+                      const idx = lines.findIndex((l) => l === lineContent);
+                      if (idx !== -1) {
+                        lines.splice(idx, 1);
+                        setPlanContent(lines.join('\n'));
+                      }
+                    } else {
+                      setPlanContent((prev) => (prev.trimEnd() ? `${prev}\n${lineContent}` : `${prev}${lineContent}`));
+                    }
+                  }}
+                  onBuild={async () => {
+                    // Same build logic as PlanViewer
+                    if (planId && planQueryText) {
+                      setPlanBuildStatus('building');
+                      setShowPlanViewer(false);
+                      setIsPlanPanelExpanded(false);
+                      
+                      // Query message already added when entering plan mode - no need to add again
+                      
+                      const responseMessageId = `response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                      let accumulatedResponse = '';
+                      const reasoningStepsForBuild: ReasoningStep[] = [];
+                      
+                      const responseMessage: ChatMessage = {
+                        id: responseMessageId,
+                        type: 'response',
+                        text: '',
+                        isLoading: true,
+                        reasoningSteps: []
+                      };
+                      setChatMessages(prev => [...prev, responseMessage]);
+                      
+                      try {
+                        await backendApi.buildPlan(
+                          planId,
+                          sessionId,
+                          planQueryText,
+                          (token: string) => {
+                            accumulatedResponse += token;
+                            setChatMessages(prev => prev.map(msg => 
+                              msg.id === responseMessageId 
+                                ? { ...msg, text: accumulatedResponse }
+                                : msg
+                            ));
+                          },
+                          (data: any) => {
+                            console.log('📋 [EXPANDED_PLAN_BUILD] Complete:', data);
+                            // Mark all reasoning steps as complete (safety net)
+                            const completedSteps = reasoningStepsForBuild.map(step => ({
+                              ...step,
+                              details: {
+                                ...step.details,
+                                status: step.details?.status === 'running' ? 'complete' : step.details?.status
+                              }
+                            }));
+                            
+                            // Convert citations array from backend to Record format for frontend
+                            let citationsRecord: Record<string, any> = {};
+                            if (data?.citations && Array.isArray(data.citations)) {
+                              data.citations.forEach((citation: any) => {
+                                const citationNum = String(citation.citation_number);
+                                citationsRecord[citationNum] = {
+                                  doc_id: citation.doc_id,
+                                  page: citation.page_number || 1,
+                                  page_number: citation.page_number || 1,
+                                  bbox: citation.bbox || {},
+                                  block_id: citation.block_id
+                                };
+                              });
+                              console.log('📋 [EXPANDED_PLAN_BUILD] Converted citations:', citationsRecord);
+                            }
+                            
+                            setChatMessages(prev => prev.map(msg => 
+                              msg.id === responseMessageId 
+                                ? { 
+                                    ...msg, 
+                                    text: data?.summary || accumulatedResponse,
+                                    isLoading: false,
+                                    reasoningSteps: completedSteps,
+                                    citations: Object.keys(citationsRecord).length > 0 ? citationsRecord : undefined
+                                  }
+                                : msg
+                            ));
+                            setPlanBuildStatus('built');
+                            setPlanContent('');
+                            setPlanId(null);
+                            setPlanQueryText('');
+                          },
+                          (error: string) => {
+                            console.error('📋 [EXPANDED_PLAN_BUILD] Error:', error);
+                            setChatMessages(prev => prev.map(msg => 
+                              msg.id === responseMessageId 
+                                ? { ...msg, text: `Error: ${error}`, isLoading: false }
+                                : msg
+                            ));
+                            setPlanBuildStatus('error');
+                          },
+                          (step) => {
+                            console.log('📋 [EXPANDED_PLAN_BUILD] Reasoning step:', step);
+                            const typedStep = step as ReasoningStep;
+                            const toolName = typedStep.details?.tool_name;
+                            const status = typedStep.details?.status;
+                            
+                            // If this is a "complete" status for an existing "running" step, update it instead of adding
+                            if (toolName && status === 'complete') {
+                              const existingIndex = reasoningStepsForBuild.findIndex(
+                                s => s.details?.tool_name === toolName && s.details?.status === 'running'
+                              );
+                              if (existingIndex !== -1) {
+                                // Update the existing step with complete status
+                                reasoningStepsForBuild[existingIndex] = typedStep;
+                              } else {
+                                // No running step found, add as new
+                                reasoningStepsForBuild.push(typedStep);
+                              }
+                            } else {
+                              // Running step or other - add to array
+                              reasoningStepsForBuild.push(typedStep);
+                            }
+                            
+                            setChatMessages(prev => prev.map(msg => 
+                              msg.id === responseMessageId 
+                                ? { ...msg, reasoningSteps: [...reasoningStepsForBuild] }
+                                : msg
+                            ));
+                          }
+                        );
+                      } catch (error) {
+                        console.error('Failed to build plan:', error);
+                        setPlanBuildStatus('error');
+                        setChatMessages(prev => prev.map(msg => 
+                          msg.id === responseMessageId 
+                            ? { ...msg, text: `Error: ${error}`, isLoading: false }
+                            : msg
+                        ));
+                      }
+                    }
+                  }}
+                  buildStatus={planBuildStatus === 'streaming' ? 'streaming' : planBuildStatus === 'building' ? 'building' : planBuildStatus === 'built' ? 'built' : 'ready'}
+                  planName={planQueryText ? `research_${planQueryText.slice(0, 20).replace(/\s+/g, '_')}` : 'research_plan'}
+                  adjustmentQuery={adjustmentQuery}
+                />
+              </div>
+            )}
+            
+            {/* Main chat content */}
+            <div 
+              className="h-full flex flex-col"
+              style={{
+                // Hide content briefly when opening in fullscreen to prevent flash
+                // But don't hide when property details is open (50/50 split mode)
+                opacity: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 0 : 1,
+                transition: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'none' : 'opacity 0.05s ease-in, width 0.3s ease',
+                visibility: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'hidden' : 'visible',
+                position: 'relative',
+                backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
+                overflow: 'hidden', // Prevent content from leaking during transitions
+                width: isPlanPanelExpanded && showPlanViewer ? '45%' : '100%',
+                minWidth: isPlanPanelExpanded && showPlanViewer ? '350px' : undefined,
+                height: '100%',
+                flex: 1,
+              }}
+            >
             {/* Header - Fixed at top */}
             <div 
               className="pr-4 pl-6" 
@@ -12287,6 +13055,310 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <AnimatePresence>
                       {renderedMessages}
                     </AnimatePresence>
+                    
+                    {/* Plan Generation Reasoning Steps - show only the latest step during streaming */}
+                    {planGenerationReasoningSteps.length > 0 && planBuildStatus === 'streaming' && !showPlanViewer && (
+                      <div style={{ marginTop: '16px', marginBottom: '8px' }}>
+                        <PlanReasoningSteps 
+                          steps={[planGenerationReasoningSteps[planGenerationReasoningSteps.length - 1]]}
+                          isAnimating={true}
+                        />
+                      </div>
+                    )}
+                    
+                    {/* Plan Viewer - show when in Plan mode and plan is ready */}
+                    {showPlanViewer && (
+                      <div style={{ marginTop: '16px', marginBottom: '16px' }}>
+                        <PlanViewer
+                          planContent={planContent}
+                          isStreaming={planBuildStatus === 'streaming'}
+                          onBuild={async () => {
+                            if (planId && planQueryText) {
+                              setPlanBuildStatus('building');
+                              
+                              // Hide plan viewer and switch to chat view with streaming response
+                              setShowPlanViewer(false);
+                              
+                              // Query message already added when entering plan mode - no need to add again
+                              
+                              // Create response message that will be updated with streaming content
+                              const responseMessageId = `response-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                              let accumulatedResponse = '';
+                              const reasoningStepsForBuild: ReasoningStep[] = [];
+                              
+                              // Add initial response message
+                              const responseMessage: ChatMessage = {
+                                id: responseMessageId,
+                                type: 'response',
+                                text: '',
+                                isLoading: true,
+                                reasoningSteps: []
+                              };
+                              setChatMessages(prev => [...prev, responseMessage]);
+                              
+                              try {
+                                await backendApi.buildPlan(
+                                  planId,
+                                  sessionId,
+                                  planQueryText,
+                                  // onToken - update streaming response
+                                  (token: string) => {
+                                    accumulatedResponse += token;
+                                    setChatMessages(prev => prev.map(msg => 
+                                      msg.id === responseMessageId 
+                                        ? { ...msg, text: accumulatedResponse }
+                                        : msg
+                                    ));
+                                  },
+                                  // onComplete - finalize the response
+                                  (data: any) => {
+                                    console.log('📋 [PLAN_BUILD] Complete:', data);
+                                    // Mark all reasoning steps as complete (safety net)
+                                    const completedSteps = reasoningStepsForBuild.map(step => ({
+                                      ...step,
+                                      details: {
+                                        ...step.details,
+                                        status: step.details?.status === 'running' ? 'complete' : step.details?.status
+                                      }
+                                    }));
+                                    
+                                    // Convert citations array from backend to Record format for frontend
+                                    let citationsRecord: Record<string, any> = {};
+                                    if (data?.citations && Array.isArray(data.citations)) {
+                                      data.citations.forEach((citation: any) => {
+                                        const citationNum = String(citation.citation_number);
+                                        citationsRecord[citationNum] = {
+                                          doc_id: citation.doc_id,
+                                          page: citation.page_number || 1,
+                                          page_number: citation.page_number || 1,
+                                          bbox: citation.bbox || {},
+                                          block_id: citation.block_id
+                                        };
+                                      });
+                                      console.log('📋 [PLAN_BUILD] Converted citations:', citationsRecord);
+                                    }
+                                    
+                                    setChatMessages(prev => prev.map(msg => 
+                                      msg.id === responseMessageId 
+                                        ? { 
+                                            ...msg, 
+                                            text: data?.summary || accumulatedResponse,
+                                            isLoading: false,
+                                            reasoningSteps: completedSteps,
+                                            citations: Object.keys(citationsRecord).length > 0 ? citationsRecord : undefined
+                                          }
+                                        : msg
+                                    ));
+                                    setPlanBuildStatus('built');
+                                    setPlanContent('');
+                                    setPlanId(null);
+                                    setPlanQueryText('');
+                                  },
+                                  // onError
+                                  (error: string) => {
+                                    console.error('📋 [PLAN_BUILD] Error:', error);
+                                    setChatMessages(prev => prev.map(msg => 
+                                      msg.id === responseMessageId 
+                                        ? { ...msg, text: `Error: ${error}`, isLoading: false }
+                                        : msg
+                                    ));
+                                    setPlanBuildStatus('error');
+                                  },
+                                  // onReasoningStep - update existing steps instead of adding duplicates
+                                  (step) => {
+                                    console.log('📋 [PLAN_BUILD] Reasoning step:', step);
+                                    const typedStep = step as ReasoningStep;
+                                    const toolName = typedStep.details?.tool_name;
+                                    const status = typedStep.details?.status;
+                                    
+                                    // If this is a "complete" status for an existing "running" step, update it instead of adding
+                                    if (toolName && status === 'complete') {
+                                      const existingIndex = reasoningStepsForBuild.findIndex(
+                                        s => s.details?.tool_name === toolName && s.details?.status === 'running'
+                                      );
+                                      if (existingIndex !== -1) {
+                                        // Update the existing step with complete status
+                                        reasoningStepsForBuild[existingIndex] = typedStep;
+                                      } else {
+                                        // No running step found, add as new
+                                        reasoningStepsForBuild.push(typedStep);
+                                      }
+                                    } else {
+                                      // Running step or other - add to array
+                                      reasoningStepsForBuild.push(typedStep);
+                                    }
+                                    
+                                    setChatMessages(prev => prev.map(msg => 
+                                      msg.id === responseMessageId 
+                                        ? { ...msg, reasoningSteps: [...reasoningStepsForBuild] }
+                                        : msg
+                                    ));
+                                  }
+                                );
+                              } catch (error) {
+                                console.error('Failed to build plan:', error);
+                                setPlanBuildStatus('error');
+                                setChatMessages(prev => prev.map(msg => 
+                                  msg.id === responseMessageId 
+                                    ? { ...msg, text: `Error: ${error}`, isLoading: false }
+                                    : msg
+                                ));
+                              }
+                            }
+                          }}
+                          onCancel={() => {
+                            setShowPlanViewer(false);
+                            setPlanContent('');
+                            setPlanId(null);
+                            setPlanBuildStatus('ready');
+                          }}
+                          buildStatus={planBuildStatus}
+                          planName={planQueryText ? `research_${planQueryText.slice(0, 20).replace(/\s+/g, '_')}` : 'research_plan'}
+                          onViewPlan={() => setIsPlanPanelExpanded(prev => !prev)}
+                          isPlanExpanded={isPlanPanelExpanded}
+                        />
+                        
+                        {/* Follow-up query - displayed below plan viewer when updating, using same style as query messages */}
+                        {isUpdatingPlan && adjustmentQuery && (
+                          <div style={{
+                            alignSelf: 'flex-end', 
+                            maxWidth: '85%', 
+                            width: 'fit-content',
+                            marginTop: '16px', 
+                            marginLeft: 'auto', 
+                            marginRight: '0',
+                          }}>
+                            <div style={{ 
+                              backgroundColor: '#FFFFFF', 
+                              borderRadius: '8px', 
+                              padding: '4px 10px', 
+                              border: '1px solid #e5e7eb', 
+                              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                            }}>
+                              <div style={{
+                                color: '#0D0D0D',
+                                fontSize: '14px',
+                                lineHeight: '20px',
+                              }}>
+                                {adjustmentQuery}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Reasoning steps - OUTSIDE plan card, matching ReasoningSteps style */}
+                        {isUpdatingPlan && planReasoningSteps.length > 0 && (
+                          <PlanReasoningSteps 
+                            steps={planReasoningSteps} 
+                            isAnimating={planBuildStatus === 'streaming'}
+                          />
+                        )}
+                        
+                        {/* Adjustments container - single collapsible block with all changes */}
+                        {isUpdatingPlan && displayedAdjustments.length > 0 && visibleAdjustmentCount > 0 && (
+                          <div 
+                            style={{ 
+                              marginTop: '8px',
+                              border: '1px solid #E5E7EB',
+                              borderRadius: '8px',
+                              overflow: 'hidden',
+                              background: 'transparent',
+                            }}
+                          >
+                            {/* Header - summary of all changes */}
+                            <div
+                              onClick={() => setIsAdjustmentsExpanded(!isAdjustmentsExpanded)}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                padding: '8px 12px',
+                                background: 'transparent',
+                                borderBottom: isAdjustmentsExpanded ? '1px solid #E5E7EB' : 'none',
+                                fontSize: '12px',
+                                color: '#374151',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <FileText style={{ 
+                                width: '14px', 
+                                height: '14px', 
+                                color: '#9CA3AF',
+                                flexShrink: 0,
+                              }} />
+                              <span style={{ 
+                                flex: 1,
+                                fontWeight: 500, 
+                              }}>
+                                {displayedAdjustments.length} {displayedAdjustments.length === 1 ? 'Change' : 'Changes'}
+                              </span>
+                              <span style={{ 
+                                fontSize: '11px',
+                                color: '#22C55E',
+                                fontFamily: 'ui-monospace, monospace',
+                              }}>
+                                +{displayedAdjustments.reduce((sum, a) => sum + a.linesAdded, 0)}
+                              </span>
+                              <span style={{ 
+                                fontSize: '11px',
+                                color: '#EF4444',
+                                fontFamily: 'ui-monospace, monospace',
+                              }}>
+                                -{displayedAdjustments.reduce((sum, a) => sum + a.linesRemoved, 0)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setIsAdjustmentsExpanded(!isAdjustmentsExpanded);
+                                }}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: '20px',
+                                  height: '20px',
+                                  borderRadius: '4px',
+                                  border: 'none',
+                                  background: 'transparent',
+                                  color: '#9CA3AF',
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                }}
+                              >
+                                {isAdjustmentsExpanded ? (
+                                  <ChevronUp style={{ width: '14px', height: '14px' }} />
+                                ) : (
+                                  <ChevronDown style={{ width: '14px', height: '14px' }} />
+                                )}
+                              </button>
+                            </div>
+                            
+                            {/* Expanded view - show individual adjustment blocks */}
+                            {isAdjustmentsExpanded && (
+                              <div style={{ padding: '8px' }}>
+                                {displayedAdjustments.slice(0, visibleAdjustmentCount).map((adjustment, index) => (
+                                  <div
+                                    key={adjustment.id}
+                                    style={{
+                                      opacity: index < visibleAdjustmentCount ? 1 : 0,
+                                      transform: index < visibleAdjustmentCount ? 'translateY(0)' : 'translateY(-6px)',
+                                      transition: 'opacity 0.3s ease, transform 0.3s ease',
+                                    }}
+                                  >
+                                    <AdjustmentBlock
+                                      adjustment={adjustment}
+                                      onScrollToChange={() => setIsPlanPanelExpanded(true)}
+                                      defaultExpanded={false}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
                     {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
                     <div ref={messagesEndRef} style={{ height: '120px', minHeight: '120px', flexShrink: 0 }} />
@@ -13086,6 +14158,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               </motion.div>
             )}
             </AnimatePresence>
+          </div>
           </div>
         </motion.div>
       )}

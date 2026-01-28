@@ -26,11 +26,15 @@ export function BrowserFullscreenProvider({ children }: { children: React.ReactN
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
+        setIsBrowserFullscreen(false);
       } else {
         await document.documentElement.requestFullscreen();
+        setIsBrowserFullscreen(true);
       }
     } catch (err) {
       console.error("Error toggling fullscreen:", err);
+      // Sync state with actual document state on error (e.g. user denied)
+      setIsBrowserFullscreen(!!document.fullscreenElement);
     }
   }, []);
 

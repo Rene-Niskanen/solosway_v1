@@ -230,6 +230,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [renderedPages, setRenderedPages] = React.useState<Map<number, { canvas: HTMLCanvasElement; dimensions: { width: number; height: number }; yOffset: number }>>(new Map());
   const [pageOffsets, setPageOffsets] = React.useState<Map<number, number>>(new Map()); // page number -> y offset
   const [baseScale, setBaseScale] = React.useState<number>(1.0); // Base scale for rendering (calculated once)
+  // Track the last width used for scale calculation to detect when recalculation is needed
+  const lastScaleWidthRef = React.useRef<number>(0);
   const [dimensionsStable, setDimensionsStable] = React.useState<boolean>(false); // Track when dimensions are stable for bbox positioning
   const pdfPagesContainerRef = React.useRef<HTMLDivElement>(null);
   
@@ -396,6 +398,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setRotation(0);
       // Reset base scale when file changes so it recalculates for new document
       setBaseScale(1.0);
+      lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
       setDimensionsStable(false); // Reset until PDF re-renders at correct scale
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
@@ -446,6 +449,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       setZoomLevel(100); // Reset zoom
       setRotation(0); // Reset rotation
       setBaseScale(1.0); // Reset base scale
+      lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
       setDimensionsStable(false); // Reset dimensions stable flag - will be set true after PDF renders
       // OPTIMIZATION: Don't reset page if switching to same document (faster switching)
       // Only reset if it's a different document
@@ -674,11 +678,36 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     const renderAllPages = async () => {
       try {
         // Always render at base scale - zoom will be applied via CSS transform for smooth experience
-        // Calculate base scale to fit container width (only calculate once or when container size changes)
+        // Calculate base scale to fit container width (recalculate when width changes significantly)
         let scale = baseScale;
         
-        // If base scale hasn't been calculated yet, calculate it now
-        if (baseScale === 1.0) {
+        // Get current container width for comparison
+        let currentContainerWidth = 0;
+        if (previewAreaRef.current && previewAreaRef.current.clientWidth > 100) {
+          currentContainerWidth = previewAreaRef.current.clientWidth;
+        } else if (pdfWrapperRef.current && pdfWrapperRef.current.clientWidth > 100) {
+          currentContainerWidth = pdfWrapperRef.current.clientWidth;
+        } else if (typeof calculatedModalWidth === 'number' && calculatedModalWidth > 100) {
+          currentContainerWidth = calculatedModalWidth;
+        }
+        
+        // Recalculate scale if:
+        // - baseScale is still default (1.0) - first render
+        // - lastScaleWidthRef is 0 - hasn't been calculated yet
+        // - container width changed by more than 50px - significant resize
+        const widthChangedSignificantly = lastScaleWidthRef.current > 0 && 
+          Math.abs(currentContainerWidth - lastScaleWidthRef.current) > 50;
+        const needsScaleRecalculation = baseScale === 1.0 || lastScaleWidthRef.current === 0 || widthChangedSignificantly;
+        
+        if (needsScaleRecalculation) {
+          console.log('📐 Recalculating scale:', { 
+            reason: baseScale === 1.0 ? 'baseScale is 1.0' : 
+                    lastScaleWidthRef.current === 0 ? 'lastScaleWidth is 0' : 
+                    'width changed significantly',
+            lastWidth: lastScaleWidthRef.current,
+            currentWidth: currentContainerWidth,
+            baseScale
+          });
           try {
             // INSTANT calculation - no delays, use available dimensions or fallback to typical scale
             if (cancelled) return;
@@ -740,26 +769,26 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                 zoomLevel
               });
               
-              // Use the fit scale if it's reasonable (between 0.8 and 2.5 for better fit)
-              if (fitScale >= 0.8 && fitScale <= 2.5) {
+              // Use the fit scale if it's reasonable (between 0.5 and 2.5 for better fit)
+              // Lowered minimum from 0.8 to 0.5 to support smaller container widths
+              if (fitScale >= 0.5 && fitScale <= 2.5) {
                 scale = fitScale;
+                // Update ref BEFORE setting state to prevent race condition
+                lastScaleWidthRef.current = containerWidth;
                 setBaseScale(fitScale); // Store base scale
                 console.log('✅ Calculated and stored base scale:', fitScale.toFixed(3));
               } else {
-                // If fit scale is too small, use a minimum of 1.2 for better readability
-                // If too large, cap at 2.0
-                if (fitScale < 0.8) {
-                  // If calculated scale is too small, the container might be very wide
-                  // Use a reasonable scale based on typical PDF page width (595px for A4)
-                  // For a typical container of 800-1000px, we want around 1.3-1.5 scale
-                  const typicalPageWidth = 595; // A4 width in points
-                  const typicalContainerWidth = 900; // Typical modal width
-                  scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
-                  scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+                // If fit scale is too small (container very narrow), use the fitScale anyway
+                // so pages actually fit the container - clamped to minimum 0.3 for readability
+                if (fitScale < 0.5) {
+                  // For narrow containers, scale down to fit rather than using fixed scale
+                  scale = Math.max(0.3, fitScale);
+                  lastScaleWidthRef.current = containerWidth;
                   setBaseScale(scale);
-                  console.log('⚠️ Fit scale too small, using typical scale:', scale.toFixed(3));
+                  console.log('⚠️ Container narrow, using smaller scale:', scale.toFixed(3));
                 } else {
                   scale = Math.min(2.0, fitScale);
+                  lastScaleWidthRef.current = containerWidth;
                   setBaseScale(scale);
                   console.log('⚠️ Fit scale too large, clamped to:', scale.toFixed(3));
                 }
@@ -770,12 +799,14 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               const typicalContainerWidth = 900; // Typical modal width
               scale = (typicalContainerWidth / typicalPageWidth) * 0.95;
               scale = Math.max(1.2, Math.min(1.8, scale)); // Clamp to reasonable range
+              lastScaleWidthRef.current = 0; // Mark as not properly calculated
               setBaseScale(scale);
               console.log('⚠️ Container width not available:', containerWidth, 'using typical scale:', scale.toFixed(3));
           }
           } catch (error) {
             console.warn('⚠️ Failed to calculate fit scale, using default:', error);
             scale = 1.0;
+            lastScaleWidthRef.current = 0; // Reset to indicate calculation failed
             setBaseScale(1.0);
           }
         } else {
@@ -892,7 +923,10 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       }
       });
     };
-  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, baseScale, getCachedRenderedPage, setCachedRenderedPage, isResizing]);
+  // Note: baseScale removed from dependencies to prevent race condition
+  // The effect re-runs on calculatedModalWidth changes, which resets baseScale to 1.0 via ResizeObserver
+  // This triggers recalculation inside the effect without causing immediate re-runs
+  }, [pdfDocument, totalPages, rotation, isOpen, file?.id, calculatedModalWidth, getCachedRenderedPage, setCachedRenderedPage, isResizing]);
 
   // Upload DOCX for Office Online Viewer
   React.useEffect(() => {
@@ -1449,6 +1483,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         // Force baseScale recalculation for PDFs IMMEDIATELY
         if (isPDF) {
           setBaseScale(1.0);
+          lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
           setDimensionsStable(false); // Reset until PDF re-renders
         }
       });
@@ -1489,6 +1524,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
               // Force baseScale recalculation for PDFs
               if (isPDF) {
                 setBaseScale(1.0);
+                lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
                 setDimensionsStable(false); // Reset until PDF re-renders at new size
               }
             });
@@ -1756,6 +1792,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         // Force immediate PDF recalculation
         if (isPDF) {
           setBaseScale(1.0);
+          lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
         }
         
         if (isMapVisible && (newLeft !== undefined || newTop !== undefined)) {
@@ -1785,6 +1822,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           // Force immediate document recalculation - instant like section opening
           if (isPDF) {
             setBaseScale(1.0); // Reset to force recalculation
+            lastScaleWidthRef.current = 0; // Reset width tracking to force recalculation
             setDimensionsStable(false); // Reset until PDF re-renders at final size
           }
         });

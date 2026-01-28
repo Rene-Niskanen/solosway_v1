@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useEffect } from 'react';
-import { Glasses, Infinity, ChevronDown, Check } from 'lucide-react';
+import { Glasses, Infinity, ChevronDown, Check, ClipboardList } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +30,13 @@ const modes: { id: AgentMode; label: string; icon: React.ElementType; shortcut: 
     icon: Glasses,
     shortcut: '⌘R',
     shortcutKey: 'r',
+  },
+  {
+    id: 'plan',
+    label: 'Plan',
+    icon: ClipboardList,
+    shortcut: '⌘P',
+    shortcutKey: 'p',
   },
 ];
 
@@ -63,11 +70,11 @@ export function ModeSelector({ className, compact = false, small = false, large 
   const gapClass = showText ? 'gap-1.5' : ''; // Add gap when showing text
   const paddingClass = compact ? 'px-2 py-0.5' : 'px-2.5 py-0.5'; // Padding without gap (gap is separate) - reduced py from 1 to 0.5
   
-  // Set background color based on mode: beige for Agent, light grey for Reader
-  const backgroundColor = mode === 'agent' ? '#F2DEB6' : '#E5E7EB'; // Light grey for Reader
-  // Set text and icon color: darker orange for Agent, black for Reader
-  const textColor = mode === 'agent' ? '#78350F' : '#1A1A1A'; // Darker orange for Agent, black for Reader
-  const iconColor = mode === 'agent' ? '#78350F' : '#1A1A1A'; // Darker orange for Agent, black for Reader
+  // Set background color based on mode: beige for Agent, light grey for Reader, light green for Plan
+  const backgroundColor = mode === 'agent' ? '#F2DEB6' : mode === 'plan' ? '#EBF1DE' : '#E5E7EB';
+  // Set text and icon color: darker orange for Agent, dark green for Plan, black for Reader
+  const textColor = mode === 'agent' ? '#78350F' : mode === 'plan' ? '#3D5A1F' : '#1A1A1A';
+  const iconColor = mode === 'agent' ? '#78350F' : mode === 'plan' ? '#3D5A1F' : '#1A1A1A';
 
   return (
     <DropdownMenu
@@ -88,7 +95,7 @@ export function ModeSelector({ className, compact = false, small = false, large 
           style={{
             backgroundColor: backgroundColor,
             color: textColor,
-            border: mode === 'agent' ? '1px solid rgba(229, 231, 235, 0.6)' : 'none',
+            border: (mode === 'agent' || mode === 'plan') ? '1px solid rgba(229, 231, 235, 0.6)' : 'none',
             fontSize: textSize,
             fontWeight: 500,
             cursor: 'pointer',

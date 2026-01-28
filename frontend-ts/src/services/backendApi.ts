@@ -321,12 +321,19 @@ class BackendApiService {
     model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus',
     // EXTENDED THINKING: Callback for streaming thinking chunks (Claude models)
     onThinkingChunk?: (chunk: string) => void,
-    onThinkingComplete?: (fullThinking: string) => void
+    onThinkingComplete?: (fullThinking: string) => void,
+    // PLAN MODE: Callbacks for plan generation
+    onPlanChunk?: (chunk: string) => void,
+    onPlanComplete?: (planId: string, fullPlan: string, isUpdate?: boolean) => void,
+    // PLAN MODE: Whether to generate a plan before execution
+    planMode?: boolean,
+    // PLAN UPDATE: Existing plan content for updates (when user provides follow-up)
+    existingPlan?: string
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
     
-    const requestBody = {
+    const requestBody: Record<string, any> = {
       query,
       propertyId,
       messageHistory,
@@ -336,7 +343,9 @@ class BackendApiService {
       responseMode: responseMode || undefined, // NEW: Pass response mode for attachment queries
       attachmentContext: attachmentContext || undefined, // NEW: Pass extracted text from attachments
       isAgentMode: isAgentMode ?? false, // AGENT MODE: Pass to backend for tool binding
-      model: model || 'gpt-4o-mini' // MODEL SELECTION: User-selected LLM model
+      model: model || 'gpt-4o-mini', // MODEL SELECTION: User-selected LLM model
+      planMode: planMode ?? false, // PLAN MODE: Generate plan before execution
+      existingPlan: existingPlan || undefined // PLAN UPDATE: Existing plan for follow-up updates
     };
     
     if (import.meta.env.DEV) {
@@ -491,6 +500,18 @@ class BackendApiService {
                     onThinkingComplete(data.content || '');
                   }
                   break;
+                case 'plan_chunk':
+                  // PLAN MODE: Stream plan content chunk
+                  if (onPlanChunk) {
+                    onPlanChunk(data.content || '');
+                  }
+                  break;
+                case 'plan_complete':
+                  // PLAN MODE: Plan generation complete, ready for build
+                  if (onPlanComplete) {
+                    onPlanComplete(data.plan_id, data.full_plan || '', data.is_update || false);
+                  }
+                  break;
                 case 'complete':
                   console.log('✅ backendApi: Received complete event:', {
                     hasData: !!data.data,
@@ -539,6 +560,101 @@ class BackendApiService {
         });
         onError(errorMessage);
       }
+    }
+  }
+
+  /**
+   * Build Plan - Execute a previously generated research plan
+   * Called when user clicks "Build" in the Plan Viewer
+   */
+  async buildPlan(
+    planId: string,
+    sessionId: string,
+    query: string,
+    onToken?: (token: string) => void,
+    onComplete?: (data: any) => void,
+    onError?: (error: string) => void,
+    onReasoningStep?: (step: { step: string; message: string; details: any; action_type?: string }) => void
+  ): Promise<void> {
+    const baseUrl = this.baseUrl || 'http://localhost:5002';
+    const url = `${baseUrl}/api/llm/build-plan`;
+    
+    const requestBody = {
+      planId,
+      sessionId,
+      query,
+      buildConfirmed: true
+    };
+    
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(requestBody)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      if (!response.body) {
+        throw new Error('No response body');
+      }
+      
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulatedText = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const jsonStr = line.slice(6).trim();
+              const data = JSON.parse(jsonStr);
+              
+              switch (data.type) {
+                case 'token':
+                  accumulatedText += data.token;
+                  onToken?.(data.token);
+                  break;
+                case 'reasoning_step':
+                  onReasoningStep?.({
+                    step: data.step,
+                    action_type: data.action_type || 'analysing',
+                    message: data.message,
+                    details: data.details || {}
+                  });
+                  break;
+                case 'complete':
+                  onComplete?.(data.data || { summary: accumulatedText });
+                  break;
+                case 'error':
+                  onError?.(data.message || 'Unknown error');
+                  break;
+              }
+            } catch (e) {
+              console.warn('Failed to parse SSE data:', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('❌ backendApi: Error in buildPlan:', errorMessage);
+      onError?.(errorMessage);
     }
   }
 
