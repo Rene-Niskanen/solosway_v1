@@ -91,7 +91,6 @@ const CitationLink: React.FC<{
         e.currentTarget.style.backgroundColor = '#F3F4F6';
         e.currentTarget.style.color = '#6B7280';
       }}
-      title={`Source: ${displayName}`}
     >
       {citationNumber}
     </button>
@@ -278,6 +277,10 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
   const { openExpandedCardView } = usePreview();
   
+  // State for gold glow animation
+  const [showGoldGlow, setShowGoldGlow] = React.useState(false);
+  const hasAnimatedRef = React.useRef(false);
+  
   // Check if bubble should be visible: only when query sent, user left, and response is loading
   const shouldShowBubble = React.useMemo(() => {
     // Check if there's at least one query message
@@ -287,6 +290,22 @@ export const FloatingChatBubble: React.FC<FloatingChatBubbleProps> = ({
     // Only show if query exists and response is loading
     return hasQuery && hasLoadingResponse;
   }, [chatMessages]);
+  
+  // Trigger gold glow animation when bubble becomes visible
+  React.useEffect(() => {
+    if (shouldShowBubble && !hasAnimatedRef.current) {
+      hasAnimatedRef.current = true;
+      setShowGoldGlow(true);
+      // Remove glow after animation completes (800ms)
+      const timer = setTimeout(() => {
+        setShowGoldGlow(false);
+      }, 800);
+      return () => clearTimeout(timer);
+    } else if (!shouldShowBubble) {
+      // Reset animation flag when bubble hides so it can animate again next time
+      hasAnimatedRef.current = false;
+    }
+  }, [shouldShowBubble]);
   
   // Helper function to render text with clickable citation links (scaled down version)
   const renderTextWithCitations = React.useCallback((

@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from backend.llm.types import MainWorkflowState, RetrievedDocument
 from backend.llm.config import config
+from backend.llm.utils.model_factory import get_llm
 from backend.services.supabase_client_factory import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -657,9 +658,7 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         State with final_summary (ready for format_response)
     """
-    from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, SystemMessage
-    from backend.llm.config import config
     from backend.llm.prompts import get_attachment_prompt
     
     attachment_context = state.get("attachment_context", {})
@@ -676,12 +675,9 @@ async def handle_attachment_fast(state: MainWorkflowState) -> MainWorkflowState:
     # Get the attachment prompt
     prompt = get_attachment_prompt(response_mode, attachment_context, user_query)
     
-    # Single fast LLM call
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Single fast LLM call - use user-selected model
+    model_preference = state.get('model_preference')
+    llm = get_llm(model_preference, temperature=0)
     
     system_msg = SystemMessage(content="You are a helpful assistant that answers questions based on provided document content.")
     human_msg = HumanMessage(content=prompt)
@@ -714,9 +710,7 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     Returns:
         State with final_summary (ready for format_response)
     """
-    from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage
-    from backend.llm.config import config
     from backend.llm.utils.system_prompts import get_system_prompt
     from backend.llm.tools.agent_actions import create_agent_action_tools
     from datetime import datetime
@@ -724,6 +718,7 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
     citation_context = state.get("citation_context", {})
     user_query = state.get("user_query", "")
     is_agent_mode = state.get("is_agent_mode", False)
+    model_preference = state.get('model_preference')
     
     cited_text = citation_context.get("cited_text", "")
     page_number = citation_context.get("page_number", "unknown")
@@ -749,6 +744,7 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         }
     
     # Create LLM - bind agent tools if in agent mode
+    # Use user-selected model from state
     agent_action_instance = None
     agent_actions = []
     
@@ -756,17 +752,9 @@ async def handle_citation_query(state: MainWorkflowState) -> MainWorkflowState:
         # Create agent action tools for proactive document display
         agent_tools, agent_action_instance = create_agent_action_tools()
         logger.info(f"⚡ [CITATION_QUERY] Agent mode enabled - binding {len(agent_tools)} agent tools")
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        ).bind_tools(agent_tools, tool_choice="auto")
+        llm = get_llm(model_preference, temperature=0).bind_tools(agent_tools, tool_choice="auto")
     else:
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        )
+        llm = get_llm(model_preference, temperature=0)
     
     system_msg = get_system_prompt('analyze')
     

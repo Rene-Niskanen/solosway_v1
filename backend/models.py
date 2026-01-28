@@ -1,6 +1,7 @@
 from . import db
 from flask_login import UserMixin
 from sqlalchemy.sql import func
+from sqlalchemy import TypeDecorator
 import enum
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -32,9 +33,34 @@ class DocumentStatus(enum.Enum):
 
 # Enum for project status
 class ProjectStatus(enum.Enum):
-    ACTIVE = 'active'
-    NEGOTIATING = 'negotiating'
-    ARCHIVED = 'archived'
+    ACTIVE = 'ACTIVE'
+    NEGOTIATING = 'NEGOTIATING'
+    ARCHIVED = 'ARCHIVED'
+
+
+class ProjectStatusType(TypeDecorator):
+    """TypeDecorator to ensure enum values are used instead of names when binding to Supabase/PostgreSQL"""
+    impl = db.Enum
+    cache_ok = True
+    
+    def __init__(self):
+        super().__init__(ProjectStatus, name='project_status', create_type=False, native_enum=True)
+    
+    def process_bind_param(self, value, dialect):
+        """Convert enum to its value (string) when binding to database"""
+        if value is None:
+            return None
+        if isinstance(value, ProjectStatus):
+            return value.value  # Use enum value ('ACTIVE'), which now matches the enum name
+        return value
+    
+    def process_result_value(self, value, dialect):
+        """Convert string from database back to enum"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return ProjectStatus(value)  # Convert string back to enum
+        return value
 
 
 class User(db.Model, UserMixin):
@@ -311,6 +337,39 @@ class PropertyAccess(db.Model):
         }
 
 
+class ProjectAccess(db.Model):
+    """Team member access to projects"""
+    __tablename__ = 'project_access'
+    
+    id = db.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = db.Column(UUID(as_uuid=True), db.ForeignKey('projects.id'), nullable=False)
+    user_email = db.Column(db.String(255), nullable=False)  # Email of invited user
+    invited_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    access_level = db.Column(db.String(50), default='viewer')  # 'viewer', 'editor'
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'accepted', 'declined'
+    invitation_token = db.Column(db.String(100), unique=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=func.now())
+    accepted_at = db.Column(db.DateTime(timezone=True))
+    
+    # Relationships
+    project = db.relationship('Project', backref='access_grants')
+    invited_by = db.relationship('User', foreign_keys=[invited_by_user_id])
+    
+    def serialize(self):
+        """Convert project access to dictionary"""
+        return {
+            'id': str(self.id),
+            'project_id': str(self.project_id),
+            'user_email': self.user_email,
+            'invited_by_user_id': self.invited_by_user_id,
+            'access_level': self.access_level,
+            'status': self.status,
+            'invitation_token': self.invitation_token,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'accepted_at': self.accepted_at.isoformat() if self.accepted_at else None
+        }
+
+
 class PropertyCardCache(db.Model):
     """Cached property card summary data for instant rendering"""
     __tablename__ = 'property_card_cache'
@@ -350,7 +409,7 @@ class Project(db.Model):
     # Project details
     title = db.Column(db.String(500), nullable=False)
     description = db.Column(db.Text)
-    status = db.Column(db.Enum(ProjectStatus, name='project_status', create_type=False, native_enum=True), default=ProjectStatus.ACTIVE, nullable=False)
+    status = db.Column(ProjectStatusType(), default=ProjectStatus.ACTIVE, nullable=False)
     tags = db.Column(JSONB, default=list)  # Array of tag strings like ["Web Design", "Branding"]
     tool = db.Column(db.String(100))  # e.g., "Figma", "Sketch", "Adobe XD"
     

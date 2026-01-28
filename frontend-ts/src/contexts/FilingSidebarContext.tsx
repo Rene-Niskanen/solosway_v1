@@ -31,7 +31,7 @@ export const FilingSidebarProvider: React.FC<{ children: React.ReactNode }> = ({
   const [selectedPropertyId, setSelectedPropertyIdState] = useState<string | null>(null);
   const [searchQuery, setSearchQueryState] = useState<string>('');
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
-  const [width, setWidthState] = useState<number>(320); // Default width: 320px (w-80)
+  const [width, setWidthState] = useState<number>(360); // Default width: 360px
   const [isResizing, setIsResizingState] = useState<boolean>(false);
 
   const openSidebar = useCallback(() => {

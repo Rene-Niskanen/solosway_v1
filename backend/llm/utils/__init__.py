@@ -14,12 +14,18 @@ from .chunk_expansion import (
 # Import block ID formatter
 from .block_id_formatter import format_document_with_block_ids
 
+# Import model factory
+from .model_factory import get_llm, get_model_info, MODEL_MAPPING
+
 __all__ = [
     'reciprocal_rank_fusion',
     'expand_chunk_with_adjacency',
     'batch_expand_chunks',
     'merge_expanded_chunks',
-    'format_document_with_block_ids'
+    'format_document_with_block_ids',
+    'get_llm',
+    'get_model_info',
+    'MODEL_MAPPING'
 ]
 
 

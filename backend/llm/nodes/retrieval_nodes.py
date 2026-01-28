@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState, RetrievedDocument
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.retrievers.vector_retriever import VectorDocumentRetriever
 from backend.llm.retrievers.hybrid_retriever import HybridDocumentRetriever
 from backend.llm.utils import reciprocal_rank_fusion
@@ -1596,11 +1597,9 @@ async def route_query(state: MainWorkflowState) -> MainWorkflowState:
         Updated state with query_intent
     """
     
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Use user-selected model from state (with fallback to config default)
+    model_preference = state.get('model_preference')
+    llm = get_llm(model_preference, temperature=0)
 
     # Build conversation context if history exists
     history_context = ""
@@ -2359,7 +2358,6 @@ This information has been verified and extracted from the property database, inc
         llm_sql_results = []
         if (not structured_results or len(structured_results) < 3) and business_id:
             try:
-                from langchain_openai import ChatOpenAI
                 from backend.llm.tools.sql_query_tool import create_property_query_tool, SQLQueryTool
                 from backend.services.supabase_client_factory import get_supabase_client
                 
@@ -2369,11 +2367,9 @@ This information has been verified and extracted from the property database, inc
                 sql_tool = SQLQueryTool(business_id=business_id)
                 
                 # Create LLM with tool binding (agent can invoke tool directly)
-                llm = ChatOpenAI(
-                    api_key=config.openai_api_key,
-                    model=config.openai_model,
-                    temperature=0.3,
-                )
+                # Use user-selected model from state (with fallback to config default)
+                model_preference = state.get('model_preference')
+                llm = get_llm(model_preference, temperature=0.3)
                 
                 # Use centralized prompt
                 # Get system prompt for SQL query task
@@ -2877,7 +2873,8 @@ async def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
                     'page_number': chunk['page_number'],
                     'bbox': chunk.get('bbox'),
                     'vector_id': chunk.get('vector_id'),
-                    'similarity': chunk['similarity'],
+                    'similarity': chunk.get('similarity', chunk.get('similarity_score', 0.0)),
+                    'source': chunk.get('source', group.get('source', 'unknown')),  # Retrieval method (vector, bm25, hybrid)
                     'doc_id': doc_id  # NEW: Include doc_id in each chunk for citation recovery
                 }
                 for chunk in top_chunks  # Only top chunks used in summary
@@ -2969,11 +2966,9 @@ async def clarify_relevant_docs(state: MainWorkflowState) -> MainWorkflowState:
 
 async def _llm_rerank_fallback(state: MainWorkflowState, merged_docs: List[Dict]) -> MainWorkflowState:
     """Fallback LLM reranking if Cohere fails."""
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Use user-selected model from state (with fallback to config default)
+    model_preference = state.get('model_preference')
+    llm = get_llm(model_preference, temperature=0)
 
     # LLM re-ranking (for merged documents)
     doc_summary = "\n".join(

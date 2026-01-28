@@ -316,7 +316,12 @@ class BackendApiService {
     // AGENT-NATIVE: Callback for agent actions (open document, highlight, navigate, save)
     onAgentAction?: (action: { action: string; params: any }) => void,
     // AGENT MODE: Whether the user is in Agent mode (enables LLM tool-based actions)
-    isAgentMode?: boolean
+    isAgentMode?: boolean,
+    // MODEL SELECTION: User-selected LLM model
+    model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus',
+    // EXTENDED THINKING: Callback for streaming thinking chunks (Claude models)
+    onThinkingChunk?: (chunk: string) => void,
+    onThinkingComplete?: (fullThinking: string) => void
   ): Promise<void> {
     const baseUrl = this.baseUrl || 'http://localhost:5002';
     const url = `${baseUrl}/api/llm/query/stream`;
@@ -330,7 +335,8 @@ class BackendApiService {
       citationContext: citationContext || undefined, // Pass citation context to backend
       responseMode: responseMode || undefined, // NEW: Pass response mode for attachment queries
       attachmentContext: attachmentContext || undefined, // NEW: Pass extracted text from attachments
-      isAgentMode: isAgentMode ?? false // AGENT MODE: Pass to backend for tool binding
+      isAgentMode: isAgentMode ?? false, // AGENT MODE: Pass to backend for tool binding
+      model: model || 'gpt-4o-mini' // MODEL SELECTION: User-selected LLM model
     };
     
     if (import.meta.env.DEV) {
@@ -473,6 +479,18 @@ class BackendApiService {
                     });
                   }
                   break;
+                case 'thinking_chunk':
+                  // EXTENDED THINKING: Stream Claude's thinking process in real-time
+                  if (onThinkingChunk) {
+                    onThinkingChunk(data.content || '');
+                  }
+                  break;
+                case 'thinking_complete':
+                  // EXTENDED THINKING: Signal that thinking is complete
+                  if (onThinkingComplete) {
+                    onThinkingComplete(data.content || '');
+                  }
+                  break;
                 case 'complete':
                   console.log('✅ backendApi: Received complete event:', {
                     hasData: !!data.data,
@@ -504,11 +522,23 @@ class BackendApiService {
         console.log('ℹ️ backendApi: Request aborted by user');
         return; // Silently return on abort
       }
-      console.error('❌ backendApi: Error in queryDocumentsStreamFetch:', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      });
-      onError(error instanceof Error ? error.message : 'Unknown error');
+      
+      // Handle incomplete chunked encoding gracefully (network interruption)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isNetworkError = errorMessage.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+                            errorMessage.includes('Failed to fetch') ||
+                            errorMessage.includes('network error');
+      
+      if (isNetworkError) {
+        console.warn('⚠️ backendApi: Network error during streaming (connection interrupted):', errorMessage);
+        onError('Connection interrupted. Please try again.');
+      } else {
+        console.error('❌ backendApi: Error in queryDocumentsStreamFetch:', {
+          error: errorMessage,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        onError(errorMessage);
+      }
     }
   }
 
@@ -612,6 +642,14 @@ class BackendApiService {
   async getAllDocuments(): Promise<ApiResponse<any>> {
     // Fetch all documents across all properties
     // Use /api/files which is the old endpoint that worked
+    return this.fetchApi<any>('/api/files', {
+      method: 'GET',
+    });
+  }
+
+  async getDocuments(): Promise<ApiResponse<any>> {
+    // Fetch all documents for the business using /api/files endpoint (which wraps SupabaseDocumentService)
+    // This endpoint returns { success: true, data: [...] }
     return this.fetchApi<any>('/api/files', {
       method: 'GET',
     });
@@ -1745,14 +1783,15 @@ class BackendApiService {
    */
   async createProperty(
     address: string,
-    coordinates: { lat: number; lng: number }
+    coordinates: { lat: number; lng: number },
+    formattedAddress?: string
   ): Promise<ApiResponse> {
     return this.fetchApi('/api/properties/create', {
       method: 'POST',
       body: JSON.stringify({
         address,
-        formatted_address: address,
-        normalized_address: address.toLowerCase(),
+        formatted_address: formattedAddress || address,
+        normalized_address: (formattedAddress || address).toLowerCase(),
         latitude: coordinates.lat,
         longitude: coordinates.lng
       })
@@ -1927,6 +1966,16 @@ class BackendApiService {
   async deleteProject(projectId: string): Promise<ApiResponse<{ message: string }>> {
     return this.fetchApi(`/api/projects/${projectId}`, {
       method: 'DELETE'
+    });
+  }
+
+  /**
+   * Add team member access to a project
+   */
+  async addProjectAccess(projectId: string, email: string, accessLevel: string = 'viewer'): Promise<ApiResponse> {
+    return this.fetchApi(`/api/projects/${projectId}/access`, {
+      method: 'POST',
+      body: JSON.stringify({ email, access_level: accessLevel })
     });
   }
 }

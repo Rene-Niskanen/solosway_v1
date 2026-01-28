@@ -2,22 +2,25 @@
 
 import * as React from "react";
 import { useMemo } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { generateAnimatePresenceKey, generateConditionalKey, generateUniqueKey } from '../utils/keyGenerator';
-import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, Earth, MapPinHouse, AudioLines, MessageCircleDashed, Copy, History } from "lucide-react";
+import { ChevronRight, ArrowUp, Paperclip, Mic, Map, X, SquareDashedMousePointer, Scan, Fullscreen, Plus, PanelLeftOpen, PanelRightClose, Trash2, CreditCard, MoveDiagonal, Square, FileText, Image as ImageIcon, File as FileIcon, FileCheck, Minimize, Minimize2, Workflow, Home, FolderOpen, TextCursorInput, Footprints, AudioLines, MessageCircleDashed, Copy, Play, Search, Lock, Pencil, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { FileAttachment, FileAttachmentData } from './FileAttachment';
 import { PropertyAttachment, PropertyAttachmentData } from './PropertyAttachment';
 import { toast } from "@/hooks/use-toast";
 import { usePreview, type CitationHighlight } from '../contexts/PreviewContext';
+import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
 import { usePropertySelection } from '../contexts/PropertySelectionContext';
 import { useDocumentSelection } from '../contexts/DocumentSelectionContext';
 import { useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useChatPanel } from '../contexts/ChatPanelContext';
 import * as pdfjs from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import veloraLogo from '/Velora Logo.jpg';
+import citationIcon from '/citation.png';
 
 // Configure PDF.js worker globally (same as other components)
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -28,8 +31,135 @@ import { QuickStartBar } from './QuickStartBar';
 import { ReasoningSteps, ReasoningStep } from './ReasoningSteps';
 import { ResponseModeChoice } from './FileChoiceStep';
 import { ModeSelector } from './ModeSelector';
+import { ModelSelector } from './ModelSelector';
 import { useMode } from '../contexts/ModeContext';
+import { useModel } from '../contexts/ModelContext';
+import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 import { BotStatusOverlay } from './BotStatusOverlay';
+import { WebSearchPill } from './SelectedModePill';
+
+// ============================================================================
+// CHAT PANEL WIDTH CONSTANTS
+// Single source of truth for all width values used in chat panel calculations
+// ============================================================================
+export const CHAT_PANEL_WIDTH = {
+  /** Default collapsed width (px) */
+  COLLAPSED: 382.5,
+  /** Expanded width as viewport percentage */
+  EXPANDED_VW: 42.5,
+  /** Minimum width during navigation tasks (px) */
+  NAV_MIN: 380,
+  /** Minimum width for document preview when open (px) - matches chat collapsed width */
+  DOC_PREVIEW_MIN: 380,
+} as const;
+
+// ============================================================================
+// UNIFIED WIDTH CALCULATION
+// Single function used by both useEffect (parent notification) and inline styles
+// ============================================================================
+interface WidthCalculationParams {
+  draggedWidth: number | null;
+  isExpanded: boolean;
+  isFullscreenMode: boolean;
+  isDocumentPreviewOpen: boolean;
+  isPropertyDetailsOpen: boolean;
+  sidebarWidth: number;
+  chatPanelWidth: number;
+  isChatPanelOpen: boolean;
+  shouldExpand?: boolean;
+  isManualFullscreen?: boolean;
+}
+
+interface WidthCalculationResult {
+  /** Width as a number (in pixels) - used for parent notification */
+  widthPx: number;
+  /** Width as CSS string - used for inline styles */
+  widthCss: string;
+}
+
+/**
+ * Unified width calculation for the chat panel.
+ * Returns both pixel value (for parent notification) and CSS string (for inline styles).
+ * 
+ * Priority order:
+ * 1. draggedWidth - user has manually resized
+ * 2. fullscreen mode (no document preview) - full available width
+ * 3. document preview or property details open - 50% split
+ * 4. expanded mode - 42.5vw
+ * 5. collapsed - 382.5px (capped to available space)
+ */
+export function calculateChatPanelWidth(params: WidthCalculationParams): WidthCalculationResult {
+  const {
+    draggedWidth,
+    isExpanded,
+    isFullscreenMode,
+    isDocumentPreviewOpen,
+    isPropertyDetailsOpen,
+    sidebarWidth,
+    chatPanelWidth,
+    isChatPanelOpen,
+    shouldExpand = false,
+    isManualFullscreen = false,
+  } = params;
+
+  const chatPanelOffset = isChatPanelOpen ? chatPanelWidth : 0;
+  const availableWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) - sidebarWidth - chatPanelOffset;
+  const shouldUse50Percent = isDocumentPreviewOpen || isPropertyDetailsOpen;
+
+  // PRIORITY 1: User has manually resized the panel
+  if (draggedWidth !== null) {
+    return {
+      widthPx: draggedWidth,
+      widthCss: `${draggedWidth}px`,
+    };
+  }
+
+  // PRIORITY 2: Fullscreen mode (from dashboard or explicit) - but NOT when document preview is open
+  // Unless user manually requested fullscreen (overrides document preview)
+  if ((shouldExpand || isFullscreenMode) && (!shouldUse50Percent || isManualFullscreen)) {
+    return {
+      widthPx: availableWidth,
+      widthCss: `calc(100vw - ${sidebarWidth}px - ${chatPanelOffset}px)`,
+    };
+  }
+
+  // PRIORITY 3: Document preview or property details is open - 50% split
+  if (isExpanded && shouldUse50Percent) {
+    const halfWidth = availableWidth / 2;
+    return {
+      widthPx: halfWidth,
+      widthCss: `calc((100vw - ${sidebarWidth}px - ${chatPanelOffset}px) / 2)`,
+    };
+  }
+
+  // PRIORITY 4: Expanded mode (no document preview) - 42.5vw
+  if (isExpanded) {
+    const expandedWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) * (CHAT_PANEL_WIDTH.EXPANDED_VW / 100) - chatPanelOffset;
+    if (chatPanelOffset > 0) {
+      return {
+        widthPx: expandedWidth,
+        widthCss: `calc(${CHAT_PANEL_WIDTH.EXPANDED_VW}vw - ${chatPanelOffset}px)`,
+      };
+    }
+    return {
+      widthPx: expandedWidth,
+      widthCss: `${CHAT_PANEL_WIDTH.EXPANDED_VW}vw`,
+    };
+  }
+
+  // PRIORITY 5: Collapsed - fixed width capped to available space
+  const collapsedWidth = Math.min(CHAT_PANEL_WIDTH.COLLAPSED, availableWidth);
+  if (chatPanelOffset > 0) {
+    return {
+      widthPx: collapsedWidth,
+      widthCss: `min(${CHAT_PANEL_WIDTH.COLLAPSED}px, calc(100vw - ${sidebarWidth}px - ${chatPanelOffset}px))`,
+    };
+  }
+  return {
+    widthPx: collapsedWidth,
+    widthCss: `${CHAT_PANEL_WIDTH.COLLAPSED}px`,
+  };
+}
 
 // ChatGPT-style thinking dot animation
 const ThinkingDot: React.FC = () => {
@@ -610,28 +740,35 @@ const StreamingResponseText: React.FC<{
   };
 
   return (
-    <div
-      style={{
-        color: '#374151',
-        fontSize: '14px',
-        lineHeight: '20px',
-        margin: 0,
-        padding: '4px 0',
-        textAlign: 'left', 
-        fontFamily: 'Inter, system-ui, sans-serif', 
-        fontWeight: 400,
-        position: 'relative',
-        minHeight: '1px', // Prevent collapse
-        contain: 'layout style paint', // Prevent layout shifts
-        wordWrap: 'break-word',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word',
-        maxWidth: '100%', // Ensure text doesn't overflow container
-        overflow: 'visible', // Allow text to wrap instead of being clipped
-        boxSizing: 'border-box' // Include padding in width calculations
-      }}
-    >
-      <ReactMarkdown 
+    <>
+      <style>{`
+        .streaming-response-text p:last-child {
+          margin-bottom: 0 !important;
+        }
+      `}</style>
+      <div
+        className="streaming-response-text"
+        style={{
+          color: '#374151',
+          fontSize: '14px',
+          lineHeight: '20px',
+          margin: 0,
+          padding: '4px 0',
+          textAlign: 'left', 
+          fontFamily: 'Inter, system-ui, sans-serif', 
+          fontWeight: 400,
+          position: 'relative',
+          minHeight: '1px', // Prevent collapse
+          contain: 'layout style', // Prevent layout shifts (removed 'paint' to prevent text clipping)
+          wordWrap: 'break-word',
+          overflowWrap: 'break-word',
+          wordBreak: 'break-word',
+          maxWidth: '100%', // Ensure text doesn't overflow container
+          overflow: 'visible', // Allow text to wrap instead of being clipped
+          boxSizing: 'border-box' // Include padding in width calculations
+        }}
+      >
+        <ReactMarkdown 
         key={markdownKey}
         skipHtml={true}
         components={{
@@ -722,7 +859,8 @@ const StreamingResponseText: React.FC<{
       >
         {textWithCitationPlaceholders}
       </ReactMarkdown>
-    </div>
+      </div>
+    </>
   );
 };
 
@@ -846,65 +984,243 @@ const CitationLink: React.FC<{
   citationData: CitationDataType;
   onClick: (data: CitationDataType) => void;
 }> = ({ citationNumber, citationData, onClick }) => {
+  const [showPreview, setShowPreview] = React.useState(false);
+  const [hoverPosition, setHoverPosition] = React.useState({ x: 0, y: 0 });
+  const [containerBounds, setContainerBounds] = React.useState<{ left: number; right: number } | undefined>(undefined);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const hoverTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const leaveTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  
   // Build display name with fallbacks
   const displayName = citationData.original_filename || 
     (citationData.classification_type ? citationData.classification_type.replace(/_/g, ' ') : 'Document');
   
+  // Check if citation has valid bbox data for preview
+  // Must be normalized (0-1 range) and not a fallback/full-page bbox
+  const hasValidBbox = React.useMemo(() => {
+    const bbox = citationData.bbox;
+    if (!bbox) {
+      console.log('🔍 [CitationLink] No bbox for citation', citationNumber);
+      return false;
+    }
+    
+    const { left, top, width, height } = bbox;
+    
+    // Check if values exist and are numbers
+    if (
+      typeof left !== 'number' || 
+      typeof top !== 'number' ||
+      typeof width !== 'number' || 
+      typeof height !== 'number'
+    ) {
+      console.log('🔍 [CitationLink] Invalid bbox types for citation', citationNumber, bbox);
+      return false;
+    }
+    
+    // Check if values are in 0-1 range (normalized)
+    if (
+      left < 0 || left > 1 ||
+      top < 0 || top > 1 ||
+      width <= 0 || width > 1 ||
+      height <= 0 || height > 1
+    ) {
+      console.warn('⚠️ [CitationLink] Bbox values out of 0-1 range for citation', citationNumber, bbox);
+      return false;
+    }
+    
+    // Check if it's a fallback bbox (covers entire page or >90% of page)
+    const area = width * height;
+    if (
+      (left === 0 && top === 0 && width === 1 && height === 1) ||
+      area > 0.9
+    ) {
+      console.warn('⚠️ [CitationLink] Rejecting fallback/full-page bbox for citation', citationNumber, { area, bbox });
+      return false;
+    }
+    
+    console.log('✅ [CitationLink] Valid bbox for citation', citationNumber, { 
+      bbox, 
+      area: (area * 100).toFixed(1) + '%' 
+    });
+    return true;
+  }, [citationData.bbox, citationNumber]);
+  
+  // Preload high-res preview on mount (not on hover) for instant display
+  React.useEffect(() => {
+    if (hasValidBbox && citationData.doc_id) {
+      const pageNumber = citationData.page || citationData.bbox?.page || 1;
+      // Trigger preload in background - don't await
+      preloadHoverPreview(citationData.doc_id, pageNumber);
+    }
+  }, [citationData.doc_id, citationData.page, citationData.bbox?.page, hasValidBbox]);
+  
+  // Cleanup timeouts on unmount
+  React.useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (leaveTimeoutRef.current) clearTimeout(leaveTimeoutRef.current);
+    };
+  }, []);
+  
+  // Close preview on scroll (anywhere in the document)
+  React.useEffect(() => {
+    if (!showPreview) return;
+    
+    const handleScroll = () => {
+      setShowPreview(false);
+      if (hoverTimeoutRef.current) {
+        clearTimeout(hoverTimeoutRef.current);
+        hoverTimeoutRef.current = null;
+      }
+    };
+    
+    // Listen for scroll on window and capture phase to catch all scroll events
+    window.addEventListener('scroll', handleScroll, true);
+    
+    return () => {
+      window.removeEventListener('scroll', handleScroll, true);
+    };
+  }, [showPreview]);
+  
+  const handleMouseEnter = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Clear any pending leave timeout
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+    
+    // Only show preview if we have valid bbox data
+    if (!hasValidBbox) return;
+    
+    // Get button position for preview placement
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHoverPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top
+    });
+    
+    // Find the chat container to constrain preview position
+    // Look for the chat panel container by traversing up the DOM
+    let element: HTMLElement | null = e.currentTarget;
+    let chatContainer: HTMLElement | null = null;
+    while (element) {
+      // Look for chat panel container - it typically has overflow-y: auto or scroll
+      // and is the main scrollable area for messages
+      const style = window.getComputedStyle(element);
+      if (
+        (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+        element.offsetHeight > 200 // Reasonable size for chat container
+      ) {
+        chatContainer = element;
+        break;
+      }
+      element = element.parentElement;
+    }
+    
+    if (chatContainer) {
+      const containerRect = chatContainer.getBoundingClientRect();
+      // Add small padding from container edges
+      setContainerBounds({
+        left: containerRect.left + 8,
+        right: containerRect.right - 8
+      });
+    } else {
+      setContainerBounds(undefined);
+    }
+    
+    // Show preview after longer delay (requires deliberate hover)
+    hoverTimeoutRef.current = setTimeout(() => {
+      setShowPreview(true);
+    }, 450);
+  };
+  
+  const handleMouseLeave = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Clear any pending hover timeout
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    
+    // Hide preview after small delay (allows moving to preview)
+    leaveTimeoutRef.current = setTimeout(() => {
+      setShowPreview(false);
+    }, 100);
+  };
+  
+  const handlePreviewMouseEnter = () => {
+    // Cancel the leave timeout if user moves to preview
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+  };
+  
+  const handlePreviewMouseLeave = () => {
+    // Hide preview when leaving the preview box
+    setShowPreview(false);
+  };
+  
   return (
-    <button
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClick(citationData);
-      }}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginLeft: '4px',
-        marginRight: '2px',
-        minWidth: '20px',
-        height: '20px',
-        padding: '0 5px',
-        fontSize: '12px',
-        fontWeight: 500,
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-        color: '#6B7280',
-        backgroundColor: '#F3F4F6',
-        borderRadius: '4px',
-        border: 'none',
-        cursor: 'pointer',
-        transition: 'all 0.15s ease',
-        verticalAlign: 'baseline',
-        position: 'relative',
-        top: '0',
-        lineHeight: 1,
-        letterSpacing: '0',
-        boxShadow: 'none',
-        transform: 'scale(1)',
-        flexShrink: 0
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = '#E5E7EB';
-        e.currentTarget.style.color = '#374151';
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = '#F3F4F6';
-        e.currentTarget.style.color = '#6B7280';
-      }}
-      onMouseDown={(e) => {
-        e.currentTarget.style.backgroundColor = '#D1D5DB';
-        e.currentTarget.style.transform = 'scale(0.98)';
-      }}
-      onMouseUp={(e) => {
-        e.currentTarget.style.backgroundColor = '#E5E7EB';
-        e.currentTarget.style.transform = 'scale(1)';
-      }}
-      title={`Source: ${displayName}`}
-      aria-label={`Citation ${citationNumber} - ${displayName}`}
-    >
-      {citationNumber}
-    </button>
+    <>
+      <button
+        ref={buttonRef}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          // Hide preview on click
+          setShowPreview(false);
+          if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+          onClick(citationData);
+        }}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          marginLeft: '3px',
+          marginRight: '2px',
+          minWidth: '19px',
+          height: '19px',
+          padding: '0 6px',
+          fontSize: '11px',
+          fontWeight: 600,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          color: '#5D5D5D',
+          backgroundColor: '#FFFFFF',
+          borderRadius: '6px',
+          border: '1px solid #E5E7EB',
+          cursor: 'pointer',
+          verticalAlign: 'middle',
+          position: 'relative',
+          top: '-1px',
+          lineHeight: 1,
+          transition: 'all 0.15s ease-in-out'
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = '#F3F4F6';
+          e.currentTarget.style.color = '#374151';
+          e.currentTarget.style.transform = 'scale(1.05)';
+          handleMouseEnter(e);
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = '#FFFFFF';
+          e.currentTarget.style.color = '#5D5D5D';
+          e.currentTarget.style.transform = 'scale(1)';
+          handleMouseLeave(e);
+        }}
+        aria-label={`Citation ${citationNumber} - ${displayName}`}
+      >
+        {citationNumber}
+      </button>
+      {showPreview && hasValidBbox && (
+        <CitationHoverPreview
+          citationData={citationData}
+          position={hoverPosition}
+          containerBounds={containerBounds}
+          onMouseEnter={handlePreviewMouseEnter}
+          onMouseLeave={handlePreviewMouseLeave}
+        />
+      )}
+    </>
   );
 };
 
@@ -1397,13 +1713,110 @@ const Globe3D: React.FC = () => {
   );
 };
 
-// Global cache for preloaded BBOX preview images
+// Global cache for preloaded BBOX preview images (low-res, 200px for thumbnails)
 interface BboxPreviewCacheEntry {
   pageImage: string;
   thumbnailHeight: number;
   timestamp: number;
 }
 const bboxPreviewCache = new globalThis.Map<string, BboxPreviewCacheEntry>();
+
+// High-resolution cache for hover preview (600px for better quality when zoomed)
+interface HoverPreviewCacheEntry {
+  pageImage: string;
+  imageWidth: number;   // Exact pixel width of rendered image
+  imageHeight: number;  // Exact pixel height of rendered image
+  timestamp: number;
+}
+const hoverPreviewCache = new globalThis.Map<string, HoverPreviewCacheEntry>();
+
+// Track in-progress preloads with promises so multiple callers can await the same load
+const hoverPreviewLoadingPromises = new globalThis.Map<string, Promise<HoverPreviewCacheEntry | null>>();
+
+// Preload high-resolution hover preview for a citation
+const preloadHoverPreview = (docId: string, pageNumber: number): Promise<HoverPreviewCacheEntry | null> => {
+  const cacheKey = `hover-${docId}-${pageNumber}`;
+  
+  // Return cached if available
+  if (hoverPreviewCache.has(cacheKey)) {
+    return Promise.resolve(hoverPreviewCache.get(cacheKey)!);
+  }
+  
+  // If already loading, return the existing promise so caller can await it
+  if (hoverPreviewLoadingPromises.has(cacheKey)) {
+    return hoverPreviewLoadingPromises.get(cacheKey)!;
+  }
+  
+  // Start new load
+  const loadPromise = (async (): Promise<HoverPreviewCacheEntry | null> => {
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+      const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
+      
+      const response = await fetch(downloadUrl, { credentials: 'include' });
+      if (!response.ok) {
+        console.warn(`[Hover Preview] Failed to download: ${response.status}`);
+        return null;
+      }
+      
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      
+      // Load PDF
+      const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      
+      // Render page at high resolution (600px width)
+      const page = await pdf.getPage(pageNumber || 1);
+      const viewport = page.getViewport({ scale: 1.0 });
+      
+      const targetWidth = 1200; // High resolution for crisp text when zoomed
+      const scale = targetWidth / viewport.width;
+      const scaledViewport = page.getViewport({ scale });
+      
+      // Create canvas for rendering
+      const canvas = document.createElement('canvas');
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
+      
+      const context = canvas.getContext('2d');
+      if (!context) {
+        return null;
+      }
+      
+      await page.render({
+        canvasContext: context,
+        viewport: scaledViewport,
+        canvas: canvas
+      }).promise;
+      
+      // Convert canvas to high-quality image
+      const imageUrl = canvas.toDataURL('image/png');
+      
+      // Cache with actual dimensions
+      const entry: HoverPreviewCacheEntry = {
+        pageImage: imageUrl,
+        imageWidth: scaledViewport.width,
+        imageHeight: scaledViewport.height,
+        timestamp: Date.now()
+      };
+      
+      hoverPreviewCache.set(cacheKey, entry);
+      console.log(`✅ [Hover Preview] Cached: ${cacheKey} (${entry.imageWidth}x${entry.imageHeight})`);
+      return entry;
+    } catch (error) {
+      console.warn(`[Hover Preview] Failed to preload:`, error);
+      return null;
+    } finally {
+      // Clean up the loading promise after completion
+      hoverPreviewLoadingPromises.delete(cacheKey);
+    }
+  })();
+  
+  // Store the promise so other callers can await it
+  hoverPreviewLoadingPromises.set(cacheKey, loadPromise);
+  
+  return loadPromise;
+};
 
 // Preload BBOX preview when citation context is prepared
 const preloadBboxPreview = async (citationContext: {
@@ -1684,7 +2097,7 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
         borderRadius: '4px',
         overflow: 'hidden',
         cursor: 'pointer',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+        boxShadow: 'none',
         border: '1px solid #e5e7eb'
       }}
       onClick={onClick}
@@ -1738,6 +2151,361 @@ const CitationBboxPreview: React.FC<CitationBboxPreviewProps> = ({ citationBboxD
   );
 };
 
+// Citation Hover Preview Component - shows zoomed preview of BBOX on hover
+// Uses the same BBOX positioning logic as StandaloneExpandedCardView for consistency
+interface CitationHoverPreviewProps {
+  citationData: CitationDataType;
+  position: { x: number; y: number };
+  containerBounds?: { left: number; right: number }; // Optional container bounds for constraining preview position
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}
+
+const CitationHoverPreview: React.FC<CitationHoverPreviewProps> = ({ 
+  citationData, 
+  position,
+  containerBounds,
+  onMouseEnter,
+  onMouseLeave 
+}) => {
+  const [pageImage, setPageImage] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [imageDimensions, setImageDimensions] = React.useState({ width: 600, height: 848 }); // Default A4
+  
+  // Fixed preview container dimensions
+  const previewWidth = 280;
+  const previewHeight = 200;
+  
+  // Get page number from citation data
+  const pageNumber = citationData.page || citationData.bbox?.page || 1;
+  
+  // Check high-res cache first, then load if not cached
+  React.useEffect(() => {
+    const cacheKey = `hover-${citationData.doc_id}-${pageNumber}`;
+    const cached = hoverPreviewCache.get(cacheKey);
+    
+    if (cached) {
+      setPageImage(cached.pageImage);
+      setImageDimensions({ width: cached.imageWidth, height: cached.imageHeight });
+      setLoading(false);
+      return;
+    }
+    
+    // Not in cache - trigger high-res preload
+    const loadPreview = async () => {
+      try {
+        const entry = await preloadHoverPreview(citationData.doc_id, pageNumber);
+        
+        if (entry) {
+          setPageImage(entry.pageImage);
+          setImageDimensions({ width: entry.imageWidth, height: entry.imageHeight });
+        }
+        setLoading(false);
+      } catch (error) {
+        console.warn('[Hover Preview] Failed to load:', error);
+        setLoading(false);
+      }
+    };
+    
+    loadPreview();
+  }, [citationData.doc_id, pageNumber]);
+  
+  // Calculate viewport position (flip if near edges)
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  
+  // Use container bounds if provided, otherwise fall back to viewport with small margin
+  const minLeftBound = containerBounds?.left ?? 10;
+  const maxRightBound = containerBounds?.right ?? (viewportWidth - 10);
+  
+  // Position above by default, flip below if near top
+  const showAbove = position.y > previewHeight + 20;
+  const topPosition = showAbove ? position.y - previewHeight - 10 : position.y + 30;
+  
+  // Horizontal centering with container-aware edge detection
+  let leftPosition = position.x - previewWidth / 2;
+  // Constrain to container bounds (or viewport if no container)
+  if (leftPosition < minLeftBound) leftPosition = minLeftBound;
+  if (leftPosition + previewWidth > maxRightBound) {
+    leftPosition = maxRightBound - previewWidth;
+  }
+  // Final safety check - ensure left position doesn't go negative
+  if (leftPosition < minLeftBound) leftPosition = minLeftBound;
+  
+  // === BBOX POSITIONING - IDENTICAL TO StandaloneExpandedCardView ===
+  const bbox = citationData.bbox;
+  const imageWidth = imageDimensions.width;
+  const imageHeight = imageDimensions.height;
+  
+  // BBOX in image pixels (simple normalized-to-pixel conversion - same as StandaloneExpandedCardView)
+  const originalBboxWidth = bbox.width * imageWidth;
+  const originalBboxHeight = bbox.height * imageHeight;
+  const originalBboxLeft = bbox.left * imageWidth;
+  const originalBboxTop = bbox.top * imageHeight;
+  
+  // Calculate center of original BBOX (same as StandaloneExpandedCardView)
+  const centerX = originalBboxLeft + originalBboxWidth / 2;
+  const centerY = originalBboxTop + originalBboxHeight / 2;
+  
+  // Logo sizing (same logic as StandaloneExpandedCardView - 2% of page height)
+  const logoHeight = 0.02 * imageHeight;
+  const logoWidth = logoHeight;
+  
+  // Calculate minimum BBOX height to match logo (same as StandaloneExpandedCardView)
+  const minBboxHeightPx = logoHeight;
+  const baseBboxHeight = Math.max(originalBboxHeight, minBboxHeightPx);
+  
+  // Calculate final dimensions with padding (same as StandaloneExpandedCardView)
+  const bboxPadding = 4;
+  const finalBboxWidth = originalBboxWidth + bboxPadding * 2;
+  const finalBboxHeight = baseBboxHeight === minBboxHeightPx 
+    ? minBboxHeightPx 
+    : baseBboxHeight + bboxPadding * 2;
+  
+  // Center the BBOX around the original text (same as StandaloneExpandedCardView)
+  const bboxLeft = Math.max(0, centerX - finalBboxWidth / 2);
+  const bboxTop = Math.max(0, centerY - finalBboxHeight / 2);
+  
+  // Constrain to page bounds (same as StandaloneExpandedCardView)
+  const constrainedLeft = Math.min(bboxLeft, imageWidth - finalBboxWidth);
+  const constrainedTop = Math.min(bboxTop, imageHeight - finalBboxHeight);
+  const finalBboxLeft = Math.max(0, constrainedLeft);
+  const finalBboxTop = Math.max(0, constrainedTop);
+  
+  // Position logo: top-right corner aligns with BBOX's top-left corner (same as StandaloneExpandedCardView)
+  const logoLeft = finalBboxLeft - logoWidth + 2;
+  const logoTop = finalBboxTop;
+  
+  // === ZOOM/CROP FOR HOVER PREVIEW ===
+  // Calculate zoom to fit BBOX in preview (with padding around it)
+  const previewPadding = 15;
+  const availableWidth = previewWidth - (previewPadding * 2);
+  const availableHeight = previewHeight - (previewPadding * 2);
+  
+  // Combined area includes logo + BBOX
+  const combinedLeft = logoLeft;
+  const combinedRight = finalBboxLeft + finalBboxWidth;
+  const combinedWidth = combinedRight - combinedLeft;
+  const combinedCenterX = (combinedLeft + combinedRight) / 2;
+  const combinedCenterY = finalBboxTop + finalBboxHeight / 2;
+  
+  // Zoom to fit the combined area (logo + BBOX)
+  const zoomForWidth = availableWidth / combinedWidth;
+  const zoomForHeight = availableHeight / finalBboxHeight;
+  
+  // Use smaller zoom to ensure BBOX fits both dimensions
+  // Max 0.7x to keep citations at a reasonable size - prevents excessive zoom on small BBOXes
+  // This ensures smaller citations show more surrounding context instead of zooming in too close
+  const rawZoom = Math.min(zoomForWidth, zoomForHeight);
+  const zoom = Math.min(0.7, rawZoom);
+  
+  // Scaled dimensions
+  const scaledImageWidth = imageWidth * zoom;
+  const scaledImageHeight = imageHeight * zoom;
+  const scaledCombinedWidth = combinedWidth * zoom;
+  const scaledCombinedHeight = finalBboxHeight * zoom;
+  
+  // Calculate translation to center BBOX in preview
+  const idealTranslateX = (previewWidth / 2) - (combinedCenterX * zoom);
+  const idealTranslateY = (previewHeight / 2) - (combinedCenterY * zoom);
+  
+  // Calculate bounds for translation to keep BBOX visible
+  // The scaled BBOX should fit within the preview
+  const scaledBboxLeft = combinedLeft * zoom;
+  const scaledBboxRight = combinedRight * zoom;
+  const scaledBboxTop = finalBboxTop * zoom;
+  const scaledBboxBottom = (finalBboxTop + finalBboxHeight) * zoom;
+  
+  // Ensure BBOX stays within preview bounds (with some margin)
+  const viewMargin = 10;
+  
+  // Translation bounds to keep BBOX visible:
+  // - Lower bound: BBOX left/top should be at least viewMargin from preview edge
+  // - Upper bound: BBOX right/bottom should be at most (previewSize - viewMargin) from preview edge
+  
+  // X bounds: translateX + scaledBboxLeft >= viewMargin (min), translateX + scaledBboxRight <= previewWidth - viewMargin (max)
+  const minTranslateX = viewMargin - scaledBboxLeft;
+  const maxTranslateX = (previewWidth - viewMargin) - scaledBboxRight;
+  
+  // Y bounds: same logic
+  const minTranslateY = viewMargin - scaledBboxTop;
+  const maxTranslateY = (previewHeight - viewMargin) - scaledBboxBottom;
+  
+  // Clamp translation to keep BBOX in view, preferring ideal (centered) position
+  // If min > max (BBOX larger than available space), use the average to center it
+  const translateX = minTranslateX > maxTranslateX 
+    ? (minTranslateX + maxTranslateX) / 2 
+    : Math.max(minTranslateX, Math.min(maxTranslateX, idealTranslateX));
+  const translateY = minTranslateY > maxTranslateY 
+    ? (minTranslateY + maxTranslateY) / 2 
+    : Math.max(minTranslateY, Math.min(maxTranslateY, idealTranslateY));
+  
+  const previewContent = (
+    <div
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{
+        position: 'fixed',
+        left: `${leftPosition}px`,
+        top: `${topPosition}px`,
+        width: `${previewWidth}px`,
+        height: `${previewHeight}px`,
+        backgroundColor: 'white',
+        border: '1px solid rgba(0, 0, 0, 0.1)',
+        borderRadius: '16px',
+        boxShadow: '0 0 0 1px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',
+        overflow: 'hidden',
+        zIndex: 99999,
+        pointerEvents: 'auto'
+      }}
+    >
+      {loading ? (
+        <div style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#f9fafb'
+        }}>
+          <div style={{ color: '#9ca3af', fontSize: '13px' }}>Loading...</div>
+        </div>
+      ) : pageImage ? (
+        <div style={{
+          position: 'relative',
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden'
+        }}>
+          {/* 
+            Image + BBOX wrapper - uses CSS transform for zoom/positioning
+            This keeps BBOX positioning identical to StandaloneExpandedCardView
+          */}
+          <div style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            transform: `translate(${translateX}px, ${translateY}px) scale(${zoom})`,
+            transformOrigin: '0 0',
+            width: `${imageWidth}px`,
+            height: `${imageHeight}px`
+          }}>
+            {/* Page image at natural size */}
+            <img
+              src={pageImage}
+              alt="Document preview"
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                width: `${imageWidth}px`,
+                height: `${imageHeight}px`,
+                pointerEvents: 'none'
+              }}
+            />
+            {/* Velora logo - positioned exactly like StandaloneExpandedCardView */}
+            <img
+              src={veloraLogo}
+              alt="Velora"
+              style={{
+                position: 'absolute',
+                left: `${logoLeft}px`,
+                top: `${logoTop}px`,
+                width: `${logoWidth}px`,
+                height: `${logoHeight}px`,
+                objectFit: 'contain',
+                pointerEvents: 'none',
+                zIndex: 11,
+                userSelect: 'none',
+                border: '2px solid rgba(255, 193, 7, 0.9)',
+                borderRadius: '2px',
+                backgroundColor: 'white',
+                boxSizing: 'border-box'
+              }}
+            />
+            {/* BBOX highlight - positioned exactly like StandaloneExpandedCardView */}
+            <div
+              style={{
+                position: 'absolute',
+                left: `${finalBboxLeft}px`,
+                top: `${finalBboxTop}px`,
+                width: `${Math.min(imageWidth, finalBboxWidth)}px`,
+                height: `${Math.min(imageHeight, finalBboxHeight)}px`,
+                backgroundColor: 'rgba(255, 235, 59, 0.4)',
+                border: '2px solid rgba(255, 193, 7, 0.9)',
+                borderRadius: '2px',
+                pointerEvents: 'none',
+                zIndex: 10,
+                boxShadow: '0 2px 8px rgba(255, 193, 7, 0.3)'
+              }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: '#f9fafb'
+        }}>
+          <div style={{ color: '#9ca3af', fontSize: '13px' }}>Preview unavailable</div>
+        </div>
+      )}
+      {/* Quote icon overlay in top-right corner */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '8px',
+          right: '8px',
+          width: '36px',
+          height: '36px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 100000,
+          pointerEvents: 'none'
+        }}
+      >
+        {/* White backdrop with blurred edges */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            maskImage: 'radial-gradient(circle, black 50%, transparent 80%)',
+            WebkitMaskImage: 'radial-gradient(circle, black 50%, transparent 80%)',
+            maskSize: 'cover',
+            WebkitMaskSize: 'cover',
+            maskPosition: 'center',
+            WebkitMaskPosition: 'center',
+            borderRadius: '8px'
+          }}
+        />
+        {/* Quote icon */}
+        <img
+          src={citationIcon}
+          alt="Citation"
+          style={{
+            position: 'relative',
+            width: '24px',
+            height: '24px',
+            objectFit: 'contain',
+            userSelect: 'none',
+            pointerEvents: 'none',
+            zIndex: 1
+          }}
+        />
+      </div>
+    </div>
+  );
+  
+  // Render via portal to escape overflow containers
+  return createPortal(previewContent, document.body);
+};
+
 interface SideChatPanelProps {
   isVisible: boolean;
   query: string;
@@ -1757,6 +2525,7 @@ interface SideChatPanelProps {
   onMinimize?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for minimizing to bubble with chat messages
   onMessagesUpdate?: (chatMessages: Array<{ id: string; type: 'query' | 'response'; text: string; attachments?: FileAttachmentData[]; propertyAttachments?: any[]; selectedDocumentIds?: string[]; selectedDocumentNames?: string[]; isLoading?: boolean }>) => void; // Callback for real-time message updates
   restoreChatId?: string | null; // Chat ID to restore from history
+  newAgentTrigger?: number; // Counter that increments when "New Agent" is clicked from ChatPanel
   onNewChat?: () => void; // Callback when new chat is clicked (to clear query in parent)
   onSidebarToggle?: () => void; // Callback for toggling sidebar
   onOpenProperty?: (address: string | null, coordinates?: { lat: number; lng: number } | null, propertyId?: string | number, navigationOnly?: boolean) => void; // Callback for opening property card
@@ -1773,6 +2542,8 @@ interface SideChatPanelProps {
 
 export interface SideChatPanelRef {
   getAttachments: () => FileAttachmentData[];
+  handleResizeStart: (e: React.MouseEvent) => void;
+  isResizing: boolean;
 }
 
 export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelProps>(({
@@ -1788,6 +2559,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   onMinimize,
   onMessagesUpdate,
   restoreChatId,
+  newAgentTrigger,
   onNewChat,
   onSidebarToggle,
   onOpenProperty,
@@ -1831,15 +2603,74 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     getCachedPdfDocument,
     preloadPdfPage,
     setHighlightCitation,
-    openExpandedCardView,
-    closeExpandedCardView,
-    expandedCardViewDoc, // Track when document preview is open/closed
+    openExpandedCardView: legacyOpenExpandedCardView, // Legacy - will be removed
+    closeExpandedCardView: legacyCloseExpandedCardView, // Legacy - will be removed
+    expandedCardViewDoc: legacyExpandedCardViewDoc, // Legacy - will be removed
     setIsAgentOpening,
     setAgentTaskActive,
     stopAgentTask,
     setMapNavigating,
     setIsChatPanelVisible // CRITICAL: Update chat panel visibility directly from SideChatPanel
   } = usePreview();
+  
+  // NEW: Use ChatStateStore for per-chat document preview isolation
+  const {
+    activeChatId: storeActiveChatId,
+    setActiveChatId: setStoreActiveChatId,
+    getChatState,
+    initializeChatState,
+    openDocumentForChat,
+    closeDocumentForChat,
+    setMessagesForChat,
+    updateMessageInChat,
+    startStreamingForChat,
+    appendStreamingText: storeAppendStreamingText,
+    setStreamingText: storeSetStreamingText,
+    addReasoningStep: storeAddReasoningStep,
+    updateCitations: storeUpdateCitations,
+    completeStreaming: storeCompleteStreaming,
+    isChatActive: storeIsChatActive,
+    activeChatIdRef: storeActiveChatIdRef
+  } = useChatStateStore();
+  
+  // ChatPanel (agent sidebar) integration - declared early for use in width calculations
+  const { isOpen: isChatPanelOpen, width: chatPanelWidth, isResizing: isChatPanelResizing, togglePanel: toggleChatPanel, closePanel: closeChatPanel, triggerGlow } = useChatPanel();
+  
+  // Track ChatPanel (agent sidebar) open/close to disable transitions for instant updates
+  const prevChatPanelOpenRef = React.useRef(isChatPanelOpen);
+  const [isChatPanelJustToggled, setIsChatPanelJustToggled] = React.useState(false);
+  
+  React.useEffect(() => {
+    const justToggled = prevChatPanelOpenRef.current !== isChatPanelOpen;
+    setIsChatPanelJustToggled(justToggled);
+    // Clear flag after one frame to allow instant update
+    if (justToggled) {
+      requestAnimationFrame(() => {
+        setIsChatPanelJustToggled(false);
+      });
+    }
+    prevChatPanelOpenRef.current = isChatPanelOpen;
+  }, [isChatPanelOpen]);
+  
+  // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
+  const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
+  
+  // Clear locked width when agent sidebar opens/closes during 50/50 mode (document preview open)
+  // This allows the dynamic calculation to account for the agent sidebar width
+  // Check both isPropertyDetailsOpen AND legacyExpandedCardViewDoc since document preview
+  // can be open independently of property details panel
+  React.useEffect(() => {
+    const isDocPreviewOpen = isPropertyDetailsOpen || !!legacyExpandedCardViewDoc;
+    if (isDocPreviewOpen && lockedWidthRef.current) {
+      // When in 50/50 mode and agent sidebar state changes, clear locked width
+      // so the dynamic calculation (which accounts for chatPanelOffset) takes effect
+      lockedWidthRef.current = null;
+    }
+  }, [isChatPanelOpen, chatPanelWidth, isPropertyDetailsOpen, legacyExpandedCardViewDoc]);
+  
+  // REF: Track current chat ID for document operations (defined later, used in callbacks)
+  // This is a forward declaration pattern - the actual ref is defined after state declarations
+  const currentChatIdForDocRef = React.useRef<string | null>(null);
   
   // CRITICAL: Sync SideChatPanel's actual visibility to PreviewContext
   // This ensures document preview knows when chat is actually visible (not just calculated)
@@ -1913,6 +2744,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
   const [hoveredQueryId, setHoveredQueryId] = React.useState<string | null>(null);
   const [copiedQueryId, setCopiedQueryId] = React.useState<string | null>(null);
+  const [isHoveringName, setIsHoveringName] = React.useState<boolean>(false);
+  const [isNearEditButton, setIsNearEditButton] = React.useState<boolean>(false);
+  const editButtonRef = React.useRef<HTMLButtonElement>(null);
 
   // Copy query text to clipboard
   const handleCopyQuery = async (queryText: string, messageId: string) => {
@@ -1937,6 +2771,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [propertySearchQuery, setPropertySearchQuery] = React.useState<string>("");
   const [propertySearchResults, setPropertySearchResults] = React.useState<PropertyData[]>([]);
   const [showPropertySearchPopup, setShowPropertySearchPopup] = React.useState<boolean>(false);
+  
+  // Web search state
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = React.useState<boolean>(false);
   const propertySearchPopupRef = React.useRef<HTMLDivElement>(null);
   const propertySearchDebounceRef = React.useRef<NodeJS.Timeout | null>(null);
   
@@ -2122,14 +2959,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const [isFullscreenMode, setIsFullscreenMode] = React.useState<boolean>(false);
   // Track fullscreen state when chat is closed so we can restore it when reopened
   const wasFullscreenWhenClosedRef = React.useRef<boolean>(false);
+  // Track if this is the first time the panel is becoming visible (to disable animation on first open)
+  const [isFirstOpen, setIsFirstOpen] = React.useState<boolean>(true);
   // Track actual rendered width of the panel for responsive design
-  const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(450);
+  const [actualPanelWidth, setActualPanelWidth] = React.useState<number>(CHAT_PANEL_WIDTH.COLLAPSED);
   // Track actual input container width for button responsive design
-  const [inputContainerWidth, setInputContainerWidth] = React.useState<number>(450);
+  const [inputContainerWidth, setInputContainerWidth] = React.useState<number>(CHAT_PANEL_WIDTH.COLLAPSED);
   // Track if we just entered fullscreen to disable transition
   const [justEnteredFullscreen, setJustEnteredFullscreen] = React.useState<boolean>(false);
   // State for drag over feedback
   const [isDragOver, setIsDragOver] = React.useState<boolean>(false);
+  // Ref to track drag state to prevent false clears when moving between child elements
+  const isDragOverRef = React.useRef<boolean>(false);
   // Track locked width to prevent expansion when property details panel closes
   const lockedWidthRef = React.useRef<string | null>(null);
   // Track if agent is performing a navigation task (prevents fullscreen re-expansion)
@@ -2140,38 +2981,40 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Track if this is the first citation clicked in the current chat session
   const isFirstCitationRef = React.useRef<boolean>(true);
   
+  // Track button row collapse level for responsive overflow handling
+  // 0 = all labels shown, 1 = some collapsed, 2 = all icons only, 3 = hide some buttons
+  const [buttonCollapseLevel, setButtonCollapseLevel] = React.useState<number>(0);
+  const buttonRowRef = React.useRef<HTMLDivElement>(null);
+  const emptyButtonRowRef = React.useRef<HTMLDivElement>(null);
+  
   // CRITICAL: When chat becomes visible with a document already open (silent background opening),
   // trigger 50/50 split so document appears immediately with correct layout
   // This handles the case where agent action opened document while chat was hidden
+  // NOTE: Uses legacyExpandedCardViewDoc because wrapped version is defined later in code
   const prevChatVisibleForDocRef = React.useRef<boolean>(isVisible);
   React.useEffect(() => {
     const chatJustBecameVisible = !prevChatVisibleForDocRef.current && isVisible;
     prevChatVisibleForDocRef.current = isVisible;
     
-    if (chatJustBecameVisible && expandedCardViewDoc) {
+    if (chatJustBecameVisible && legacyExpandedCardViewDoc) {
       // Chat just became visible and document is already open (was opened silently in background)
       // Trigger 50/50 split so document appears with correct layout
       console.log('📂 [SIDE_CHAT_PANEL] Chat visible with silently-opened document - triggering 50/50 split:', {
-        docId: expandedCardViewDoc.docId,
-        filename: expandedCardViewDoc.filename,
-        hasHighlight: !!expandedCardViewDoc.highlight
+        docId: legacyExpandedCardViewDoc.docId,
+        filename: legacyExpandedCardViewDoc.filename,
+        hasHighlight: !!legacyExpandedCardViewDoc.highlight
       });
       setIsExpanded(true);
-      setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
-      lockedWidthRef.current = '50vw';
+      setDraggedWidth(null); // Clear any dragged width so unified width calculation takes effect
+      // NOTE: Don't set lockedWidthRef - the unified calculateChatPanelWidth will use 50% split
+      // because legacyExpandedCardViewDoc is already open
       
-      // Notify parent of width change
-      if (onChatWidthChange) {
-        const newWidth = window.innerWidth * 0.5;
-        onChatWidthChange(newWidth);
-      }
+      // Width notification will happen via useEffect when isExpanded/expandedCardViewDoc changes
       
       // Mark that we've seen a citation (so subsequent citations don't trigger this again)
       isFirstCitationRef.current = false;
-    } else if (chatJustBecameVisible && !expandedCardViewDoc) {
-      console.log('📂 [SIDE_CHAT_PANEL] Chat became visible but no document in state - document may not have been opened silently');
     }
-  }, [isVisible, expandedCardViewDoc, onChatWidthChange, setIsExpanded]);
+  }, [isVisible, legacyExpandedCardViewDoc, onChatWidthChange, setIsExpanded]);
   
   // Use refs to store resize state for performance (avoid re-renders during drag)
   const resizeStateRef = React.useRef<{
@@ -2205,7 +3048,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     
     // CRITICAL: Don't re-expand to fullscreen if we're in the middle of a navigation task
     // Navigation tasks shrink the chat to 380px and should NOT be overridden
-    if (isNavigatingTaskRef.current) {
+    // Exception: when property details is open, we must expand to keep split view aligned
+    if (isNavigatingTaskRef.current && !isPropertyDetailsOpen) {
       console.log('🚫 Skipping fullscreen expansion - navigation task in progress');
       return;
     }
@@ -2217,7 +3061,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
       
       // Only set fullscreen mode when shouldExpand is true AND property details is NOT open
-      // When property details is open, use normal 35vw width (not fullscreen)
+      // When property details is open, use 50/50 split width (not fullscreen)
       if (!isPropertyDetailsOpen) {
         // Set fullscreen mode (from dashboard query) - do this immediately
         if (!isFullscreenMode) {
@@ -2234,17 +3078,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           }, 50); // Reduced from 100ms for faster transition
         }
       } else {
-        // Property details is open - use normal 35vw width (not fullscreen)
+        // Property details is open - use 50/50 split width (not fullscreen)
         // Clear fullscreen mode if it was set (but not if user manually requested fullscreen)
         if (isFullscreenMode && !isManualFullscreenRef.current) {
-          console.log('📐 Property details open - clearing fullscreen mode, using 35vw');
+          console.log('📐 Property details open - clearing fullscreen mode, using 50/50 split');
           setIsFullscreenMode(false);
           isFullscreenFromDashboardRef.current = false;
         }
-        // Lock the width to 35vw for analyse mode (unless user manually requested fullscreen)
+        // Clear locked width so dynamic 50/50 calculation takes effect (unless user manually requested fullscreen)
         if (!isManualFullscreenRef.current) {
-          lockedWidthRef.current = '35vw';
-          // Clear dragged width so locked width takes effect
+          lockedWidthRef.current = null;
+          // Clear dragged width so dynamic width takes effect
           setDraggedWidth(null);
         }
       }
@@ -2276,8 +3120,30 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       wasFullscreenWhenClosedRef.current = isFullscreenMode || isManualFullscreenRef.current || isFullscreenFromDashboardRef.current;
       console.log('💾 Chat closing - saving fullscreen state:', wasFullscreenWhenClosedRef.current);
     } else if (!wasVisible && isVisible) {
-      // Chat is opening - restore fullscreen state if we were in fullscreen before
-      if (wasFullscreenWhenClosedRef.current && !shouldExpand) {
+      // Chat is opening - track first open to disable animation on initial render
+      if (isFirstOpen) {
+        // This is the first open - disable transitions
+        setIsFirstOpen(false);
+      }
+      
+      // CRITICAL: If opening with shouldExpand, set fullscreen immediately to prevent flash
+      if (shouldExpand && !isPropertyDetailsOpen) {
+        console.log('🔄 Chat opening with shouldExpand - setting fullscreen immediately');
+        setIsFullscreenMode(true);
+        isFullscreenFromDashboardRef.current = true;
+        setIsExpanded(true);
+        setDraggedWidth(null); // Clear any dragged width so fullscreen width takes effect
+        lockedWidthRef.current = null;
+        // Disable transition for instant fullscreen - set immediately
+        setJustEnteredFullscreen(true);
+        // Clear after render completes
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setJustEnteredFullscreen(false);
+          });
+        });
+      } else if (wasFullscreenWhenClosedRef.current && !shouldExpand) {
+        // Chat is opening - restore fullscreen state if we were in fullscreen before
         console.log('🔄 Chat opening - restoring fullscreen state');
         setIsFullscreenMode(true);
         isFullscreenFromDashboardRef.current = true;
@@ -2286,12 +3152,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         lockedWidthRef.current = null;
         // Disable transition for instant fullscreen
         setJustEnteredFullscreen(true);
-        setTimeout(() => {
-          setJustEnteredFullscreen(false);
-        }, 50);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setJustEnteredFullscreen(false);
+          });
+        });
       }
+      
     }
-  }, [isVisible, isFullscreenMode, shouldExpand]);
+  }, [isVisible, isFullscreenMode, shouldExpand, isPropertyDetailsOpen]);
   
   // Calculate QuickStartBar position dynamically based on chat bar position
   React.useLayoutEffect(() => {
@@ -2378,10 +3247,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     };
   }, [isQuickStartBarVisible, isExpanded]); // Recalculate when visibility or expanded state changes
   
-  // Lock width when property details panel opens in expanded chat
+  // Clear locked width when property details panel opens in expanded chat (use dynamic 50/50 calculation)
   React.useEffect(() => {
     if (isExpanded && isPropertyDetailsOpen) {
-      lockedWidthRef.current = '35vw';
+      lockedWidthRef.current = null;
     }
   }, [isExpanded, isPropertyDetailsOpen]);
   
@@ -2390,11 +3259,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   const wasFullscreenOnResizeStartRef = React.useRef(false);
   const hasExitedFullscreenDuringResizeRef = React.useRef(false);
   
-  const handleResizeStart = (e: React.MouseEvent) => {
+  // Store current values in refs for stable handleResizeStart callback
+  const resizeFullscreenModeRef = React.useRef(isFullscreenMode);
+  const resizePropertyDetailsOpenRef = React.useRef(isPropertyDetailsOpen);
+  const resizeDraggedWidthRef = React.useRef(draggedWidth);
+  const resizeIsExpandedRef = React.useRef(isExpanded);
+  const resizeSidebarWidthRef = React.useRef(sidebarWidth);
+  const resizeDocPreviewRef = React.useRef(legacyExpandedCardViewDoc);
+  
+  // Keep refs in sync with state
+  React.useEffect(() => {
+    resizeFullscreenModeRef.current = isFullscreenMode;
+    resizePropertyDetailsOpenRef.current = isPropertyDetailsOpen;
+    resizeDraggedWidthRef.current = draggedWidth;
+    resizeIsExpandedRef.current = isExpanded;
+    resizeSidebarWidthRef.current = sidebarWidth;
+    resizeDocPreviewRef.current = legacyExpandedCardViewDoc;
+  });
+  
+  const handleResizeStart = React.useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     
-    const panelElement = e.currentTarget.closest('[class*="fixed"]') as HTMLElement;
+    // Use panelRef directly instead of searching from event target
+    // This allows the function to be called from external components (like StandaloneExpandedCardView)
+    const panelElement = panelRef.current || e.currentTarget.closest('[class*="fixed"]') as HTMLElement;
     if (!panelElement) return;
     
     panelElementRef.current = panelElement;
@@ -2403,8 +3292,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // Get the actual current width from the DOM element
     const actualCurrentWidth = rect.width;
     
-    // Check if we're in fullscreen mode
-    const isInFullscreen = isFullscreenMode && !isPropertyDetailsOpen;
+    // Check if we're in fullscreen mode (use refs for latest values)
+    const isInFullscreen = resizeFullscreenModeRef.current && !resizePropertyDetailsOpenRef.current;
     wasFullscreenOnResizeStartRef.current = isInFullscreen;
     hasExitedFullscreenDuringResizeRef.current = false;
     
@@ -2415,11 +3304,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       hasExitedFullscreenDuringResizeRef.current = true;
       
       // Calculate width based on cursor position (where user touched the handle)
-      const availableWidth = window.innerWidth - sidebarWidth;
-      const cursorDistanceFromLeft = e.clientX - sidebarWidth;
+      const availableWidth = window.innerWidth - resizeSidebarWidthRef.current;
+      const cursorDistanceFromLeft = e.clientX - resizeSidebarWidthRef.current;
       // Clamp to min/max bounds
-      const minWidth = 450;
-      const maxWidth = availableWidth;
+      // If document preview is open, cap max width to leave room for it
+      // Must account for: left gap (12px) + min doc preview width (380px) + right gap (12px) = 404px
+      const isDocPreviewOpen = !!resizeDocPreviewRef.current;
+      const minWidth = CHAT_PANEL_WIDTH.COLLAPSED;
+      const docPreviewTotalSpace = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN + 24; // min width + gaps
+      const maxWidth = isDocPreviewOpen 
+        ? availableWidth - docPreviewTotalSpace 
+        : availableWidth;
       const targetWidth = Math.min(Math.max(cursorDistanceFromLeft, minWidth), maxWidth);
       
       // Apply the width immediately based on cursor position
@@ -2440,14 +3335,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Not in fullscreen - use current width
       let currentWidth: number;
       
-      if (draggedWidth !== null) {
-        currentWidth = draggedWidth;
+      if (resizeDraggedWidthRef.current !== null) {
+        currentWidth = resizeDraggedWidthRef.current;
       } else if (actualCurrentWidth > 0) {
         currentWidth = actualCurrentWidth;
       } else {
-        currentWidth = isExpanded 
-          ? (isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5)
-          : 450;
+        // 50% of available width (after sidebar) when property details is open
+        currentWidth = resizeIsExpandedRef.current 
+          ? (resizePropertyDetailsOpenRef.current ? (window.innerWidth - resizeSidebarWidthRef.current) / 2 : window.innerWidth * (CHAT_PANEL_WIDTH.EXPANDED_VW / 100))
+          : CHAT_PANEL_WIDTH.COLLAPSED;
       }
       
       resizeStateRef.current = {
@@ -2458,17 +3354,45 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
     
     setIsResizing(true);
-  };
+  }, [onChatWidthChange]);
 
   // Handle resize mouse move and cleanup - using useEffect like PDF preview modal
+  // ULTRA SMOOTH: Directly manipulates both chat panel AND document preview DOM for zero-lag sync
   React.useEffect(() => {
     if (!isResizing || !resizeStateRef.current || !panelElementRef.current) {
       return;
     }
 
-    const minWidth = 450;
+    const minWidth = CHAT_PANEL_WIDTH.COLLAPSED;
     // Allow dragging to the edge of the screen (only account for sidebar width)
-    const maxWidth = window.innerWidth - sidebarWidth;
+    // BUT if document preview is open, cap max width to leave room for document preview
+    // Must account for: left gap (12px) + min doc preview width (380px) + right gap (12px) = 404px
+    const isDocPreviewOpen = !!legacyExpandedCardViewDoc;
+    const baseMaxWidth = window.innerWidth - sidebarWidth;
+    const docPreviewTotalSpace = CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN + 24; // min width + gaps (12px left + 12px right)
+    const maxWidth = isDocPreviewOpen 
+      ? baseMaxWidth - docPreviewTotalSpace 
+      : baseMaxWidth;
+
+    // Find the document preview element for direct DOM manipulation
+    // This ensures both panels resize together with zero lag
+    const documentPreviewElement = document.querySelector('[data-document-preview="true"]') as HTMLElement | null;
+    
+    // Get sidebar and agent sidebar widths from document preview's data attributes
+    const getDocPreviewSidebarWidth = () => {
+      if (!documentPreviewElement) return sidebarWidth;
+      return parseInt(documentPreviewElement.dataset.sidebarWidth || '0', 10) || sidebarWidth;
+    };
+    const getDocPreviewAgentSidebarWidth = () => {
+      if (!documentPreviewElement) return 0;
+      return parseInt(documentPreviewElement.dataset.agentSidebarWidth || '0', 10);
+    };
+
+    // ULTRA SMOOTH: Set up document preview for resize (disable transitions, enable GPU acceleration)
+    if (documentPreviewElement) {
+      documentPreviewElement.style.transition = 'none';
+      documentPreviewElement.style.willChange = 'width';
+    }
 
     const handleMouseMove = (e: MouseEvent) => {
       // Cancel any pending RAF
@@ -2497,18 +3421,51 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         }
         
         // Calculate new width based on delta
-        // NOTE: Handle is on RIGHT edge, so dragging left (negative delta) = narrower, right (positive) = wider
+        // NOTE: Handle is on RIGHT edge - edge follows cursor exactly
+        // Dragging right (positive delta) = wider, dragging left (negative delta) = narrower
         const newWidth = Math.min(Math.max(resizeStateRef.current.startWidth + deltaX, minWidth), maxWidth);
         
-        // Direct DOM manipulation for immediate visual feedback
+        // ULTRA SMOOTH: Direct DOM manipulation for chat panel
+        // Document preview uses left/right positioning and will auto-resize via React props
+        // Round width to prevent sub-pixel rendering gaps
+        const roundedWidth = Math.round(newWidth);
+        
         if (panelElementRef.current) {
-          panelElementRef.current.style.width = `${newWidth}px`;
+          panelElementRef.current.style.width = `${roundedWidth}px`;
         }
         
-        // Update state
-        setDraggedWidth(newWidth);
+        // Update document preview's left AND width directly for zero-lag sync
+        // CORRECT LAYOUT: Sidebar (left) | Chat Panel (left) | Document Preview (RIGHT)
+        // Document preview left = sidebarWidth + chatPanelWidth + gap
+        if (documentPreviewElement && isDocPreviewOpen) {
+          const docSidebarWidth = getDocPreviewSidebarWidth();
+          const docAgentSidebarWidth = getDocPreviewAgentSidebarWidth();
+          
+          // Calculate the natural left position
+          const naturalDocLeft = docSidebarWidth + roundedWidth + 11;
+          
+          // Calculate the maximum left position that still allows minimum doc preview width
+          // maxLeft + minDocWidth + rightGap = viewport - agentSidebar
+          const maxDocLeft = window.innerWidth - docAgentSidebarWidth - 12 - CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
+          
+          // Cap left position to ensure document preview never gets pushed off screen
+          const docLeft = Math.min(naturalDocLeft, maxDocLeft);
+          
+          // Calculate width based on capped left position
+          const availableDocWidth = window.innerWidth - docLeft - docAgentSidebarWidth - 12;
+          
+          // Enforce minimum doc width (should always be satisfied now, but keep as safety)
+          const finalWidth = Math.max(availableDocWidth, CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN);
+          
+          documentPreviewElement.style.left = `${docLeft}px`;
+          documentPreviewElement.style.width = `${Math.round(finalWidth)}px`;
+        }
+        
+        // Update state (React will batch these updates)
+        // Use rounded width for consistency with DOM manipulation
+        setDraggedWidth(roundedWidth);
         if (onChatWidthChange) {
-          onChatWidthChange(newWidth);
+          onChatWidthChange(roundedWidth);
         }
       });
     };
@@ -2520,7 +3477,38 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         rafIdRef.current = null;
       }
 
-      setIsResizing(false);
+      // Get the final chat panel width from the DOM to calculate matching document preview position
+      if (documentPreviewElement && panelElementRef.current) {
+        const finalChatWidth = panelElementRef.current.getBoundingClientRect().width;
+        const docSidebarWidth = getDocPreviewSidebarWidth();
+        const docAgentSidebarWidth = getDocPreviewAgentSidebarWidth();
+        
+        // Calculate natural final position
+        const naturalDocLeft = docSidebarWidth + Math.round(finalChatWidth) + 12;
+        
+        // Cap left position to ensure document stays on screen with minimum width
+        const maxDocLeft = window.innerWidth - docAgentSidebarWidth - 12 - CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN;
+        const finalDocLeft = Math.min(naturalDocLeft, maxDocLeft);
+        
+        // Calculate width based on capped left position
+        const finalDocWidth = window.innerWidth - finalDocLeft - docAgentSidebarWidth - 12;
+        const clampedWidth = Math.max(finalDocWidth, CHAT_PANEL_WIDTH.DOC_PREVIEW_MIN);
+        
+        // Set final values - DO NOT clear them
+        // Keep inline styles until React state has fully propagated
+        // They will be cleared when a new resize starts
+        documentPreviewElement.style.left = `${finalDocLeft}px`;
+        documentPreviewElement.style.width = `${Math.round(clampedWidth)}px`;
+        documentPreviewElement.style.transition = '';
+        documentPreviewElement.style.willChange = 'auto';
+      }
+
+      // Delay setting isResizing to false to allow chatPanelWidth state to propagate
+      // This prevents React from overwriting DOM styles with stale values
+      setTimeout(() => {
+        setIsResizing(false);
+      }, 50);
+      
       resizeStateRef.current = null;
       panelElementRef.current = null;
       wasFullscreenOnResizeStartRef.current = false;
@@ -2546,37 +3534,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       document.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      
+      // ULTRA SMOOTH: Reset document preview styles on cleanup
+      if (documentPreviewElement) {
+        documentPreviewElement.style.transition = '';
+        documentPreviewElement.style.willChange = 'auto';
+      }
     };
-  }, [isResizing, sidebarWidth, onChatWidthChange]);
+  }, [isResizing, sidebarWidth, onChatWidthChange, legacyExpandedCardViewDoc]);
+  
+  // Get document preview from ChatStateStore using the proper hook
+  // This hook subscribes to chatStates changes, ensuring re-render when document closes
+  const chatStateDocumentPreview = useActiveChatDocumentPreview();
+  
+  // Use ChatStateStore document preview if available, fall back to legacy PreviewContext
+  const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
   
   // Calculate and notify parent of chat panel width changes
+  // Uses unified calculateChatPanelWidth for consistent width calculation
   React.useEffect(() => {
     if (onChatWidthChange && isVisible) {
-      // Use dragged width if set, otherwise use locked width or calculate based on current state
-      let chatWidth: number;
-      if (draggedWidth !== null) {
-        chatWidth = draggedWidth;
-      } else if (isExpanded) {
-        if (isFullscreenMode) {
-          // Fullscreen from dashboard: span full width minus sidebar
-          chatWidth = window.innerWidth - sidebarWidth;
-        } else if (lockedWidthRef.current) {
-          // Use locked width (convert vw to pixels)
-          const vwValue = parseFloat(lockedWidthRef.current);
-          chatWidth = window.innerWidth * (vwValue / 100);
-        } else {
-          // Normal calculation
-          chatWidth = isPropertyDetailsOpen ? window.innerWidth * 0.35 : window.innerWidth * 0.5;
-        }
-      } else {
-        chatWidth = 450; // Fixed 450px when collapsed
-      }
-      onChatWidthChange(chatWidth);
+      const isDocumentPreviewOpen = !!expandedCardViewDoc;
+      
+      const { widthPx } = calculateChatPanelWidth({
+        draggedWidth,
+        isExpanded,
+        isFullscreenMode,
+        isDocumentPreviewOpen,
+        isPropertyDetailsOpen,
+        sidebarWidth,
+        chatPanelWidth,
+        isChatPanelOpen,
+        isManualFullscreen: isManualFullscreenRef.current,
+      });
+      
+      onChatWidthChange(widthPx);
     } else if (onChatWidthChange && !isVisible) {
       // Chat is hidden, notify parent that width is 0
       onChatWidthChange(0);
     }
-  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth]);
+  }, [isExpanded, isVisible, isPropertyDetailsOpen, draggedWidth, onChatWidthChange, isFullscreenMode, sidebarWidth, isChatPanelOpen, chatPanelWidth, expandedCardViewDoc]);
   
   // Don't reset dragged width when collapsing - allow custom width to persist
   // User can resize in both expanded and collapsed states
@@ -2633,12 +3630,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     }
   }, [isBotPaused]);
   
-  // Expose getAttachments method via ref
+  // Expose methods via ref for parent components
   React.useImperativeHandle(ref, () => ({
     getAttachments: () => {
       return attachedFilesRef.current;
-    }
-  }), []);
+    },
+    handleResizeStart,
+    isResizing
+  }), [handleResizeStart, isResizing]);
   
   // Restore attachments when initialAttachedFiles prop changes
   const prevInitialAttachedFilesRef = React.useRef<FileAttachmentData[] | undefined>(initialAttachedFiles);
@@ -2679,19 +3678,27 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   // Filing sidebar integration
   const { toggleSidebar: toggleFilingSidebar, isOpen: isFilingSidebarOpen, isResizing: isFilingSidebarResizing, width: filingSidebarWidth } = useFilingSidebar();
+  // Note: useChatPanel hook is declared earlier in the component for use in width calculations
   
   // Agent mode (reader vs agent)
   const { mode: agentMode, isAgentMode } = useMode();
   
+  // Model selection (gpt-4o-mini, gpt-4o, claude-sonnet, claude-opus)
+  const { model: selectedModel } = useModel();
+  
   // Ref to track current agent mode (avoids closure issues in streaming callbacks)
   const isAgentModeRef = React.useRef(isAgentMode);
+  
+  // Ref to track current model selection (avoids closure issues in streaming callbacks)
+  const selectedModelRef = React.useRef(selectedModel);
   React.useEffect(() => {
     isAgentModeRef.current = isAgentMode;
+    selectedModelRef.current = selectedModel;
     // Hide bot overlay when switching from agent mode to reader mode
     if (!isAgentMode) {
       setIsBotActive(false);
     }
-  }, [isAgentMode]);
+  }, [isAgentMode, selectedModel]);
   
   // Ref to track current fullscreen mode (avoids closure issues in streaming callbacks)
   const isFullscreenModeRef = React.useRef(isFullscreenMode);
@@ -2709,7 +3716,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Store messages (both queries and responses)
   interface ReasoningStep {
     step: string;
-    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'complete' | 'context' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
+    action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'thinking' | 'complete' | 'context' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
     message: string;
     count?: number;
     target?: string;
@@ -2767,8 +3774,23 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const [submittedQueries, setSubmittedQueries] = React.useState<SubmittedQuery[]>([]);
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([]);
+  // CRITICAL: Ref to track current chatMessages for streaming callbacks (avoids stale closure issues)
+  const chatMessagesRef = React.useRef<ChatMessage[]>([]);
+  // Keep ref in sync with state
+  React.useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
   // Persistent sessionId for conversation continuity (reused across all messages in this chat session)
   const [sessionId] = React.useState<string>(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  
+  // Chat title state management
+  const [currentChatId, setCurrentChatId] = React.useState<string | null>(null);
+  const [chatTitle, setChatTitle] = React.useState<string>('');
+  const [isEditingTitle, setIsEditingTitle] = React.useState<boolean>(false);
+  const [editingTitleValue, setEditingTitleValue] = React.useState<string>('');
+  const [isTitleStreaming, setIsTitleStreaming] = React.useState<boolean>(false);
+  const [streamedTitle, setStreamedTitle] = React.useState<string>('');
+  const titleStreamIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
   
   // File choice flow state - tracks pending file choice when attachments have extracted text
   const pendingFileChoiceRef = React.useRef<{
@@ -2851,6 +3873,129 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Persist chat messages across panel open/close
   const persistedChatMessagesRef = React.useRef<ChatMessage[]>([]);
   
+  // ========== LEGACY BUFFERING SYSTEM ==========
+  // NOTE: This buffering system is being replaced by ChatStateStore.
+  // ChatStateStore provides true per-chat isolation without complex buffering.
+  // Document previews are now stored per-chat in ChatStateStore.
+  // This legacy code remains for streaming callback compatibility and will be
+  // removed once streaming callbacks are fully migrated to ChatStateStore.
+  // ================================================
+  interface BufferedChatState {
+    messages: ChatMessage[];           // Latest message state
+    accumulatedText: string;           // Streaming text buffer
+    reasoningSteps: ReasoningStep[];    // Reasoning steps
+    citations: Record<string, CitationData>; // Citations
+    status: 'loading' | 'completed';    // Current status
+    lastUpdate: number;                 // Timestamp of last update
+    isLoading: boolean;                 // Whether response is still streaming
+    // Query lifecycle state (for exact restoration)
+    documentPreview?: {                 // LEGACY: Now handled by ChatStateStore
+      docId: string;
+      filename: string;
+      highlight?: {
+        fileId: string;
+        bbox: any;                      // Contains { left, top, width, height, page }
+        doc_id: string;
+        block_id?: string;
+        block_content?: string;
+        original_filename: string;
+      };
+    };
+    activeAgentAction?: {               // Agent action in progress (if any)
+      action: string;                   // e.g., 'open_document', 'navigate_to_property'
+      params: any;
+      timestamp: number;
+    };
+    lastReasoningStep?: ReasoningStep;  // Last reasoning step (to show current activity)
+    documentPreviewCaptured?: boolean;  // Whether document preview state was explicitly captured (to distinguish "no doc open" from "never saved")
+  }
+  
+  // LEGACY: Track which chat is currently active (being viewed)
+  // Now handled by ChatStateStore.activeChatId
+  const activeChatIdRef = React.useRef<string | null>(null);
+  
+  // LEGACY: Track which chat owns the current document preview
+  // No longer needed - ChatStateStore provides per-chat document preview isolation
+  const documentPreviewOwnerRef = React.useRef<string | null>(null);
+  
+  // Buffer updates for inactive chats
+  const bufferedChatUpdatesRef = React.useRef<Record<string, BufferedChatState>>({});
+  
+  // Helper: Check if a specific chat is currently active (being viewed)
+  // CRITICAL: Use activeChatIdRef as primary source of truth for multiple concurrent chats
+  // This ensures correct routing of streaming updates when multiple chats are running
+  const isChatActive = React.useCallback((chatId: string | null, visible: boolean): boolean => {
+    if (!visible || !chatId) return false;
+    // Primary: Check activeChatIdRef (most reliable for concurrent chats)
+    if (chatId === activeChatIdRef.current) return true;
+    // Secondary: Check currentChatId (for normal query scenario)
+    if (chatId === currentChatId) return true;
+    return false;
+  }, [currentChatId]);
+  
+  // Unified helper: Check if a query's chat is currently active
+  // This provides consistent chatIsActive logic across all streaming callbacks
+  // Use this for all streaming callback checks to prevent leakage between chats
+  // 
+  // CRITICAL FIX: The primary check is activeChatIdRef.current which is set synchronously
+  // when a query starts and cleared when switching chats. This prevents callbacks from
+  // old chats from updating the UI after the user has switched to a new chat.
+  const isChatActiveForQuery = React.useCallback((
+    queryChatId: string | null,
+    savedChatId: string | null
+  ): boolean => {
+    if (!queryChatId) return false;
+    
+    // CRITICAL: activeChatIdRef is the ONLY source of truth for the active chat
+    // This is set synchronously when:
+    // 1. A query starts (set to queryChatId)
+    // 2. A new agent is requested (set to null)
+    // 3. A chat is restored (set to restoreChatId)
+    // 
+    // If the callback's queryChatId doesn't match activeChatIdRef, the chat is inactive
+    // and updates should be buffered, NOT displayed in the UI
+    if (queryChatId === activeChatIdRef.current) return true;
+    
+    // REMOVED: The following checks caused leakage between chats:
+    // - savedChatId && queryChatId === savedChatId - ALWAYS true for originating chat!
+    // - isVisible && queryChatId === currentChatIdRef.current - stale after new agent
+    // - restoreChatId === queryChatId - handled by activeChatIdRef already
+    
+    return false;
+  }, []);
+  
+  // Helper: Update active chat when chat becomes visible or switches
+  const updateActiveChat = React.useCallback((chatId: string | null, visible: boolean) => {
+    if (visible && chatId) {
+      activeChatIdRef.current = chatId;
+    } else if (!visible) {
+      activeChatIdRef.current = null;
+    }
+  }, []);
+  
+  // Helper: Get or create buffered state for a chat
+  const getBufferedState = React.useCallback((chatId: string): BufferedChatState => {
+    if (!bufferedChatUpdatesRef.current[chatId]) {
+      bufferedChatUpdatesRef.current[chatId] = {
+        messages: [],
+        accumulatedText: '',
+        reasoningSteps: [],
+        citations: {},
+        status: 'loading',
+        lastUpdate: Date.now(),
+        isLoading: true
+      };
+    }
+    return bufferedChatUpdatesRef.current[chatId];
+  }, []);
+  
+  // CRITICAL: Restore document preview when chat becomes visible and has buffered document preview
+  // This handles the case where user left a chat with document preview open and returns to it
+  // NOTE: Uses legacy functions because wrapped versions are defined later in code
+  // NOTE: Document preview restoration is now handled by ChatStateStore
+  // MainContent reads from useActiveChatDocumentPreview() which returns the active chat's preview
+  // No manual restoration needed - switching activeChatId automatically shows the correct preview
+  
   // Reset first citation flag when chat messages are cleared (new chat session)
   React.useEffect(() => {
     if (chatMessages.length === 0) {
@@ -2865,6 +4010,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
     onActiveChatChange?.(hasLoadingMessage);
   }, [chatMessages, onActiveChatChange]);
+  
+  // Track previous message count for first chat glow detection
+  const prevGlowMessageCountRef = React.useRef(0);
+  
+  // Trigger gold glow animation only when creating the FIRST chat (messages go from 0 to having content)
+  React.useEffect(() => {
+    const messageCount = chatMessages.length;
+    
+    // Trigger glow only when this is the first chat (was 0 messages, now has messages)
+    if (prevGlowMessageCountRef.current === 0 && messageCount > 0) {
+      triggerGlow();
+    }
+    
+    prevGlowMessageCountRef.current = messageCount;
+  }, [chatMessages.length, triggerGlow]);
+  
   // Track message IDs that existed when panel was last opened (for animation control)
   const restoredMessageIdsRef = React.useRef<Set<string>>(new Set());
   const MAX_FILES = 4;
@@ -2906,7 +4067,883 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [inputValue, addPropertyAttachment]);
   
   // Use chat history context
-  const { addChatToHistory, getChatById } = useChatHistory();
+  const { addChatToHistory, getChatById, updateChatTitle, updateChatStatus, updateChatDescription, updateChatInHistory, chatHistory, saveChatState } = useChatHistory();
+  
+  // Update chat status to 'completed' when all messages finish loading
+  React.useEffect(() => {
+    const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+    const currentChat = currentChatId ? getChatById(currentChatId) : null;
+    
+    // If there are no loading messages and the chat status is still 'loading', update it to 'completed'
+    if (!hasLoadingMessage && currentChat && currentChat.status === 'loading' && currentChatId) {
+      console.log('✅ SideChatPanel: Auto-updating chat status to completed (no loading messages):', currentChatId);
+      updateChatStatus(currentChatId, 'completed');
+    }
+  }, [chatMessages, currentChatId, getChatById, updateChatStatus]);
+  
+  // Track when new agent was requested to prevent restore interference
+  const newAgentRequestedRef = React.useRef<boolean>(false);
+  
+  // Track when we're restoring a chat to prevent query processing during restore
+  const isRestoringChatRef = React.useRef<boolean>(false);
+  
+  // Track last restored chat to prevent duplicate restorations
+  const lastRestoredChatIdRef = React.useRef<string | null>(null);
+  
+  // Track currentChatId in a ref to avoid stale closures in effects
+  const currentChatIdRef = React.useRef<string | null>(currentChatId);
+  React.useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+    // Also update the doc ref for document operations
+    currentChatIdForDocRef.current = currentChatId;
+  }, [currentChatId]);
+  
+  // ========== CHAT STATE STORE INTEGRATION ==========
+  // Wrapper: Open document with per-chat isolation (writes to ChatStateStore)
+  // Also calls legacy openExpandedCardView during migration for backward compatibility
+  const openExpandedCardView = React.useCallback((
+    docId: string, 
+    filename: string, 
+    highlight?: CitationHighlight, 
+    isAgentTriggered?: boolean
+  ) => {
+    const chatId = currentChatIdRef.current;
+    if (chatId) {
+      // Write to ChatStateStore (per-chat isolation)
+      openDocumentForChat(chatId, { docId, filename, highlight });
+    }
+    // Also call legacy for backward compatibility during migration
+    legacyOpenExpandedCardView(docId, filename, highlight, isAgentTriggered);
+  }, [openDocumentForChat, legacyOpenExpandedCardView]);
+  
+  // Wrapper: Close document with per-chat isolation
+  const closeExpandedCardView = React.useCallback(() => {
+    const chatId = currentChatIdRef.current;
+    if (chatId) {
+      closeDocumentForChat(chatId);
+    }
+    legacyCloseExpandedCardView();
+  }, [closeDocumentForChat, legacyCloseExpandedCardView]);
+  
+  // CRITICAL: Sync currentChatId to ChatStateStore's activeChatId
+  // This ensures the store knows which chat is currently active
+  React.useEffect(() => {
+    const chatId = currentChatId || null;
+    if (chatId !== storeActiveChatId) {
+      setStoreActiveChatId(chatId);
+    }
+  }, [currentChatId, storeActiveChatId, setStoreActiveChatId]);
+  
+  // Initialize chat state in ChatStateStore when currentChatId changes
+  React.useEffect(() => {
+    if (currentChatId) {
+      initializeChatState(currentChatId);
+    }
+  }, [currentChatId, initializeChatState]);
+  // ========== END CHAT STATE STORE INTEGRATION ==========
+  
+  // Track last processed newAgentTrigger to prevent infinite loops
+  const lastProcessedTriggerRef = React.useRef<number>(0);
+  
+  // CRITICAL: When newAgentTrigger changes (increments), clear currentChatId to allow new chat creation
+  // This happens when "New Agent" is clicked from ChatPanel
+  React.useEffect(() => {
+    // CRITICAL: Only process if trigger has actually changed and is greater than last processed
+    // This prevents infinite loops when state updates trigger re-renders
+    if (newAgentTrigger && newAgentTrigger > 0 && newAgentTrigger > lastProcessedTriggerRef.current) {
+      console.log('🆕 SideChatPanel: New agent requested (trigger:', newAgentTrigger, ') - clearing state immediately');
+      
+      // Mark this trigger as processed immediately to prevent re-processing
+      lastProcessedTriggerRef.current = newAgentTrigger;
+      
+      // CRITICAL: Before clearing state, capture current query lifecycle state
+      // Use ref to get latest value without adding to dependency array
+      const currentChatIdValue = currentChatIdRef.current;
+      if (currentChatIdValue) {
+        const bufferedState = getBufferedState(currentChatIdValue);
+        
+        // Capture document preview state if document is open
+        const expandedDoc = expandedCardViewDoc;
+        // FIX: Use chatMessagesRef.current to get the latest messages (avoid stale closure)
+        const currentMessages = chatMessagesRef.current;
+        
+        // FIX: Save current messages to buffer BEFORE clearing state
+        // This ensures streaming callbacks for this chat will have the messages to work with
+        if (currentMessages.length > 0) {
+          bufferedState.messages = [...currentMessages];
+          bufferedState.status = currentMessages.some(msg => msg.isLoading) ? 'loading' : 'completed';
+          bufferedState.isLoading = currentMessages.some(msg => msg.isLoading);
+          
+          // Save accumulated text from loading message
+          const loadingMsg = currentMessages.find(msg => msg.isLoading);
+          if (loadingMsg && loadingMsg.text) {
+            bufferedState.accumulatedText = loadingMsg.text;
+          }
+          
+          // Save citations
+          currentMessages.forEach(msg => {
+            if (msg.citations && Object.keys(msg.citations).length > 0) {
+              bufferedState.citations = { ...bufferedState.citations, ...msg.citations };
+            }
+          });
+          
+          console.log('💾 SideChatPanel: Buffered messages before new agent:', {
+            chatId: currentChatIdValue,
+            messageCount: currentMessages.length,
+            isLoading: bufferedState.isLoading
+          });
+        }
+        
+        if (expandedDoc) {
+          bufferedState.documentPreview = {
+            docId: expandedDoc.docId,
+            filename: expandedDoc.filename,
+            highlight: expandedDoc.highlight ? {
+              fileId: expandedDoc.highlight.fileId,
+              bbox: expandedDoc.highlight.bbox, // bbox already contains page
+              doc_id: expandedDoc.highlight.doc_id,
+              block_id: expandedDoc.highlight.block_id || '',
+              block_content: expandedDoc.highlight.block_content,
+              original_filename: expandedDoc.highlight.original_filename
+            } : undefined
+          };
+          console.log('💾 SideChatPanel: Buffered document preview before new agent:', bufferedState.documentPreview);
+        }
+        
+        // Capture last reasoning step from current messages
+        const lastMessage = currentMessages[currentMessages.length - 1];
+        if (lastMessage?.reasoningSteps && lastMessage.reasoningSteps.length > 0) {
+          bufferedState.lastReasoningStep = lastMessage.reasoningSteps[lastMessage.reasoningSteps.length - 1];
+        }
+        
+        bufferedState.lastUpdate = Date.now();
+        
+        // Mark chat as inactive
+        activeChatIdRef.current = null;
+        console.log('💾 SideChatPanel: Captured query lifecycle state before new agent - chat will buffer updates');
+      }
+      
+      // Set flag to prevent restore from interfering
+      newAgentRequestedRef.current = true;
+      
+      // CRITICAL: Clear currentChatId FIRST, synchronously
+      setCurrentChatId(null);
+      currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
+      
+      // Clear all other state immediately
+      setChatTitle('');
+      setChatMessages([]);
+      // FIX: Also clear chatMessagesRef synchronously to avoid stale values
+      chatMessagesRef.current = [];
+      setSubmittedQueries([]);
+      
+      // CRITICAL: Check if input was focused BEFORE clearing state
+      // We need to capture this before any state changes that might cause re-renders
+      const wasFocused = inputRef.current && document.activeElement === inputRef.current;
+      
+      // Clear input value - let React handle the DOM update (controlled component)
+      setInputValue("");
+      
+      // Reset textarea height and restore focus after React updates the DOM
+      // Use requestAnimationFrame to ensure React has finished updating
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (inputRef.current) {
+            // Reset textarea height to initial state
+            inputRef.current.style.height = 'auto';
+            inputRef.current.style.height = '24px';
+            
+            // CRITICAL: Restore focus if input was focused
+            // Double requestAnimationFrame ensures React has fully updated the DOM
+            if (wasFocused) {
+              // Use a microtask to ensure focus happens after all React updates
+              Promise.resolve().then(() => {
+                if (inputRef.current) {
+                  inputRef.current.focus();
+                  // Ensure cursor is at the end (should be 0 since we cleared it)
+                  const length = inputRef.current.value.length;
+                  inputRef.current.setSelectionRange(length, length);
+                }
+              });
+            }
+          }
+        });
+      });
+      
+      setAttachedFiles([]);
+      attachedFilesRef.current = [];
+      clearPropertyAttachments();
+      setIsSubmitted(false);
+      
+      // Clear persisted messages ref
+      persistedChatMessagesRef.current = [];
+      restoredMessageIdsRef.current = new Set();
+      
+      // CRITICAL: Clear bot status overlay state for new chat
+      setIsBotActive(false);
+      setBotActivityMessage('Running...');
+      setIsBotPaused(false);
+      isBotPausedRef.current = false;
+      
+      // Close ONLY the legacy document preview (not ChatStateStore)
+      // The previous chat's document preview is preserved in ChatStateStore
+      // The new chat will have no document preview until one is opened
+      // We only close legacy so the UI doesn't show the old document while new chat starts
+      legacyCloseExpandedCardView();
+      
+      // Reset flag after a delay to prevent restoration from interfering
+      // Note: This flag will be cleared early if user starts typing (in handleTextareaChange)
+      // This is just a safety net in case user doesn't type immediately
+      setTimeout(() => {
+        newAgentRequestedRef.current = false;
+      }, 500);
+    }
+  }, [newAgentTrigger, clearPropertyAttachments, getBufferedState]); // CRITICAL: Removed currentChatId, expandedCardViewDoc, chatMessages to prevent infinite loop
+  
+  // CRITICAL: When restoreChatId is cleared (set to null), clear currentChatId to allow new chat creation
+  // This is a fallback for when restoreChatId changes from a value to null
+  // Track previous restoreChatId to detect when it changes from a value to null
+  const prevRestoreChatIdRef = React.useRef<string | null | undefined>(restoreChatId);
+  React.useEffect(() => {
+    const prevRestoreChatId = prevRestoreChatIdRef.current;
+    
+    // CRITICAL: Skip if new agent was just requested (handled by newAgentTrigger effect)
+    if (newAgentRequestedRef.current) {
+      prevRestoreChatIdRef.current = restoreChatId;
+      return;
+    }
+    
+    // Update ref AFTER checking conditions to prevent infinite loops
+    prevRestoreChatIdRef.current = restoreChatId;
+    
+    // If restoreChatId was set but is now null (cleared), clear currentChatId to allow new chat
+    // This indicates "New Agent" was clicked from ChatPanel
+    // CRITICAL: Only run if we actually have a currentChatId to clear (prevents re-running after clearing)
+    // Use ref to get latest value without adding to dependency array (prevents infinite loop)
+    if (prevRestoreChatId && !restoreChatId && currentChatIdRef.current) {
+      console.log('🆕 SideChatPanel: restoreChatId cleared (was:', prevRestoreChatId, ') - clearing currentChatId for new chat');
+      setCurrentChatId(null);
+      setChatTitle('');
+      setChatMessages([]);
+      setSubmittedQueries([]);
+      
+      // CRITICAL: Check if input was focused BEFORE clearing state
+      const wasFocused = inputRef.current && document.activeElement === inputRef.current;
+      
+      // Clear input state - let React handle the DOM update (controlled component)
+      setInputValue("");
+      
+      // Reset textarea height and restore focus after React updates
+      // Use requestAnimationFrame to ensure React has finished updating
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (inputRef.current) {
+            // Reset textarea height to initial state
+            inputRef.current.style.height = 'auto';
+            inputRef.current.style.height = '24px';
+            
+            // Restore focus if input was focused
+            if (wasFocused) {
+              // Use a microtask to ensure focus happens after all React updates
+              Promise.resolve().then(() => {
+                if (inputRef.current) {
+                  inputRef.current.focus();
+                  const length = inputRef.current.value.length;
+                  inputRef.current.setSelectionRange(length, length);
+                }
+              });
+            }
+          }
+        });
+      });
+      
+      setAttachedFiles([]);
+      attachedFilesRef.current = [];
+      clearPropertyAttachments();
+      setIsSubmitted(false);
+      
+      // CRITICAL: Clear bot status overlay state for new chat
+      setIsBotActive(false);
+      setBotActivityMessage('Running...');
+      setIsBotPaused(false);
+      isBotPausedRef.current = false;
+    }
+  }, [restoreChatId, clearPropertyAttachments]); // CRITICAL: Removed currentChatId from deps to prevent infinite loop
+  
+  // NOTE: Document preview restoration for restoreChatId is now handled by ChatStateStore
+  // When activeChatId changes, MainContent automatically shows that chat's document preview
+  
+  // CRITICAL: Track active chat and handle visibility changes
+  // Update activeChatIdRef when chat becomes visible/invisible or when currentChatId changes
+  React.useEffect(() => {
+    updateActiveChat(currentChatId, isVisible);
+  }, [currentChatId, isVisible, updateActiveChat]);
+  
+  // CRITICAL: Save chat state when navigating away or when chat becomes invisible
+  // This ensures granular state is preserved for restoration
+  // Note: prevIsVisibleRef already exists above for fullscreen state, so we track chatId separately
+  const prevCurrentChatIdForStateRef = React.useRef<string | null>(currentChatId);
+  React.useEffect(() => {
+    // Save state when:
+    // 1. Chat becomes invisible (navigating away)
+    // 2. currentChatId changes (switching chats)
+    const wasVisible = prevIsVisibleRef.current;
+    const prevChatId = prevCurrentChatIdForStateRef.current;
+    
+    // Update refs
+    prevIsVisibleRef.current = isVisible;
+    prevCurrentChatIdForStateRef.current = currentChatId;
+    
+    // When chat becomes invisible or switches, capture document preview state
+    if (prevChatId && (wasVisible && !isVisible || (prevChatId !== currentChatId))) {
+      const bufferedState = getBufferedState(prevChatId);
+      
+      // Capture document preview state if document is open
+      if (expandedCardViewDoc) {
+        bufferedState.documentPreview = {
+          docId: expandedCardViewDoc.docId,
+          filename: expandedCardViewDoc.filename,
+          highlight: expandedCardViewDoc.highlight ? {
+            fileId: expandedCardViewDoc.highlight.fileId,
+            bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
+            doc_id: expandedCardViewDoc.highlight.doc_id,
+            block_id: expandedCardViewDoc.highlight.block_id || '',
+            block_content: expandedCardViewDoc.highlight.block_content,
+            original_filename: expandedCardViewDoc.highlight.original_filename
+          } : undefined
+        };
+        console.log('💾 SideChatPanel: Buffered document preview - chat became inactive:', bufferedState.documentPreview);
+      }
+      
+      // Capture last reasoning step
+      const lastMessage = chatMessages[chatMessages.length - 1];
+      if (lastMessage?.reasoningSteps && lastMessage.reasoningSteps.length > 0) {
+        bufferedState.lastReasoningStep = lastMessage.reasoningSteps[lastMessage.reasoningSteps.length - 1];
+      }
+    }
+    
+    // Save state if chat was visible and now invisible, or if chatId changed
+    if (wasVisible && !isVisible && prevChatId && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0 || submittedQueries.length > 0)) {
+      console.log('💾 SideChatPanel: Saving chat state - chat became invisible:', {
+        chatId: prevChatId,
+        inputValue: inputValue,
+        attachedFiles: attachedFiles.length,
+        propertyAttachments: propertyAttachments.length
+      });
+      saveChatState(prevChatId, {
+        inputValue: inputValue,
+        attachedFiles: [...attachedFiles],
+        propertyAttachments: [...propertyAttachments],
+        submittedQueries: [...submittedQueries] as any[]
+      });
+    } else if (prevChatId && prevChatId !== currentChatId && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0 || submittedQueries.length > 0)) {
+      // Chat ID changed (switching chats) - save previous chat state
+      console.log('💾 SideChatPanel: Saving chat state - switching chats:', {
+        fromChatId: prevChatId,
+        toChatId: currentChatId,
+        inputValue: inputValue,
+        attachedFiles: attachedFiles.length,
+        propertyAttachments: propertyAttachments.length
+      });
+      saveChatState(prevChatId, {
+        inputValue: inputValue,
+        attachedFiles: [...attachedFiles],
+        propertyAttachments: [...propertyAttachments],
+        submittedQueries: [...submittedQueries] as any[]
+      });
+    }
+  }, [isVisible, currentChatId, inputValue, attachedFiles, propertyAttachments, submittedQueries, saveChatState, expandedCardViewDoc, chatMessages, getBufferedState]);
+  
+  // Track abort controllers per chat ID for cleanup
+  const abortControllersRef = React.useRef<Record<string, AbortController>>({});
+  
+  // Cleanup: Abort queries when chat is deleted from history
+  React.useEffect(() => {
+    // Get list of chat IDs that still exist in history
+    const existingChatIds = new Set(chatHistory.map(chat => chat.id));
+    
+    // Find chat IDs that have abort controllers but no longer exist in history
+    const deletedChatIds: string[] = [];
+    Object.entries(abortControllersRef.current).forEach(([chatId, controller]) => {
+      if (!existingChatIds.has(chatId)) {
+        deletedChatIds.push(chatId);
+      }
+    });
+    
+    // Abort queries for deleted chats and clean up
+    deletedChatIds.forEach(chatId => {
+      const controller = abortControllersRef.current[chatId];
+      if (controller) {
+        console.log('🧹 SideChatPanel: Aborting query for deleted chat:', chatId);
+        controller.abort();
+        delete abortControllersRef.current[chatId];
+      }
+    });
+  }, [chatHistory]);
+  
+  // Helper: Extract description from query (file changes, context, etc.)
+  const extractDescription = React.useCallback((query: string): string => {
+    if (!query || !query.trim()) return '';
+    
+    // Look for file patterns (e.g., "Edited ChatPanel.tsx", "Checking if...")
+    const filePattern = /(?:edited|editing|checking|updated|modified|changed)\s+([a-zA-Z0-9_\-./]+\.(tsx?|jsx?|py|md|json|css|html|sql))/i;
+    const fileMatch = query.match(filePattern);
+    if (fileMatch) {
+      return `Edited ${fileMatch[1]}`;
+    }
+    
+    // Look for "Checking if..." or similar patterns
+    const checkingPattern = /(checking|looking|searching|finding|analyzing|reviewing).*?[.!?]/i;
+    const checkingMatch = query.match(checkingPattern);
+    if (checkingMatch) {
+      return checkingMatch[0].substring(0, 60).trim();
+    }
+    
+    // Use first 50-60 characters of query if no specific pattern found
+    return query.substring(0, 60).trim();
+  }, []);
+  
+  // Helper: Clean query by removing filler words, question marks, and verbose phrases
+  // Preserves location indicators (of, in, for) that might be part of location patterns
+  const cleanQuery = React.useCallback((query: string): string => {
+    if (!query || !query.trim()) {
+      return '';
+    }
+    
+    let cleaned = query.trim();
+    
+    // Remove question marks
+    cleaned = cleaned.replace(/\?/g, '');
+    
+    // Remove verbose phrases
+    const verbosePhrases = [
+      /assessment\s+of/gi,
+      /information\s+about/gi,
+      /details\s+on/gi,
+      /details\s+about/gi,
+      /tell\s+me\s+about/gi,
+      /show\s+me\s+the/gi,
+      /show\s+me/gi,
+      /please\s+show/gi,
+      /can\s+you\s+show/gi,
+      /could\s+you\s+show/gi,
+      /what\s+is\s+the/gi,
+      /what\s+are\s+the/gi,
+      /what\s+is/gi,
+      /what\s+are/gi,
+    ];
+    
+    for (const phrase of verbosePhrases) {
+      cleaned = cleaned.replace(phrase, '');
+    }
+    
+    // Remove common filler words, but preserve location indicators when they might be part of patterns
+    // Don't remove "of", "in", "for" as they're important for location extraction
+    const fillerWords = ['please', 'show', 'me', 'tell', 'get', 'find', 'what', 'is', 'are', 'can', 'could', 'would', 'should', 'will', 'this', 'that', 'these', 'those', 'the', 'a', 'an', 'to', 'and', 'or', 'about', 'with', 'from'];
+    const words = cleaned.split(/\s+/);
+    const filteredWords = words.filter(w => {
+      const lower = w.toLowerCase().replace(/[^\w]/g, '');
+      return lower.length > 0 && !fillerWords.includes(lower);
+    });
+    
+    cleaned = filteredWords.join(' ');
+    
+    // Remove dates (simple pattern - can be enhanced)
+    cleaned = cleaned.replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g, '');
+    cleaned = cleaned.replace(/\b\d{4}\b/g, ''); // Remove standalone years
+    
+    // Normalize whitespace
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    
+    return cleaned;
+  }, []);
+  
+  // Helper: Extract property subject from attachments
+  const extractPropertySubject = React.useCallback((propertyAttachments?: PropertyAttachmentData[]): string | null => {
+    if (!propertyAttachments || propertyAttachments.length === 0) {
+      return null;
+    }
+    
+    const firstProperty = propertyAttachments[0].property as any;
+    if (firstProperty?.address) {
+      const address = firstProperty.address;
+      const addressParts = address.split(',').map((p: string) => p.trim());
+      if (addressParts.length > 0) {
+        // Return first meaningful part (usually street address)
+        let subject = addressParts[0];
+        if (subject.length > 50) {
+          subject = subject.substring(0, 47) + '...';
+        }
+        return subject;
+      }
+    }
+    
+    return null;
+  }, []);
+  
+  // Helper: Extract main topic/subject from query (ChatGPT-style)
+  // Works on original query to preserve location indicators
+  const extractMainTopic = React.useCallback((query: string): string | null => {
+    if (!query || !query.trim()) {
+      return null;
+    }
+    
+    const queryText = query.trim();
+    const queryLower = queryText.toLowerCase();
+    
+    // 1. Check for property addresses in query text (highest priority)
+    const propertyAddressPatterns = [
+      /\d+\s+[\w\s]+(?:road|street|avenue|close|drive|lane|way|hill|park|gardens?|village|place|crescent|grove|terrace|gardens)/i,
+      /[\w\s]+(?:road|street|avenue|close|drive|lane|way|hill|park|gardens?|village|place|crescent|grove|terrace),\s*[\w\s]+/i,
+    ];
+    
+    for (const pattern of propertyAddressPatterns) {
+      const match = queryText.match(pattern);
+      if (match) {
+        let address = match[0].trim();
+        if (address.length > 50) {
+          address = address.substring(0, 47) + '...';
+        }
+        return address;
+      }
+    }
+    
+    // 2. Check for known location patterns (Bristol areas, cities, postcodes)
+    const locationPatterns = [
+      /bristol,?\s*(?:city\s*centre|centre|center)/i,
+      /bristol,?\s*(?:city|town)/i,
+      /(?:city\s*centre|centre|center),?\s*bristol/i,
+      /clifton,?\s*bristol/i,
+      /harbourside,?\s*bristol/i,
+      /redland,?\s*bristol/i,
+      /montpelier,?\s*bristol/i,
+      /bedminster,?\s*bristol/i,
+      /stokes\s*croft,?\s*bristol/i,
+      /easton,?\s*bristol/i,
+      /hotwells,?\s*bristol/i,
+      /cotham,?\s*bristol/i,
+      /clifton/i,
+      /harbourside/i,
+      /redland/i,
+      /montpelier/i,
+      /bedminster/i,
+      /stokes\s*croft/i,
+      /easton/i,
+      /hotwells/i,
+      /cotham/i,
+      /bristol/i,
+      /bs\d+\s*\d*[a-z]{2}/i, // UK postcode
+    ];
+    
+    for (const pattern of locationPatterns) {
+      const match = queryText.match(pattern);
+      if (match) {
+        let location = match[0].trim();
+        
+        // Fix capitalization for common patterns
+        if (location.toLowerCase().includes('bristol, city centre') || 
+            location.toLowerCase().includes('city centre, bristol') ||
+            location.toLowerCase().includes('bristol, city')) {
+          return 'Bristol, City Centre';
+        }
+        
+        // Capitalize first letter of each word
+        location = location.split(/\s+/).map(word => 
+          word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        ).join(' ');
+        
+        return location;
+      }
+    }
+    
+    // 3. Extract location from "of [location]" pattern (very common, e.g., "value of highlands")
+    // This works with lowercase locations
+    const ofPattern = /\bof\s+([a-z]+(?:\s+[a-z]+)?)\b/i;
+    const ofMatch = queryText.match(ofPattern);
+    if (ofMatch && ofMatch[1]) {
+      const location = ofMatch[1].trim();
+      // Capitalize first letter of each word
+      const capitalized = location.split(/\s+/).map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      return capitalized;
+    }
+    
+    // 4. Extract location from "in [location]" pattern
+    const inPattern = /\bin\s+([a-z]+(?:\s+[a-z]+)?)\b/i;
+    const inMatch = queryText.match(inPattern);
+    if (inMatch && inMatch[1]) {
+      const location = inMatch[1].trim();
+      const capitalized = location.split(/\s+/).map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      return capitalized;
+    }
+    
+    // 5. Extract capitalized proper nouns (places, names) - but exclude metric words
+    const metricWords = new Set(['risk', 'flooding', 'flood', 'water', 'surface', 'value', 'price', 'valuation', 'market', 'bedroom', 'bathroom', 'room', 'size', 'area', 'condition', 'valuer', 'surveyor', 'inspector', 'author', 'sale', 'offer', 'listing', 'transaction', 'comparable', 'comp', 'analysis', 'report', 'assessment', 'hazard']);
+    const commonWords = new Set(['the', 'a', 'an', 'of', 'in', 'for', 'to', 'and', 'or', 'about', 'with', 'from', 'this', 'that', 'these', 'those', 'please', 'show', 'me', 'tell', 'get', 'find', 'what', 'is', 'are', 'can', 'could', 'would', 'should', 'will']);
+    const words = queryText.split(/\s+/);
+    const keyWords = words.filter(w => {
+      const cleanWord = w.replace(/[^\w]/g, '');
+      return cleanWord.length > 2 && 
+             cleanWord[0] === cleanWord[0].toUpperCase() && 
+             !commonWords.has(cleanWord.toLowerCase()) &&
+             !metricWords.has(cleanWord.toLowerCase()) &&
+             /^[a-zA-Z]+$/.test(cleanWord);
+    });
+    
+    if (keyWords.length > 0) {
+      // Take first meaningful capitalized word(s) - max 2 words for topic
+      const topic = keyWords.slice(0, 2).join(' ');
+      return topic.length > 50 ? topic.substring(0, 47) + '...' : topic;
+    }
+    
+    // 6. Extract location from end of query (common pattern: "...of [location]")
+    const endLocationPattern = /\bof\s+([a-z]+(?:\s+[a-z]+)?)\s*$/i;
+    const endMatch = queryText.match(endLocationPattern);
+    if (endMatch && endMatch[1]) {
+      const location = endMatch[1].trim();
+      const capitalized = location.split(/\s+/).map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      return capitalized;
+    }
+    
+    return null;
+  }, []);
+  
+  // Helper: Extract question type - what the user is asking about (ChatGPT-style)
+  const extractQuestionType = React.useCallback((query: string): string | null => {
+    if (!query || !query.trim()) {
+      return null;
+    }
+    
+    const queryLower = query.toLowerCase();
+    
+    // 1. Risk-related: Extract full phrase before "risk" (e.g., "surface flooding risk" → "Surface Flooding Risk")
+    const riskMatch = queryLower.match(/\b(\w+(?:\s+\w+){0,3})\s+risk\b/);
+    if (riskMatch && riskMatch[1]) {
+      const riskType = riskMatch[1].split(/\s+/).map((word: string) => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      return `${riskType} Risk`;
+    }
+    
+    // Check for standalone "risk"
+    if (/\brisk\b/.test(queryLower)) {
+      return 'Risk';
+    }
+    
+    // 2. Value-related: Prioritize "market value" over just "value"
+    if (/market\s+value/.test(queryLower)) {
+      return 'Market Value';
+    }
+    if (/\bvaluation\b/.test(queryLower)) {
+      return 'Valuation';
+    }
+    if (/\bvalue\b/.test(queryLower)) {
+      return 'Value';
+    }
+    if (/\bprice\b/.test(queryLower)) {
+      return 'Price';
+    }
+    if (/\bworth\b/.test(queryLower)) {
+      return 'Worth';
+    }
+    
+    // 3. Property attributes
+    if (/\bbedroom(s)?\b/.test(queryLower)) {
+      return 'Bedrooms';
+    }
+    if (/\bbathroom(s)?\b/.test(queryLower)) {
+      return 'Bathrooms';
+    }
+    if (/\broom(s)?\b/.test(queryLower)) {
+      return 'Rooms';
+    }
+    if (/(size|area|square\s+feet|sqft|sq\s+ft)/.test(queryLower)) {
+      return 'Size';
+    }
+    if (/\bcondition\b/.test(queryLower)) {
+      return 'Condition';
+    }
+    
+    // 4. Professional info
+    if (/\bvaluer\b/.test(queryLower)) {
+      return 'Valuer';
+    }
+    if (/\bsurveyor\b/.test(queryLower)) {
+      return 'Surveyor';
+    }
+    if (/\binspector\b/.test(queryLower)) {
+      return 'Inspector';
+    }
+    if (/\bauthor\b/.test(queryLower)) {
+      return 'Author';
+    }
+    
+    // 5. Transaction info
+    if (/\bsale\b/.test(queryLower)) {
+      return 'Sale';
+    }
+    if (/\boffer\b/.test(queryLower)) {
+      return 'Offer';
+    }
+    if (/\blisting\b/.test(queryLower)) {
+      return 'Listing';
+    }
+    if (/\btransaction\b/.test(queryLower)) {
+      return 'Transaction';
+    }
+    
+    // 6. Other metrics
+    if (/\bcomparables?\b/.test(queryLower)) {
+      return 'Comparables';
+    }
+    if (/\bcomps\b/.test(queryLower)) {
+      return 'Comparables';
+    }
+    if (/\banalysis\b/.test(queryLower)) {
+      return 'Analysis';
+    }
+    if (/\breport\b/.test(queryLower)) {
+      return 'Report';
+    }
+    if (/\bassessment\b/.test(queryLower)) {
+      return 'Assessment';
+    }
+    if (/\bhazard\b/.test(queryLower)) {
+      return 'Hazard';
+    }
+    
+    return null;
+  }, []);
+  
+  // ChatGPT-style chat title generation: natural, topic-first approach
+  const generateSmartChatTitle = React.useCallback((query: string, propertyAttachments?: PropertyAttachmentData[], attachments?: FileAttachmentData[]): string => {
+    if (!query || !query.trim()) {
+      return 'New chat';
+    }
+    
+    // 1. Check property attachments first (highest priority for topic)
+    const propertyTopic = extractPropertySubject(propertyAttachments);
+    if (propertyTopic) {
+      const questionType = extractQuestionType(query);
+      if (questionType) {
+        // Natural formatting: "Topic QuestionType" (e.g., "123 Main Street Market Value")
+        return `${propertyTopic} ${questionType}`;
+      }
+      return propertyTopic;
+    }
+    
+    // 2. Extract main topic from original query (preserves location indicators)
+    const topic = extractMainTopic(query);
+    const questionType = extractQuestionType(query);
+    
+    // 3. Format title naturally (ChatGPT-style)
+    // Priority: Topic is more important than question type
+    if (topic && questionType) {
+      // Combine naturally: "Highlands Value", "Bristol Bedrooms"
+      return `${topic} ${questionType}`;
+    }
+    if (topic) {
+      // If we have a clear topic, use it (ChatGPT often just uses the topic)
+      return topic;
+    }
+    if (questionType) {
+      // If no topic but clear question type, use it
+      return questionType;
+    }
+    
+    // 4. Fallback: Check for document names in attachments
+    if (attachments && attachments.length > 0) {
+      const firstDoc = attachments[0];
+      if (firstDoc.name) {
+        const docName = firstDoc.name.replace(/\.[^/.]+$/, '');
+        if (docName.length > 0) {
+          return docName.length > 50 ? docName.substring(0, 47) + '...' : docName;
+        }
+      }
+    }
+    
+    // 5. Fallback: Intelligent truncation at word boundaries
+    const queryText = query.trim();
+    if (queryText.length > 50) {
+      const truncated = queryText.substring(0, 47);
+      const lastSpace = truncated.lastIndexOf(' ');
+      if (lastSpace > 20) {
+        return truncated.substring(0, lastSpace) + '...';
+      }
+      return truncated + '...';
+    }
+    
+    return queryText;
+  }, [extractPropertySubject, extractMainTopic, extractQuestionType]);
+  
+  // Streaming typing effect for title
+  const streamTitle = React.useCallback((title: string) => {
+    // Clear any existing interval
+    if (titleStreamIntervalRef.current) {
+      clearInterval(titleStreamIntervalRef.current);
+      titleStreamIntervalRef.current = null;
+    }
+    
+    setIsTitleStreaming(true);
+    setStreamedTitle('');
+    let index = 0;
+    
+    titleStreamIntervalRef.current = setInterval(() => {
+      if (index < title.length) {
+        setStreamedTitle(title.substring(0, index + 1));
+        index++;
+      } else {
+        if (titleStreamIntervalRef.current) {
+          clearInterval(titleStreamIntervalRef.current);
+          titleStreamIntervalRef.current = null;
+        }
+        setIsTitleStreaming(false);
+        setChatTitle(title);
+        setStreamedTitle('');
+      }
+    }, 40) as unknown as NodeJS.Timeout; // 40ms per character
+  }, []);
+  
+  // Cleanup streaming interval on unmount
+  React.useEffect(() => {
+    return () => {
+      if (titleStreamIntervalRef.current) {
+        clearInterval(titleStreamIntervalRef.current);
+        titleStreamIntervalRef.current = null;
+      }
+    };
+  }, []);
+  
+  // Edit title handlers
+  const handleToggleEdit = React.useCallback(() => {
+    setIsEditingTitle(true);
+    setEditingTitleValue(chatTitle || 'New chat');
+  }, [chatTitle]);
+  
+  const handleSaveTitle = React.useCallback(() => {
+    const trimmedTitle = editingTitleValue.trim();
+    if (trimmedTitle && trimmedTitle !== chatTitle) {
+      const finalTitle = trimmedTitle || chatTitle || 'New chat';
+      setChatTitle(finalTitle);
+      
+      // Update in chat history if currentChatId exists
+      if (currentChatId) {
+        updateChatTitle(currentChatId, finalTitle);
+      }
+    }
+    setIsEditingTitle(false);
+    setEditingTitleValue('');
+  }, [editingTitleValue, chatTitle, currentChatId, updateChatTitle]);
+  
+  const handleCancelEdit = React.useCallback(() => {
+    setIsEditingTitle(false);
+    setEditingTitleValue('');
+  }, []);
   
   // Track the last processed query from props to avoid duplicates
   const lastProcessedQueryRef = React.useRef<string>('');
@@ -2915,6 +4952,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // This prevents race conditions between the two useEffects that both watch query/isVisible
   const isProcessingQueryRef = React.useRef<boolean>(false);
   
+  // Track which queries have been processed for each chat to prevent re-processing on chat return
+  // Key: chatId, Value: query string that was processed
+  const processedQueriesPerChatRef = React.useRef<Record<string, string>>({});
+  
   // Process query prop from SearchBar (when in map view)
   React.useEffect(() => {
     // Only process if:
@@ -2922,9 +4963,48 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // 2. Query is different from last processed query
     // 3. Query hasn't already been added to chat messages
     // 4. We're not already processing a query
+    // 5. We're not currently restoring a chat AND switching to a different chat
+    //    (allow query processing if restoreChatId matches currentChatId - same chat, no switch needed)
     // NOTE: Removed isVisible check - queries should process in background even when panel is hidden
     // This allows queries to continue processing when user navigates away
-    if (query && query.trim() && query !== lastProcessedQueryRef.current && !isProcessingQueryRef.current) {
+    // CRITICAL: Only block if genuinely switching to a different chat
+    // Allow query processing to continue for the active chat even during restoration
+    const isActuallySwitchingChats = isRestoringChatRef.current && 
+      restoreChatId && 
+      restoreChatId !== currentChatId &&
+      restoreChatId !== currentChatIdRef.current; // Also check ref to handle async state updates
+    
+    // CRITICAL: When restoring a chat, don't process any query from the prop
+    // The restored chat's messages are loaded from history, not from a new query
+    // This prevents query leakage where the previous chat's query gets sent to the restored chat's session
+    const isRestoringDifferentChat = restoreChatId && restoreChatId !== currentChatId;
+    
+    // CRITICAL: Check if this query was already processed for the target chat
+    // This prevents re-processing when returning to a chat that already has this query completed
+    const chatIdForQuery = currentChatId || restoreChatId;
+    const alreadyProcessedForThisChat = chatIdForQuery && 
+      processedQueriesPerChatRef.current[chatIdForQuery] === query?.trim();
+    
+    if (alreadyProcessedForThisChat) {
+      // Silently skip - this is expected behavior when returning to a chat
+      // Only log in dev mode to reduce console noise
+      if (import.meta.env.DEV) {
+        console.log('⏭️ SideChatPanel: Skipping query - already processed for this chat:', {
+          query: query?.substring(0, 50),
+          chatId: chatIdForQuery
+        });
+      }
+    }
+    
+    if (isRestoringDifferentChat) {
+      console.log('⏭️ SideChatPanel: Skipping query - restoring a different chat:', {
+        query: query?.substring(0, 50),
+        restoreChatId,
+        currentChatId
+      });
+    }
+    
+    if (query && query.trim() && query !== lastProcessedQueryRef.current && !isProcessingQueryRef.current && !isActuallySwitchingChats && !alreadyProcessedForThisChat && !isRestoringDifferentChat) {
       const queryText = query.trim();
       
       // Check if this query is already in chat messages
@@ -2948,9 +5028,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Mark this query as being processed
         lastProcessedQueryRef.current = queryText;
         isProcessingQueryRef.current = true;
-        // Mark as processing to prevent duplicate API calls from other useEffects
-        isProcessingQueryRef.current = true;
-        lastProcessedQueryRef.current = queryText;
         
         // Get selected document IDs if selection mode was used
         const selectedDocIds = selectedDocumentIds.size > 0 
@@ -2970,6 +5047,78 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               })
               .filter((name): name is string => !!name);
           }
+        }
+        
+        // Check if this is a new chat session
+        // CRITICAL: Use refs for more reliable detection (avoids stale closure issues)
+        // This prevents query leakage between agents when switching quickly
+        // Priority: Check ref first (updated synchronously), then state as fallback
+        const currentChatIdValue = currentChatIdRef.current ?? currentChatId;
+        const currentMessagesLength = chatMessagesRef.current.length || chatMessages.length;
+        const isNewChatSession = !currentChatIdValue || currentMessagesLength === 0;
+        
+        let chatSessionId = sessionId; // Default to component sessionId, will be overridden if new chat
+        let savedChatId: string | undefined; // Declare at higher scope for status update
+        
+        if (isNewChatSession) {
+          // Generate chat ID and title for new chat
+          const newChatId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          setCurrentChatId(newChatId);
+          currentChatIdRef.current = newChatId; // Update ref synchronously for streaming callbacks
+          
+          // Generate smart title from first query
+          const generatedTitle = generateSmartChatTitle(
+            queryText,
+            propertyAttachments,
+            attachedFiles.length > 0 ? attachedFiles : initialAttachedFiles
+          );
+          
+          // Extract description from query
+          const description = extractDescription(queryText || '');
+          
+          // Create chat history entry with unique sessionId
+          // CRITICAL: Generate unique sessionId tied to chat ID for backend isolation
+          const chatHistorySessionId = `session_${newChatId}_${Date.now()}`;
+          chatSessionId = chatHistorySessionId; // Use chat's sessionId for this query
+          
+          savedChatId = addChatToHistory({
+            title: generatedTitle,
+            timestamp: new Date().toISOString(),
+            preview: queryText || '',
+            messages: [],
+            status: 'completed', // Create with 'completed' status, update to 'loading' when query actually starts
+            sessionId: chatHistorySessionId, // Unique sessionId per agent
+            description: description // Secondary detail line
+          });
+          
+          // CRITICAL: Update currentChatId to match the actual ID from addChatToHistory
+          // This fixes the bug where currentChatId was set to newChatId but addChatToHistory
+          // generates a different ID internally. Without this, updateChatInHistory calls
+          // would fail to find the chat when switching agents.
+          setCurrentChatId(savedChatId);
+          currentChatIdRef.current = savedChatId; // Update ref synchronously for streaming callbacks
+          
+          // Record this query as processed for this chat to prevent re-processing on chat return
+          processedQueriesPerChatRef.current[savedChatId] = queryText;
+          
+          console.log('✅ SideChatPanel: Created new chat history entry (query prop path):', {
+            chatId: savedChatId,
+            sessionId: chatHistorySessionId,
+            status: 'completed',
+            description
+          });
+          
+          // Stream the title with typing effect
+          streamTitle(generatedTitle);
+        } else if (currentChatId) {
+          // For existing chat, get sessionId from chat history
+          const existingChat = getChatById(currentChatId);
+          if (existingChat?.sessionId) {
+            chatSessionId = existingChat.sessionId;
+            console.log('🔄 SideChatPanel: Using existing chat sessionId (query prop path):', chatSessionId);
+          }
+          // Update status to loading for existing chat
+          updateChatStatus(currentChatId, 'loading');
         }
         
         // Add query message to chat (similar to handleSubmit)
@@ -3169,8 +5318,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               // If no attachments, silently continue (normal query flow)
             }
             
-            const abortController = new AbortController();
-            abortControllerRef.current = abortController;
+            // Create abort controller for query prop path
+            const queryPropAbortController = new AbortController();
+            if (currentChatId) {
+              abortControllersRef.current[currentChatId] = queryPropAbortController;
+            }
+            // Also set in old ref for backward compatibility
+            abortControllerRef.current = queryPropAbortController;
             
             let accumulatedText = '';
             let tokenBuffer = ''; // Buffer for tokens before displaying
@@ -3219,6 +5373,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return;
                 }
                 
+                // CRITICAL: Check if this chat is still active before updating UI
+                // This prevents leakage when user switches to a new chat mid-stream
+                const stillActive = isChatActiveForQuery(queryChatId, savedChatId);
+                if (!stillActive) {
+                  console.log('⚠️ [BLOCK_QUEUE] Chat no longer active, stopping block processing:', {
+                    queryChatId,
+                    activeChatId: activeChatIdRef.current
+                  });
+                  isProcessingQueue = false;
+                  // Buffer the accumulated text for this chat
+                  if (queryChatId) {
+                    const bufferedState = getBufferedState(queryChatId);
+                    bufferedState.accumulatedText = displayedText;
+                    bufferedState.lastUpdate = Date.now();
+                  }
+                  return;
+                }
+                
                 if (blockQueue.length === 0) {
                   isProcessingQueue = false;
                   // Check if we have more blocks to extract
@@ -3242,12 +5414,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // This ensures consistent behavior across all queries
                   const cleanedText = cleanResponseText(displayedText);
                   
-                  // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
-                  setChatMessages(prev => prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? { ...msg, text: cleanedText }
-                      : msg
-                  ));
+                  // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
+                  // This ensures spinning animations stop when response text starts displaying
+                  setChatMessages(prev => prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      // If this is the first time we're adding text, set isLoading to false
+                      const wasLoading = msg.isLoading;
+                      const hasTextNow = cleanedText.trim().length > 0;
+                      
+                      if (wasLoading && hasTextNow) {
+                        console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (query prop path):', {
+                          loadingResponseId,
+                          textLength: cleanedText.length,
+                          textPreview: cleanedText.substring(0, 100)
+                        });
+                        
+                        // Update chat status to completed when text first appears
+                        if (currentChatId) {
+                          updateChatStatus(currentChatId, 'completed');
+                        }
+                      }
+                      
+                      return { ...msg, text: cleanedText, isLoading: false };
+                    }
+                    return msg;
+                  }));
                   
                   // Determine delay based on block type and size
                   // Headings: slightly longer delay
@@ -3362,27 +5553,98 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               } : null
             });
             
+            // CRITICAL: Use chat's sessionId (not component sessionId) for backend isolation
+            // Create abort controller for this query (query prop path - file attachments)
+            const queryPropFileAbortController = new AbortController();
+            
+            // CRITICAL: Capture queryChatId at query start (not when callbacks fire)
+            // Use savedChatId for new chats, otherwise use ref (more reliable than state)
+            const queryChatId = savedChatId || currentChatIdRef.current || currentChatId;
+            
+            // CRITICAL: Set activeChatIdRef IMMEDIATELY when query starts (before any streaming callbacks)
+            // This ensures streaming updates route to the correct chat
+            if (queryChatId && isVisible) {
+              activeChatIdRef.current = queryChatId;
+            }
+            
+            if (queryChatId) {
+              abortControllersRef.current[queryChatId] = queryPropFileAbortController;
+            }
+            
+            // Update chat status to 'loading' right before query starts
+            if (queryChatId) {
+              updateChatStatus(queryChatId, 'loading');
+            }
+            
+            // Initialize buffered state for this chat if it doesn't exist
+            if (queryChatId) {
+              getBufferedState(queryChatId);
+              // CRITICAL: activeChatIdRef is already set above, but log for debugging
+              if (isVisible) {
+                console.log('✅ SideChatPanel: Set activeChatIdRef for query:', {
+                  queryChatId,
+                  savedChatId,
+                  currentChatId,
+                  isVisible
+                });
+              }
+            }
+            
             await backendApi.queryDocumentsStreamFetch(
               queryText,
               propertyId,
               messageHistory,
-              sessionId,
+              chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
               // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
               (token: string) => {
                 accumulatedText += token;
                 tokenBuffer += token;
                 
-                // Only process tokens if not paused
-                if (!isBotPausedRef.current) {
+                // Check if chat is active before updating UI
+                // CRITICAL: For new chats, currentChatId might not be updated yet (async state)
+                // So we check activeChatIdRef which is set synchronously, or savedChatId for new chats
+                // Also allow updates if we're restoring the same chat that's processing
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+                
+                // Only process tokens if not paused and chat is active
+                if (!isBotPausedRef.current && chatIsActive) {
                   // Process tokens to find complete markdown blocks
                   // This allows ReactMarkdown to render formatted output progressively
                   processTokensWithDelay();
+                } else if (!chatIsActive && queryChatId) {
+                  // Chat is inactive - buffer the update
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.accumulatedText = accumulatedText;
+                  bufferedState.lastUpdate = Date.now();
                 }
                 // If paused, tokens are still accumulated in tokenBuffer but not processed
                 // When resumed, processTokensWithDelay() will be called to process buffered tokens
+                
+                // Always update history periodically
+                // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+                if (queryChatId && accumulatedText.length % 100 === 0) {
+                  const currentMessages = chatMessagesRef.current;
+                  const historyMessages = currentMessages.map(msg => ({
+                    role: msg.type === 'query' ? 'user' : 'assistant',
+                    content: msg.text || '',
+                    attachments: msg.attachments || [],
+                    propertyAttachments: msg.propertyAttachments || [],
+                    citations: msg.citations || {},
+                    isLoading: msg.isLoading,
+                    reasoningSteps: msg.reasoningSteps || []
+                  }));
+                  updateChatInHistory(queryChatId, historyMessages);
+                  console.log('📝 [HISTORY_SAVE] Periodic update:', { chatId: queryChatId, messageCount: historyMessages.length, textLength: accumulatedText.length });
+                }
               },
               // onComplete: Final response received - flush buffer and complete animation
               (data: any) => {
+                // Check if chat is active
+                // CRITICAL: For new chats, currentChatId might not be updated yet (async state)
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+                
                 console.log('✅ SideChatPanel: onComplete received:', { 
                   hasData: !!data, 
                   hasSummary: !!data?.summary, 
@@ -3395,7 +5657,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   tokenBufferLength: tokenBuffer.length,
                   pendingBufferLength: pendingBuffer.length,
                   dataKeys: data ? Object.keys(data) : [],
-                  fullData: data // Include full data for debugging
+                  fullData: data, // Include full data for debugging
+                  chatIsActive,
+                  queryChatId
                 });
                 
                 // Extract any remaining complete blocks
@@ -3453,100 +5717,199 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     usedDataSummary: !displayedText && !!data?.summary,
                     usedAccumulatedText: !displayedText && !data?.summary && !!accumulatedText,
                     citationsCount: Object.keys(finalCitations).length,
-                    loadingResponseId: loadingResponseId
-                  });
-                  
-                  // Log the message that will be set
-                  console.log('✅ SideChatPanel: Setting response message:', {
-                    id: loadingResponseId,
-                    textLength: finalText.length,
-                    textPreview: finalText.substring(0, 200),
-                    isLoading: false,
-                    citationsCount: Object.keys(finalCitations).length
-                  });
-                
-                // Hide bot status overlay when streaming completes
-                // BUT keep it visible in agent mode if navigation task or document opening is in progress
-                if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
-                  setIsBotActive(false);
-                }
-                
-                // Clear resume processing ref when query completes
-                resumeProcessingRef.current = null;
-                
-                  // Set the complete formatted text
-                setChatMessages(prev => {
-                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                  console.log('✅ SideChatPanel: setChatMessages - before update:', {
-                    prevCount: prev.length,
-                    existingMessageId: existingMessage?.id,
-                    existingMessageText: existingMessage?.text?.substring(0, 50) || 'N/A',
                     loadingResponseId: loadingResponseId,
-                    allMessageIds: prev.map(m => m.id),
-                    finalTextLength: finalText.length,
-                    finalTextPreview: finalText.substring(0, 100)
+                    chatIsActive
                   });
                   
-                  // CRITICAL: If message not found, create it (shouldn't happen but safety check)
-                  if (!existingMessage) {
-                    console.warn('⚠️ SideChatPanel: Loading message not found, creating new response message');
-                    const newResponseMessage: ChatMessage = {
+                  if (chatIsActive) {
+                    // Hide bot status overlay when streaming completes
+                    // BUT keep it visible in agent mode if navigation task or document opening is in progress
+                    if (!isAgentModeRef.current || (!isNavigatingTaskRef.current && !isOpeningDocumentRef.current)) {
+                      setIsBotActive(false);
+                    }
+                    
+                    // Clear resume processing ref when query completes
+                    resumeProcessingRef.current = null;
+                    
+                    // Set the complete formatted text
+                    setChatMessages(prev => {
+                      const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                      console.log('✅ SideChatPanel: setChatMessages - before update:', {
+                        prevCount: prev.length,
+                        existingMessageId: existingMessage?.id,
+                        existingMessageText: existingMessage?.text?.substring(0, 50) || 'N/A',
+                        loadingResponseId: loadingResponseId,
+                        allMessageIds: prev.map(m => m.id),
+                        finalTextLength: finalText.length,
+                        finalTextPreview: finalText.substring(0, 100)
+                      });
+                      
+                      // CRITICAL: If message not found, create it (shouldn't happen but safety check)
+                      if (!existingMessage) {
+                        console.warn('⚠️ SideChatPanel: Loading message not found, creating new response message');
+                        const newResponseMessage: ChatMessage = {
+                          id: loadingResponseId,
+                          type: 'response',
+                          text: finalText || 'Response received',
+                          isLoading: false,
+                          reasoningSteps: [],
+                          citations: finalCitations
+                        };
+                        const updated = [...prev, newResponseMessage];
+                        persistedChatMessagesRef.current = updated;
+                        console.log('✅ SideChatPanel: Created new response message:', {
+                          id: newResponseMessage.id,
+                          textLength: newResponseMessage.text.length,
+                          textPreview: newResponseMessage.text.substring(0, 100)
+                        });
+                        return updated;
+                      }
+                      
+                      const responseMessage: ChatMessage = {
+                        id: loadingResponseId,
+                        type: 'response',
+                        text: finalText || 'Response received', // Ensure text is never empty
+                        isLoading: false,
+                        reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
+                        citations: finalCitations // Use final citations (normalized to string keys)
+                      };
+                      
+                      const updated = prev.map(msg => 
+                        msg.id === loadingResponseId 
+                          ? responseMessage
+                          : msg
+                      );
+                      
+                      // Verify the update worked
+                      const updatedMessage = updated.find(msg => msg.id === loadingResponseId);
+                      if (!updatedMessage || updatedMessage.text !== responseMessage.text) {
+                        console.error('❌ SideChatPanel: Message update failed!', {
+                          found: !!updatedMessage,
+                          textMatch: updatedMessage?.text === responseMessage.text,
+                          expectedText: responseMessage.text.substring(0, 50),
+                          actualText: updatedMessage?.text?.substring(0, 50)
+                        });
+                      }
+                      
+                      console.log('✅ SideChatPanel: setChatMessages - after update:', {
+                        updatedCount: updated.length,
+                        responseMessageId: responseMessage.id,
+                        responseMessageText: responseMessage.text.substring(0, 100),
+                        responseMessageIsLoading: responseMessage.isLoading,
+                        foundInUpdated: updatedMessage?.text?.substring(0, 50) || 'NOT FOUND',
+                        verified: updatedMessage?.text === responseMessage.text
+                      });
+                      
+                      persistedChatMessagesRef.current = updated;
+                      return updated;
+                    });
+                  } else if (queryChatId) {
+                    // Chat is inactive - buffer the complete message
+                    const bufferedState = getBufferedState(queryChatId);
+                    const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                      chatMessages.find(msg => msg.id === loadingResponseId);
+                    
+                    const responseMessage: ChatMessage = {
                       id: loadingResponseId,
                       type: 'response',
                       text: finalText || 'Response received',
                       isLoading: false,
-                      reasoningSteps: [],
+                      reasoningSteps: existingMessage?.reasoningSteps || [],
                       citations: finalCitations
                     };
-                    const updated = [...prev, newResponseMessage];
-                    persistedChatMessagesRef.current = updated;
-                    console.log('✅ SideChatPanel: Created new response message:', {
-                      id: newResponseMessage.id,
-                      textLength: newResponseMessage.text.length,
-                      textPreview: newResponseMessage.text.substring(0, 100)
-                    });
-                    return updated;
+                    
+                    // Update buffered messages
+                    const updatedMessages = bufferedState.messages.map(msg => 
+                      msg.id === loadingResponseId ? responseMessage : msg
+                    );
+                    if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                      updatedMessages.push(responseMessage);
+                    }
+                    
+                    bufferedState.messages = updatedMessages;
+                    bufferedState.accumulatedText = accumulatedText;
+                    bufferedState.status = 'completed';
+                    bufferedState.isLoading = false;
+                    bufferedState.citations = finalCitations;
+                    bufferedState.lastUpdate = Date.now();
+                    
+                    console.log('💾 SideChatPanel: Buffered complete message for inactive chat (query prop):', queryChatId);
                   }
-                  
-                const responseMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: finalText || 'Response received', // Ensure text is never empty
-                    isLoading: false,
-                    reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: finalCitations // Use final citations (normalized to string keys)
-                };
                 
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? responseMessage
-                      : msg
-                  );
-                  
-                  // Verify the update worked
-                  const updatedMessage = updated.find(msg => msg.id === loadingResponseId);
-                  if (!updatedMessage || updatedMessage.text !== responseMessage.text) {
-                    console.error('❌ SideChatPanel: Message update failed!', {
-                      found: !!updatedMessage,
-                      textMatch: updatedMessage?.text === responseMessage.text,
-                      expectedText: responseMessage.text.substring(0, 50),
-                      actualText: updatedMessage?.text?.substring(0, 50)
-                    });
+                // Get the most up-to-date reasoning steps for history
+                // For active chats, always use the current chatMessages state (most up-to-date)
+                // For inactive chats, use buffered state
+                let latestReasoningStepsForHistory: ReasoningStep[] = [];
+                if (chatIsActive) {
+                  // Active chat - use current UI state (most reliable)
+                  const activeMessageForHistory = chatMessages.find(msg => msg.id === loadingResponseId);
+                  latestReasoningStepsForHistory = activeMessageForHistory?.reasoningSteps || [];
+                } else if (queryChatId) {
+                  // Inactive chat - use buffered state
+                  const bufferedStateForHistory = getBufferedState(queryChatId);
+                  const bufferedMessageForHistory = bufferedStateForHistory.messages.find(msg => msg.id === loadingResponseId);
+                  if (bufferedMessageForHistory?.reasoningSteps && bufferedMessageForHistory.reasoningSteps.length > 0) {
+                    latestReasoningStepsForHistory = bufferedMessageForHistory.reasoningSteps;
+                  } else if (bufferedStateForHistory.reasoningSteps.length > 0) {
+                    latestReasoningStepsForHistory = bufferedStateForHistory.reasoningSteps;
+                  } else {
+                    // Fallback to current chatMessages (might have some steps)
+                    const activeMessageForHistory = chatMessages.find(msg => msg.id === loadingResponseId);
+                    latestReasoningStepsForHistory = activeMessageForHistory?.reasoningSteps || [];
                   }
+                } else {
+                  // No queryChatId - use current state
+                  // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+                  const activeMessageForHistory = chatMessagesRef.current.find(msg => msg.id === loadingResponseId);
+                  latestReasoningStepsForHistory = activeMessageForHistory?.reasoningSteps || [];
+                }
+                
+                // Always update chat history and status
+                // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+                if (queryChatId) {
+                  const currentMessages = chatMessagesRef.current;
+                  const finalMessages = chatIsActive ? currentMessages.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? {
+                          role: 'assistant' as 'user' | 'assistant',
+                          content: finalText,
+                          citations: finalCitations,
+                          reasoningSteps: latestReasoningStepsForHistory.length > 0 ? latestReasoningStepsForHistory : (msg.reasoningSteps || []),
+                          isLoading: false
+                        }
+                      : {
+                          role: (msg.type === 'query' ? 'user' : 'assistant') as 'user' | 'assistant',
+                          content: msg.text || '',
+                          attachments: msg.attachments || [],
+                          propertyAttachments: msg.propertyAttachments || [],
+                          citations: msg.citations || {},
+                          reasoningSteps: msg.reasoningSteps || [],
+                          isLoading: msg.isLoading
+                        }
+                  ) : (getBufferedState(queryChatId).messages.map(msg => {
+                    const role = msg.type === 'query' ? 'user' : 'assistant';
+                    const msgReasoningSteps = msg.id === loadingResponseId 
+                      ? (latestReasoningStepsForHistory.length > 0 ? latestReasoningStepsForHistory : (msg.reasoningSteps || []))
+                      : (msg.reasoningSteps || []);
+                    return {
+                      role: role as 'user' | 'assistant',
+                      content: msg.text || '',
+                      attachments: msg.attachments || [],
+                      propertyAttachments: msg.propertyAttachments || [],
+                      citations: msg.citations || {},
+                      reasoningSteps: msgReasoningSteps,
+                      isLoading: msg.isLoading
+                    };
+                  }));
                   
-                  console.log('✅ SideChatPanel: setChatMessages - after update:', {
-                    updatedCount: updated.length,
-                    responseMessageId: responseMessage.id,
-                    responseMessageText: responseMessage.text.substring(0, 100),
-                    responseMessageIsLoading: responseMessage.isLoading,
-                    foundInUpdated: updatedMessage?.text?.substring(0, 50) || 'NOT FOUND',
-                    verified: updatedMessage?.text === responseMessage.text
-                  });
+                  updateChatInHistory(queryChatId, finalMessages);
+                  updateChatStatus(queryChatId, 'completed');
                   
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
-                };
+                  // Clean up abort controller
+                  delete abortControllersRef.current[queryChatId];
+                  console.log('✅ [HISTORY_SAVE] Final save on complete (query path):', { chatId: queryChatId, messageCount: finalMessages.length, hasContent: finalMessages.some(m => m.content && m.content.trim().length > 0) });
+                }
+              };
                 
                 // Wait for queue to finish processing (max 3 seconds), then finalize
                 const maxWait = 2000;
@@ -3565,13 +5928,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onError: Handle errors
               (error: string) => {
+              // Categorize error types for better handling
+              const isNetworkError = error.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+                                    error.includes('Connection interrupted') ||
+                                    error.includes('Failed to fetch') ||
+                                    error.includes('network error');
+              
+              // Log network errors as warnings (less severe), others as errors
+              if (isNetworkError) {
+                console.warn('⚠️ SideChatPanel: Network error during streaming:', error);
+              } else {
                 console.error('❌ SideChatPanel: Streaming error:', error);
+              }
+              
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
                 
-                // Hide bot status overlay on error
-                setIsBotActive(false);
-                
-                // Clear resume processing ref on error
-                resumeProcessingRef.current = null;
+                // Always update chat status to 'completed' even on error
+                if (queryChatId) {
+                  updateChatStatus(queryChatId, 'completed');
+                  // Clean up abort controller
+                  delete abortControllersRef.current[queryChatId];
+                }
                 
                 // Check if this is an attachment without query error
                 // Note: documentIdsArray is defined in the parent scope
@@ -3585,37 +5963,74 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 if (hasAttachments && (isQueryRequiredError || isEmptyQuery)) {
                   // Show helpful prompt for attachments without query
                   errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+                } else if (isNetworkError) {
+                  // Show user-friendly message for network errors
+                  errorText = 'Connection was interrupted. Please try again.';
                 } else {
                   // Show generic error for other cases
                   errorText = error || 'Sorry, I encountered an error processing your query.';
                 }
                 
-                setChatMessages(prev => {
-                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-                const errorMessage: ChatMessage = {
-                  id: loadingResponseId,
-                  type: 'response',
-                  text: errorText,
+                if (chatIsActive) {
+                  // Hide bot status overlay on error (only if active)
+                  setIsBotActive(false);
+                  
+                  // Clear resume processing ref on error
+                  resumeProcessingRef.current = null;
+                  
+                  setChatMessages(prev => {
+                    const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                    const errorMessage: ChatMessage = {
+                      id: loadingResponseId,
+                      type: 'response',
+                      text: errorText,
+                      isLoading: false,
+                      reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                    };
+                    
+                    const updated = prev.map(msg => 
+                      msg.id === loadingResponseId 
+                        ? errorMessage
+                        : msg
+                    );
+                    persistedChatMessagesRef.current = updated;
+                    return updated;
+                  });
+                } else if (queryChatId) {
+                  // Chat is inactive - buffer error message
+                  const bufferedState = getBufferedState(queryChatId);
+                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                    chatMessages.find(msg => msg.id === loadingResponseId);
+                  
+                  const errorMessage: ChatMessage = {
+                    id: loadingResponseId,
+                    type: 'response',
+                    text: errorText,
                     isLoading: false,
-                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-                };
-                
-                  const updated = prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? errorMessage
-                      : msg
+                    reasoningSteps: existingMessage?.reasoningSteps || []
+                  };
+                  
+                  const updatedMessages = bufferedState.messages.map(msg => 
+                    msg.id === loadingResponseId ? errorMessage : msg
                   );
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                  if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                    updatedMessages.push(errorMessage);
+                  }
+                  bufferedState.messages = updatedMessages;
+                  bufferedState.status = 'completed';
+                  bufferedState.isLoading = false;
+                  bufferedState.lastUpdate = Date.now();
+                }
               },
               undefined, // onStatus (optional)
-              abortController.signal, // abortSignal
+              queryPropFileAbortController.signal, // abortSignal - pass abort signal for cleanup
               documentIdsArray, // documentIds
               // onReasoningStep: Handle reasoning step events
               (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
                 
-                // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
+                // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY (always, background operation)
                 // This happens BEFORE citations arrive, making documents ready instantly
                 // Priority: doc_previews (earliest, from found_documents step) > doc_metadata > documents array
                 if (step.details) {
@@ -3647,63 +6062,139 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                 }
                 
-                setChatMessages(prev => {
-                  const updated = prev.map(msg => {
-                    if (msg.id === loadingResponseId) {
-                      const existingSteps = msg.reasoningSteps || [];
-                      // Use step + message as unique key to allow different messages for same step type
-                      // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
-                      const stepKey = `${step.step}:${step.message}`;
-                      const now = Date.now();
-                      const existingIndex = existingSteps.findIndex(s => 
-                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                      );
-                      
-                      // Skip if this exact step was added very recently (deduplication)
-                      if (existingIndex >= 0) {
-                        return msg;
+                const newStep: ReasoningStep = {
+                  step: step.step,
+                  action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
+                  message: step.message,
+                  count: step.count,
+                  details: step.details,
+                  timestamp: Date.now()
+                };
+                
+                if (chatIsActive) {
+                  setChatMessages(prev => {
+                    const updated = prev.map(msg => {
+                      if (msg.id === loadingResponseId) {
+                        const existingSteps = msg.reasoningSteps || [];
+                        // Use step + message as unique key to allow different messages for same step type
+                        // Also dedupe by timestamp proximity (within 500ms) to prevent duplicate emissions
+                        const stepKey = `${step.step}:${step.message}`;
+                        const now = Date.now();
+                        const existingIndex = existingSteps.findIndex(s => 
+                          `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                        );
+                        
+                        // Skip if this exact step was added very recently (deduplication)
+                        if (existingIndex >= 0) {
+                          return msg;
+                        }
+                        
+                        // Add new step
+                        return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                       }
-                      
-                      const newStep: ReasoningStep = {
-                        step: step.step,
-                        action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
-                        message: step.message,
-                        count: step.count,
-                        details: step.details,
-                        timestamp: now
-                      };
-                      
-                      // Add new step
-                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                    }
-                    return msg;
+                      return msg;
+                    });
+                    persistedChatMessagesRef.current = updated;
+                    return updated;
                   });
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                } else if (queryChatId) {
+                  // Chat is inactive - buffer reasoning step
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.reasoningSteps.push(newStep);
+                  bufferedState.lastReasoningStep = newStep;
+                  bufferedState.lastUpdate = Date.now();
+                  
+                  // Update buffered messages with reasoning steps
+                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                    chatMessages.find(msg => msg.id === loadingResponseId);
+                  
+                  if (existingMessage) {
+                    const existingSteps = existingMessage.reasoningSteps || [];
+                    const stepKey = `${step.step}:${step.message}`;
+                    const now = Date.now();
+                    const existingIndex = existingSteps.findIndex(s => 
+                      `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                    );
+                    
+                    if (existingIndex === -1) {
+                      const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
+                      const updatedMessages = bufferedState.messages.map(msg => 
+                        msg.id === loadingResponseId ? updatedMessage : msg
+                      );
+                      if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                        updatedMessages.push(updatedMessage);
+                      }
+                      bufferedState.messages = updatedMessages;
+                    }
+                  }
+                }
+                
+                // Always update history (reasoning steps are part of messages)
+                // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+                if (queryChatId) {
+                  const currentMessages = chatMessagesRef.current;
+                  const historyMessages = (chatIsActive ? currentMessages : (getBufferedState(queryChatId).messages)).map(msg => ({
+                    role: msg.type === 'query' ? 'user' : 'assistant',
+                    content: msg.text || '',
+                    attachments: msg.attachments || [],
+                    propertyAttachments: msg.propertyAttachments || [],
+                    citations: msg.citations || {},
+                    reasoningSteps: msg.reasoningSteps || [],
+                    isLoading: msg.isLoading
+                  }));
+                  updateChatInHistory(queryChatId, historyMessages);
+                }
               },
               // onReasoningContext: Handle LLM-generated contextual narration
               (context: { message: string; moment: string }) => {
                 console.log('🟢 SideChatPanel: Received reasoning context:', context);
                 
-                setChatMessages(prev => {
-                  const updated = prev.map(msg => {
-                    if (msg.id === loadingResponseId) {
-                      const existingSteps = msg.reasoningSteps || [];
-                      const contextStep: ReasoningStep = {
-                        step: `context_${context.moment}`,
-                        action_type: 'context',
-                        message: context.message,
-                        details: { moment: context.moment },
-                        timestamp: Date.now()
-                      };
-                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
-                    }
-                    return msg;
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+                
+                const contextStep: ReasoningStep = {
+                  step: `context_${context.moment}`,
+                  action_type: 'context',
+                  message: context.message,
+                  details: { moment: context.moment },
+                  timestamp: Date.now()
+                };
+                
+                if (chatIsActive) {
+                  setChatMessages(prev => {
+                    const updated = prev.map(msg => {
+                      if (msg.id === loadingResponseId) {
+                        const existingSteps = msg.reasoningSteps || [];
+                        return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
+                      }
+                      return msg;
+                    });
+                    persistedChatMessagesRef.current = updated;
+                    return updated;
                   });
-                  persistedChatMessagesRef.current = updated;
-                  return updated;
-                });
+                } else if (queryChatId) {
+                  // Chat is inactive - buffer reasoning context
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.reasoningSteps.push(contextStep);
+                  bufferedState.lastReasoningStep = contextStep;
+                  bufferedState.lastUpdate = Date.now();
+                  
+                  // Update buffered messages
+                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                    chatMessages.find(msg => msg.id === loadingResponseId);
+                  
+                  if (existingMessage) {
+                    const existingSteps = existingMessage.reasoningSteps || [];
+                    const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, contextStep] };
+                    const updatedMessages = bufferedState.messages.map(msg => 
+                      msg.id === loadingResponseId ? updatedMessage : msg
+                    );
+                    if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                      updatedMessages.push(updatedMessage);
+                    }
+                    bufferedState.messages = updatedMessages;
+                  }
+                }
               },
               // onCitation: Handle citation events during streaming
               (citation: { citation_number: string | number; data: any }) => {
@@ -3750,7 +6241,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   original_filename: citation.data.original_filename // Include filename for preloading
                 };
                 
-                // PRELOAD: Start downloading document in background when citation received
+                // Always accumulate citations in buffer (for inactive chats)
+                if (queryChatId) {
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.citations[citationNumStr] = accumulatedCitations[citationNumStr];
+                  bufferedState.lastUpdate = Date.now();
+                }
+                
+                // PRELOAD: Start downloading document in background when citation received (always, background operation)
                 // This ensures documents are ready when user clicks citation (instant BBOX highlight)
                 // Note: Documents may already be preloaded from reasoning steps, but this is a fallback
                 const docId = citation.data.doc_id;
@@ -3793,18 +6291,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   }
                 }
                 
-                // Update message with citations in real-time
-                // Merge with previous citations to avoid overwriting when multiple citations arrive quickly
-                setChatMessages(prev => {
-                  return prev.map(msg => 
-                    msg.id === loadingResponseId
-                      ? {
-                          ...msg,
-                          citations: { ...(msg.citations || {}), ...accumulatedCitations }
-                        }
-                      : msg
-                  );
-                });
+                // Update message with citations in real-time (only if chat is active)
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+                if (chatIsActive) {
+                  // Merge with previous citations to avoid overwriting when multiple citations arrive quickly
+                  setChatMessages(prev => {
+                    return prev.map(msg => 
+                      msg.id === loadingResponseId
+                        ? {
+                            ...msg,
+                            citations: { ...(msg.citations || {}), ...accumulatedCitations }
+                          }
+                        : msg
+                    );
+                  });
+                }
               },
               citationContext || undefined, // citationContext (from citation click)
               responseMode, // responseMode (from file choice)
@@ -3813,6 +6315,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               (action: { action: string; params: any }) => {
                 console.log('🎯 [AGENT_ACTION] Received action:', action);
                 
+                // Use unified helper for consistent chat active check
+                const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+                // STRICT: Verify this query's chat is the currently active one (prevents race conditions)
+                const isCorrectChat = queryChatId === activeChatIdRef.current;
+                
                 // Skip agent actions in reader mode - just show citations without auto-opening
                 // Use ref to get current mode value (avoids closure issues)
                 if (!isAgentModeRef.current) {
@@ -3820,7 +6327,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return;
                 }
                 
-                console.log('✅ [AGENT_MODE] Executing agent action:', action.action);
+                console.log('✅ [AGENT_MODE] Executing agent action:', action.action, { chatIsActive, isCorrectChat, queryChatId, activeChat: activeChatIdRef.current });
+                
+                // Buffer agent action for inactive chats OR if chat ownership mismatch
+                if ((!chatIsActive || !isCorrectChat) && queryChatId) {
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.activeAgentAction = {
+                    action: action.action,
+                    params: action.params,
+                    timestamp: Date.now()
+                  };
+                  bufferedState.lastUpdate = Date.now();
+                  console.log('💾 SideChatPanel: Buffered agent action for inactive chat (query prop):', action.action);
+                }
                 
                 switch (action.action) {
                   case 'open_document':
@@ -3836,21 +6355,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     // bbox is now included in open_document action (no separate highlight_bbox)
                     console.log('📂 [AGENT_ACTION] Opening document:', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                     if (action.params.doc_id) {
-                      // AGENT GLOW: Activate glowing border effect before opening
-                      setIsAgentOpening(true);
-                      // Keep bot overlay visible during document opening
-                      isOpeningDocumentRef.current = true;
-                      setBotActivityMessage('Opening document...');
-                      
-                      // Use the citation data from the backend action directly
-                      const citationData = {
-                        doc_id: action.params.doc_id,
-                        page: action.params.page || 1,
-                        original_filename: action.params.filename || '',
-                        bbox: action.params.bbox || undefined
-                      };
-                      
-                      handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
+                      if (chatIsActive && isCorrectChat) {
+                        // AGENT GLOW: Activate glowing border effect before opening
+                        setIsAgentOpening(true);
+                        // Keep bot overlay visible during document opening
+                        isOpeningDocumentRef.current = true;
+                        setBotActivityMessage('Opening document...');
+                        
+                        // Use the citation data from the backend action directly
+                        const citationData = {
+                          doc_id: action.params.doc_id,
+                          page: action.params.page || 1,
+                          original_filename: action.params.filename || '',
+                          bbox: action.params.bbox || undefined
+                        };
+                        
+                        handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
+                      } else if (queryChatId) {
+                        // Chat is inactive - store document preview in ChatStateStore
+                        // This allows the document to be pre-opened when user returns to this chat
+                        // Ensure page is inside bbox for consistent CitationHighlight structure
+                        const bboxWithPage = action.params.bbox ? {
+                          ...action.params.bbox,
+                          page: action.params.bbox.page || action.params.page || 1
+                        } : undefined;
+                        const docPreview = {
+                          docId: action.params.doc_id,
+                          filename: action.params.filename || '',
+                          highlight: bboxWithPage ? {
+                            fileId: action.params.doc_id,
+                            bbox: bboxWithPage,
+                            doc_id: action.params.doc_id,
+                            block_id: action.params.block_id || '',
+                            block_content: action.params.block_content || '',
+                            original_filename: action.params.filename || ''
+                          } : undefined
+                        };
+                        // Store in ChatStateStore (will be displayed when user switches to this chat)
+                        openDocumentForChat(queryChatId, docPreview);
+                        console.log('💾 SideChatPanel: Stored document preview in ChatStateStore for inactive chat:', { chatId: queryChatId, docPreview });
+                      }
                     }
                     break;
                     
@@ -3861,20 +6405,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     break;
                     
                   case 'navigate_to_property':
-                    // Navigate to property details panel
-                    // CRITICAL: Close document preview immediately when navigating to property
-                    // This prevents old content from remaining visible during navigation
-                    console.log('🧭 [AGENT_ACTION] navigate_to_property received - closing preview and navigating');
-                    // Set navigation flag to prevent fullscreen restoration
-                    isNavigatingTaskRef.current = true;
-                    wasFullscreenBeforeCitationRef.current = false;
-                    // IMMEDIATELY close any open document preview to clear old content
-                    closeExpandedCardView();
-                    // Update bot status to show navigation activity
-                    setBotActivityMessage('Navigating...');
-                    if (action.params.property_id && onOpenProperty) {
-                      onOpenProperty(null, null, action.params.property_id);
+                    if (chatIsActive && isCorrectChat) {
+                      // Navigate to property details panel
+                      // CRITICAL: Close document preview immediately when navigating to property
+                      // This prevents old content from remaining visible during navigation
+                      console.log('🧭 [AGENT_ACTION] navigate_to_property received - closing preview and navigating');
+                      // Set navigation flag to prevent fullscreen restoration
+                      isNavigatingTaskRef.current = true;
+                      wasFullscreenBeforeCitationRef.current = false;
+                      // IMMEDIATELY close any open document preview to clear old content
+                      closeExpandedCardView();
+                      documentPreviewOwnerRef.current = null;
+                      // Update bot status to show navigation activity
+                      setBotActivityMessage('Navigating...');
+                      if (action.params.property_id && onOpenProperty) {
+                        onOpenProperty(null, null, action.params.property_id);
+                      }
                     }
+                    // If inactive, action is already buffered above
                     break;
                   
                   case 'show_map_view':
@@ -3906,7 +6454,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     setTimeout(() => {
                       console.log('🗺️ [AGENT_ACTION] show_map_view - Step 2: Shrinking chat panel to reveal map');
                       // Shrink chat panel - map will be visible behind it
-                      const navMinWidth = 380;
+                      const navMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
                       setDraggedWidth(navMinWidth);
                       lockedWidthRef.current = null;
                       if (onChatWidthChange) {
@@ -3947,7 +6495,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       setAgentTaskActive(true, 'Navigating to property...');
                       setMapNavigating(true); // Enable map glow effect
                       // Ensure chat is shrunk (in case show_map_view didn't fire)
-                      const pinNavMinWidth = 380;
+                      const pinNavMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
                       setDraggedWidth(pinNavMinWidth);
                       lockedWidthRef.current = null;
                       if (onChatWidthChange) {
@@ -4009,34 +6557,63 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     break;
                   
                   case 'prepare_document':
-                    // EARLY DOCUMENT PREPARATION: Start loading document before answer is generated
+                    // EARLY DOCUMENT PREPARATION: Download and cache document BEFORE answer is generated
                     // This happens WHILE the LLM is still generating the answer, so the document
-                    // will be cached and ready when open_document action comes
+                    // will be fully cached and ready for INSTANT display when open_document action comes
                     console.log('📥 [AGENT_ACTION] prepare_document - pre-loading document:', action.params.doc_id);
-                    if (action.params.doc_id && backendApi) {
-                      // Pre-cache the document by fetching its metadata
-                      // This warms up the cache so open_document is faster
+                    if (action.params.doc_id) {
+                      const docId = action.params.doc_id;
+                      const filename = action.params.filename || 'document.pdf';
+                      
+                      // Check if already cached - skip if so
+                      const alreadyCached = (window as any).__preloadedDocumentBlobs?.[docId];
+                      if (alreadyCached) {
+                        console.log('✅ [EARLY_PREP] Document already cached, skipping:', docId.substring(0, 8) + '...');
+                        break;
+                      }
+                      
+                      // Actually download the document in background (not just HEAD request!)
                       (async () => {
                         try {
-                          // Pre-fetch document info to warm cache
-                          const docId = action.params.doc_id;
-                          const downloadUrl = action.params.download_url || `/api/files/download?document_id=${docId}`;
+                          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5002';
+                          const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
                           
-                          // Start fetching the document in background (this warms the browser cache)
-                          fetch(downloadUrl, { 
-                            method: 'HEAD',  // Just check if accessible, don't download full file yet
-                            credentials: 'include'
-                          }).then(() => {
-                            console.log('✅ [EARLY_PREP] Document URL validated:', docId.substring(0, 8) + '...');
-                          }).catch(() => {
-                            // Ignore errors - this is just pre-warming
-                          });
+                          console.log('📥 [EARLY_PREP] Starting background download:', docId.substring(0, 8) + '...');
+                          const response = await fetch(downloadUrl, { credentials: 'include' });
                           
-                          // Store doc_id for immediate use when open_document comes
-                          (window as any).__preparedDocumentId = docId;
-                          (window as any).__preparedDocumentFilename = action.params.filename;
-                          console.log('✅ [EARLY_PREP] Document prepared for fast opening:', docId.substring(0, 8) + '...');
+                          if (!response.ok) {
+                            console.warn('⚠️ [EARLY_PREP] Failed to download:', response.status);
+                            return;
+                          }
+                          
+                          const blob = await response.blob();
+                          const url = URL.createObjectURL(blob);
+                          
+                          // Cache the blob URL for instant use when open_document comes
+                          if (!(window as any).__preloadedDocumentBlobs) {
+                            (window as any).__preloadedDocumentBlobs = {};
+                          }
+                          (window as any).__preloadedDocumentBlobs[docId] = {
+                            url,
+                            type: blob.type || 'application/pdf',
+                            filename,
+                            timestamp: Date.now()
+                          };
+                          
+                          // Also preload into PreviewContext for StandaloneExpandedCardView
+                          const file = new File([blob], filename, { type: blob.type || 'application/pdf' });
+                          const fileData: FileAttachmentData = {
+                            id: docId,
+                            file,
+                            name: filename,
+                            type: blob.type || 'application/pdf',
+                            size: blob.size
+                          };
+                          preloadFile(fileData);
+                          
+                          console.log('✅ [EARLY_PREP] Document fully cached and ready:', docId.substring(0, 8) + '...', blob.size, 'bytes');
                         } catch (e) {
+                          console.warn('⚠️ [EARLY_PREP] Background download failed:', e);
                           // Ignore errors - this is just optimization
                         }
                       })();
@@ -4047,7 +6624,34 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     console.warn('Unknown agent action:', action.action);
                 }
               },
-              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+              isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+              selectedModelRef.current, // Pass selected model to backend
+              // onThinkingChunk: Stream Claude's extended thinking in real-time
+              (chunk: string) => {
+                setChatMessages(prev => prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    // Find the thinking step and update its content
+                    const updatedSteps = (msg.reasoningSteps || []).map(step => {
+                      if (step.action_type === 'thinking') {
+                        return {
+                          ...step,
+                          details: {
+                            ...step.details,
+                            thinking_content: (step.details?.thinking_content || '') + chunk
+                          }
+                        };
+                      }
+                      return step;
+                    });
+                    return { ...msg, reasoningSteps: updatedSteps };
+                  }
+                  return msg;
+                }));
+              },
+              // onThinkingComplete: Finalize thinking content
+              (fullThinking: string) => {
+                console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
+              }
             );
           } catch (error: any) {
             isProcessingQueryRef.current = false;
@@ -4123,6 +6727,62 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       resizeObserver.disconnect();
     };
   }, [isVisible]);
+  
+  // Detect button row overflow and set collapse level
+  // This measures actual content vs container width and progressively collapses buttons
+  // Uses parent container width (actualPanelWidth) as the primary constraint
+  React.useEffect(() => {
+    const calculateCollapseLevel = () => {
+      // Use actualPanelWidth as the primary constraint, accounting for padding
+      // Empty state: 32px padding on each side (64px total), or 12px each side (24px) when narrow
+      // Chat state: form has 32px padding + chat bar has 12px padding = 44px each side (88px total)
+      
+      // Calculate effective button row width based on panel width and padding
+      const isNarrowPanel = actualPanelWidth < 320;
+      const effectiveWidth = isNarrowPanel 
+        ? actualPanelWidth - 36 // 12px padding + 6px margins
+        : actualPanelWidth - 88; // 32px form padding + 12px bar padding each side
+      
+      // Calculate required width for different collapse levels based on actual button widths:
+      // Level 0 (all labels): ModeSelector(~100) + Model(~100) + gap + Web(28) + Map(55) + Attach(70) + Voice(65) + gaps ≈ 450px
+      // Level 1 (Map/Attach/Voice icons): ModeSelector(100) + Model(100) + Web(28) + Map(30) + Attach(26) + Voice(30) + gaps ≈ 350px
+      // Level 2 (all icons): ModeSelector(40) + Model(40) + Web(28) + Map(30) + Attach(26) + Voice(30) + gaps ≈ 220px
+      // Level 3 (hide Voice): ModeSelector(40) + Model(40) + Web(28) + Map(30) + Attach(26) + gaps ≈ 180px
+      
+      // Use effective button row width for thresholds
+      if (effectiveWidth < 200) {
+        setButtonCollapseLevel(3); // Hide Voice, very compact
+      } else if (effectiveWidth < 280) {
+        setButtonCollapseLevel(2); // All buttons icon-only including Model/Mode
+      } else if (effectiveWidth < 380) {
+        setButtonCollapseLevel(1); // Map, Attach, Voice icons only
+      } else {
+        setButtonCollapseLevel(0); // All labels shown
+      }
+    };
+    
+    // Initial calculation
+    calculateCollapseLevel();
+    
+    // Also re-calculate on resize observer for any ref that exists
+    const resizeObserver = new ResizeObserver(() => {
+      // Use requestAnimationFrame for smooth updates
+      requestAnimationFrame(calculateCollapseLevel);
+    });
+    
+    // Observe both button rows if they exist
+    if (buttonRowRef.current) {
+      resizeObserver.observe(buttonRowRef.current);
+    }
+    if (emptyButtonRowRef.current) {
+      resizeObserver.observe(emptyButtonRowRef.current);
+    }
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [isVisible, actualPanelWidth, inputContainerWidth, draggedWidth]);
+  
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const initialScrollHeightRef = React.useRef<number | null>(null);
   const isDeletingRef = React.useRef(false);
@@ -4235,6 +6895,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     return () => clearInterval(intervalId);
   }, [hasLoadingMessage]);
   
+  // Scroll to bottom when chat panel becomes visible and has messages
+  const prevIsVisibleForScrollRef = React.useRef<boolean>(isVisible);
+  React.useEffect(() => {
+    const chatJustBecameVisible = !prevIsVisibleForScrollRef.current && isVisible;
+    prevIsVisibleForScrollRef.current = isVisible;
+    
+    // When chat opens and has messages, scroll to bottom (most recent response)
+    if (chatJustBecameVisible && chatMessages.length > 0) {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          autoScrollEnabledRef.current = true; // Enable auto-scroll when opening
+          scrollToBottom();
+        }, 100);
+      });
+    }
+  }, [isVisible, chatMessages.length, scrollToBottom]);
   
   // Track if we were in fullscreen mode before opening a citation
   // This allows us to restore fullscreen when the document preview closes
@@ -4250,20 +6926,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
     // CRITICAL: Skip restoration if we're navigating (agent navigation closes preview but shouldn't restore fullscreen)
     if (!expandedCardViewDoc && wasFullscreenBeforeCitationRef.current && !isNavigatingTaskRef.current) {
       console.log('🔄 [CITATION] Document preview closed - restoring fullscreen mode instantly (snap, no animation)');
-      // Use flushSync to ensure state updates happen synchronously before render (like dashboard opening)
-      flushSync(() => {
-        // Use justEnteredFullscreen to disable transition (same as initial fullscreen entry)
-        setJustEnteredFullscreen(true);
-        setIsRestoringFullscreen(true);
-        
-        // Restore fullscreen mode immediately (no delay to prevent seeing map)
-        setIsFullscreenMode(true);
-        isFullscreenFromDashboardRef.current = true;
-        setDraggedWidth(null); // Clear any dragged width so fullscreen width takes effect
-        lockedWidthRef.current = null; // Clear locked width
-        // DON'T reset wasFullscreenBeforeCitationRef - keep it true so subsequent citations also restore fullscreen
-        // It will be reset when user manually exits fullscreen or when switching away from dashboard mode
-      });
+      
+      // Use justEnteredFullscreen to disable transition (same as initial fullscreen entry)
+      setJustEnteredFullscreen(true);
+      setIsRestoringFullscreen(true);
+      
+      // Restore fullscreen mode immediately (no delay to prevent seeing map)
+      setIsFullscreenMode(true);
+      isFullscreenFromDashboardRef.current = true;
+      setDraggedWidth(null); // Clear any dragged width so fullscreen width takes effect
+      lockedWidthRef.current = null; // Clear locked width
+      // DON'T reset wasFullscreenBeforeCitationRef - keep it true so subsequent citations also restore fullscreen
+      // It will be reset when user manually exits fullscreen or when switching away from dashboard mode
       
       // Notify parent of width change immediately
       if (onChatWidthChange) {
@@ -4397,57 +7071,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         });
       }
 
-      // Check if document is already loaded in preview context (performance optimization)
-      const existingFile = previewFiles.find(f => f.id === docId);
-      let file: File;
-      let fileType: string;
-      let fileSize: number;
-      
-      if (existingFile && existingFile.file) {
-        // Reuse existing file - no need to download again
-        console.log('✅ [CITATION] Document already loaded, reusing existing file');
-        file = existingFile.file;
-        fileType = existingFile.type || 'application/pdf';
-        fileSize = existingFile.size || 0;
-      } else {
-        // Download document only if not already loaded
-        console.log('📥 [CITATION] Downloading document (not in cache)');
-        const downloadUrl = `${backendUrl}/api/files/download?document_id=${docId}`;
-        
-        const response = await fetch(downloadUrl, {
-          credentials: 'include'
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to download document: ${response.status} ${response.statusText}`);
-        }
-
-        const blob = await response.blob();
-        
-        // Determine file type from blob or citation data
-        fileType = blob.type || 'application/pdf';
-        fileSize = blob.size;
-        
-        // Create File object from blob
-        file = new File([blob], citationData.original_filename || 'document.pdf', {
-          type: fileType
-        });
-      }
-
-      // Convert to FileAttachmentData format for PreviewContext cache
-      const fileData: FileAttachmentData = {
-        id: docId, // Use doc_id as the file ID
-        file: file,
-        name: citationData.original_filename || 'document.pdf',
-        type: fileType,
-        size: fileSize
-      };
-
-      // Ensure the ExpandedCardView can open instantly without a second download.
-      // (StandaloneExpandedCardView now reuses PreviewContext cache when available.)
-      preloadFile(fileData);
-
       // NEW: Validate bbox before using it
+      // OPTIMIZATION: Build highlight data FIRST, then open preview immediately
+      // StandaloneExpandedCardView handles its own document loading with loading state
       const validateBbox = (bbox: any): boolean => {
         if (!bbox || typeof bbox !== 'object') return false;
         
@@ -4504,7 +7130,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           const highlightPage = citationData.bbox.page || citationData.page || citationData.page_number || 1;
           
           highlightData = {
-            fileId: docId, // CRITICAL: Must match fileData.id below
+            fileId: docId,
             bbox: {
               left: citationData.bbox.left,
               top: citationData.bbox.top,
@@ -4523,7 +7149,6 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             fileId: docId,
             page: highlightPage,
             bbox: citationData.bbox,
-            fileDataId: fileData.id, // Verify they match
             block_id: highlightData.block_id
           });
         }
@@ -4560,7 +7185,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             const highlightPage = highlightChunk.bbox.page || highlightChunk.page_number || citationData.page || citationData.page_number || 1;
             
             highlightData = {
-              fileId: docId, // CRITICAL: Must match fileData.id below
+              fileId: docId,
               bbox: {
                 left: highlightChunk.bbox.left,
                 top: highlightChunk.bbox.top,
@@ -4574,8 +7199,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               fileId: docId,
               reason: highlightSource?.reason,
               page: highlightPage,
-              bbox: highlightChunk.bbox,
-              fileDataId: fileData.id // Verify they match
+              bbox: highlightChunk.bbox
             });
           }
         } else {
@@ -4585,9 +7209,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
       console.log('📚 [CITATION] Highlight payload prepared for preview:', {
         highlightData,
-        fileDataId: fileData.id,
-        highlightFileId: highlightData?.fileId,
-        fileIdsMatch: highlightData ? fileData.id === highlightData.fileId : 'no highlight'
+        docId,
+        highlightFileId: highlightData?.fileId
       });
       
       // Always switch from fullscreen to 50% width when clicking a citation
@@ -4595,7 +7218,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // Check if we're in fullscreen mode OR if we were in fullscreen before (for subsequent citations)
       // Use ref to get current fullscreen state (avoids stale closure issues in streaming callbacks)
       const currentFullscreenMode = isFullscreenModeRef.current;
-      console.log('🔍 [CITATION] Fullscreen mode check:', { currentFullscreenMode, wasFullscreenBefore: wasFullscreenBeforeCitationRef.current });
+      const isDocumentPreviewAlreadyOpen = !!expandedCardViewDoc;
+      console.log('🔍 [CITATION] Fullscreen mode check:', { currentFullscreenMode, wasFullscreenBefore: wasFullscreenBeforeCitationRef.current, isDocumentPreviewAlreadyOpen });
       
       if (currentFullscreenMode || wasFullscreenBeforeCitationRef.current) {
         console.log('🎯 [CITATION] Citation clicked in fullscreen mode - switching to 50% width for 50/50 split');
@@ -4606,29 +7230,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         // Clear fullscreen mode to allow 50/50 split with document preview
         setIsFullscreenMode(false);
         // Don't reset isFullscreenFromDashboardRef here - we'll restore it when closing
-        setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
-        lockedWidthRef.current = '50vw';
-        
-        // Notify parent of width change
-        if (onChatWidthChange) {
-          const newWidth = window.innerWidth * 0.5;
-          onChatWidthChange(newWidth);
+        // Only clear dragged width if no document preview is already open
+        // If document preview is open, user may have adjusted the width - preserve it
+        if (!isDocumentPreviewAlreadyOpen) {
+          setDraggedWidth(null); // Clear any dragged width so unified width calculation takes effect
         }
+        // NOTE: Don't set lockedWidthRef - the unified calculateChatPanelWidth will use 50% split
+        // when document preview opens (which happens right after this)
+        
+        // Width notification will happen via useEffect when expandedCardViewDoc changes
       } else if (isFirstCitationRef.current) {
         // If not in fullscreen, we weren't in fullscreen before
         wasFullscreenBeforeCitationRef.current = false;
-        // If not in fullscreen but first citation, still expand to 50% if collapsed
-        console.log('🎯 [CITATION] First citation clicked - expanding chat panel to 50% width for 50/50 split');
+        // If not in fullscreen but first citation, still expand if collapsed
+        console.log('🎯 [CITATION] First citation clicked - expanding chat panel for 50/50 split view');
         setIsExpanded(true);
-        setDraggedWidth(null); // Clear any dragged width so 50vw takes effect
-        lockedWidthRef.current = '50vw';
+        // Only clear dragged width if no document preview is already open
+        // If document preview is open, user may have adjusted the width - preserve it
+        if (!isDocumentPreviewAlreadyOpen) {
+          setDraggedWidth(null); // Clear any dragged width so unified width calculation takes effect
+        }
+        // NOTE: Don't set lockedWidthRef - the unified calculateChatPanelWidth will use 50% split
+        // when document preview opens (which happens right after this)
         isFirstCitationRef.current = false; // Mark that we've seen a citation
         
-        // Notify parent of width change
-        if (onChatWidthChange) {
-          const newWidth = window.innerWidth * 0.5;
-          onChatWidthChange(newWidth);
-        }
+        // Width notification will happen via useEffect when expandedCardViewDoc changes
       } else {
         // If not in fullscreen and not first citation, we weren't in fullscreen before
         wasFullscreenBeforeCitationRef.current = false;
@@ -4646,10 +7272,12 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       // CRITICAL: Pass isAgentTriggered flag so agent actions bypass chat panel visibility check
       openExpandedCardView(docId, citationData.original_filename || 'document.pdf', highlightData || undefined, fromAgentAction);
       
+      // Track ownership of this document preview to prevent cross-contamination
+      documentPreviewOwnerRef.current = currentChatIdRef.current || currentChatId;
+      
       console.log('✅ Document opened in viewer:', {
         filename: citationData.original_filename,
         docId: docId,
-        fileId: fileData.id,
         hasHighlight: !!highlightData,
         highlightPage: highlightData?.bbox?.page,
         highlightBbox: highlightData?.bbox
@@ -4662,7 +7290,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         variant: "destructive",
       });
     }
-  }, [previewFiles, preloadFile, openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
+  }, [openExpandedCardView, toast, isFullscreenMode, onChatWidthChange]);
   
   // Initialize textarea height on mount
   React.useEffect(() => {
@@ -4727,6 +7355,96 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           transform: rotateX(360deg) rotateY(360deg);
         }
       }
+      
+      /* Gold clockwise wave glow animation for Agents Sidebar button */
+      @keyframes goldClockwiseGlow {
+        0% {
+          box-shadow: inset 0 -2px 8px rgba(212, 175, 55, 0.8),
+                      0 0 12px rgba(255, 215, 0, 0.6);
+          border-color: rgba(212, 175, 55, 0.9);
+        }
+        12.5% {
+          box-shadow: inset 2px -2px 8px rgba(212, 175, 55, 0.7),
+                      3px 0 12px rgba(255, 215, 0, 0.5);
+          border-color: rgba(212, 175, 55, 0.85);
+        }
+        25% {
+          box-shadow: inset 2px 0 8px rgba(212, 175, 55, 0.7),
+                      3px 2px 12px rgba(255, 215, 0, 0.5);
+          border-color: rgba(212, 175, 55, 0.8);
+        }
+        37.5% {
+          box-shadow: inset 2px 2px 8px rgba(212, 175, 55, 0.6),
+                      0 3px 12px rgba(255, 215, 0, 0.4);
+          border-color: rgba(212, 175, 55, 0.7);
+        }
+        50% {
+          box-shadow: inset 0 2px 8px rgba(212, 175, 55, 0.5),
+                      -3px 2px 12px rgba(255, 215, 0, 0.3);
+          border-color: rgba(212, 175, 55, 0.6);
+        }
+        62.5% {
+          box-shadow: inset -2px 2px 8px rgba(212, 175, 55, 0.4),
+                      -3px 0 10px rgba(255, 215, 0, 0.2);
+          border-color: rgba(212, 175, 55, 0.5);
+        }
+        75% {
+          box-shadow: inset -2px 0 6px rgba(212, 175, 55, 0.3),
+                      -2px -2px 8px rgba(255, 215, 0, 0.15);
+          border-color: rgba(212, 175, 55, 0.4);
+        }
+        87.5% {
+          box-shadow: inset -1px -1px 4px rgba(212, 175, 55, 0.15),
+                      0 -2px 6px rgba(255, 215, 0, 0.1);
+          border-color: rgba(203, 213, 225, 0.7);
+        }
+        100% {
+          box-shadow: none;
+          border-color: rgba(203, 213, 225, 0.7);
+        }
+      }
+      
+      .agent-sidebar-gold-glow {
+        animation: goldClockwiseGlow 0.8s ease-out forwards !important;
+      }
+      
+      .agent-sidebar-gold-glow span {
+        animation: goldTextPulse 0.6s ease-out forwards;
+      }
+      
+      .agent-sidebar-gold-glow svg {
+        animation: goldIconPulse 0.6s ease-out forwards;
+      }
+      
+      @keyframes goldTextPulse {
+        0% {
+          color: rgba(180, 145, 45, 1);
+          text-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
+        }
+        50% {
+          color: rgba(180, 145, 45, 0.7);
+          text-shadow: 0 0 3px rgba(255, 215, 0, 0.25);
+        }
+        100% {
+          color: inherit;
+          text-shadow: none;
+        }
+      }
+      
+      @keyframes goldIconPulse {
+        0% {
+          color: rgba(180, 145, 45, 1);
+          filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.6));
+        }
+        50% {
+          color: rgba(180, 145, 45, 0.7);
+          filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.3));
+        }
+        100% {
+          color: inherit;
+          filter: none;
+        }
+      }
     `;
     if (!document.getElementById('sidechat-scrollbar-style')) {
       document.head.appendChild(style);
@@ -4744,15 +7462,218 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   // Restore persisted messages when panel becomes visible
   React.useEffect(() => {
     if (isVisible) {
-      // If restoreChatId is provided, restore that chat from history
-      if (restoreChatId) {
+      // Skip restore if new agent was just requested
+      if (newAgentRequestedRef.current) {
+        console.log('🔄 SideChatPanel: Skipping restore - new agent was just requested');
+        return;
+      }
+      
+      // Track previous restoreChatId to detect changes
+      const prevRestoreChatId = prevRestoreChatIdRef.current;
+      prevRestoreChatIdRef.current = restoreChatId;
+      
+      // If restoreChatId changed and is different from currentChatId, switch chats
+      // Enhanced: Add check to ensure we're not in the middle of a new agent request
+      // CRITICAL: Only restore if we're actually switching to a different chat
+      // If restoreChatId === currentChatId, the chat is already active - skip restoration
+      // Also prevent duplicate restorations by checking lastRestoredChatIdRef
+      // FIX: Allow re-restoration if current chat has no messages (previous restoration failed/partial)
+      const currentMessagesEmpty = chatMessagesRef.current.length === 0;
+      const shouldAllowReRestore = currentMessagesEmpty && restoreChatId === lastRestoredChatIdRef.current;
+      if (restoreChatId && 
+          restoreChatId !== currentChatId && 
+          (restoreChatId !== lastRestoredChatIdRef.current || shouldAllowReRestore) && 
+          !newAgentRequestedRef.current) {
+        const chatToRestore = getChatById(restoreChatId);
+        console.log('🔄 [RESTORE_INIT] Switching chats:', {
+          from: currentChatId,
+          to: restoreChatId,
+          prevRestore: prevRestoreChatId,
+          isVisible,
+          chatStatus: chatToRestore?.status,
+          historyMessageCount: chatToRestore?.messages?.length || 0,
+          preview: chatToRestore?.preview?.substring(0, 50) || 'none',
+          allowReRestore: shouldAllowReRestore,
+          currentMessagesEmpty: currentMessagesEmpty
+        });
+        
+        // CRITICAL: Save current chat's streaming state to buffer before clearing UI
+        // This prevents interrupting ongoing queries when switching chats
+        // FIX: Use chatMessagesRef.current to get latest messages (avoid stale closure)
+        if (currentChatId && currentChatId !== restoreChatId) {
+          const currentBufferedState = getBufferedState(currentChatId);
+          const currentMessages = chatMessagesRef.current;
+          
+          // Save current messages (preserve streaming state)
+          currentBufferedState.messages = [...currentMessages];
+          
+          // Save accumulated text from last loading message if it exists
+          const lastLoadingMessage = currentMessages.find(msg => msg.isLoading);
+          if (lastLoadingMessage && lastLoadingMessage.text) {
+            currentBufferedState.accumulatedText = lastLoadingMessage.text;
+          }
+          
+          // Save reasoning steps from messages
+          const allReasoningSteps: ReasoningStep[] = [];
+          currentMessages.forEach(msg => {
+            if (msg.reasoningSteps && msg.reasoningSteps.length > 0) {
+              allReasoningSteps.push(...msg.reasoningSteps);
+            }
+          });
+          if (allReasoningSteps.length > 0) {
+            currentBufferedState.reasoningSteps = allReasoningSteps;
+            currentBufferedState.lastReasoningStep = allReasoningSteps[allReasoningSteps.length - 1];
+          }
+          
+          // Save citations from messages
+          currentMessages.forEach(msg => {
+            if (msg.citations && Object.keys(msg.citations).length > 0) {
+              currentBufferedState.citations = { ...currentBufferedState.citations, ...msg.citations };
+            }
+          });
+          
+          // Preserve loading state
+          const hasLoadingMessage = currentMessages.some(msg => msg.isLoading);
+          currentBufferedState.isLoading = hasLoadingMessage;
+          currentBufferedState.status = hasLoadingMessage ? 'loading' : 'completed';
+          currentBufferedState.lastUpdate = Date.now();
+          
+          // CRITICAL: Save document preview state if document is open AND this chat owns it
+          // This ensures each chat has its own document preview isolated (ownership check prevents cross-contamination)
+          if (expandedCardViewDoc && documentPreviewOwnerRef.current === currentChatId) {
+            currentBufferedState.documentPreview = {
+              docId: expandedCardViewDoc.docId,
+              filename: expandedCardViewDoc.filename,
+              highlight: expandedCardViewDoc.highlight ? {
+                fileId: expandedCardViewDoc.highlight.fileId,
+                bbox: expandedCardViewDoc.highlight.bbox,
+                doc_id: expandedCardViewDoc.highlight.doc_id,
+                block_id: expandedCardViewDoc.highlight.block_id || '',
+                block_content: expandedCardViewDoc.highlight.block_content || '',
+                original_filename: expandedCardViewDoc.highlight.original_filename || ''
+              } : undefined
+            };
+            console.log('💾 Saved document preview with ownership match:', {
+              chatId: currentChatId,
+              owner: documentPreviewOwnerRef.current
+            });
+          } else {
+            // Explicitly clear document preview in buffer if no document is open or this chat doesn't own it
+            currentBufferedState.documentPreview = undefined;
+            if (expandedCardViewDoc && documentPreviewOwnerRef.current !== currentChatId) {
+              console.log('⚠️ Skipping document preview save - ownership mismatch:', {
+                chatId: currentChatId,
+                owner: documentPreviewOwnerRef.current
+              });
+            }
+          }
+          // Mark that we've captured the document preview state for this chat (even if empty)
+          currentBufferedState.documentPreviewCaptured = true;
+          
+          console.log('💾 SideChatPanel: Saved current chat streaming state to buffer:', {
+            chatId: currentChatId,
+            messagesCount: currentMessages.length,
+            accumulatedTextLength: currentBufferedState.accumulatedText.length,
+            reasoningStepsCount: allReasoningSteps.length,
+            isLoading: hasLoadingMessage,
+            hasDocumentPreview: !!expandedCardViewDoc
+          });
+          
+          // NOTE: Document preview is NOT closed here anymore
+          // ChatStateStore maintains per-chat document previews, so switching chats
+          // will automatically show the new chat's document preview (or none if that chat has none)
+        }
+        
+        // CRITICAL: Save current chat state before switching (granular restoration)
+        if (currentChatId && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0 || submittedQueries.length > 0)) {
+          console.log('💾 SideChatPanel: Saving current chat state before switching:', {
+            chatId: currentChatId,
+            inputValue: inputValue,
+            attachedFiles: attachedFiles.length,
+            propertyAttachments: propertyAttachments.length,
+            submittedQueries: submittedQueries.length
+          });
+          saveChatState(currentChatId, {
+            inputValue: inputValue,
+            attachedFiles: [...attachedFiles],
+            propertyAttachments: [...propertyAttachments],
+            submittedQueries: [...submittedQueries] as any[]
+          });
+        }
+        
+        // CRITICAL: Set activeChatIdRef IMMEDIATELY before clearing state
+        // This ensures streaming callbacks route to the correct chat
+        activeChatIdRef.current = restoreChatId;
+        updateActiveChat(restoreChatId, isVisible);
+        
+        // Mark that we're restoring to prevent query processing during restore
+        // CRITICAL: Only set this flag when actually switching chats
+        isRestoringChatRef.current = true;
+        
+        // CRITICAL: Clear currentChatId FIRST to allow restore
+        setCurrentChatId(null);
+        
+        // Clear all UI state synchronously
+        setChatMessages([]);
+        setSubmittedQueries([]);
+        setChatTitle('');
+        setInputValue("");
+        setAttachedFiles([]);
+        attachedFilesRef.current = [];
+        clearPropertyAttachments();
+        setIsSubmitted(false);
+        
+        // Then immediately restore the new chat
         const chat = getChatById(restoreChatId);
         if (chat && chat.messages) {
+          // Check for buffered updates for this chat
+          const bufferedState = bufferedChatUpdatesRef.current[restoreChatId];
+          
+          // Restore will proceed - flag is already set above
+          // Check if the restored chat has a running query
+          const hasLoadingMessages = chat.messages.some((msg: any) => msg.isLoading === true);
+          const hasRunningStatus = chat.status === 'loading';
+          const isBufferedLoading = bufferedState?.isLoading === true;
+          
+          // If chat has a running query (from history or buffer), show bot status overlay
+          if (hasLoadingMessages || hasRunningStatus || isBufferedLoading) {
+            setIsBotActive(true);
+            // Use buffered last reasoning step message if available
+            const botMessage = bufferedState?.lastReasoningStep?.message || 'Running...';
+            setBotActivityMessage(botMessage);
+            setIsBotPaused(false);
+            isBotPausedRef.current = false;
+          } else {
+            // Only clear bot status overlay if the new chat doesn't have a running query
+            setIsBotActive(false);
+            setBotActivityMessage('Running...');
+            setIsBotPaused(false);
+            isBotPausedRef.current = false;
+          }
+          
+          // Set current chat ID and load title from history
+          setCurrentChatId(restoreChatId);
+          currentChatIdRef.current = restoreChatId; // Update ref synchronously for document preview operations
+          if (chat.title) {
+            setChatTitle(chat.title);
+            // No streaming for restored chats - display immediately
+            setIsTitleStreaming(false);
+            setStreamedTitle('');
+          }
+          
           // Convert history messages to ChatMessage format
           // CRITICAL: Use index in map to ensure unique IDs even if Date.now() is the same
-          const restoredMessages: ChatMessage[] = chat.messages.map((msg: any, idx: number) => {
+          let restoredMessages: ChatMessage[] = chat.messages.map((msg: any, idx: number) => {
             // Use index + timestamp + random to guarantee uniqueness
             const uniqueId = `restored-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Preserve isLoading state from history
+            // If chat is running and this is the last assistant message, it should be loading
+            const isLastMessage = idx === chat.messages.length - 1;
+            const isAssistantMessage = msg.role === 'assistant' || msg.type === 'response';
+            const shouldBeLoading = msg.isLoading === true || 
+              (isLastMessage && chat.status === 'loading' && isAssistantMessage && (!msg.content || msg.content.trim().length === 0));
+            
             return {
               id: uniqueId,
               type: msg.role === 'user' ? 'query' : 'response',
@@ -4760,63 +7681,238 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               attachments: msg.attachments || [],
               propertyAttachments: msg.propertyAttachments || [],
               citations: msg.citations || {}, // Restore citations for clickable buttons
-              isLoading: false
+              reasoningSteps: msg.reasoningSteps || [], // Restore reasoning steps
+              isLoading: shouldBeLoading // Preserve running state
             };
           });
+          
+          // FIX: Fallback restoration - if messages are empty but preview exists, create minimal query message
+          // This handles cases where messages weren't saved properly (backend failure, stale closure, etc.)
+          if (restoredMessages.length === 0 && chat.preview && chat.preview.trim()) {
+            console.log('⚠️ SideChatPanel: Messages empty but preview exists, creating fallback query message:', chat.preview);
+            const fallbackQueryId = `fallback-query-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            restoredMessages = [{
+              id: fallbackQueryId,
+              type: 'query',
+              text: chat.preview.trim(),
+              attachments: [],
+              propertyAttachments: [],
+              citations: {},
+              reasoningSteps: [],
+              isLoading: false
+            }];
+            
+            // Also update the chat in history with this minimal message so future restores work
+            updateChatInHistory(restoreChatId, [{
+              role: 'user' as const,
+              content: chat.preview.trim(),
+              attachments: [],
+              propertyAttachments: [],
+              citations: {},
+              reasoningSteps: [],
+              isLoading: false
+            }]);
+          }
+          
+          // CRITICAL: Merge buffered updates if they exist (buffered is more recent)
+          if (bufferedState && bufferedState.messages.length > 0) {
+            console.log('🔄 SideChatPanel: Merging buffered updates with history:', {
+              historyMessages: restoredMessages.length,
+              bufferedMessages: bufferedState.messages.length,
+              status: bufferedState.status,
+              isLoading: bufferedState.isLoading
+            });
+            
+            // Use buffered messages (they're more recent)
+            restoredMessages = bufferedState.messages.map((msg, idx) => ({
+              ...msg,
+              // Ensure unique IDs
+              id: msg.id || `buffered-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`
+            }));
+            
+            // Apply buffered citations
+            if (bufferedState.citations && Object.keys(bufferedState.citations).length > 0) {
+              // Merge citations into the last response message
+              const lastResponse = restoredMessages.filter(m => m.type === 'response').pop();
+              if (lastResponse) {
+                lastResponse.citations = { ...lastResponse.citations, ...bufferedState.citations };
+              }
+            }
+            
+            // CRITICAL: Merge buffered accumulated text into the last loading message if it exists
+            if (bufferedState.accumulatedText) {
+              const lastLoadingMessage = restoredMessages.find(msg => msg.isLoading);
+              if (lastLoadingMessage) {
+                lastLoadingMessage.text = bufferedState.accumulatedText;
+                console.log('🔄 SideChatPanel: Applied buffered accumulated text to loading message:', {
+                  textLength: bufferedState.accumulatedText.length,
+                  messageId: lastLoadingMessage.id
+                });
+              }
+            }
+          }
+          
+          // CRITICAL: Apply buffered reasoning steps to bot overlay immediately (even if no buffered messages)
+          if (bufferedState?.lastReasoningStep) {
+            setBotActivityMessage(bufferedState.lastReasoningStep.message);
+            console.log('🔄 SideChatPanel: Applied buffered reasoning step to bot overlay:', bufferedState.lastReasoningStep.message);
+          }
+          
+          // CRITICAL: Merge buffered reasoning steps into the loading message
+          // This handles the case where reasoning steps were captured but the message wasn't updated
+          // (e.g., due to timing issues or ID mismatches during background execution)
+          if (bufferedState?.reasoningSteps && bufferedState.reasoningSteps.length > 0) {
+            const loadingMessage = restoredMessages.find(msg => msg.isLoading);
+            const lastResponseMessage = restoredMessages.filter(m => m.type === 'response').pop();
+            const targetMessage = loadingMessage || lastResponseMessage;
+            
+            if (targetMessage) {
+              const existingSteps = targetMessage.reasoningSteps || [];
+              const existingStepKeys = new Set(existingSteps.map(s => `${s.step}:${s.message}`));
+              
+              // Add any buffered steps that aren't already in the message
+              const newSteps = bufferedState.reasoningSteps.filter(s => 
+                !existingStepKeys.has(`${s.step}:${s.message}`)
+              );
+              
+              if (newSteps.length > 0) {
+                targetMessage.reasoningSteps = [...existingSteps, ...newSteps];
+                console.log('🔄 SideChatPanel: Merged buffered reasoning steps into message:', {
+                  existingCount: existingSteps.length,
+                  addedCount: newSteps.length,
+                  totalCount: targetMessage.reasoningSteps.length
+                });
+              }
+            }
+          }
           
           setChatMessages(restoredMessages);
           persistedChatMessagesRef.current = restoredMessages;
           restoredMessageIdsRef.current = new Set(restoredMessages.map(m => m.id));
           
-          // CRITICAL: Automatically open document preview if restored messages have citations
-          // Find the last response message with citations and open the first citation's document
-          for (let i = restoredMessages.length - 1; i >= 0; i--) {
-            const msg = restoredMessages[i];
-            if (msg.type === 'response' && msg.citations && Object.keys(msg.citations).length > 0) {
-              // Found a response with citations - get the first citation
-              const firstCitationKey = Object.keys(msg.citations)[0];
-              const citationData = msg.citations[firstCitationKey];
-              
-              if (citationData && citationData.doc_id) {
-                console.log('📂 [RESTORE] Auto-opening document preview from restored chat citation:', {
-                  docId: citationData.doc_id,
-                  filename: citationData.original_filename,
-                  hasBbox: !!citationData.bbox
-                });
-                
-                // Automatically open the document preview (as if agent-triggered, so it opens even if chat visibility check fails)
-                // Use a small delay to ensure chat panel visibility is set correctly first
-                setTimeout(() => {
-                  const page = citationData.page || citationData.page_number || citationData.bbox?.page || 1;
-                  const highlightData = citationData.bbox ? {
-                    fileId: citationData.doc_id,
-                    bbox: {
-                      ...citationData.bbox,
-                      page: page
-                    },
-                    page: page,
-                    doc_id: citationData.doc_id,
-                    block_content: (citationData as any).block_content || (citationData as any).cited_text || '',
-                    original_filename: citationData.original_filename
-                  } : undefined;
-                  
-                  // Open as agent-triggered so it bypasses chat visibility check
-                  openExpandedCardView(
-                    citationData.doc_id,
-                    citationData.original_filename || 'document.pdf',
-                    highlightData,
-                    true // isAgentTriggered = true
-                  );
-                }, 100); // Small delay to ensure state is ready
-                
-                // Only open the first citation found (most recent response)
-                break;
+          console.log('✅ [RESTORE_COMPLETE] Messages restored:', {
+            chatId: restoreChatId,
+            messageCount: restoredMessages.length,
+            messageTypes: restoredMessages.map(m => m.type),
+            hasContent: restoredMessages.some(m => m.text && m.text.trim().length > 0)
+          });
+          
+          // Scroll to bottom (most recent response) when chat is restored
+          // Use requestAnimationFrame to ensure DOM has updated
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              autoScrollEnabledRef.current = true; // Enable auto-scroll for restored chat
+              scrollToBottom();
+            }, 50);
+          });
+          
+          // NOTE: Document preview restoration is now handled by ChatStateStore
+          // When activeChatId changes to restoreChatId, MainContent automatically shows that chat's document preview
+          // No manual restoration needed here
+          
+          // CRITICAL: Restore agent action state if buffered
+          if (bufferedState?.activeAgentAction) {
+            const action = bufferedState.activeAgentAction;
+            // Check if action is still relevant (within last 30 seconds)
+            const actionAge = Date.now() - action.timestamp;
+            if (actionAge < 30000) {
+              console.log('🔄 SideChatPanel: Restoring agent action state:', action.action);
+              // Update bot overlay message to reflect the action
+              if (action.action === 'open_document') {
+                setBotActivityMessage('Opening document...');
+              } else if (action.action === 'navigate_to_property' || action.action === 'select_property_pin') {
+                setBotActivityMessage('Navigating...');
               }
             }
           }
           
-          return;
+          // CRITICAL: Restore granular state (input, attachments, etc.) if saved
+          if (chat.savedState) {
+            console.log('🔄 SideChatPanel: Restoring granular state for chat:', restoreChatId, chat.savedState);
+            if (chat.savedState.inputValue !== undefined) {
+              setInputValue(chat.savedState.inputValue);
+              // Also update the textarea if it exists
+              if (inputRef.current) {
+                inputRef.current.value = chat.savedState.inputValue;
+                // Adjust textarea height
+                inputRef.current.style.height = 'auto';
+                inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+              }
+            }
+            if (chat.savedState.attachedFiles && chat.savedState.attachedFiles.length > 0) {
+              setAttachedFiles([...chat.savedState.attachedFiles]);
+              attachedFilesRef.current = [...chat.savedState.attachedFiles];
+            }
+            if (chat.savedState.propertyAttachments && chat.savedState.propertyAttachments.length > 0) {
+              // Clear existing property attachments first, then restore saved ones
+              clearPropertyAttachments();
+              chat.savedState.propertyAttachments.forEach((prop: any) => {
+                addPropertyAttachment(prop);
+              });
+            }
+            if (chat.savedState.submittedQueries && chat.savedState.submittedQueries.length > 0) {
+              setSubmittedQueries([...chat.savedState.submittedQueries] as SubmittedQuery[]);
+            }
+          }
+          
+          // CRITICAL: Clear restore flag IMMEDIATELY after messages are restored
+          // This allows query processing to resume for this chat
+          isRestoringChatRef.current = false;
+          
+          // Track that this chat has been restored to prevent duplicate restorations
+          lastRestoredChatIdRef.current = restoreChatId;
+          
+          // CRITICAL: If chat is running but has no loading message, add one to show the running state
+          if (chat.status === 'loading') {
+            const hasLoadingMessage = restoredMessages.some(msg => msg.isLoading === true);
+            const lastMessage = restoredMessages[restoredMessages.length - 1];
+            
+            if (!hasLoadingMessage && lastMessage && lastMessage.type === 'query') {
+              // Chat is running but no loading message - add one
+              const loadingMessage: ChatMessage = {
+                id: `loading-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                type: 'response',
+                text: '',
+                isLoading: true
+              };
+              const messagesWithLoading = [...restoredMessages, loadingMessage];
+              setChatMessages(messagesWithLoading);
+              persistedChatMessagesRef.current = messagesWithLoading;
+              restoredMessageIdsRef.current = new Set(messagesWithLoading.map(m => m.id));
+              console.log('🔄 SideChatPanel: Added loading message for running chat:', restoreChatId);
+              
+              // Scroll to bottom after adding loading message
+              requestAnimationFrame(() => {
+                setTimeout(() => {
+                  autoScrollEnabledRef.current = true;
+                  scrollToBottom();
+                }, 50);
+              });
+            } else if (!hasLoadingMessage) {
+              // Chat status is 'loading' but no loading message and last message is not a query
+              // This might be a stale status - check if we should update it
+              const hasCompletedResponses = restoredMessages.some((msg: ChatMessage) => 
+                msg.type === 'response' && 
+                msg.text && 
+                msg.text.trim().length > 0
+              );
+              if (hasCompletedResponses) {
+                console.log('🔄 SideChatPanel: Restored chat has loading status but no loading messages and has completed responses, updating to completed:', restoreChatId);
+                updateChatStatus(restoreChatId, 'completed');
+              }
+            }
+          }
+          
+          // NOTE: Document preview restoration is now handled ONLY via bufferedState.documentPreview
+          // We no longer auto-open documents from citations to ensure proper per-chat isolation
+          // This prevents document preview leakage between chats
+        } else {
+          // Chat not found or has no messages - clear restore flag
+          console.warn('🔄 SideChatPanel: Chat not found or has no messages, clearing restore flag:', restoreChatId);
+          isRestoringChatRef.current = false;
         }
+        
+        return;
       }
       
       // If we have persisted messages, restore them (no animation)
@@ -4826,6 +7922,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         setChatMessages(persistedMessages);
         // Track which messages were restored so they don't animate
         restoredMessageIdsRef.current = new Set(persistedMessages.map(m => m.id));
+        
+        // Scroll to bottom (most recent response) when persisted messages are restored
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            autoScrollEnabledRef.current = true; // Enable auto-scroll for restored chat
+            scrollToBottom();
+          }, 50);
+        });
         
         // CRITICAL: Automatically open document preview if persisted messages have citations
         // Find the last response message with citations and open the first citation's document
@@ -4897,20 +8001,17 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       }
       
       // Initialize with new query if provided
+      // CRITICAL: This useEffect should ONLY initialize the panel UI, NOT process queries
+      // Query processing is handled by the first useEffect (line 2939)
+      // Only initialize if query is provided but NOT being processed by first useEffect
       if (query && query.trim()) {
         const queryText = query.trim();
         
-        // CRITICAL: Don't process if:
-        // 1. Another useEffect is already processing this query
-        // 2. This query was already processed (check lastProcessedQueryRef)
-        // 3. Query is already in chat messages
-        if (isProcessingQueryRef.current) {
-          console.log('⏳ SideChatPanel: Query already being processed by another useEffect, skipping');
-          return;
-        }
-        
-        if (queryText === lastProcessedQueryRef.current) {
-          console.log('⏳ SideChatPanel: Query already processed in first useEffect, skipping');
+        // CRITICAL: Don't process queries here - the first useEffect handles query processing
+        // This useEffect should only handle UI initialization when panel becomes visible
+        // Skip entirely if query is being processed or already processed
+        if (isProcessingQueryRef.current || queryText === lastProcessedQueryRef.current) {
+          console.log('⏳ SideChatPanel: Query processing handled by first useEffect, skipping initialization');
           return;
         }
         
@@ -4919,13 +8020,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         );
         
         if (isAlreadyInMessages) {
-          console.log('⏳ SideChatPanel: Query already in messages, skipping');
+          console.log('⏳ SideChatPanel: Query already in messages, skipping initialization');
           return;
         }
         
-        // Mark as processing to prevent duplicate API calls
-        isProcessingQueryRef.current = true;
-        lastProcessedQueryRef.current = queryText;
+        // If we reach here, the first useEffect hasn't processed the query yet
+        // This should not happen in normal flow, but if it does, let the first useEffect handle it
+        // Don't process here to avoid duplicate API calls
+        console.log('⏳ SideChatPanel: Query will be processed by first useEffect, skipping duplicate processing');
+        return;
         
         // FIRST: Show bot status overlay immediately (before any processing) - ONLY in agent mode
         if (isAgentMode) {
@@ -5083,6 +8186,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   return;
                 }
                 
+                // CRITICAL: Check if this chat is still active before updating UI
+                // For initial query path, currentChatId might be set by now - check activeChatIdRef
+                // If activeChatIdRef is set to something else, we've switched chats
+                const initialChatId = currentChatIdRef.current || currentChatId;
+                const stillActive = !initialChatId || initialChatId === activeChatIdRef.current;
+                if (!stillActive) {
+                  console.log('⚠️ [INITIAL_BLOCK_QUEUE] Chat no longer active, stopping block processing:', {
+                    initialChatId,
+                    activeChatId: activeChatIdRef.current
+                  });
+                  isProcessingQueue = false;
+                  return;
+                }
+                
                 if (blockQueue.length === 0) {
                   isProcessingQueue = false;
                   // Check if we have more blocks to extract
@@ -5106,12 +8223,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   // This ensures consistent behavior across all queries
                   const cleanedText = cleanResponseText(displayedText);
                   
-                  // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
-                  setChatMessages(prev => prev.map(msg => 
-                    msg.id === loadingResponseId 
-                      ? { ...msg, text: cleanedText }
-                      : msg
-                  ));
+                  // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
+                  // This ensures spinning animations stop when response text starts displaying
+                  setChatMessages(prev => prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      // If this is the first time we're adding text, set isLoading to false
+                      const wasLoading = msg.isLoading;
+                      const hasTextNow = cleanedText.trim().length > 0;
+                      
+                      if (wasLoading && hasTextNow) {
+                        console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (initial query):', {
+                          loadingResponseId,
+                          textLength: cleanedText.length,
+                          textPreview: cleanedText.substring(0, 100)
+                        });
+                        
+                        // Update chat status to completed when text first appears
+                        if (currentChatId) {
+                          updateChatStatus(currentChatId, 'completed');
+                        }
+                      }
+                      
+                      return { ...msg, text: cleanedText, isLoading: false };
+                    }
+                    return msg;
+                  }));
                   
                   // Determine delay based on block type and size
                   // Headings: slightly longer delay
@@ -5140,9 +8276,10 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               }
             };
             
-            // Create AbortController for this query
-            const abortController = new AbortController();
-            abortControllerRef.current = abortController;
+            // Create AbortController for initial query (query prop - no chat history yet)
+            const initialQueryAbortController = new AbortController();
+            // Note: This path doesn't have currentChatId yet, so we use old ref
+            abortControllerRef.current = initialQueryAbortController;
             
             // Convert selected document IDs to array for initial query
             const initialDocumentIds = selectedDocumentIds.size > 0 
@@ -5258,17 +8395,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               },
               // onError: Handle errors
               (error: string) => {
-                console.error('❌ SideChatPanel: Streaming error for initial query:', error);
+                // Categorize error types for better handling
+                const isNetworkError = error.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+                                      error.includes('Connection interrupted') ||
+                                      error.includes('Failed to fetch') ||
+                                      error.includes('network error');
+                
+                // Log network errors as warnings (less severe), others as errors
+                if (isNetworkError) {
+                  console.warn('⚠️ SideChatPanel: Network error during streaming (initial query):', error);
+                } else {
+                  console.error('❌ SideChatPanel: Streaming error for initial query:', error);
+                }
+                
+                // Update chat status to 'completed' even on error
+                if (currentChatId) {
+                  updateChatStatus(currentChatId, 'completed');
+                  // Clean up abort controller
+                  delete abortControllersRef.current[currentChatId];
+                }
                 
                 // Hide bot status overlay on error
                 setIsBotActive(false);
+                
+                const errorText = isNetworkError 
+                  ? 'Connection was interrupted. Please try again.'
+                  : `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`;
                 
                 setChatMessages(prev => {
                   const existingMessage = prev.find(msg => msg.id === loadingResponseId);
                 const errorMessage: ChatMessage = {
                   id: loadingResponseId,
                   type: 'response',
-                  text: `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`,
+                  text: errorText,
                     isLoading: false,
                     reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
                 };
@@ -5295,7 +8454,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 setBotActivityMessage(message);
               },
               // abortSignal: Pass abort signal for cancellation
-              abortController.signal,
+              initialQueryAbortController.signal,
               // documentIds: Pass selected document IDs to filter search
               initialDocumentIds,
               // onReasoningStep: Handle reasoning step events
@@ -5427,6 +8586,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       };
                       
                       handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
+                      // NOTE: handleCitationClick calls openExpandedCardView which stores in ChatStateStore
                     }
                     break;
                   case 'highlight_bbox':
@@ -5463,7 +8623,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     // Exit fullscreen mode IMMEDIATELY
                     setIsFullscreenMode(false);
                     setTimeout(() => {
-                      const navMinWidth = 380;
+                      const navMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
                       setDraggedWidth(navMinWidth);
                       lockedWidthRef.current = null;
                       if (onChatWidthChange) {
@@ -5486,7 +8646,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     setTimeout(() => {
                       setAgentTaskActive(true, 'Navigating to property...');
                       setMapNavigating(true);
-                      const pinNavMinWidth = 380;
+                      const pinNavMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
                       setDraggedWidth(pinNavMinWidth);
                       lockedWidthRef.current = null;
                       if (onChatWidthChange) {
@@ -5531,7 +8691,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     break;
                 }
               },
-              isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+              isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+              selectedModelRef.current, // Pass selected model to backend
+              // onThinkingChunk: Stream Claude's extended thinking in real-time
+              (chunk: string) => {
+                setChatMessages(prev => prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    const updatedSteps = (msg.reasoningSteps || []).map(step => {
+                      if (step.action_type === 'thinking') {
+                        return {
+                          ...step,
+                          details: {
+                            ...step.details,
+                            thinking_content: (step.details?.thinking_content || '') + chunk
+                          }
+                        };
+                      }
+                      return step;
+                    });
+                    return { ...msg, reasoningSteps: updatedSteps };
+                  }
+                  return msg;
+                }));
+              },
+              // onThinkingComplete: Finalize thinking content
+              (fullThinking: string) => {
+                console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
+              }
             );
             
             // Clear abort controller and processing flag on completion
@@ -5577,12 +8763,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
         })();
       }
     }
-  }, [isVisible, query, restoreChatId, getChatById]);
+  }, [isVisible, query, restoreChatId, getChatById, currentChatId, clearPropertyAttachments, updateChatStatus, openExpandedCardView]);
 
 
 
   // Handle textarea change with auto-resize logic
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // CRITICAL: Prevent input from being blocked during new agent creation
+    // If new agent was just requested, allow typing to proceed normally
+    if (newAgentRequestedRef.current) {
+      // Clear the flag early to allow normal input handling
+      // The timeout in the newAgentTrigger effect will still run as a safety net
+      newAgentRequestedRef.current = false;
+    }
+    
     const value = e.target.value;
     const cursorPos = e.target.selectionStart;
     
@@ -5744,8 +8938,16 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   // Handle drop from FilingSidebar
   const handleDrop = React.useCallback(async (e: React.DragEvent) => {
+    console.log('📥 SideChatPanel: handleDrop called', {
+      types: Array.from(e.dataTransfer.types),
+      files: e.dataTransfer.files.length,
+      target: (e.target as HTMLElement)?.tagName,
+      currentTarget: (e.currentTarget as HTMLElement)?.tagName
+    });
+    
     e.preventDefault();
     e.stopPropagation();
+    isDragOverRef.current = false;
     setIsDragOver(false);
     
     try {
@@ -5857,25 +9059,39 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
 
   const handleDragOver = React.useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.stopPropagation();
+    e.stopPropagation(); // Stop propagation like SearchBar
     
     // Check if this is a document from FilingSidebar (has application/json type) or regular files
     const hasFilingSidebarDocument = e.dataTransfer.types.includes('application/json');
     const hasFiles = e.dataTransfer.types.includes('Files');
     
+    console.log('🔄 SideChatPanel: handleDragOver called', { 
+      hasFilingSidebarDocument, 
+      hasFiles, 
+      types: Array.from(e.dataTransfer.types),
+      target: (e.target as HTMLElement)?.tagName,
+      currentTarget: (e.currentTarget as HTMLElement)?.tagName
+    });
+    
     if (hasFilingSidebarDocument || hasFiles) {
       e.dataTransfer.dropEffect = 'move';
+      isDragOverRef.current = true;
       setIsDragOver(true);
+      console.log('✅ SideChatPanel: Setting isDragOver to true');
     } else {
       e.dataTransfer.dropEffect = 'none';
+      isDragOverRef.current = false;
       setIsDragOver(false);
+      console.log('❌ SideChatPanel: No valid drag types, setting isDragOver to false');
     }
   }, []);
 
   const handleDragLeave = React.useCallback((e: React.DragEvent) => {
     // Only clear drag state if we're actually leaving the drop zone
+    // Use simple relatedTarget check like SearchBar
     const relatedTarget = e.relatedTarget as HTMLElement;
     if (!e.currentTarget.contains(relatedTarget)) {
+      isDragOverRef.current = false;
       setIsDragOver(false);
     }
   }, []);
@@ -6005,11 +9221,79 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
       console.log('💬 SideChatPanel: Adding query message:', newQueryMessage);
       console.log('🔍 SideChatPanel: Property attachments in message:', newQueryMessage.propertyAttachments);
       
-      // Reset first citation flag if this is a new chat session (no previous messages)
-      const isNewChatSession = chatMessages.length === 0;
+      // Reset first citation flag if this is a new chat session
+      // CRITICAL: Use refs for more reliable detection (avoids stale closure issues)
+      // This prevents query leakage between agents when switching quickly
+      // Priority: Check ref first (updated synchronously), then state as fallback
+      const currentChatIdValue = currentChatIdRef.current ?? currentChatId;
+      const currentMessagesLength = chatMessagesRef.current.length || chatMessages.length;
+      const isNewChatSession = !currentChatIdValue || currentMessagesLength === 0;
+      
+      let chatSessionId = sessionId; // Default to component sessionId, will be overridden if new chat
+      let savedChatId: string | undefined; // Declare at higher scope for status update
+      
       if (isNewChatSession) {
         isFirstCitationRef.current = true;
         console.log('🔄 [CITATION] New chat session detected - resetting first citation flag');
+        
+        // Generate chat ID and title for new chat
+        const newChatId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        setCurrentChatId(newChatId);
+        currentChatIdRef.current = newChatId; // Update ref synchronously for streaming callbacks
+        
+        // Generate smart title from first query
+        const generatedTitle = generateSmartChatTitle(
+          submitted || '',
+          propertiesToStore,
+          attachmentsToStore
+        );
+        
+        // Extract description from query
+        const description = extractDescription(submitted || '');
+        
+        // Create chat history entry with unique sessionId
+        // CRITICAL: Generate unique sessionId tied to chat ID for backend isolation
+        const chatHistorySessionId = `session_${newChatId}_${Date.now()}`;
+        chatSessionId = chatHistorySessionId; // Use chat's sessionId for this query
+        
+        savedChatId = addChatToHistory({
+          title: generatedTitle,
+          timestamp: new Date().toISOString(),
+          preview: submitted || '',
+          messages: [],
+          status: 'completed', // Create with 'completed' status, update to 'loading' when query actually starts
+          sessionId: chatHistorySessionId, // Unique sessionId per agent
+          description: description // Secondary detail line
+        });
+        
+        // CRITICAL: Update currentChatId to match the actual ID from addChatToHistory
+        // This fixes the bug where currentChatId was set to newChatId but addChatToHistory
+        // generates a different ID internally. Without this, updateChatInHistory calls
+        // would fail to find the chat when switching agents.
+        setCurrentChatId(savedChatId);
+        currentChatIdRef.current = savedChatId; // Update ref synchronously for streaming callbacks
+        
+        // Record this query as processed for this chat to prevent re-processing on chat return
+        processedQueriesPerChatRef.current[savedChatId] = submitted || '';
+        
+        console.log('✅ SideChatPanel: Created new chat history entry:', {
+          chatId: savedChatId,
+          sessionId: chatHistorySessionId,
+          status: 'completed',
+          description
+        });
+        
+        // Stream the title with typing effect
+        streamTitle(generatedTitle);
+      } else if (currentChatId) {
+        // For existing chat, get sessionId from chat history
+        const existingChat = getChatById(currentChatId);
+        if (existingChat?.sessionId) {
+          chatSessionId = existingChat.sessionId;
+          console.log('🔄 SideChatPanel: Using existing chat sessionId:', chatSessionId);
+        }
+        // Update status to loading for existing chat
+        updateChatStatus(currentChatId, 'loading');
       }
       
       setChatMessages(prev => {
@@ -6095,6 +9379,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             isProcessingQueue = true;
             
             const processNext = () => {
+              // CRITICAL: Check if this chat is still active before updating UI
+              // This prevents leakage when user switches to a new chat mid-stream
+              const stillActive = isChatActiveForQuery(queryChatId, savedChatId);
+              if (!stillActive) {
+                console.log('⚠️ [FOLLOW_UP_BLOCK_QUEUE] Chat no longer active, stopping block processing:', {
+                  queryChatId,
+                  activeChatId: activeChatIdRef.current
+                });
+                isProcessingQueue = false;
+                // Buffer the accumulated text for this chat
+                if (queryChatId) {
+                  const bufferedState = getBufferedState(queryChatId);
+                  bufferedState.accumulatedText = displayedText;
+                  bufferedState.lastUpdate = Date.now();
+                }
+                return;
+              }
+              
               if (blockQueue.length === 0) {
                 isProcessingQueue = false;
                 // Check if we have more blocks to extract
@@ -6118,12 +9420,31 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // This ensures consistent behavior across all queries
                 const cleanedText = cleanResponseText(displayedText);
                 
-                // Update state with markdown blocks - StreamingResponseText will complete and render formatted output
-                setChatMessages(prev => prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? { ...msg, text: cleanedText }
-                    : msg
-                ));
+                // CRITICAL: Set isLoading to false as soon as text appears to stop animations immediately
+                // This ensures spinning animations stop when response text starts displaying
+                setChatMessages(prev => prev.map(msg => {
+                  if (msg.id === loadingResponseId) {
+                    // If this is the first time we're adding text, set isLoading to false
+                    const wasLoading = msg.isLoading;
+                    const hasTextNow = cleanedText.trim().length > 0;
+                    
+                    if (wasLoading && hasTextNow) {
+                      console.log('✅ SideChatPanel: Response text appeared, setting isLoading to false (follow-up query path 2):', {
+                        loadingResponseId,
+                        textLength: cleanedText.length,
+                        textPreview: cleanedText.substring(0, 100)
+                      });
+                      
+                      // Update chat status to completed when text first appears
+                      if (queryChatId) {
+                        updateChatStatus(queryChatId, 'completed');
+                      }
+                    }
+                    
+                    return { ...msg, text: cleanedText, isLoading: false };
+                  }
+                  return msg;
+                }));
                 
                 // Determine delay based on block type and size
                 // Headings: slightly longer delay
@@ -6155,9 +9476,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
           // Track accumulated citations for real-time updates
           const accumulatedCitations: Record<string, CitationDataType> = {};
           
-          // Create AbortController for this query
-          const abortController = new AbortController();
-          abortControllerRef.current = abortController;
+          // Create AbortController for this query (handleSubmit path)
+          const handleSubmitAbortController = new AbortController();
+          if (currentChatId) {
+            abortControllersRef.current[currentChatId] = handleSubmitAbortController;
+          }
+          // Also set in old ref for backward compatibility
+          abortControllerRef.current = handleSubmitAbortController;
           
           // Convert selected document IDs to array
           const documentIdsArray = selectedDocumentIds.size > 0 
@@ -6264,22 +9589,93 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             })();
           };
           
+          // CRITICAL: Use chat's sessionId (not component sessionId) for backend isolation
+          // Create abort controller for this query (handleSubmit path - no file attachments)
+          const handleSubmitNoFileAbortController = new AbortController();
+          
+          // CRITICAL: Capture queryChatId at query start (not when callbacks fire)
+          // This ensures we use the correct chatId even if user switches chats during query
+          // Use savedChatId for new chats, otherwise use ref (more reliable than state)
+          const queryChatId = savedChatId || currentChatIdRef.current || currentChatId;
+          
+          // CRITICAL: Set activeChatIdRef IMMEDIATELY when query starts (before any streaming callbacks)
+          // This ensures streaming updates route to the correct chat
+          if (queryChatId && isVisible) {
+            activeChatIdRef.current = queryChatId;
+          }
+          
+          if (queryChatId) {
+            abortControllersRef.current[queryChatId] = handleSubmitNoFileAbortController;
+          }
+          
+          // Update chat status to 'loading' right before query starts
+          if (queryChatId) {
+            updateChatStatus(queryChatId, 'loading');
+          }
+          
+          // Initialize buffered state for this chat if it doesn't exist
+          if (queryChatId) {
+            getBufferedState(queryChatId);
+            // CRITICAL: activeChatIdRef is already set above, but log for debugging
+            if (isVisible) {
+              console.log('✅ SideChatPanel: Set activeChatIdRef for handleSubmit query:', {
+                queryChatId,
+                savedChatId,
+                currentChatId,
+                isVisible
+              });
+            }
+          }
+          
           await backendApi.queryDocumentsStreamFetch(
             submittedQuery,
             propertyId,
             messageHistory,
-            sessionId,
+            chatSessionId, // Use chat's sessionId (not component sessionId) for backend isolation
             // onToken: Buffer tokens until we have complete markdown blocks, then display formatted
             (token: string) => {
               accumulatedText += token;
               tokenBuffer += token;
               
-              // Process tokens to find complete markdown blocks
-              // This allows ReactMarkdown to render formatted output progressively
-              processTokensWithDelay();
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              
+              if (chatIsActive) {
+                // Process tokens to find complete markdown blocks
+                // This allows ReactMarkdown to render formatted output progressively
+                processTokensWithDelay();
+              } else if (queryChatId) {
+                // Chat is inactive - buffer the update
+                const bufferedState = getBufferedState(queryChatId);
+                bufferedState.accumulatedText = accumulatedText;
+                bufferedState.lastUpdate = Date.now();
+                
+                // Update buffered messages with current state
+                // We'll update the full message state periodically or on complete
+              }
+              
+              // Always update persistedChatMessagesRef for history
+              // Update history periodically (every ~100 tokens or every 2-3 seconds)
+              // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+              if (queryChatId && accumulatedText.length % 100 === 0) {
+                const currentMessages = chatMessagesRef.current;
+                const historyMessages = currentMessages.map(msg => ({
+                  role: msg.type === 'query' ? 'user' : 'assistant',
+                  content: msg.text || '',
+                  attachments: msg.attachments || [],
+                  propertyAttachments: msg.propertyAttachments || [],
+                  citations: msg.citations || {},
+                  isLoading: msg.isLoading,
+                  reasoningSteps: msg.reasoningSteps || []
+                }));
+                updateChatInHistory(queryChatId, historyMessages);
+              }
             },
             // onComplete: Final response received - flush buffer and complete animation
             (data: any) => {
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              
               // Extract any remaining complete blocks
               extractCompleteBlocks();
               
@@ -6293,12 +9689,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 // StreamingResponseText will handle completion based on isStreaming state
                 const cleanedText = cleanResponseText(displayedText);
                 
-                // Update with final text
-                setChatMessages(prev => prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? { ...msg, text: cleanedText }
-                    : msg
-                ));
+                if (chatIsActive) {
+                  // Update with final text (only if active)
+                  setChatMessages(prev => prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? { ...msg, text: cleanedText }
+                      : msg
+                  ));
+                }
               }
               
               // Wait for queue to finish processing, then set final text
@@ -6315,38 +9713,147 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 summary: finalText.substring(0, 100),
                 documentsFound: data.relevant_documents?.length || 0,
                   citationCount: Object.keys(mergedCitations).length,
-                  citationKeys: Object.keys(mergedCitations)
+                  citationKeys: Object.keys(mergedCitations),
+                  chatIsActive,
+                  queryChatId
                 });
                 
-                // Hide bot status overlay when streaming completes
-                // BUT keep it visible in agent mode if navigation task is in progress
-                if (!isAgentModeRef.current || !isNavigatingTaskRef.current) {
-                  setIsBotActive(false);
+                // Get the most up-to-date reasoning steps
+                // For active chats, always use the current chatMessages state (most up-to-date)
+                // For inactive chats, use buffered state
+                let latestReasoningSteps: ReasoningStep[] = [];
+                if (chatIsActive) {
+                  // Active chat - use current UI state (most reliable)
+                  const activeMessage = chatMessages.find(msg => msg.id === loadingResponseId);
+                  latestReasoningSteps = activeMessage?.reasoningSteps || [];
+                } else if (queryChatId) {
+                  // Inactive chat - use buffered state
+                  const bufferedState = getBufferedState(queryChatId);
+                  const bufferedMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId);
+                  if (bufferedMessage?.reasoningSteps && bufferedMessage.reasoningSteps.length > 0) {
+                    latestReasoningSteps = bufferedMessage.reasoningSteps;
+                  } else if (bufferedState.reasoningSteps.length > 0) {
+                    latestReasoningSteps = bufferedState.reasoningSteps;
+                  } else {
+                    // Fallback to current chatMessages (might have some steps)
+                    const activeMessage = chatMessages.find(msg => msg.id === loadingResponseId);
+                    latestReasoningSteps = activeMessage?.reasoningSteps || [];
+                  }
+                } else {
+                  // No queryChatId - use current state
+                  const activeMessage = chatMessages.find(msg => msg.id === loadingResponseId);
+                  latestReasoningSteps = activeMessage?.reasoningSteps || [];
                 }
                 
-                // Set the complete formatted text
-              setChatMessages(prev => {
-                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-              const responseMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: finalText,
-                  isLoading: false,
-                  reasoningSteps: existingMessage?.reasoningSteps || [], // Preserve reasoning steps
-                    citations: mergedCitations // Merged citations applied once
-              };
+                if (chatIsActive) {
+                  // Hide bot status overlay when streaming completes
+                  // BUT keep it visible in agent mode if navigation task is in progress
+                  if (!isAgentModeRef.current || !isNavigatingTaskRef.current) {
+                    setIsBotActive(false);
+                  }
+                  
+                  // Set the complete formatted text
+                  setChatMessages(prev => {
+                    const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                    const responseMessage: ChatMessage = {
+                      id: loadingResponseId,
+                      type: 'response',
+                      text: finalText,
+                      isLoading: false,
+                      reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []), // Preserve reasoning steps
+                      citations: mergedCitations // Merged citations applied once
+                    };
+                    
+                    const updated = prev.map(msg => 
+                      msg.id === loadingResponseId 
+                        ? responseMessage
+                        : msg
+                    );
+                    persistedChatMessagesRef.current = updated;
+                    return updated;
+                  });
+                } else if (queryChatId) {
+                  // Chat is inactive - buffer the complete message
+                  const bufferedState = getBufferedState(queryChatId);
+                  const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                    chatMessages.find(msg => msg.id === loadingResponseId);
+                  
+                  const responseMessage: ChatMessage = {
+                    id: loadingResponseId,
+                    type: 'response',
+                    text: finalText,
+                    isLoading: false,
+                    reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (existingMessage?.reasoningSteps || []),
+                    citations: mergedCitations
+                  };
+                  
+                  // Update buffered messages
+                  const updatedMessages = bufferedState.messages.map(msg => 
+                    msg.id === loadingResponseId ? responseMessage : msg
+                  );
+                  if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                    updatedMessages.push(responseMessage);
+                  }
+                  
+                  bufferedState.messages = updatedMessages;
+                  bufferedState.accumulatedText = accumulatedText;
+                  bufferedState.status = 'completed';
+                  bufferedState.isLoading = false;
+                  bufferedState.citations = mergedCitations;
+                  bufferedState.lastUpdate = Date.now();
+                  
+                  console.log('💾 SideChatPanel: Buffered complete message for inactive chat:', queryChatId);
+                }
               
-                const updated = prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? responseMessage
-                    : msg
-                );
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
+                // Always update chat history and status
+                // CRITICAL: Use chatMessagesRef.current to avoid stale closure issues
+                if (queryChatId) {
+                  // Use latest reasoning steps (from either active state or buffered state)
+                  const currentMessages = chatMessagesRef.current;
+                  const finalMessages = chatIsActive ? currentMessages.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? {
+                          role: 'assistant' as 'user' | 'assistant',
+                          content: finalText,
+                          citations: mergedCitations,
+                          reasoningSteps: latestReasoningSteps.length > 0 ? latestReasoningSteps : (msg.reasoningSteps || []),
+                          isLoading: false
+                        }
+                      : {
+                          role: (msg.type === 'query' ? 'user' : 'assistant') as 'user' | 'assistant',
+                          content: msg.text || '',
+                          attachments: msg.attachments || [],
+                          propertyAttachments: msg.propertyAttachments || [],
+                          citations: msg.citations || {},
+                          reasoningSteps: msg.reasoningSteps || [],
+                          isLoading: msg.isLoading
+                        }
+                  ) : (queryChatId ? getBufferedState(queryChatId).messages.map(msg => {
+                    const role = msg.type === 'query' ? 'user' : 'assistant';
+                    const msgReasoningSteps = msg.id === loadingResponseId 
+                      ? (latestReasoningSteps.length > 0 ? latestReasoningSteps : (msg.reasoningSteps || []))
+                      : (msg.reasoningSteps || []);
+                    return {
+                      role: role as 'user' | 'assistant',
+                      content: msg.text || '',
+                      attachments: msg.attachments || [],
+                      propertyAttachments: msg.propertyAttachments || [],
+                      citations: msg.citations || {},
+                      reasoningSteps: msgReasoningSteps,
+                      isLoading: msg.isLoading
+                    };
+                  }) : []);
+                  
+                  updateChatInHistory(queryChatId, finalMessages);
+                  updateChatStatus(queryChatId, 'completed');
+                  
+                  // Clean up abort controller
+                  delete abortControllersRef.current[queryChatId];
+                  console.log('✅ [HISTORY_SAVE] Final save on complete (submit path):', { chatId: queryChatId, messageCount: finalMessages.length, hasContent: finalMessages.some(m => m.content && m.content.trim().length > 0) });
+                }
               
-              // Keep reasoning steps in the message - don't clear them
-              currentQueryIdRef.current = null;
+                // Keep reasoning steps in the message - don't clear them
+                currentQueryIdRef.current = null;
               };
               
               // Wait for queue to finish processing (max 2 seconds), then finalize
@@ -6366,10 +9873,28 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             },
             // onError: Handle errors
             (error: string) => {
-              console.error('❌ SideChatPanel: Streaming error:', error);
+              // Categorize error types for better handling
+              const isNetworkError = error.includes('ERR_INCOMPLETE_CHUNKED_ENCODING') || 
+                                    error.includes('Connection interrupted') ||
+                                    error.includes('Failed to fetch') ||
+                                    error.includes('network error');
               
-              // Hide bot status overlay on error
-              setIsBotActive(false);
+              // Log network errors as warnings (less severe), others as errors
+              if (isNetworkError) {
+                console.warn('⚠️ SideChatPanel: Network error during streaming:', error);
+              } else {
+                console.error('❌ SideChatPanel: Streaming error:', error);
+              }
+              
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              
+              // Always update chat status to 'completed' even on error
+              if (queryChatId) {
+                updateChatStatus(queryChatId, 'completed');
+                // Clean up abort controller
+                delete abortControllersRef.current[queryChatId];
+              }
               
               // Check if this is an attachment without query error
               const isQueryRequiredError = error.includes('Query is required') || 
@@ -6381,37 +9906,69 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               if (hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery)) {
                 // Show helpful prompt for attachments without query
                 errorText = `I see you've attached a file, but I need a question to help you with it. Please tell me what you'd like to know about the document.`;
+              } else if (isNetworkError) {
+                // Show user-friendly message for network errors
+                errorText = 'Connection was interrupted. Please try again.';
               } else {
                 // Show generic error for other cases
                 errorText = `Sorry, I encountered an error while processing your query. Please try again or contact support if the issue persists. Error: ${error}`;
               }
               
-              setChatMessages(prev => {
-                const existingMessage = prev.find(msg => msg.id === loadingResponseId);
-              const errorMessage: ChatMessage = {
-                id: loadingResponseId,
-                type: 'response',
-                text: errorText,
-                  isLoading: false,
-                  reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
-              };
-              
-                const updated = prev.map(msg => 
-                  msg.id === loadingResponseId 
-                    ? errorMessage
-                    : msg
-                );
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
-              
-              if (!(hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery))) {
-                // Only show toast for non-attachment errors
-                toast({
-                  description: 'Failed to get AI response. Please try again.',
-                  duration: 5000,
-                  variant: 'destructive',
+              if (chatIsActive) {
+                // Hide bot status overlay on error (only if active)
+                setIsBotActive(false);
+                
+                setChatMessages(prev => {
+                  const existingMessage = prev.find(msg => msg.id === loadingResponseId);
+                  const errorMessage: ChatMessage = {
+                    id: loadingResponseId,
+                    type: 'response',
+                    text: errorText,
+                    isLoading: false,
+                    reasoningSteps: existingMessage?.reasoningSteps || [] // Preserve reasoning steps
+                  };
+                  
+                  const updated = prev.map(msg => 
+                    msg.id === loadingResponseId 
+                      ? errorMessage
+                      : msg
+                  );
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
                 });
+                
+                if (!(hasAttachmentsForError && (isQueryRequiredError || isEmptyQuery))) {
+                  // Only show toast for non-attachment errors
+                  toast({
+                    description: 'Failed to get AI response. Please try again.',
+                    duration: 5000,
+                    variant: 'destructive',
+                  });
+                }
+              } else if (queryChatId) {
+                // Chat is inactive - buffer error message
+                const bufferedState = getBufferedState(queryChatId);
+                const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                  chatMessages.find(msg => msg.id === loadingResponseId);
+                
+                const errorMessage: ChatMessage = {
+                  id: loadingResponseId,
+                  type: 'response',
+                  text: errorText,
+                  isLoading: false,
+                  reasoningSteps: existingMessage?.reasoningSteps || []
+                };
+                
+                const updatedMessages = bufferedState.messages.map(msg => 
+                  msg.id === loadingResponseId ? errorMessage : msg
+                );
+                if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                  updatedMessages.push(errorMessage);
+                }
+                bufferedState.messages = updatedMessages;
+                bufferedState.status = 'completed';
+                bufferedState.isLoading = false;
+                bufferedState.lastUpdate = Date.now();
               }
             },
             // onStatus: Show status messages
@@ -6421,12 +9978,15 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               setBotActivityMessage(message);
             },
             // abortSignal: Pass abort signal for cancellation
-            abortController.signal,
+            handleSubmitNoFileAbortController.signal,
             // documentIds: Pass selected document IDs to filter search
             documentIdsArray,
             // onReasoningStep: Handle reasoning step events
             (step: { step: string; action_type?: string; message: string; count?: number; details: any }) => {
               console.log('🟡 SideChatPanel: Received reasoning step:', step);
+              
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
               
               // FILTER: Skip "Opening citation view" reasoning step during navigation
               // Navigation queries should not show document opening steps
@@ -6438,7 +9998,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 return; // Don't add this reasoning step to the UI
               }
               
-              // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY
+              // PRELOAD: Extract document IDs from reasoning steps and preload IMMEDIATELY (always, background operation)
               if (step.details) {
                 if (step.details.doc_previews && Array.isArray(step.details.doc_previews)) {
                   step.details.doc_previews.forEach((doc: any) => {
@@ -6461,59 +10021,134 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 }
               }
               
-              setChatMessages(prev => {
-                const updated = prev.map(msg => {
-                  if (msg.id === loadingResponseId) {
-                    const existingSteps = msg.reasoningSteps || [];
-                    const stepKey = `${step.step}:${step.message}`;
-                    const now = Date.now();
-                    const existingIndex = existingSteps.findIndex(s => 
-                      `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
-                    );
-                    
-                    if (existingIndex >= 0) {
-                      return msg;
+              const newStep: ReasoningStep = {
+                step: step.step,
+                action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
+                message: step.message,
+                count: step.count,
+                details: step.details,
+                timestamp: Date.now()
+              };
+              
+              if (chatIsActive) {
+                // Update reasoning steps in UI
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      const stepKey = `${step.step}:${step.message}`;
+                      const now = Date.now();
+                      const existingIndex = existingSteps.findIndex(s => 
+                        `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                      );
+                      
+                      if (existingIndex >= 0) {
+                        return msg;
+                      }
+                      
+                      return { ...msg, reasoningSteps: [...existingSteps, newStep] };
                     }
-                    
-                    const newStep: ReasoningStep = {
-                      step: step.step,
-                      action_type: (step.action_type as ReasoningStep['action_type']) || 'analysing',
-                      message: step.message,
-                      count: step.count,
-                      details: step.details,
-                      timestamp: now
-                    };
-                    
-                    return { ...msg, reasoningSteps: [...existingSteps, newStep] };
-                  }
-                  return msg;
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
                 });
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
+              } else if (queryChatId) {
+                // Chat is inactive - buffer reasoning step
+                const bufferedState = getBufferedState(queryChatId);
+                bufferedState.reasoningSteps.push(newStep);
+                bufferedState.lastReasoningStep = newStep;
+                bufferedState.lastUpdate = Date.now();
+                
+                // Update buffered messages with reasoning steps
+                const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                  chatMessages.find(msg => msg.id === loadingResponseId);
+                
+                if (existingMessage) {
+                  const existingSteps = existingMessage.reasoningSteps || [];
+                  const stepKey = `${step.step}:${step.message}`;
+                  const now = Date.now();
+                  const existingIndex = existingSteps.findIndex(s => 
+                    `${s.step}:${s.message}` === stepKey && (now - s.timestamp) < 500
+                  );
+                  
+                  if (existingIndex === -1) {
+                    const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, newStep] };
+                    const updatedMessages = bufferedState.messages.map(msg => 
+                      msg.id === loadingResponseId ? updatedMessage : msg
+                    );
+                    if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                      updatedMessages.push(updatedMessage);
+                    }
+                    bufferedState.messages = updatedMessages;
+                  }
+                }
+              }
+              
+              // Always update history (reasoning steps are part of messages)
+              if (queryChatId) {
+                const historyMessages = (chatIsActive ? chatMessages : (getBufferedState(queryChatId).messages)).map(msg => ({
+                  role: msg.type === 'query' ? 'user' : 'assistant',
+                  content: msg.text || '',
+                  attachments: msg.attachments || [],
+                  propertyAttachments: msg.propertyAttachments || [],
+                  citations: msg.citations || {},
+                  reasoningSteps: msg.reasoningSteps || [],
+                  isLoading: msg.isLoading
+                }));
+                updateChatInHistory(queryChatId, historyMessages);
+              }
             },
             // onReasoningContext: Handle LLM-generated contextual narration
             (context: { message: string; moment: string }) => {
               console.log('🟢 SideChatPanel: Received reasoning context:', context);
               
-              setChatMessages(prev => {
-                const updated = prev.map(msg => {
-                  if (msg.id === loadingResponseId) {
-                    const existingSteps = msg.reasoningSteps || [];
-                    const contextStep: ReasoningStep = {
-                      step: `context_${context.moment}`,
-                      action_type: 'context',
-                      message: context.message,
-                      details: { moment: context.moment },
-                      timestamp: Date.now()
-                    };
-                    return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
-                  }
-                  return msg;
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              
+              const contextStep: ReasoningStep = {
+                step: `context_${context.moment}`,
+                action_type: 'context',
+                message: context.message,
+                details: { moment: context.moment },
+                timestamp: Date.now()
+              };
+              
+              if (chatIsActive) {
+                setChatMessages(prev => {
+                  const updated = prev.map(msg => {
+                    if (msg.id === loadingResponseId) {
+                      const existingSteps = msg.reasoningSteps || [];
+                      return { ...msg, reasoningSteps: [...existingSteps, contextStep] };
+                    }
+                    return msg;
+                  });
+                  persistedChatMessagesRef.current = updated;
+                  return updated;
                 });
-                persistedChatMessagesRef.current = updated;
-                return updated;
-              });
+              } else if (queryChatId) {
+                // Chat is inactive - buffer reasoning context
+                const bufferedState = getBufferedState(queryChatId);
+                bufferedState.reasoningSteps.push(contextStep);
+                bufferedState.lastReasoningStep = contextStep;
+                bufferedState.lastUpdate = Date.now();
+                
+                // Update buffered messages
+                const existingMessage = bufferedState.messages.find(msg => msg.id === loadingResponseId) || 
+                  chatMessages.find(msg => msg.id === loadingResponseId);
+                
+                if (existingMessage) {
+                  const existingSteps = existingMessage.reasoningSteps || [];
+                  const updatedMessage = { ...existingMessage, reasoningSteps: [...existingSteps, contextStep] };
+                  const updatedMessages = bufferedState.messages.map(msg => 
+                    msg.id === loadingResponseId ? updatedMessage : msg
+                  );
+                  if (!updatedMessages.find(msg => msg.id === loadingResponseId)) {
+                    updatedMessages.push(updatedMessage);
+                  }
+                  bufferedState.messages = updatedMessages;
+                }
+              }
             },
             // onCitation: Accumulate citations locally (NO state updates to avoid re-render storm)
             (citation: { citation_number: string | number; data: any }) => {
@@ -6550,7 +10185,14 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 original_filename: citation.data.original_filename
               };
               
-              // Preload document in background (no state update)
+              // Always accumulate citations in buffer (for inactive chats)
+              if (queryChatId) {
+                const bufferedState = getBufferedState(queryChatId);
+                bufferedState.citations[citationNumStr] = accumulatedCitations[citationNumStr];
+                bufferedState.lastUpdate = Date.now();
+              }
+              
+              // Preload document in background (no state update, always happens)
               const docId = citation.data.doc_id;
               if (docId) {
                 preloadDocumentById(docId, citation.data.original_filename);
@@ -6566,6 +10208,11 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             (action: { action: string; params: any }) => {
               console.log('🎯 [AGENT_ACTION] Received action (follow-up):', action);
               
+              // Use unified helper for consistent chat active check
+              const chatIsActive = isChatActiveForQuery(queryChatId, savedChatId);
+              // STRICT: Verify this query's chat is the currently active one (prevents race conditions)
+              const isCorrectChat = queryChatId === activeChatIdRef.current;
+
               // Skip agent actions in reader mode - just show citations without auto-opening
               // Use ref to get current mode value (avoids closure issues)
               if (!isAgentModeRef.current) {
@@ -6573,7 +10220,19 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 return;
               }
               
-              console.log('✅ [AGENT_MODE] Executing agent action (follow-up):', action.action);
+              console.log('✅ [AGENT_MODE] Executing agent action (follow-up):', action.action, { chatIsActive, isCorrectChat, queryChatId, activeChat: activeChatIdRef.current });
+              
+              // Buffer agent action for inactive chats OR if chat ownership mismatch
+              if ((!chatIsActive || !isCorrectChat) && queryChatId) {
+                const bufferedState = getBufferedState(queryChatId);
+                bufferedState.activeAgentAction = {
+                  action: action.action,
+                  params: action.params,
+                  timestamp: Date.now()
+                };
+                bufferedState.lastUpdate = Date.now();
+                console.log('💾 SideChatPanel: Buffered agent action for inactive chat:', action.action);
+              }
               
               switch (action.action) {
                 case 'open_document':
@@ -6586,21 +10245,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   
                   console.log('📂 [AGENT_ACTION] Opening document (follow-up):', action.params.doc_id, 'page:', action.params.page, 'bbox:', action.params.bbox);
                   if (action.params.doc_id) {
-                    // AGENT GLOW: Activate glowing border effect before opening
-                    setIsAgentOpening(true);
-                    // Keep bot overlay visible during document opening
-                    isOpeningDocumentRef.current = true;
-                    setBotActivityMessage('Opening document...');
-                    
-                    // Use the citation data from the backend action directly
-                    const citationData = {
-                      doc_id: action.params.doc_id,
-                      page: action.params.page || 1,
-                      original_filename: action.params.filename || '',
-                      bbox: action.params.bbox || undefined
-                    };
-                    
-                    handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
+                    if (chatIsActive && isCorrectChat) {
+                      // AGENT GLOW: Activate glowing border effect before opening
+                      setIsAgentOpening(true);
+                      // Keep bot overlay visible during document opening
+                      isOpeningDocumentRef.current = true;
+                      setBotActivityMessage('Opening document...');
+                      
+                      // Use the citation data from the backend action directly
+                      const citationData = {
+                        doc_id: action.params.doc_id,
+                        page: action.params.page || 1,
+                        original_filename: action.params.filename || '',
+                        bbox: action.params.bbox || undefined
+                      };
+                      
+                      handleCitationClick(citationData as any, true); // fromAgentAction=true (backend emits reasoning step)
+                    } else if (queryChatId) {
+                      // Chat is inactive - store document preview in ChatStateStore
+                      // This allows the document to be pre-opened when user returns to this chat
+                      // Ensure page is inside bbox for consistent CitationHighlight structure
+                      const bboxWithPage = action.params.bbox ? {
+                        ...action.params.bbox,
+                        page: action.params.bbox.page || action.params.page || 1
+                      } : undefined;
+                      const docPreview = {
+                        docId: action.params.doc_id,
+                        filename: action.params.filename || '',
+                        highlight: bboxWithPage ? {
+                          fileId: action.params.doc_id,
+                          bbox: bboxWithPage,
+                          doc_id: action.params.doc_id,
+                          block_id: action.params.block_id || '',
+                          block_content: action.params.block_content || '',
+                          original_filename: action.params.filename || ''
+                        } : undefined
+                      };
+                      // Store in ChatStateStore (will be displayed when user switches to this chat)
+                      openDocumentForChat(queryChatId, docPreview);
+                      console.log('💾 SideChatPanel: Stored document preview in ChatStateStore for inactive chat (follow-up):', { chatId: queryChatId, docPreview });
+                    }
                   }
                   break;
                 case 'highlight_bbox':
@@ -6608,75 +10292,85 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   console.log('⚠️ [AGENT_ACTION] Legacy highlight_bbox received (follow-up)');
                   break;
                 case 'navigate_to_property':
-                  // CRITICAL: Close document preview immediately when navigating to property
-                  // This prevents old content (like EPC rating) from remaining visible
-                  console.log('🧭 [AGENT_ACTION] navigate_to_property received (follow-up) - closing preview and navigating');
-                  // Set navigation flag to prevent fullscreen restoration
-                  isNavigatingTaskRef.current = true;
-                  wasFullscreenBeforeCitationRef.current = false;
-                  // IMMEDIATELY close any open document preview to clear old content
-                  closeExpandedCardView();
-                  // Update bot status to show navigation activity
-                  setBotActivityMessage('Navigating...');
-                  if (action.params.property_id && onOpenProperty) {
-                    onOpenProperty(null, null, action.params.property_id);
+                  if (chatIsActive && isCorrectChat) {
+                    // CRITICAL: Close document preview immediately when navigating to property
+                    // This prevents old content (like EPC rating) from remaining visible
+                    console.log('🧭 [AGENT_ACTION] navigate_to_property received (follow-up) - closing preview and navigating');
+                    // Set navigation flag to prevent fullscreen restoration
+                    isNavigatingTaskRef.current = true;
+                    wasFullscreenBeforeCitationRef.current = false;
+                    // IMMEDIATELY close any open document preview to clear old content
+                    closeExpandedCardView();
+                    documentPreviewOwnerRef.current = null;
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
+                    if (action.params.property_id && onOpenProperty) {
+                      onOpenProperty(null, null, action.params.property_id);
+                    }
                   }
+                  // If inactive, action is already buffered above
                   break;
                 case 'show_map_view':
-                  // SEQUENCED FLOW for follow-up
-                  // NOTE: Do NOT call onMapToggle() - that hides the chat!
-                  console.log('🗺️ [AGENT_ACTION] show_map_view received (follow-up) - queuing:', action.params);
-                  // CRITICAL: Set navigation flag BEFORE closing preview to prevent fullscreen restoration
-                  isNavigatingTaskRef.current = true;
-                  wasFullscreenBeforeCitationRef.current = false;
-                  // Update bot status to show navigation activity
-                  setBotActivityMessage('Navigating...');
-                  // IMMEDIATELY close any open document preview
-                  closeExpandedCardView();
-                  setTimeout(() => {
-                    const navMinWidth = 380;
-                    setIsFullscreenMode(false);
-                    setDraggedWidth(navMinWidth);
-                    lockedWidthRef.current = null;
-                    if (onChatWidthChange) {
-                      onChatWidthChange(navMinWidth);
-                    }
-                    // Map is already rendered behind the chat - shrinking reveals it
-                  }, 600);
+                  if (chatIsActive && isCorrectChat) {
+                    // SEQUENCED FLOW for follow-up
+                    // NOTE: Do NOT call onMapToggle() - that hides the chat!
+                    console.log('🗺️ [AGENT_ACTION] show_map_view received (follow-up) - queuing:', action.params);
+                    // CRITICAL: Set navigation flag BEFORE closing preview to prevent fullscreen restoration
+                    isNavigatingTaskRef.current = true;
+                    wasFullscreenBeforeCitationRef.current = false;
+                    // Update bot status to show navigation activity
+                    setBotActivityMessage('Navigating...');
+                    // IMMEDIATELY close any open document preview
+                    closeExpandedCardView();
+                    setTimeout(() => {
+                      const navMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
+                      setIsFullscreenMode(false);
+                      setDraggedWidth(navMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(navMinWidth);
+                      }
+                      // Map is already rendered behind the chat - shrinking reveals it
+                    }, 600);
+                  }
+                  // If inactive, action is already buffered above
                   break;
                 case 'select_property_pin':
-                  // SEQUENCED FLOW for follow-up
-                  console.log('📍 [AGENT_ACTION] select_property_pin received (follow-up) - queuing:', action.params);
-                  // CRITICAL: Set navigation flag IMMEDIATELY to prevent fullscreen restoration
-                  isNavigatingTaskRef.current = true;
-                  wasFullscreenBeforeCitationRef.current = false;
-                  closeExpandedCardView();
-                  setTimeout(() => {
-                    setAgentTaskActive(true, 'Navigating to property...');
-                    setMapNavigating(true);
-                    const pinNavMinWidth = 380;
-                    setIsFullscreenMode(false);
-                    setDraggedWidth(pinNavMinWidth);
-                    lockedWidthRef.current = null;
-                    if (onChatWidthChange) {
-                      onChatWidthChange(pinNavMinWidth);
-                    }
+                  if (chatIsActive) {
+                    // SEQUENCED FLOW for follow-up
+                    console.log('📍 [AGENT_ACTION] select_property_pin received (follow-up) - queuing:', action.params);
+                    // CRITICAL: Set navigation flag IMMEDIATELY to prevent fullscreen restoration
+                    isNavigatingTaskRef.current = true;
+                    wasFullscreenBeforeCitationRef.current = false;
+                    closeExpandedCardView();
                     setTimeout(() => {
-                      if (action.params.property_id && onOpenProperty) {
-                        const coords = action.params.latitude && action.params.longitude 
-                          ? { lat: action.params.latitude, lng: action.params.longitude }
-                          : undefined;
-                        onOpenProperty(action.params.address || null, coords || null, action.params.property_id, true);
-                        setTimeout(() => {
-                          setAgentTaskActive(false);
-                          setMapNavigating(false);
-                          setIsBotActive(false); // Hide bot status overlay when navigation completes
-                          // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
-                          // Will be reset when next query starts
-                        }, 1000);
+                      setAgentTaskActive(true, 'Navigating to property...');
+                      setMapNavigating(true);
+                      const pinNavMinWidth = CHAT_PANEL_WIDTH.NAV_MIN;
+                      setIsFullscreenMode(false);
+                      setDraggedWidth(pinNavMinWidth);
+                      lockedWidthRef.current = null;
+                      if (onChatWidthChange) {
+                        onChatWidthChange(pinNavMinWidth);
                       }
-                    }, 500);
-                  }, 800);
+                      setTimeout(() => {
+                        if (action.params.property_id && onOpenProperty) {
+                          const coords = action.params.latitude && action.params.longitude 
+                            ? { lat: action.params.latitude, lng: action.params.longitude }
+                            : undefined;
+                          onOpenProperty(action.params.address || null, coords || null, action.params.property_id, true);
+                          setTimeout(() => {
+                            setAgentTaskActive(false);
+                            setMapNavigating(false);
+                            setIsBotActive(false); // Hide bot status overlay when navigation completes
+                            // NOTE: Don't reset isNavigatingTaskRef here - it prevents fullscreen re-expansion
+                            // Will be reset when next query starts
+                          }, 1000);
+                        }
+                      }, 500);
+                    }, 800);
+                  }
+                  // If inactive, action is already buffered above
                   break;
                 case 'search_property_result':
                   console.log('🔍 [AGENT_ACTION] search_property_result received (follow-up):', action.params);
@@ -6700,7 +10394,33 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   break;
               }
             },
-            isAgentModeRef.current // Pass agent mode to backend for tool-based actions
+            isAgentModeRef.current, // Pass agent mode to backend for tool-based actions
+            selectedModelRef.current, // Pass selected model to backend
+            // onThinkingChunk: Stream Claude's extended thinking in real-time
+            (chunk: string) => {
+              setChatMessages(prev => prev.map(msg => {
+                if (msg.id === loadingResponseId) {
+                  const updatedSteps = (msg.reasoningSteps || []).map(step => {
+                    if (step.action_type === 'thinking') {
+                      return {
+                        ...step,
+                        details: {
+                          ...step.details,
+                          thinking_content: (step.details?.thinking_content || '') + chunk
+                        }
+                      };
+                    }
+                    return step;
+                  });
+                  return { ...msg, reasoningSteps: updatedSteps };
+                }
+                return msg;
+              }));
+            },
+            // onThinkingComplete: Finalize thinking content
+            (fullThinking: string) => {
+              console.log('🧠 Extended thinking complete:', fullThinking.length, 'chars');
+            }
           );
           
           // Clear abort controller and processing flag on completion
@@ -6799,6 +10519,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   
   const hasContent = inputValue.trim().length > 0;
   
+  // Track if chat is empty for centered "New Agent" layout
+  const isEmptyChat = chatMessages.length === 0;
+
   // CRITICAL: This useMemo MUST be at top level (not inside JSX) to follow React's Rules of Hooks
   // This fixes "Rendered more hooks than during the previous render" error
   const renderedMessages = useMemo(() => {
@@ -6920,7 +10643,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   borderRadius: '8px', 
                   overflow: 'hidden',
                   border: '1px solid rgba(229, 231, 235, 0.6)',
-                  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+                  boxShadow: 'none',
                   marginBottom: '2px',
                   position: 'relative',
                   backgroundColor: '#f9fafb'
@@ -6972,7 +10695,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 />
               </div>
             )}
-            <div style={{ backgroundColor: '#F5F5F5', borderRadius: '8px', padding: '4px 10px', border: 'none', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', maxWidth: '100%', boxSizing: 'border-box' }}>
+            <div style={{ backgroundColor: '#FFFFFF', borderRadius: '8px', padding: '4px 10px', border: '1px solid #e5e7eb', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)', width: '100%', wordWrap: 'break-word', overflowWrap: 'break-word', display: 'block', maxWidth: '100%', boxSizing: 'border-box' }}>
               {message.attachments?.length > 0 && (
                 <div style={{ marginBottom: (message.text || message.propertyAttachments?.length > 0) ? '8px' : '0', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                   {message.attachments.map((attachment, i) => (
@@ -7046,57 +10769,50 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '18px 0' }} />,
                     }}>{truncatedText}</ReactMarkdown>
                   </div>
-                  {/* Hover Copy Button - positioned inline next to text */}
-                  {hoveredQueryId === finalKey && (
-                    <motion.button
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.9 }}
-                      transition={{ duration: 0.15 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCopyQuery(message.text || '', finalKey);
-                      }}
-                      style={{
-                        marginLeft: '8px',
-                        backgroundColor: '#374151',
-                        color: '#FFFFFF',
-                        border: 'none',
-                        borderRadius: '6px',
-                        padding: '4px 8px',
-                        fontSize: '12px',
-                        fontFamily: 'system-ui, -apple-system, sans-serif',
-                        fontWeight: 400,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        whiteSpace: 'nowrap',
-                        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.12)',
-                        flexShrink: 0,
-                        alignSelf: 'flex-start',
-                        marginTop: '2px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#4B5563';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#374151';
-                      }}
-                    >
-                      {copiedQueryId === finalKey ? (
-                        <span>Copied</span>
-                      ) : (
-                        <>
-                          <Copy size={12} style={{ flexShrink: 0 }} />
-                          <span>Copy</span>
-                        </>
-                      )}
-                    </motion.button>
-                  )}
                 </div>
               )}
             </div>
+            {/* Copy icon below bubble - ChatGPT style */}
+            {hoveredQueryId === finalKey && message.text && (
+              <motion.button
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopyQuery(message.text || '', finalKey);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: '2px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: copiedQueryId === finalKey ? '#10B981' : '#9CA3AF',
+                  marginTop: '2px'
+                }}
+                onMouseEnter={(e) => {
+                  if (copiedQueryId !== finalKey) {
+                    e.currentTarget.style.color = '#6B7280';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (copiedQueryId !== finalKey) {
+                    e.currentTarget.style.color = '#9CA3AF';
+                  }
+                }}
+                title={copiedQueryId === finalKey ? 'Copied!' : 'Copy'}
+              >
+                {copiedQueryId === finalKey ? (
+                  <Check size={14} />
+                ) : (
+                  <Copy size={14} />
+                )}
+              </motion.button>
+            )}
           </div>
         );
       }
@@ -7121,8 +10837,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             position: 'relative',
             minHeight: '1px' // Prevent collapse
           }}>
-          {message.reasoningSteps?.length > 0 && (showReasoningTrace || message.isLoading) && (
-            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} />
+          {/* Reasoning Steps - show when loading, or after response if toggle is enabled */}
+          {message.reasoningSteps && message.reasoningSteps.length > 0 && (message.isLoading || showReasoningTrace) && (
+            <ReasoningSteps key={`reasoning-${finalKey}`} steps={message.reasoningSteps} isLoading={message.isLoading} hasResponseText={!!message.text} isAgentMode={isAgentMode} skipAnimations={!!isRestored} />
           )}
             {/* Show bouncing dot only after ALL reading is complete - right before response text arrives */}
             {message.isLoading && !message.text && 
@@ -7137,7 +10854,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             <div style={{
               position: 'relative',
               minHeight: '1px', // Prevent collapse
-              contain: 'layout style paint' // Prevent layout shifts
+              contain: 'layout style' // Prevent layout shifts (removed 'paint' to prevent text clipping)
             }}>
               <StreamingResponseText
                 text={message.text}
@@ -7156,19 +10873,21 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
   }, [chatMessages, showReasoningTrace, restoredMessageIdsRef, handleCitationClick, onOpenProperty, scrollToBottom, expandedCardViewDoc, propertyAttachments]);
 
   return (
-    <AnimatePresence>
+    <AnimatePresence mode="wait">
       {isVisible && (
         <motion.div
           key="side-chat-panel"
           ref={panelRef}
-          initial={{ opacity: 0 }} // No slide animation - instant appearance
+          data-side-chat-panel-root="true"
+          initial={false} // No animation - instant appearance always
           animate={{ 
             opacity: 1
           }}
           exit={{ opacity: 0, transition: { duration: 0 } }} // No slide animation on exit - instant disappear
           transition={{ duration: 0 }} // No animation - instant appearance
           layout={false} // Disable layout animation
-          className="fixed top-0 bottom-0 z-30"
+          onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
+          className="fixed top-0 bottom-0 z-[10001]"
           style={{
             left: (() => {
               // Always use sidebarWidth prop which MainContent calculates correctly
@@ -7177,28 +10896,24 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               return `${sidebarWidth}px`;
             })(), // Always positioned using sidebarWidth from MainContent - updates instantly
             width: (() => {
-              // Use sidebarWidth prop directly - MainContent already calculates it correctly
-              // accounting for FilingSidebar when open/closing, and base sidebar when closed
-              const actualLeft = sidebarWidth;
+              // Use unified width calculation for consistent behavior
+              // This ensures the same width logic is used for both parent notification and DOM rendering
+              const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
               
-              // PRIORITY 1: If draggedWidth is set (e.g., during navigation), use it
-              // This takes precedence over fullscreen to allow navigation tasks to shrink the chat
-              if (draggedWidth !== null) {
-                return `${draggedWidth}px`;
-              }
-              // PRIORITY 2: If opening in fullscreen mode (shouldExpand from dashboard), start at fullscreen width immediately
-              // Check shouldExpand directly (don't wait for isFullscreenMode to be set) to prevent initial 450px flash
-              if (shouldExpand && !isPropertyDetailsOpen) {
-                return `calc(100vw - ${actualLeft}px)`;
-              }
-              if (isExpanded) {
-                // Use fullscreen width if fullscreen mode is enabled AND (property details is closed OR user manually requested fullscreen)
-                if (isFullscreenMode && (!isPropertyDetailsOpen || isManualFullscreenRef.current)) {
-                  return `calc(100vw - ${actualLeft}px)`;
-                }
-                return lockedWidthRef.current || (isPropertyDetailsOpen ? '35vw' : '50vw');
-              }
-              return '450px';
+              const { widthCss } = calculateChatPanelWidth({
+                draggedWidth,
+                isExpanded,
+                isFullscreenMode,
+                isDocumentPreviewOpen,
+                isPropertyDetailsOpen,
+                sidebarWidth,
+                chatPanelWidth,
+                isChatPanelOpen,
+                shouldExpand,
+                isManualFullscreen: isManualFullscreenRef.current,
+              });
+              
+              return widthCss;
             })(),
             backgroundColor: '#FCFCF9',
             boxShadow: 'none',
@@ -7206,51 +10921,59 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
             // Track previous sidebar state to detect collapse immediately
             // Use local tracking (isSidebarJustCollapsed) for immediate detection, plus props for MainContent tracking
             // This ensures chat panel adjusts immediately with no animation delay
-            transition: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen)) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-            transitionProperty: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen) ? 'none' : 'width', // Disable ALL transitions (including left) when resizing or closing
-            willChange: (isResizing || isFilingSidebarResizing || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing
+            // Also disable transitions when ChatPanel (agent sidebar) opens/closes for instant width adjustment
+            transition: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || justEnteredFullscreen || shouldExpand || isRestoringFullscreen || (isFullscreenMode && !isRestoringFullscreen) || isFirstOpen) ? 'none' : 'width 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+            transitionProperty: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed || !isFilingSidebarOpen || isFirstOpen) ? 'none' : 'width', // Disable ALL transitions (including left) when resizing, closing, ChatPanel toggle, or first opening
+            willChange: (isResizing || isFilingSidebarResizing || isChatPanelResizing || isChatPanelJustToggled || isFilingSidebarClosing || isSidebarCollapsing || isSidebarJustCollapsed) ? 'left, width' : 'width', // Optimize for instant changes when closing or ChatPanel toggle
             backfaceVisibility: 'hidden', // Prevent flickering
             transform: 'translateZ(0)' // Force GPU acceleration
           }}
         >
-          {/* Drag handle for resizing from right edge - available in both expanded and collapsed states */}
-          <div
-            onMouseDown={handleResizeStart}
-            style={{
-              position: 'absolute',
-              right: '-2px', // Extend slightly beyond the edge for easier grabbing
-              top: 0,
-              bottom: 0,
-              width: '12px', // Wider handle for better visibility and easier grabbing
-              cursor: 'ew-resize',
-              zIndex: 10000, // Higher than PropertyDetailsPanel (9999) to ensure line is always visible
-              backgroundColor: 'transparent', // No background color
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              pointerEvents: 'auto', // Ensure it captures mouse events
-            }}
-          >
-            {/* Faint line to distinguish the boundary between chat and property details panel */}
+          {/* Drag handle for resizing from right edge - extends full height above all content */}
+          {/* Only show when property details panel is open OR when document preview is NOT open */}
+          {/* When document preview is open, the document's left edge handles resize instead */}
+          {(isPropertyDetailsOpen || !expandedCardViewDoc) && (
             <div
+              onMouseDown={handleResizeStart}
+              className="group"
               style={{
-                width: '1px',
-                height: '100%',
-                backgroundColor: 'rgba(156, 163, 175, 0.3)', // Faint gray line - more visible than before
-                position: 'relative',
-                zIndex: 10000, // Ensure line is above property details panel
+                position: 'absolute',
+                right: -6, // Extend into document preview area for easier grabbing
+                top: 0,
+                bottom: 0,
+                width: '12px', // Wider grab area for easier interaction
+                cursor: 'ew-resize',
+                zIndex: 10010,
+                backgroundColor: 'transparent',
+                pointerEvents: 'auto',
+                display: 'flex',
+                justifyContent: 'center', // Center the visual indicator
+                alignItems: 'center',
               }}
-            />
-          </div>
+            >
+              {/* Border line - only visible when property details panel is open */}
+              <div
+                className={`transition-all duration-100 ${isPropertyDetailsOpen ? 'group-hover:bg-blue-500 group-active:bg-blue-600' : ''}`}
+                style={{
+                  width: isResizing ? '3px' : (isPropertyDetailsOpen ? '1px' : '0px'),
+                  height: '100%',
+                  backgroundColor: isResizing ? 'rgb(59, 130, 246)' : (isPropertyDetailsOpen ? 'rgba(203, 213, 225, 1)' : 'transparent'),
+                  borderRadius: '1px',
+                  transition: 'width 100ms ease-out, background-color 100ms ease-out',
+                }}
+              />
+            </div>
+          )}
           
           {/* Panel content will go here */}
           <div 
             className="h-full flex flex-col"
             style={{
               // Hide content briefly when opening in fullscreen to prevent flash
-              opacity: (shouldExpand && !isFullscreenMode) ? 0 : 1,
-              transition: (shouldExpand && !isFullscreenMode) ? 'none' : 'opacity 0.05s ease-in',
-              visibility: (shouldExpand && !isFullscreenMode) ? 'hidden' : 'visible',
+              // But don't hide when property details is open (50/50 split mode)
+              opacity: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 0 : 1,
+              transition: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'none' : 'opacity 0.05s ease-in',
+              visibility: (shouldExpand && !isFullscreenMode && !isPropertyDetailsOpen) ? 'hidden' : 'visible',
               position: 'relative',
               backgroundColor: '#FCFCF9', // Ensure solid background to prevent leaks
               overflow: 'hidden', // Prevent content from leaking during transitions
@@ -7258,114 +10981,214 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
               height: '100%'
             }}
           >
-            {/* Header */}
-            <div className="py-4 pr-4 pl-6 relative" style={{ backgroundColor: '#FCFCF9', borderBottom: 'none', position: 'relative', zIndex: 10 }}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={onSidebarToggle}
-                    className={`flex items-center ${inputContainerWidth >= 550 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
-                    title={isMainSidebarOpen ? "Close sidebar" : "Open sidebar"}
-                    type="button"
-                    style={{
-                      padding: inputContainerWidth < 550 ? '4px' : '4px 8px',
-                      height: '24px',
-                      minHeight: '24px',
-                      backgroundColor: isMainSidebarOpen ? '#FFFFFF' : '#F5F5F5',
-                      opacity: 1,
-                      backdropFilter: 'none'
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isMainSidebarOpen) {
-                        e.currentTarget.style.backgroundColor = '#E8E8E8';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isMainSidebarOpen) {
-                        e.currentTarget.style.backgroundColor = '#F5F5F5';
-                      }
-                    }}
-                  >
-                    {isMainSidebarOpen ? (
-                      <PanelRightClose
-                        className="w-3.5 h-3.5 scale-x-[-1]"
-                        strokeWidth={1.5}
-                      />
-                    ) : (
-                      <PanelLeftOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    )}
-                    {inputContainerWidth >= 550 && (
-                      <span className="text-xs font-medium">
-                        {isMainSidebarOpen ? "Close" : "Sidebar"}
-                      </span>
-                    )}
-                  </button>
-
-                  {/* Hide the Files sidebar icon when the main sidebar is open (the control exists there). */}
+            {/* Header - Fixed at top */}
+            <div 
+              className="pr-4 pl-6" 
+              style={{ 
+                backgroundColor: '#FCFCF9', 
+                position: 'sticky', 
+                top: 0, 
+                zIndex: 10002,
+                flexShrink: 0,
+                pointerEvents: 'auto',
+                paddingTop: '15px',
+                paddingBottom: '19px'
+              }}
+            >
+              <div 
+                className="flex items-center justify-between group"
+                onMouseMove={(e) => {
+                  if (editButtonRef.current && actualPanelWidth >= 940) {
+                    const buttonRect = editButtonRef.current.getBoundingClientRect();
+                    const mouseX = e.clientX;
+                    const mouseY = e.clientY;
+                    
+                    // Calculate distance from cursor to button center
+                    const buttonCenterX = buttonRect.left + buttonRect.width / 2;
+                    const buttonCenterY = buttonRect.top + buttonRect.height / 2;
+                    const distance = Math.sqrt(
+                      Math.pow(mouseX - buttonCenterX, 2) + Math.pow(mouseY - buttonCenterY, 2)
+                    );
+                    
+                    // Show button when cursor is within 60px
+                    setIsNearEditButton(distance < 60);
+                  }
+                }}
+                onMouseLeave={() => {
+                  setIsNearEditButton(false);
+                }}
+              >
+                <div className="flex items-center space-x-2">
+                  {/* Sidebar Open Button - shown when sidebar is closed */}
                   {!isMainSidebarOpen && (
-                  <AnimatePresence mode="wait">
-                      <motion.button
-                        key="folder-icon"
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.8 }}
-                        transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-                        onClick={toggleFilingSidebar}
-                        className={`flex items-center ${inputContainerWidth >= 550 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-colors duration-200`}
-                        title="Toggle Files sidebar"
-                        type="button"
-                        style={{
-                          padding: inputContainerWidth < 550 ? '4px' : '4px 8px',
-                          height: '24px',
-                          minHeight: '24px',
-                          backgroundColor: '#FFFFFF',
-                          opacity: 1,
-                          backdropFilter: 'none'
-                        }}
-                      >
-                        <FolderOpen className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        {inputContainerWidth >= 550 && (
-                          <span className="text-xs font-medium">Files</span>
-                        )}
-                      </motion.button>
-                  </AnimatePresence>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        // Ensure we're calling the main sidebar toggle
+                        if (onSidebarToggle) {
+                          onSidebarToggle();
+                        }
+                      }}
+                      className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                      title="Open sidebar"
+                      type="button"
+                      style={{
+                        padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                        height: '26px',
+                        minHeight: '26px',
+                        border: 'none',
+                        position: 'relative',
+                        zIndex: 10001,
+                        pointerEvents: 'auto',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <PanelLeftOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                      {actualPanelWidth >= 600 && (
+                        <span className="text-[12px] font-normal text-[#666]">Sidebar</span>
+                      )}
+                    </button>
                   )}
 
-                  {/* Chat History Button */}
-                  <button
-                    onClick={onOpenChatHistory}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} text-slate-600 hover:text-slate-700 border border-slate-200/60 hover:border-slate-300/80 transition-all duration-200`}
-                    title="Chat History"
+                  {/* Sidebar Close Button - shown when sidebar is open */}
+                  {isMainSidebarOpen && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        // Ensure we're calling the main sidebar toggle, not the filing sidebar toggle
+                        if (onSidebarToggle) {
+                          onSidebarToggle();
+                        }
+                      }}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    title="Close"
                     type="button"
                     style={{
-                      padding: actualPanelWidth < 600 ? '4px' : '4px 8px',
-                      height: '24px',
-                      minHeight: '24px',
-                      backgroundColor: '#FFFFFF',
-                      opacity: 1,
-                      backdropFilter: 'none'
+                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
                     }}
                   >
-                    <History
-                      className="w-3.5 h-3.5"
-                      strokeWidth={1.5}
+                    <PanelRightClose
+                      className="w-3.5 h-3.5 text-[#666] scale-x-[-1]"
+                      strokeWidth={1.75}
                     />
                     {actualPanelWidth >= 600 && (
-                      <span className="text-xs font-medium">
-                        Chat History
+                      <span className="text-[12px] font-normal text-[#666]">Close</span>
+                    )}
+                    </button>
+                  )}
+
+                  {/* Files Open Button - shown when files sidebar is closed */}
+                  {!isFilingSidebarOpen && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        toggleFilingSidebar();
+                      }}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    title="Toggle Files sidebar"
+                    type="button"
+                    style={{
+                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    {actualPanelWidth >= 600 && (
+                      <span className="text-[12px] font-normal text-[#666]">Files</span>
+                    )}
+                    </button>
+                  )}
+
+                  {/* Files Close Button - shown when files sidebar is open */}
+                  {isFilingSidebarOpen && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        toggleFilingSidebar();
+                      }}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    title="Close Files"
+                    type="button"
+                    style={{
+                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer',
+                      backgroundColor: 'rgba(0, 0, 0, 0.04)'
+                    }}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    {actualPanelWidth >= 600 && (
+                      <span className="text-[12px] font-normal text-[#666]">Close Files</span>
+                    )}
+                    </button>
+                  )}
+
+                  {/* Browser Fullscreen Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      toggleBrowserFullscreen();
+                    }}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    title={isBrowserFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                    type="button"
+                    style={{
+                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer',
+                      backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
+                    }}
+                  >
+                    {isBrowserFullscreen ? (
+                      <Minimize2 className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    ) : (
+                      <Fullscreen className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    )}
+                    {actualPanelWidth >= 600 && (
+                      <span className="text-[12px] font-normal text-[#666]">
+                        {isBrowserFullscreen ? "Exit" : "Fullscreen"}
                       </span>
                     )}
                   </button>
-                </div>
-                <div className="flex items-center space-x-2">
+
+                  {/* New Agent Button */}
                   <motion.button
                     onClick={() => {
                       // Save current chat to history if there are messages
                       if (chatMessages.length > 0) {
                         const firstQuery = chatMessages.find(m => m.type === 'query');
                         const preview = firstQuery?.text || 'New chat';
-                        addChatToHistory({
-                          title: '',
+                        const savedChatId = addChatToHistory({
+                          title: chatTitle || '', // Use current chat title if available
                           timestamp: new Date().toISOString(),
                           preview,
                           messages: chatMessages.map(m => ({
@@ -7376,66 +11199,410 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             citations: m.citations || {} // Include citations for clickable buttons
                           }))
                         });
+                        
+                        // Update chat ID if we have one
+                        if (currentChatId && savedChatId !== currentChatId) {
+                          // If title was set, update it in the saved chat
+                          if (chatTitle) {
+                            updateChatTitle(savedChatId, chatTitle);
+                          }
+                        }
                       }
                       
-                      // Completely clear ALL state for new chat
-                      setChatMessages([]);
-                      setSubmittedQueries([]);
-                      persistedChatMessagesRef.current = [];
-                      restoredMessageIdsRef.current = new Set();
-                      setInputValue("");
-                      setAttachedFiles([]);
-                      clearPropertyAttachments();
-                      setSelectionModeActive(false);
-                      setIsSubmitted(false);
-                      setIsFocused(false);
-                      // Reset first citation flag for new chat session
-                      isFirstCitationRef.current = true;
+                      // Check if there's a running query (either in UI state or chat history)
+                      const hasLoadingMessage = chatMessages.some(msg => msg.isLoading);
+                      const existingChat = currentChatId ? getChatById(currentChatId) : null;
+                      const hasRunningQueryInHistory = existingChat?.status === 'loading';
+                      const hasRunningQuery = hasLoadingMessage || hasRunningQueryInHistory;
                       
-                      // Reset textarea if it exists
-                      if (inputRef.current) {
-                        inputRef.current.value = "";
-                        inputRef.current.style.height = 'auto';
-                      }
-                      
-                      // Notify parent to clear query prop
-                      if (onNewChat) {
-                        onNewChat();
+                      if (hasRunningQuery) {
+                        // CRITICAL: Save current chat to history BEFORE clearing UI state
+                        // This ensures the running query's state is preserved
+                        // Use chatMessagesRef.current for consistency
+                        const currentMessages = chatMessagesRef.current;
+                        if (currentChatId && currentMessages.length > 0) {
+                          // Convert chatMessages to history format and save
+                          const historyMessages = currentMessages.map(msg => ({
+                            role: msg.type === 'query' ? 'user' : 'assistant',
+                            content: msg.text || '',
+                            attachments: msg.attachments || [],
+                            propertyAttachments: msg.propertyAttachments || [],
+                            citations: msg.citations || {}
+                          }));
+                          updateChatInHistory(currentChatId, historyMessages);
+                          console.log('💾 SideChatPanel: Saved running query state to history before new agent:', currentChatId);
+                          
+                          // CRITICAL: Save messages AND document preview to buffer
+                          // This ensures streaming callbacks can continue updating the buffered state
+                          // AND the state is properly restored when returning to this chat
+                          const bufferedState = getBufferedState(currentChatId);
+                          
+                          // Save messages to buffer (with their original IDs for streaming callback matching)
+                          bufferedState.messages = [...currentMessages];
+                          bufferedState.status = currentMessages.some(msg => msg.isLoading) ? 'loading' : 'completed';
+                          bufferedState.isLoading = currentMessages.some(msg => msg.isLoading);
+                          
+                          // Save accumulated text from loading message
+                          const loadingMsg = currentMessages.find(msg => msg.isLoading);
+                          if (loadingMsg && loadingMsg.text) {
+                            bufferedState.accumulatedText = loadingMsg.text;
+                          }
+                          
+                          // Save reasoning steps from loading message
+                          if (loadingMsg && loadingMsg.reasoningSteps) {
+                            bufferedState.reasoningSteps = [...loadingMsg.reasoningSteps];
+                            const lastStep = loadingMsg.reasoningSteps[loadingMsg.reasoningSteps.length - 1];
+                            if (lastStep) {
+                              bufferedState.lastReasoningStep = lastStep;
+                            }
+                          }
+                          
+                          bufferedState.lastUpdate = Date.now();
+                          console.log('💾 SideChatPanel: Saved messages to buffer before new agent:', {
+                            messageCount: currentMessages.length,
+                            isLoading: bufferedState.isLoading,
+                            reasoningStepsCount: bufferedState.reasoningSteps.length
+                          });
+                          
+                          // Save document preview state to buffer if document is open
+                          if (expandedCardViewDoc) {
+                            bufferedState.documentPreview = {
+                              docId: expandedCardViewDoc.docId,
+                              filename: expandedCardViewDoc.filename,
+                              highlight: expandedCardViewDoc.highlight ? {
+                                fileId: expandedCardViewDoc.highlight.fileId,
+                                bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
+                                doc_id: expandedCardViewDoc.highlight.doc_id,
+                                block_id: expandedCardViewDoc.highlight.block_id || '',
+                                block_content: expandedCardViewDoc.highlight.block_content,
+                                original_filename: expandedCardViewDoc.highlight.original_filename
+                              } : undefined
+                            };
+                            console.log('💾 SideChatPanel: Saved document preview to buffer before new agent:', bufferedState.documentPreview);
+                          }
+                        }
+                        
+                        // Preserve currentChatId conceptually (it's in history)
+                        // But clear it in UI to force new chat creation on next query
+                        
+                        // Clear only UI input state for new query
+                        setInputValue("");
+                        setAttachedFiles([]);
+                        attachedFilesRef.current = [];
+                        clearPropertyAttachments();
+                        setSelectionModeActive(false);
+                        setIsSubmitted(false);
+                        setIsFocused(false);
+                        
+                        // Clear title state (new chat will get new title)
+                        setChatTitle('');
+                        setIsTitleStreaming(false);
+                        setStreamedTitle('');
+                        setIsEditingTitle(false);
+                        setEditingTitleValue('');
+                        
+                        // Clear persisted messages ref (new query will start fresh)
+                        persistedChatMessagesRef.current = [];
+                        restoredMessageIdsRef.current = new Set();
+                        
+                        // Reset first citation flag for new chat session
+                        isFirstCitationRef.current = true;
+                        
+                        // Reset textarea if it exists
+                        if (inputRef.current) {
+                          inputRef.current.value = "";
+                          inputRef.current.style.height = 'auto';
+                        }
+                        
+                        // CRITICAL: Clear chatMessages in UI (but they're saved to history above)
+                        // This allows the UI to show empty state for new query
+                        // The running query will continue updating its history entry in background
+                        setChatMessages([]);
+                        setSubmittedQueries([]);
+                        
+                        // Set currentChatId to null to force new chat creation on next query
+                        // The running query's chatId is preserved in history, so it can continue updating
+                        setCurrentChatId(null);
+                        currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
+                        activeChatIdRef.current = null; // Also clear active chat to prevent response routing to old chat
+                        
+                        // CRITICAL: Close document preview for new agent (it's saved to buffer above)
+                        // This prevents document view leakage between agents
+                        if (expandedCardViewDoc) {
+                          closeExpandedCardView();
+                          documentPreviewOwnerRef.current = null;
+                        }
+                        
+                        // Notify parent to clear query prop (allows new query to be entered)
+                        if (onNewChat) {
+                          onNewChat();
+                        }
+                        
+                        console.log('🆕 SideChatPanel: Cleared UI for new agent while preserving running query:', {
+                          preservedChatId: existingChat?.id,
+                          runningQueryStatus: existingChat?.status
+                        });
+                      } else {
+                        // No running query - still need to save state to buffer BEFORE clearing
+                        // This ensures state is restored when returning to this chat
+                        if (currentChatId) {
+                          const bufferedState = getBufferedState(currentChatId);
+                          
+                          // Always save current messages to buffer
+                          const currentMessages = chatMessagesRef.current;
+                          if (currentMessages.length > 0) {
+                            bufferedState.messages = [...currentMessages];
+                            bufferedState.status = 'completed';
+                            bufferedState.isLoading = false;
+                            bufferedState.lastUpdate = Date.now();
+                            console.log('💾 SideChatPanel: Saved messages to buffer before new agent (no running query):', {
+                              messageCount: currentMessages.length
+                            });
+                          }
+                          
+                          // Save document preview state to buffer if document is open
+                          if (expandedCardViewDoc) {
+                            bufferedState.documentPreview = {
+                              docId: expandedCardViewDoc.docId,
+                              filename: expandedCardViewDoc.filename,
+                              highlight: expandedCardViewDoc.highlight ? {
+                                fileId: expandedCardViewDoc.highlight.fileId,
+                                bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
+                                doc_id: expandedCardViewDoc.highlight.doc_id,
+                                block_id: expandedCardViewDoc.highlight.block_id || '',
+                                block_content: expandedCardViewDoc.highlight.block_content,
+                                original_filename: expandedCardViewDoc.highlight.original_filename
+                              } : undefined
+                            };
+                            console.log('💾 SideChatPanel: Saved document preview to buffer before new agent (no running query):', bufferedState.documentPreview);
+                          }
+                        }
+                        
+                        // Clear all state as before (existing behavior)
+                        setChatMessages([]);
+                        setSubmittedQueries([]);
+                        persistedChatMessagesRef.current = [];
+                        restoredMessageIdsRef.current = new Set();
+                        setInputValue("");
+                        setAttachedFiles([]);
+                        clearPropertyAttachments();
+                        setSelectionModeActive(false);
+                        setIsSubmitted(false);
+                        setIsFocused(false);
+                        isFirstCitationRef.current = true;
+                        setCurrentChatId(null);
+                        currentChatIdRef.current = null; // Also update ref synchronously to avoid stale closure issues
+                        activeChatIdRef.current = null; // Also clear active chat to prevent response routing to old chat
+                        setChatTitle('');
+                        setIsTitleStreaming(false);
+                        setStreamedTitle('');
+                        setIsEditingTitle(false);
+                        setEditingTitleValue('');
+                        
+                        // CRITICAL: Close document preview for new agent (it's saved to buffer above)
+                        // This prevents document view leakage between agents
+                        if (expandedCardViewDoc) {
+                          closeExpandedCardView();
+                          documentPreviewOwnerRef.current = null;
+                        }
+                        
+                        if (inputRef.current) {
+                          inputRef.current.value = "";
+                          inputRef.current.style.height = 'auto';
+                        }
+                        
+                        if (onNewChat) {
+                          onNewChat();
+                        }
                       }
                     }}
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.99 }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1 rounded-none' : 'justify-center w-8 h-8 rounded-none'} border border-slate-200/60 hover:border-slate-300/80 rounded-none transition-all duration-200 group`}
+                    whileHover={{ backgroundColor: '#f0f0f0' }}
+                    whileTap={{ backgroundColor: '#e8e8e8' }}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm transition-all duration-150`}
                     style={{
-                      padding: actualPanelWidth < 600 ? '4px' : '4px 8px',
-                      height: '24px',
-                      minHeight: '24px',
-                      backgroundColor: '#FFFFFF',
-                      opacity: 1,
-                      backdropFilter: 'none'
+                      padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      cursor: 'pointer'
                     }}
                     title="New chat"
                   >
-                    <Plus className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
-                    {actualPanelWidth >= 600 && (
-                      <span className="text-slate-600 text-xs">
+                    <Plus className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
+                    {actualPanelWidth >= 750 && (
+                      <span className="text-[12px] font-normal text-[#666]">
                         New chat
                       </span>
                     )}
                   </motion.button>
+                </div>
+                
+                {/* Center - Chat Title */}
+                <div className="flex-1 flex items-center justify-center px-4">
+                  {actualPanelWidth >= 900 ? (
+                    <div className="flex items-center gap-2 max-w-md">
+                      {/* Padlock icon (subtle, light gray) - shown by default, hidden when editing */}
+                      {!isEditingTitle && (
+                        <Lock 
+                          className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" 
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      )}
+                      
+                      {/* Title display/input */}
+                      {isEditingTitle ? (
+                        <input
+                          type="text"
+                          value={editingTitleValue}
+                          onChange={(e) => setEditingTitleValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSaveTitle();
+                            }
+                            if (e.key === 'Escape') {
+                              handleCancelEdit();
+                            }
+                          }}
+                          onBlur={handleSaveTitle}
+                          className="text-sm font-normal text-gray-900 bg-transparent border-none outline-none text-center flex-1 min-w-0"
+                          style={{ width: '100%' }}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span 
+                          className="text-sm font-normal text-slate-600 truncate text-center cursor-pointer hover:text-slate-700"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleEdit();
+                          }}
+                          onMouseEnter={(e) => {
+                            e.stopPropagation();
+                            setIsHoveringName(true);
+                          }}
+                          onMouseLeave={(e) => {
+                            e.stopPropagation();
+                            setIsHoveringName(false);
+                          }}
+                          title="Click to edit chat name"
+                          style={{ 
+                            display: 'inline-block',
+                            padding: '0',
+                            margin: '0'
+                          }}
+                        >
+                          {isTitleStreaming ? streamedTitle : (chatTitle || 'New chat')}
+                        </span>
+                      )}
+                      
+                      {/* Edit toggle (pencil icon) - hidden when width is small */}
+                      {actualPanelWidth >= 940 && (
+                        <button
+                          ref={editButtonRef}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleEdit();
+                          }}
+                          className={`${isNearEditButton ? 'opacity-100' : 'opacity-0'} p-1 rounded hover:bg-gray-100 transition-opacity flex-shrink-0`}
+                          title="Edit chat name"
+                          type="button"
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-gray-400" />
+                        </button>
+                      )}
+                    </div>
+                  ) : isEditingTitle ? (
+                    <div className="flex items-center gap-2 max-w-md">
+                      <input
+                        type="text"
+                        value={editingTitleValue}
+                        onChange={(e) => setEditingTitleValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveTitle();
+                          }
+                          if (e.key === 'Escape') {
+                            handleCancelEdit();
+                          }
+                        }}
+                        onBlur={handleSaveTitle}
+                        className="text-sm font-normal text-gray-900 bg-transparent border-none outline-none text-center flex-1 min-w-0"
+                        style={{ width: '100%' }}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+                
+                <div className="flex items-center space-x-2">
+                  {/* Agents Sidebar Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      if (isChatPanelOpen) {
+                        // Only close when open - use closePanel instead of toggle
+                        closeChatPanel();
+                      } else {
+                        // Open when closed
+                        toggleChatPanel();
+                      }
+                    }}
+                    className={`flex items-center ${actualPanelWidth >= 750 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150`}
+                    title={isChatPanelOpen ? "Close Agent Sidebar" : "Agents Sidebar"}
+                    type="button"
+                    style={{
+                      padding: actualPanelWidth < 750 ? '5px' : '5px 8px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      backgroundColor: isChatPanelOpen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
+                    }}
+                  >
+                    {isChatPanelOpen ? (
+                      <PanelRightClose
+                        className="w-3.5 h-3.5 text-[#666]"
+                        strokeWidth={1.75}
+                      />
+                    ) : (
+                      <Play
+                        className="w-3.5 h-3.5 text-[#666]"
+                        strokeWidth={1.75}
+                      />
+                    )}
+                    {actualPanelWidth >= 750 && (
+                      <span className="text-[12px] font-normal text-[#666]">
+                        {isChatPanelOpen ? "Close" : "Agents"}
+                      </span>
+                    )}
+                  </button>
                   
                   {/* Reasoning trace toggle */}
                   <div 
-                    className="flex items-center space-x-1.5 px-2 py-1 border border-slate-200/60 rounded-none"
-                    style={{ backgroundColor: '#FFFFFF', opacity: 1, backdropFilter: 'none' }}
+                    className="flex items-center gap-1 rounded-sm hover:bg-[#f0f0f0] transition-all duration-150 cursor-pointer"
+                    style={{ 
+                      padding: '5px 8px',
+                      height: '26px'
+                    }}
                     title={showReasoningTrace ? "Reasoning trace will stay visible after response" : "Reasoning trace will hide after response"}
+                    onClick={() => setShowReasoningTrace(!showReasoningTrace)}
                   >
-                    <Footprints className="w-4 h-4 text-slate-600" strokeWidth={1.5} />
+                    <Footprints className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                     <button
                       type="button"
-                      onClick={() => setShowReasoningTrace(!showReasoningTrace)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowReasoningTrace(!showReasoningTrace);
+                      }}
                       className={`relative w-7 h-4 rounded-full transition-colors ${
-                        showReasoningTrace ? 'bg-[#F59E0B]' : 'bg-slate-300'
+                        showReasoningTrace ? 'bg-[#10a37f]' : 'bg-[#d1d5db]'
                       }`}
                     >
                       <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${
@@ -7447,28 +11614,22 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   <button
                     type="button"
                     onClick={() => {
-                      // Get current width in pixels (same logic as drag resizing uses)
-                      let currentWidth: number;
-                      if (draggedWidth !== null) {
-                        currentWidth = draggedWidth;
-                      } else if (isExpanded && isFullscreenMode) {
-                        // Fullscreen mode from dashboard
-                        currentWidth = window.innerWidth - sidebarWidth;
-                      } else if (lockedWidthRef.current) {
-                        // Convert vw to pixels if locked width is set
-                        const vwValue = parseFloat(lockedWidthRef.current);
-                        currentWidth = window.innerWidth * (vwValue / 100);
-                      } else if (isExpanded) {
-                        currentWidth = isPropertyDetailsOpen 
-                          ? window.innerWidth * 0.35 
-                          : window.innerWidth * 0.5;
-                      } else {
-                        currentWidth = 450;
-                      }
+                      // Get current width using unified calculation
+                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+                      const { widthPx: currentWidth } = calculateChatPanelWidth({
+                        draggedWidth,
+                        isExpanded,
+                        isFullscreenMode,
+                        isDocumentPreviewOpen,
+                        isPropertyDetailsOpen,
+                        sidebarWidth,
+                        chatPanelWidth,
+                        isChatPanelOpen,
+                        isManualFullscreen: isManualFullscreenRef.current,
+                      });
                       
                       // Define threshold: if width is >= 600px, consider it "large" and make it smaller
                       // Otherwise, make it larger (fullscreen)
-                      const SMALL_SIZE = 450; // Minimum/collapsed size
                       const THRESHOLD = 600; // Threshold between small and large
                       
                       let newWidth: number;
@@ -7476,7 +11637,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       
                       if (currentWidth >= THRESHOLD) {
                         // Currently large - make it smaller
-                        newWidth = SMALL_SIZE;
+                        newWidth = CHAT_PANEL_WIDTH.COLLAPSED;
                         newExpandedState = false;
                         // Reset fullscreen mode when collapsing
                         if (isFullscreenMode) {
@@ -7496,7 +11657,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         // Clear dragged width so fullscreen width calculation takes effect
                         setDraggedWidth(null);
                         // Calculate fullscreen width for notification
-                        newWidth = window.innerWidth - sidebarWidth;
+                        const chatPanelOffset = isChatPanelOpen ? chatPanelWidth : 0;
+                        newWidth = window.innerWidth - sidebarWidth - chatPanelOffset;
                         // Reset the flag after a short delay
                         setTimeout(() => {
                           setJustEnteredFullscreen(false);
@@ -7511,143 +11673,646 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                         onChatWidthChange(newWidth);
                       }
                     }}
-                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1.5 px-2 py-1' : 'justify-center p-1.5'} border rounded-none transition-all duration-200 group border-slate-200/60 hover:border-slate-300/80 focus:outline-none outline-none`}
+                    className={`flex items-center ${actualPanelWidth >= 600 ? 'gap-1' : 'justify-center'} rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150 focus:outline-none outline-none`}
                     style={{
                       marginLeft: '4px',
-                      height: '24px',
-                      minHeight: '24px',
-                      backgroundColor: '#FFFFFF',
-                      opacity: 1,
-                      backdropFilter: 'none'
+                      padding: actualPanelWidth >= 600 ? '5px 8px' : '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      border: 'none',
+                      cursor: 'pointer'
                     }}
                     title={(() => {
-                      // Calculate current width using same logic as onClick
-                      let currentWidth: number;
-                      if (draggedWidth !== null) {
-                        currentWidth = draggedWidth;
-                      } else if (isExpanded && isFullscreenMode) {
-                        // Fullscreen mode from dashboard
-                        currentWidth = window.innerWidth - sidebarWidth;
-                      } else if (lockedWidthRef.current) {
-                        const vwValue = parseFloat(lockedWidthRef.current);
-                        currentWidth = window.innerWidth * (vwValue / 100);
-                      } else if (isExpanded) {
-                        currentWidth = isPropertyDetailsOpen 
-                          ? window.innerWidth * 0.35 
-                          : window.innerWidth * 0.5;
-                      } else {
-                        currentWidth = 450;
-                      }
+                      // Calculate current width using unified calculation
+                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+                      const { widthPx: currentWidth } = calculateChatPanelWidth({
+                        draggedWidth,
+                        isExpanded,
+                        isFullscreenMode,
+                        isDocumentPreviewOpen,
+                        isPropertyDetailsOpen,
+                        sidebarWidth,
+                        chatPanelWidth,
+                        isChatPanelOpen,
+                        isManualFullscreen: isManualFullscreenRef.current,
+                      });
                       return currentWidth >= 600 ? "Make chat smaller" : "Make chat larger";
                     })()}
                   >
                     {(() => {
-                      // Calculate current width using same logic as onClick
-                      let currentWidth: number;
-                      if (draggedWidth !== null) {
-                        currentWidth = draggedWidth;
-                      } else if (isExpanded && isFullscreenMode) {
-                        // Fullscreen mode from dashboard
-                        currentWidth = window.innerWidth - sidebarWidth;
-                      } else if (lockedWidthRef.current) {
-                        const vwValue = parseFloat(lockedWidthRef.current);
-                        currentWidth = window.innerWidth * (vwValue / 100);
-                      } else if (isExpanded) {
-                        currentWidth = isPropertyDetailsOpen 
-                          ? window.innerWidth * 0.35 
-                          : window.innerWidth * 0.5;
-                      } else {
-                        currentWidth = 450;
-                      }
+                      // Calculate current width using unified calculation
+                      const isDocumentPreviewOpen = isPropertyDetailsOpen || !!expandedCardViewDoc;
+                      const { widthPx: currentWidth } = calculateChatPanelWidth({
+                        draggedWidth,
+                        isExpanded,
+                        isFullscreenMode,
+                        isDocumentPreviewOpen,
+                        isPropertyDetailsOpen,
+                        sidebarWidth,
+                        chatPanelWidth,
+                        isChatPanelOpen,
+                        isManualFullscreen: isManualFullscreenRef.current,
+                      });
                       const isLarge = currentWidth >= 600;
                       return (
                         <>
                           {isLarge ? (
-                            <Minimize2 className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                            <Minimize2 className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                           ) : (
-                            <MoveDiagonal className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={1.5} />
+                            <MoveDiagonal className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                           )}
-                          {actualPanelWidth >= 600 && (
-                            <span className="text-xs font-medium text-slate-600">
-                              {isLarge ? 'Minimise' : 'fullscreen'}
-                            </span>
-                          )}
-                        </>
+                          </>
                       );
                     })()}
                   </button>
                   <button
                     onClick={() => {
-                      onMapToggle();
-                      closeExpandedCardView(); // Close document preview (Reference agent) when closing chat
+                      // CRITICAL: Save chat state before closing (granular restoration)
+                      if (currentChatId && (inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0 || submittedQueries.length > 0)) {
+                        console.log('💾 SideChatPanel: Saving chat state before closing:', {
+                          chatId: currentChatId,
+                          inputValue: inputValue,
+                          attachedFiles: attachedFiles.length,
+                          propertyAttachments: propertyAttachments.length
+                        });
+                        saveChatState(currentChatId, {
+                          inputValue: inputValue,
+                          attachedFiles: [...attachedFiles],
+                          propertyAttachments: [...propertyAttachments],
+                          submittedQueries: [...submittedQueries] as any[]
+                        });
+                      }
+                      
+                      // CRITICAL: Save document preview state to buffer before closing
+                      // This ensures the document preview is restored when returning to this chat
+                      if (currentChatId && expandedCardViewDoc) {
+                        const bufferedState = getBufferedState(currentChatId);
+                        bufferedState.documentPreview = {
+                          docId: expandedCardViewDoc.docId,
+                          filename: expandedCardViewDoc.filename,
+                          highlight: expandedCardViewDoc.highlight ? {
+                            fileId: expandedCardViewDoc.highlight.fileId,
+                            bbox: expandedCardViewDoc.highlight.bbox, // bbox already contains page
+                            doc_id: expandedCardViewDoc.highlight.doc_id,
+                            block_id: expandedCardViewDoc.highlight.block_id || '',
+                            block_content: expandedCardViewDoc.highlight.block_content,
+                            original_filename: expandedCardViewDoc.highlight.original_filename
+                          } : undefined
+                        };
+                        console.log('💾 SideChatPanel: Saved document preview to buffer before closing:', bufferedState.documentPreview);
+                      }
+                      
+                      // CRITICAL: Use onMinimize when there are messages to preserve chat data for return-to-chat
+                      // This matches the behavior of the regular chat interface
+                      if (onMinimize && chatMessages.length > 0) {
+                        closeExpandedCardView(); // Close document preview (Reference agent) when closing chat
+                        onMinimize(chatMessages);
+                      } else if (onMapToggle) {
+                        closeExpandedCardView(); // Close document preview (Reference agent) when closing chat
+                        onMapToggle();
+                      }
                     }}
-                    className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-all"
+                    className="rounded-sm hover:bg-[#f0f0f0] active:bg-[#e8e8e8] transition-all duration-150"
                     title="Close chat"
-                    style={isPropertyDetailsOpen ? { marginRight: '8px' } : undefined}
+                    style={{
+                      padding: '5px',
+                      height: '26px',
+                      minHeight: '26px',
+                      marginLeft: '8px',
+                      ...(isPropertyDetailsOpen ? { marginRight: '8px' } : {}),
+                      position: 'relative',
+                      zIndex: 10001,
+                      pointerEvents: 'auto',
+                      border: 'none',
+                      cursor: 'pointer'
+                    }}
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-3.5 h-3.5 text-[#666]" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
             </div>
             
-            {/* Content area - Query bubbles (ChatGPT-like scrollable area) */}
-            <div 
-              ref={contentAreaRef}
-              className="flex-1 overflow-y-auto sidechat-scroll" 
-              style={{ 
-                backgroundColor: '#FCFCF9',
-                padding: '16px 0', // Simplified padding - content will be centered
-                // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
-                marginRight: '6px',
-                scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
-                minWidth: '300px', // Prevent squishing of content area
-                flexShrink: 1, // Allow shrinking but with minWidth constraint
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center', // Center content wrapper horizontally
-                position: 'relative', // For BotStatusOverlay positioning
-                overflowX: 'hidden' // Prevent horizontal overflow leaks
-              }}
-            >
-              {/* Centered content wrapper - ChatGPT-like centered layout */}
-              <div style={{ 
-                width: '100%', 
-                maxWidth: '680px', // Match chat bar max width (640px inner + 40px padding = 680px)
-                paddingLeft: '32px',
-                paddingRight: '32px',
-                margin: '0 auto' // Center the content wrapper
-              }}>
-              <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
-                <AnimatePresence>
-                  {renderedMessages}
-                </AnimatePresence>
-                {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
-                {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
-                <div ref={messagesEndRef} style={{ height: '120px', minHeight: '120px', flexShrink: 0 }} />
+            {/* Conditional layout: Centered empty state OR normal messages + bottom input */}
+            <AnimatePresence mode="wait">
+            {isEmptyChat ? (
+              /* Empty chat state - Centered expanded chat bar (like Cursor's new chat) */
+              <motion.div
+                key="empty-chat-layout"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20, transition: { duration: 0.15 } }}
+                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                ref={contentAreaRef}
+                onClick={(e) => e.stopPropagation()}
+                className="flex-1"
+                style={{
+                  backgroundColor: '#FCFCF9',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'flex-start',
+                  alignItems: 'center',
+                  // Reduce padding for narrow panels
+                  padding: actualPanelWidth < 320 ? '0 12px' : '0 32px',
+                  paddingTop: '12vh', // Position input in upper portion like Cursor
+                  minWidth: '200px', // Allow narrower layouts
+                  position: 'relative',
+                  overflowX: 'hidden'
+                }}
+              >
+                {/* Expanded Chat Input Container */}
+                <div style={{ 
+                  width: '100%', 
+                  maxWidth: '640px',
+                  position: 'relative'
+                }}>
+                  {/* QuickStartBar for empty state */}
+                  {isQuickStartBarVisible && (
+                    <div
+                      ref={quickStartBarWrapperRef}
+                      style={{
+                        position: 'absolute',
+                        bottom: 'calc(100% + 12px)',
+                        left: '50%',
+                        transform: 'translateX(-50%)',
+                        zIndex: 10000,
+                        width: 'fit-content',
+                        maxWidth: '680px',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        pointerEvents: 'auto',
+                        visibility: 'visible'
+                      }}
+                    >
+                      <QuickStartBar
+                        onDocumentLinked={(propertyId, documentId) => {
+                          console.log('Document linked:', { propertyId, documentId });
+                          if (onQuickStartToggle) {
+                            onQuickStartToggle();
+                          }
+                        }}
+                        onPopupVisibilityChange={() => {}}
+                        isInChatPanel={true}
+                        chatInputRef={inputRef}
+                      />
+                    </div>
+                  )}
+                  
+                  <form 
+                    ref={chatFormRef}
+                    onSubmit={handleSubmit} 
+                    className="relative"
+                    data-side-chat-panel="true"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ 
+                      overflow: 'visible', 
+                      height: 'auto', 
+                      width: '100%',
+                      pointerEvents: 'auto'
+                    }}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    {/* Expanded chat bar for empty state */}
+                    <div 
+                      className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        background: isDragOver ? '#F5F5F5' : '#FFFFFF',
+                        border: isDragOver ? '2px dashed #4B5563' : '1px solid #B8BCC4',
+                        boxShadow: 'none', // No shadow for clean empty state look
+                        position: 'relative',
+                        paddingTop: '12px',
+                        paddingBottom: '12px',
+                        paddingRight: '16px',
+                        paddingLeft: '16px',
+                        overflow: 'visible',
+                        width: '100%',
+                        height: 'auto',
+                        minHeight: '160px', // Taller for empty state
+                        boxSizing: 'border-box',
+                        borderRadius: '8px', // Match other chat bars
+                        transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out',
+                      }}
+                    >
+                      {/* File Attachments Display */}
+                      <AnimatePresence mode="wait">
+                        {attachedFiles.length > 0 && (
+                          <motion.div 
+                            key="file-attachments-empty"
+                            initial={false}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.1, ease: "easeOut" }}
+                            style={{ height: 'auto', marginBottom: '12px' }}
+                            className="flex flex-wrap gap-2 justify-start"
+                            layout={false}
+                          >
+                            {attachedFiles.map((file, attachmentIdx) => (
+                              <FileAttachment
+                                key={generateAnimatePresenceKey(
+                                  'FileAttachment',
+                                  attachmentIdx,
+                                  file.id || file.name,
+                                  'file'
+                                )}
+                                attachment={file}
+                                onRemove={handleRemoveFile}
+                                onPreview={(file) => {
+                                  addPreviewFile(file);
+                                }}
+                                onDragStart={(fileId) => {
+                                  setIsDraggingFile(true);
+                                  setDraggedFileId(fileId);
+                                }}
+                                onDragEnd={() => {
+                                  setIsDraggingFile(false);
+                                  setDraggedFileId(null);
+                                  setIsOverBin(false);
+                                }}
+                              />
+                            ))}
+                          </motion.div>
+                        )}
+                        
+                        {/* Property Attachments Display */}
+                        {propertyAttachments.length > 0 && (
+                          <motion.div 
+                            key={generateUniqueKey('PropertyAttachmentsContainer', 'empty', propertyAttachments.length)}
+                            initial={false}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.1, ease: "easeOut" }}
+                            style={{ height: 'auto', marginBottom: '12px' }}
+                            className="flex flex-wrap gap-2 justify-start"
+                            layout={false}
+                          >
+                            {propertyAttachments.map((property, propertyIdx) => {
+                              const primaryId = property.id ?? property.property?.id;
+                              const primaryKey = typeof primaryId === 'number' ? primaryId.toString() : primaryId;
+                              return (
+                                <PropertyAttachment
+                                  key={generateAnimatePresenceKey(
+                                    'PropertyAttachment',
+                                    propertyIdx,
+                                    primaryKey || property.address,
+                                    'property'
+                                  )}
+                                  attachment={property}
+                                  onRemove={removePropertyAttachment}
+                                />
+                              );
+                            })}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                      
+                      {/* Expanded Textarea */}
+                      <div 
+                        className="flex items-start w-full"
+                        style={{ 
+                          minHeight: '100px',
+                          height: 'auto',
+                          width: '100%',
+                          marginBottom: '16px',
+                          flexShrink: 0
+                        }}
+                      >
+                        <div className="flex-1 relative flex items-start w-full" style={{ 
+                          overflow: 'visible', 
+                          minHeight: '100px',
+                          width: '100%',
+                          minWidth: '0',
+                          paddingRight: '0px'
+                        }}>
+                          <textarea 
+                            ref={inputRef}
+                            value={inputValue}
+                            onChange={(e) => {
+                              // Simple handler for empty state - no auto-resize
+                              if (newAgentRequestedRef.current) {
+                                newAgentRequestedRef.current = false;
+                              }
+                              setInputValue(e.target.value);
+                            }}
+                            onFocus={() => setIsFocused(true)} 
+                            onBlur={() => setIsFocused(false)} 
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={e => { 
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSubmit(e);
+                              }
+                            }} 
+                            placeholder="Ask anything..."
+                            className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
+                            style={{
+                              height: '100px',
+                              minHeight: '100px',
+                              maxHeight: '100px',
+                              fontSize: '14px',
+                              lineHeight: '22px',
+                              paddingTop: '0px',
+                              paddingBottom: '4px',
+                              paddingRight: '8px',
+                              paddingLeft: '2px',
+                              scrollbarWidth: 'thin',
+                              scrollbarColor: 'rgba(229, 231, 235, 0.5) transparent',
+                              overflow: 'hidden',
+                              overflowY: 'auto',
+                              wordWrap: 'break-word',
+                              transition: 'none',
+                              resize: 'none',
+                              width: '100%',
+                              minWidth: '0',
+                              color: inputValue ? '#0D0D0D' : undefined,
+                              boxSizing: 'border-box'
+                            }}
+                            autoComplete="off"
+                            disabled={isSubmitted}
+                            rows={3}
+                          />
+                        </div>
+                      </div>
+                      
+                      {/* Mode buttons row - for empty state */}
+                      {/* Responsive layout - uses buttonCollapseLevel for overflow-based progressive collapse */}
+                      {(() => {
+                        const isVeryNarrowEmpty = buttonCollapseLevel >= 3 || actualPanelWidth < 320;
+                        // Use buttonCollapseLevel for responsive button sizing
+                        // Level 0: all labels shown
+                        // Level 1: Map, Attach, Voice show icons only
+                        // Level 2: All buttons icon-only including Model
+                        // Level 3: Hide Voice button, very narrow layout
+                        const showMapIconOnly = buttonCollapseLevel >= 1;
+                        const showAttachIconOnly = buttonCollapseLevel >= 1;
+                        const showModelIconOnly = buttonCollapseLevel >= 2;
+                        const showVoiceIconOnly = buttonCollapseLevel >= 1;
+                        const hideVoice = buttonCollapseLevel >= 3;
+                        return (
+                          <div
+                            ref={emptyButtonRowRef}
+                            className={`relative flex w-full ${isVeryNarrowEmpty ? 'flex-col gap-2' : 'items-center justify-between'}`}
+                            style={{
+                              width: '100%',
+                              minWidth: '0',
+                              minHeight: isVeryNarrowEmpty ? 'auto' : '24px',
+                              overflow: 'hidden' // Prevent visual overflow while measuring
+                            }}
+                          >
+                            {/* Left side: Mode Selector + Model Selector */}
+                            <div className="flex items-center gap-1" style={{ flexShrink: 1, minWidth: 0 }}>
+                              <ModeSelector compact={isVeryNarrowEmpty || buttonCollapseLevel >= 2} />
+                              {/* Hide model selector when very narrow */}
+                              {!isVeryNarrowEmpty && <ModelSelector compact={showModelIconOnly} />}
+                            </div>
+
+                            {/* Right side: Web Search, Map, Link, Attach, Voice, Send */}
+                            <div className={`flex items-center gap-1.5 ${isVeryNarrowEmpty ? 'flex-wrap justify-end' : ''}`} style={{ flexShrink: 0 }}>
+                              <input
+                                ref={fileInputRef}
+                                type="file"
+                                multiple
+                                onChange={handleFileSelect}
+                                className="hidden"
+                                accept="image/*,.pdf,.doc,.docx"
+                              />
+                              
+                              {/* Web Search Toggle - hide at high collapse levels */}
+                              {buttonCollapseLevel < 3 && (
+                                isWebSearchEnabled ? (
+                                  <WebSearchPill 
+                                    onDismiss={() => setIsWebSearchEnabled(false)}
+                                  />
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsWebSearchEnabled(true)}
+                                    className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
+                                    style={{
+                                      backgroundColor: '#FFFFFF',
+                                      border: '1px solid rgba(229, 231, 235, 0.6)',
+                                      borderRadius: '12px',
+                                      transition: 'background-color 0.2s ease',
+                                      width: '28px',
+                                      height: '26px',
+                                      minHeight: '24px'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                    }}
+                                    title="Enable web search"
+                                  >
+                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                      <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                      <path d="M2 12h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                  </button>
+                                )
+                              )}
+                              
+                              {/* Map button - first to collapse to icon */}
+                              {onMapToggle && (
+                                <button
+                                  type="button"
+                                  onClick={onMapToggle}
+                                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                                  style={{
+                                    backgroundColor: '#FFFFFF',
+                                    border: '1px solid rgba(229, 231, 235, 0.6)',
+                                    transition: 'background-color 0.15s ease',
+                                    height: '22px',
+                                    minHeight: '22px',
+                                    fontSize: '12px',
+                                    padding: showMapIconOnly ? '4px 8px' : undefined
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                  }}
+                                  title="Go to map"
+                                >
+                                  <Map className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                  {!showMapIconOnly && <span className="text-xs font-medium">Map</span>}
+                                </button>
+                              )}
+                              
+                              {/* Attach button - second to collapse to icon */}
+                              <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="flex items-center gap-1.5 px-2 py-1 text-gray-900 focus:outline-none outline-none"
+                                style={{
+                                  backgroundColor: '#FFFFFF',
+                                  border: '1px solid rgba(229, 231, 235, 0.6)',
+                                  borderRadius: '12px',
+                                  transition: 'background-color 0.15s ease',
+                                  height: '26px',
+                                  minHeight: '26px',
+                                  paddingLeft: showAttachIconOnly ? '6px' : '8px',
+                                  paddingRight: showAttachIconOnly ? '6px' : '8px'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
+                                }}
+                                title="Attach file"
+                              >
+                                <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                {!showAttachIconOnly && <span className="text-xs font-medium">Attach</span>}
+                              </button>
+                              
+                              {/* Voice button - third to collapse to icon, then hide at high collapse level */}
+                              {!hideVoice && (
+                                <button
+                                  type="button"
+                                  className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                                  style={{
+                                    backgroundColor: '#ECECEC',
+                                    transition: 'background-color 0.15s ease',
+                                    height: '22px',
+                                    minHeight: '22px',
+                                    fontSize: '12px',
+                                    marginLeft: '4px',
+                                    padding: showVoiceIconOnly ? '4px 8px' : undefined
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#E0E0E0';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = '#ECECEC';
+                                  }}
+                                  title="Voice input"
+                                >
+                                  <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                                  {!showVoiceIconOnly && <span className="text-xs font-medium">Voice</span>}
+                                </button>
+                              )}
+                              
+                              {/* Send button */}
+                          <AnimatePresence mode="wait">
+                            {(inputValue.trim() || attachedFiles.length > 0 || propertyAttachments.length > 0) && (
+                              <motion.button 
+                                key="send-button-empty"
+                                type="submit" 
+                                onClick={handleSubmit} 
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                                className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
+                                style={{
+                                  width: '24px',
+                                  height: '24px',
+                                  minWidth: '24px',
+                                  minHeight: '24px',
+                                  borderRadius: '50%',
+                                  flexShrink: 0,
+                                  marginLeft: '8px'
+                                }}
+                                disabled={isSubmitted}
+                                whileHover={!isSubmitted ? { scale: 1.05 } : {}}
+                                whileTap={!isSubmitted ? { scale: 0.95 } : {}}
+                              >
+                                <motion.div
+                                  key="arrow-up-empty"
+                                  initial={{ opacity: 1 }}
+                                  animate={{ opacity: 1 }}
+                                  className="absolute inset-0 flex items-center justify-center"
+                                  style={{ pointerEvents: 'none' }}
+                                >
+                                  <ArrowUp className="w-4 h-4" strokeWidth={2.5} style={{ color: '#ffffff' }} />
+                                </motion.div>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </form>
                 </div>
-              </div>
-            </div>
+              </motion.div>
+            ) : (
+              /* Normal chat state - Messages + bottom input */
+              <motion.div
+                key="messages-layout"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0, transition: { duration: 0.1 } }}
+                transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                className="flex-1 flex flex-col"
+                style={{ minWidth: 0, width: '100%', minHeight: 0, overflow: 'visible' }}
+              >
+                {/* Content area - Query bubbles (ChatGPT-like scrollable area) */}
+                <div 
+                  ref={contentAreaRef}
+                  onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
+                  className="flex-1 overflow-y-auto sidechat-scroll" 
+                  style={{ 
+                    backgroundColor: '#FCFCF9',
+                    padding: '16px 0', // Simplified padding - content will be centered
+                    // Inset the scroll container slightly so the scrollbar isn't flush against the panel edge
+                    marginRight: '6px',
+                    scrollbarWidth: 'thin',
+                    scrollbarColor: 'rgba(0, 0, 0, 0.02) transparent',
+                    minWidth: 0, // Allow shrinking at narrow widths - content wrapper handles responsive layout
+                    flexShrink: 1,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center', // Center content wrapper horizontally
+                    position: 'relative', // For BotStatusOverlay positioning
+                    overflowX: 'hidden' // Prevent horizontal overflow leaks
+                  }}
+                >
+                  {/* Centered content wrapper - ChatGPT-like centered layout */}
+                  <div style={{ 
+                    width: '100%', 
+                    maxWidth: '680px', // Match chat bar max width (640px inner + 40px padding = 680px)
+                    paddingLeft: actualPanelWidth < 320 ? '12px' : '32px',
+                    paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
+                    margin: '0 auto' // Center the content wrapper
+                  }}>
+                  <div className="flex flex-col" style={{ minHeight: '100%', gap: '16px', width: '100%' }}>
+                    <AnimatePresence>
+                      {renderedMessages}
+                    </AnimatePresence>
+                    {/* Scroll anchor - ensures bottom of response is visible above chat bar */}
+                    {/* Extra padding ensures content isn't hidden behind chat input when scrolled to bottom */}
+                    <div ref={messagesEndRef} style={{ height: '120px', minHeight: '120px', flexShrink: 0 }} />
+                    </div>
+                  </div>
+                </div>
             
-            
-            {/* Chat Input at Bottom - Condensed SearchBar design */}
-            <div 
-              ref={chatInputContainerRef}
+                {/* Chat Input at Bottom - Condensed SearchBar design (only for non-empty chat) */}
+                <div 
+                  ref={chatInputContainerRef}
+              onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
               style={{ 
                 backgroundColor: '#FCFCF9', 
                 paddingTop: '16px', 
-                paddingBottom: '24px', 
+                paddingBottom: '48px', 
                 paddingLeft: '0', // Remove left padding - centering handled by form
                 paddingRight: '0', // Remove right padding - centering handled by form
                 position: 'relative', 
                 overflow: 'visible', // Allow BotStatusOverlay to extend above
-                minWidth: '300px', // Prevent squishing of chat input container
+                minWidth: '200px', // Allow narrower chat input container
                 flexShrink: 0, // Prevent flex shrinking
                 display: 'flex',
                 justifyContent: 'center', // Center the form
                 width: '100%',
-                zIndex: 5 // Ensure input area is above content area
+                zIndex: 5, // Ensure input area is above content area
+                pointerEvents: 'auto' // Ensure container can receive drag events
               }}
                 >
                   {/* QuickStartBar - appears above chat bar when Workflow button is clicked */}
@@ -7686,6 +12351,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                 ref={chatFormRef}
                 onSubmit={handleSubmit} 
                 className="relative" 
+                data-side-chat-panel="true"
+                onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                 style={{ 
                   overflow: 'visible', 
                   height: 'auto', 
@@ -7695,15 +12362,25 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   alignItems: 'center',
                   position: 'relative',
                   // Match content wrapper padding to align chatbar with text display
-                  paddingLeft: '32px',
-                  paddingRight: '32px'
+                  // Reduce padding when panel is narrow
+                  paddingLeft: actualPanelWidth < 320 ? '12px' : '32px',
+                  paddingRight: actualPanelWidth < 320 ? '12px' : '32px',
+                  pointerEvents: 'auto' // Ensure form can receive drag events
                 }}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
               >
                 {/* Wrapper for chat bar + overlay to enable proper z-index stacking */}
-                <div style={{ position: 'relative', width: 'min(100%, 640px)', minWidth: '300px' }}>
+                <div 
+                  onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
+                  style={{ 
+                    position: 'relative', 
+                    width: 'min(100%, 640px)', 
+                    minWidth: '200px', // Allow narrower wrapper
+                    pointerEvents: 'auto' // Ensure wrapper can receive drag events
+                  }}
+                >
                   {/* Bot Status Overlay - sits BEHIND the chat bar */}
                   <BotStatusOverlay
                     isActive={isBotActive}
@@ -7714,12 +12391,13 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                   {/* Chat bar - sits ON TOP of the overlay */}
                   <div 
                     className={`relative flex flex-col ${isSubmitted ? 'opacity-75' : ''}`}
+                    onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                     style={{
                       background: isDragOver ? '#F5F5F5' : '#FFFFFF',
-                      border: isDragOver ? '2px dashed #4B5563' : '1px solid #E5E7EB',
+                      border: isDragOver ? '2px dashed #4B5563' : '1px solid #B8BCC4',
                       boxShadow: isDragOver 
                         ? '0 4px 12px 0 rgba(75, 85, 99, 0.15), 0 2px 4px 0 rgba(75, 85, 99, 0.1)' 
-                        : '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+                        : 'none',
                       position: 'relative',
                       paddingTop: '8px', // Default padding top
                       paddingBottom: '8px', // Default padding bottom
@@ -7730,9 +12408,9 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                       height: 'auto',
                       minHeight: '48px', // Fixed minimum height to prevent expansion when typing starts
                       boxSizing: 'border-box',
-                      borderRadius: '12px', // Original rounded square corners
+                      borderRadius: '8px', // Slightly sharper corners
                       transition: 'background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-                      zIndex: 1, // Above the bot status overlay
+                      zIndex: 2, // Above the bot status overlay
                     }}
                   >
                   {/* Input row */}
@@ -7740,7 +12418,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     className="relative flex flex-col w-full" 
                     style={{ 
                       height: 'auto', 
-                      minHeight: '24px',
+                      minHeight: '26px',
                       width: '100%',
                       minWidth: '0'
                     }}
@@ -7828,7 +12506,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     <div 
                       className="flex items-start w-full"
                       style={{ 
-                        minHeight: '24px', // Minimum height matches textarea minHeight
+                        minHeight: '26px', // Minimum height matches textarea minHeight
                         height: 'auto', // Allow growth but maintain minimum
                         width: '100%',
                         marginTop: '4px', // Additional padding above textarea
@@ -7838,7 +12516,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     >
                       <div className="flex-1 relative flex items-start w-full" style={{ 
                         overflow: 'visible', 
-                        minHeight: '24px',
+                        minHeight: '26px',
                         width: '100%',
                         minWidth: '0',
                         paddingRight: '0px' // Ensure no extra padding on right side
@@ -7849,6 +12527,7 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           onChange={handleTextareaChange}
                           onFocus={() => setIsFocused(true)} 
                           onBlur={() => setIsFocused(false)} 
+                          onClick={(e) => e.stopPropagation()} // Prevent clicks from closing agent sidebar
                           onKeyDown={e => { 
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -7866,8 +12545,8 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             : "Ask anything..."}
                           className="w-full bg-transparent focus:outline-none font-normal text-gray-900 resize-none [&::-webkit-scrollbar]:w-0.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-200/50 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:hover:bg-gray-300/70 [&::placeholder]:text-[#8E8E8E]"
                           style={{
-                            height: '24px', // Fixed initial height to prevent layout shift when typing starts
-                            minHeight: '24px',
+                            height: '26px', // Fixed initial height to prevent layout shift when typing starts
+                            minHeight: '26px',
                             maxHeight: '140px',
                             fontSize: '14px',
                             lineHeight: '20px',
@@ -7978,134 +12657,72 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                     </div>
                     
                     {/* Bottom row: Icons (Left) and Send Button (Right) */}
-                    <div
-                      className="relative flex items-center justify-between w-full"
-                      style={{
-                        width: '100%',
-                        minWidth: '0',
-                        minHeight: '32px'
-                      }}
-                    >
-                      {/* Left Icons: Mode Selector and Minimize Chat Button */}
-                      <div className="flex items-center space-x-2">
-                        {/* Mode Selector Dropdown */}
-                        {/* - Fullscreen: normal size text (no props)
-                            - 50/50 split (wider): small text (small={true})
-                            - Smallest width (450px or close): icon only (compact={true}) */}
-                        {(() => {
-                          // Calculate current width for mode selector logic
-                          const currentWidth = draggedWidth !== null 
-                            ? draggedWidth 
-                            : (isFullscreenMode 
-                              ? window.innerWidth 
-                              : window.innerWidth * 0.5); // Default 50vw in split view
-                          
-                          // Show icon only when at minimum width (450px) or very close to it
-                          const isAtMinWidth = currentWidth <= 500; // Small buffer above 450px min
-                          const isCompact = !isFullscreenMode && isAtMinWidth;
-                          const isSmall = !isFullscreenMode && !isAtMinWidth;
-                          
-                          return (
-                            <ModeSelector 
-                              compact={isCompact}
-                              small={isSmall}
-                            />
-                          );
-                        })()}
-                        
-                        {(() => {
-                          // Determine button state:
-                          // - If map is visible (side-by-side): Show "Close chat" with MessageCircleDashed
-                          // - If fullscreen OR property details OR document preview: Show "Map" with MapPinHouse
-                          const showMapButton = isFullscreenMode || isPropertyDetailsOpen || !!expandedCardViewDoc;
-                          const showCloseChat = isMapVisible && !showMapButton;
-                          // For "Close chat", only show text when chat is big enough to avoid squishing (higher threshold)
-                          // For "Map" button, show text when chat is big OR when in fullscreen/property details/document preview
-                          // IMPORTANT: When draggedWidth is set, use it as the source of truth (not isExpanded)
-                          const actualWidth = draggedWidth !== null ? draggedWidth : (isExpanded ? 600 : 380);
-                          const isChatBig = actualWidth > 450;
-                          // Lower threshold for "Close chat" to make it appear more readily
-                          const isChatBigEnoughForCloseChat = actualWidth > 450; // Lowered from 600 to 450 to show text more readily
-                          const showText = showCloseChat 
-                            ? isChatBigEnoughForCloseChat  // Show "Close chat" text when chat is big enough
-                            : (isChatBig || showMapButton); // Show "Map" text when chat is big OR when showing map button
-                          
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (showCloseChat && onMinimize && chatMessages.length > 0) {
-                                  // Close chat when map is visible
-                                  onMinimize(chatMessages);
-                                } else if (showMapButton && onMapToggle) {
-                                  // Go to map when in fullscreen or property details is open
-                                  // Close document preview if it's open
-                                  if (expandedCardViewDoc) {
-                                    closeExpandedCardView();
-                                  }
-                                  onMapToggle();
-                                } else if (onMinimize && chatMessages.length > 0) {
-                                  onMinimize(chatMessages);
-                                } else if (onMapToggle) {
-                                  // Close document preview if it's open
-                                  if (expandedCardViewDoc) {
-                                    closeExpandedCardView();
-                                  }
-                                  onMapToggle();
-                                }
-                              }}
-                              className={`flex items-center flex-shrink-0 ${showText ? 'gap-1.5 px-2 py-1 rounded-full' : 'justify-center p-1.5 border rounded-md'} transition-all duration-200 group focus:outline-none outline-none ${showText ? 'text-gray-900' : 'border-slate-200/50 hover:border-slate-300/70 bg-white/85 hover:bg-white/90 text-slate-600'}`}
-                              style={{
-                                marginLeft: '4px',
-                                ...(showText ? {
-                                  backgroundColor: '#FFFFFF',
-                                  border: '1px solid rgba(229, 231, 235, 0.6)',
-                                  transition: 'background-color 0.2s ease',
-                                  height: '24px',
-                                  minHeight: '24px',
-                                  maxWidth: 'fit-content' // Prevent button from stretching
-                                } : {
-                                  height: '24px',
-                                  minHeight: '24px',
-                                  width: '24px' // Fixed width when no text
-                                })
-                              }}
-                              onMouseEnter={(e) => {
-                                if (showText) {
-                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (showText) {
-                                  e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                }
-                              }}
-                              title={showCloseChat ? "Close chat" : "Go to map"}
-                            >
-                              {showCloseChat ? (
-                                <MessageCircleDashed className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
-                              ) : (
-                                <MapPinHouse className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700 transition-colors" strokeWidth={2} />
-                              )}
-                              {showText && (
-                                <span className="text-xs font-medium whitespace-nowrap">
-                                  {showCloseChat ? 'Close chat' : 'Map'}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })()}
-                      </div>
+                    {/* Progressive collapse with priority: Map > Attach > Voice */}
+                    {/* Uses buttonCollapseLevel for overflow-based responsive sizing */}
+                    {(() => {
+                      const isVeryNarrow = buttonCollapseLevel >= 3;
+                      // Use buttonCollapseLevel for responsive button sizing
+                      // Level 0: all labels shown
+                      // Level 1: Map, Attach, Voice show icons only
+                      // Level 2: All buttons icon-only including Model
+                      // Level 3: Hide Voice button, very narrow layout
+                      const showMapIconOnly = buttonCollapseLevel >= 1;
+                      const showAttachIconOnly = buttonCollapseLevel >= 1;
+                      const showModelIconOnly = buttonCollapseLevel >= 2;
+                      const showVoiceIconOnly = buttonCollapseLevel >= 1;
+                      const hideVoice = buttonCollapseLevel >= 3;
+                      
+                      return (
+                        <div
+                          ref={buttonRowRef}
+                          className={`relative flex w-full ${isVeryNarrow ? 'flex-col gap-2' : 'items-center justify-between'}`}
+                          style={{
+                            width: '100%',
+                            minWidth: '0',
+                            minHeight: isVeryNarrow ? 'auto' : '32px',
+                            overflow: 'hidden' // Prevent visual overflow while measuring
+                          }}
+                        >
+                          {/* Left Icons: Mode Selector and Model Selector */}
+                          <div className={`flex items-center gap-1 ${isVeryNarrow ? 'justify-start' : ''}`} style={{ flexShrink: 1, minWidth: 0 }}>
+                            {/* Mode Selector Dropdown */}
+                            {/* - Fullscreen: normal size text (no props)
+                                - Expanded split (wider): small text (small={true})
+                                - Smallest width (collapsed or close): icon only (compact={true}) */}
+                            {(() => {
+                              // Calculate current width for mode selector logic
+                              const currentWidth = draggedWidth !== null 
+                                ? draggedWidth 
+                                : (isFullscreenMode 
+                                  ? window.innerWidth 
+                                  : window.innerWidth * (CHAT_PANEL_WIDTH.EXPANDED_VW / 100)); // Default expanded width
+                              
+                              // Show icon only when at minimum width (collapsed) or very close to it, or when very narrow
+                              const isAtMinWidth = currentWidth <= 425 || isVeryNarrow || buttonCollapseLevel >= 2; // Small buffer above collapsed min
+                              const isCompact = !isFullscreenMode && isAtMinWidth;
+                              const isSmall = !isFullscreenMode && !isAtMinWidth;
+                              // Make Agent mode button larger on opening render for map (when query is empty and no messages)
+                              const isOpeningRender = (!query || query.trim() === '') && chatMessages.length === 0 && isMapVisible;
+                              
+                              return (
+                                <>
+                                  <ModeSelector 
+                                    compact={isCompact}
+                                    small={isSmall}
+                                    large={isOpeningRender}
+                                  />
+                                  {/* Hide model selector when very narrow to save space */}
+                                  {!isVeryNarrow && <ModelSelector compact={showModelIconOnly} />}
+                                </>
+                              );
+                            })()}
+                          </div>
 
-                      {/* Right Icons: Attachment, Mic, Send */}
-                      <motion.div 
-                        className="flex items-center space-x-3 flex-shrink-0" 
+                          {/* Right Icons: Web Search, Map, Link, Attach, Voice, Send */}
+                          {/* NOTE: Removed layout prop to prevent button movement glitch when panel resizes (e.g., clicking citations) */}
+                      <div 
+                        className={`flex items-center gap-1.5 flex-shrink-0 ${isVeryNarrow ? 'flex-wrap justify-end' : ''}`}
                         style={{ marginRight: '4px' }}
-                        layout
-                        transition={{ 
-                          layout: { duration: 0.12, ease: [0.16, 1, 0.3, 1] }, // Quicker return animation when send button disappears
-                          default: { duration: 0.18, ease: [0.16, 1, 0.3, 1] } // Normal for other transitions
-                        }}
                       >
                         <input
                           ref={fileInputRef}
@@ -8115,6 +12732,97 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                           className="hidden"
                           accept="image/*,.pdf,.doc,.docx"
                         />
+                        
+                        {/* Web Search Toggle - hide at high collapse levels */}
+                        {buttonCollapseLevel < 3 && (
+                          isWebSearchEnabled ? (
+                            <WebSearchPill 
+                              onDismiss={() => setIsWebSearchEnabled(false)}
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setIsWebSearchEnabled(true)}
+                              className="flex items-center justify-center rounded-full text-gray-600 hover:text-gray-700 transition-colors focus:outline-none outline-none"
+                              style={{
+                                backgroundColor: '#FFFFFF',
+                                border: '1px solid rgba(229, 231, 235, 0.6)',
+                                borderRadius: '12px',
+                                transition: 'background-color 0.2s ease',
+                                width: '28px',
+                                height: '26px',
+                                minHeight: '24px'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.backgroundColor = '#F5F5F5';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.backgroundColor = '#FFFFFF';
+                              }}
+                              title="Enable web search"
+                            >
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M2 12h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            </button>
+                          )
+                        )}
+                        
+                        {/* Map button - first to collapse to icon */}
+                        {onMapToggle && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Save document preview state before closing if needed
+                              if (currentChatId && expandedCardViewDoc) {
+                                const bufferedState = getBufferedState(currentChatId);
+                                bufferedState.documentPreview = {
+                                  docId: expandedCardViewDoc.docId,
+                                  filename: expandedCardViewDoc.filename,
+                                  highlight: expandedCardViewDoc.highlight ? {
+                                    fileId: expandedCardViewDoc.highlight.fileId,
+                                    bbox: expandedCardViewDoc.highlight.bbox,
+                                    doc_id: expandedCardViewDoc.highlight.doc_id,
+                                    block_id: expandedCardViewDoc.highlight.block_id || '',
+                                    block_content: expandedCardViewDoc.highlight.block_content,
+                                    original_filename: expandedCardViewDoc.highlight.original_filename
+                                  } : undefined
+                                };
+                              }
+                              
+                              if (onMinimize && chatMessages.length > 0) {
+                                if (expandedCardViewDoc) closeExpandedCardView();
+                                onMinimize(chatMessages);
+                              } else {
+                                if (expandedCardViewDoc) closeExpandedCardView();
+                                onMapToggle();
+                              }
+                            }}
+                            className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                            style={{
+                              backgroundColor: '#FFFFFF',
+                              border: '1px solid rgba(229, 231, 235, 0.6)',
+                              transition: 'background-color 0.15s ease',
+                              height: '22px',
+                              minHeight: '22px',
+                              fontSize: '12px',
+                              padding: showMapIconOnly ? '4px 8px' : undefined
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#F5F5F5';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#FFFFFF';
+                            }}
+                            title="Go to map"
+                          >
+                            <Map className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            {!showMapIconOnly && <span className="text-xs font-medium">Map</span>}
+                          </button>
+                        )}
+                        
                         {/* Document Selection Button - Only show when property details panel is open */}
                         {isPropertyDetailsOpen && (
                           <div className="relative flex items-center">
@@ -8173,97 +12881,95 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                               )}
                             </div>
                           )}
-                        {/* Link and Attach buttons grouped together with smaller gap */}
-                        {/* Shrink to icons when property details panel is open and chat is small */}
-                        {(() => {
-                          // Show only icons when property details is open AND chat is small (not expanded or narrow)
-                          const showIconOnly = isPropertyDetailsOpen && (!isExpanded || inputContainerWidth < 450);
-                          return (
-                            <>
-                              <div className="flex items-center gap-1.5">
-                                {onQuickStartToggle && (
-                                  <button
-                                    type="button"
-                                    onClick={onQuickStartToggle}
-                                    className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                                    style={{
-                                      backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FFFFFF',
-                                      border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
-                                      transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                                      padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
-                                      height: '24px',
-                                      minHeight: '24px'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                      if (!isQuickStartBarVisible) {
-                                        e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                      }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      if (!isQuickStartBarVisible) {
-                                        e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                      }
-                                    }}
-                                    title="Link document to property"
-                                  >
-                                    <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
-                                    {!showIconOnly && inputContainerWidth >= 450 && (
-                                    <span className="text-xs font-medium">Link</span>
-                                    )}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => fileInputRef.current?.click()}
-                                  className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                                  style={{
-                                    backgroundColor: '#FFFFFF',
-                                    border: '1px solid rgba(229, 231, 235, 0.6)',
-                                    transition: 'background-color 0.2s ease',
-                                    padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
-                                    height: '24px',
-                                    minHeight: '24px'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#F5F5F5';
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#FFFFFF';
-                                  }}
-                                  title="Attach file"
-                                >
-                                  <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                  {!showIconOnly && inputContainerWidth >= 450 && (
-                                  <span className="text-xs font-medium">Attach</span>
-                                  )}
-                                </button>
-                              </div>
-                              <button
-                                type="button"
-                                className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 transition-colors focus:outline-none outline-none"
-                                style={{
-                                  backgroundColor: '#ECECEC',
-                                  transition: 'background-color 0.2s ease',
-                                  padding: showIconOnly ? '4px 6px' : (inputContainerWidth < 450 ? '4px 6px' : '4px 8px'),
-                                  height: '24px',
-                                  minHeight: '24px'
-                                }}
-                                onMouseEnter={(e) => {
-                                  e.currentTarget.style.backgroundColor = '#E0E0E0';
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.backgroundColor = '#ECECEC';
-                                }}
-                                title="Voice input"
-                              >
-                                <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                {!showIconOnly && inputContainerWidth >= 450 && (
-                                <span className="text-xs font-medium">Voice</span>
-                                )}
-                              </button>
-                            </>
-                          );
-                        })()}
+                        {/* Link and Attach buttons - use progressive collapse thresholds from outer scope */}
+                        <div className="flex items-center gap-1">
+                          {/* Link button - commented out for now
+                          {onQuickStartToggle && (
+                            <button
+                              type="button"
+                              onClick={onQuickStartToggle}
+                              className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
+                              style={{
+                                backgroundColor: isQuickStartBarVisible ? '#ECFDF5' : '#FCFCF9',
+                                border: isQuickStartBarVisible ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(229, 231, 235, 0.6)',
+                                transition: 'background-color 0.15s ease, border-color 0.15s ease',
+                                willChange: 'background-color, border-color',
+                                padding: showAttachIconOnly ? '4px 6px' : '4px 8px',
+                                height: '26px',
+                                minHeight: '24px'
+                              }}
+                              onMouseEnter={(e) => {
+                                if (!isQuickStartBarVisible) {
+                                  e.currentTarget.style.backgroundColor = '#F5F5F5';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isQuickStartBarVisible) {
+                                  e.currentTarget.style.backgroundColor = '#FCFCF9';
+                                }
+                              }}
+                              title="Link document to property"
+                            >
+                              <Workflow className={`w-3.5 h-3.5 ${isQuickStartBarVisible ? 'text-green-500' : ''}`} strokeWidth={1.5} />
+                              {!showAttachIconOnly && (
+                              <span className="text-xs font-medium">Link</span>
+                              )}
+                            </button>
+                          )}
+                          */}
+                          {/* Attach button - second to collapse to icon */}
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="flex items-center gap-1.5 px-2 py-1 rounded-full text-gray-900 focus:outline-none outline-none"
+                            style={{
+                              backgroundColor: '#FCFCF9',
+                              border: '1px solid rgba(229, 231, 235, 0.6)',
+                              transition: 'background-color 0.15s ease, border-color 0.15s ease',
+                              willChange: 'background-color, border-color',
+                              padding: showAttachIconOnly ? '4px 6px' : '4px 8px',
+                              height: '26px',
+                              minHeight: '24px'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#F5F5F5';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#FCFCF9';
+                            }}
+                            title="Attach file"
+                          >
+                            <Paperclip className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            {!showAttachIconOnly && <span className="text-xs font-medium">Attach</span>}
+                          </button>
+                        </div>
+                        {/* Voice button - third to collapse to icon, then hide */}
+                        {!hideVoice && (
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-gray-900 focus:outline-none outline-none"
+                            style={{
+                              backgroundColor: '#ECECEC',
+                              transition: 'background-color 0.15s ease',
+                              willChange: 'background-color',
+                              height: '22px',
+                              minHeight: '22px',
+                              fontSize: '12px',
+                              marginLeft: '4px',
+                              padding: showVoiceIconOnly ? '4px 8px' : undefined
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = '#E0E0E0';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = '#ECECEC';
+                            }}
+                            title="Voice input"
+                          >
+                            <AudioLines className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            {!showVoiceIconOnly && <span className="text-xs font-medium">Voice</span>}
+                          </button>
+                        )}
                         
                         {/* Send button or Stop button (when streaming) */}
                         <AnimatePresence mode="wait">
@@ -8278,32 +12984,46 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   key="stop-button"
                                   type="button" 
                                   onClick={handleStopQuery} 
-                                  initial={{ opacity: 0, scale: 0.85, x: 8 }}
-                                  animate={{ opacity: 1, scale: 1, x: 0 }}
-                                  exit={{ opacity: 0, scale: 0.85, x: 8 }}
-                                  transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }} // Quicker exit
+                                  initial={{ opacity: 1, scale: 1, backgroundColor: '#6E6E6E' }}
+                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#6E6E6E' }}
+                                  exit={{ opacity: 0 }}
+                                  transition={{ duration: 0 }}
+                                  layout={false}
                                   className="flex items-center justify-center relative focus:outline-none outline-none"
                                   style={{
-                                    width: '28px',
-                                    height: '28px',
-                                    minWidth: '28px',
-                                    minHeight: '28px',
+                                    width: '22px',
+                                    height: '22px',
+                                    minWidth: '22px',
+                                    minHeight: '22px',
+                                    maxWidth: '22px',
+                                    maxHeight: '22px',
                                     borderRadius: '50%',
-                                    border: '1px solid #D1D5DB',
-                                    backgroundColor: '#FFFFFF',
-                                    flexShrink: 0
-                                  }}
-                                  whileHover={{ 
-                                    scale: 1.05,
-                                    backgroundColor: '#F3F4F6',
-                                    borderColor: '#9CA3AF'
+                                    border: 'none',
+                                    backgroundColor: '#6E6E6E',
+                                    flexShrink: 0,
+                                    alignSelf: 'center',
+                                    marginLeft: '12px' // Increased gap from Voice button
                                   }}
                                   whileTap={{ 
                                     scale: 0.95
                                   }}
                                   title="Stop generating"
                                 >
-                                  <Square className="w-2.5 h-2.5" strokeWidth={2} style={{ color: '#000000', fill: '#000000' }} />
+                                  <svg 
+                                    className="w-2.5 h-2.5" 
+                                    viewBox="0 0 10 10" 
+                                    fill="none" 
+                                    xmlns="http://www.w3.org/2000/svg"
+                                  >
+                                    <rect 
+                                      x="1" 
+                                      y="1" 
+                                      width="8" 
+                                      height="8" 
+                                      rx="1.5" 
+                                      fill="#FFFFFF"
+                                    />
+                                  </svg>
                                 </motion.button>
                               );
                             }
@@ -8315,23 +13035,20 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                                   key="send-button"
                                   type="submit" 
                                   onClick={handleSubmit} 
-                                  initial={{ opacity: 0, scale: 0.85, x: 8 }}
-                                  animate={{ opacity: 1, scale: 1, x: 0, backgroundColor: '#415C85' }}
-                                  exit={{ 
-                                    opacity: 0, 
-                                    scale: 0.85, 
-                                    x: 8,
-                                    transition: { duration: 0.12, ease: [0.16, 1, 0.3, 1] } // Quicker exit
-                                  }}
-                                  transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                  initial={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
+                                  animate={{ opacity: 1, scale: 1, backgroundColor: '#4A4A4A' }}
+                                  exit={{ opacity: 0 }}
+                                  transition={{ duration: 0 }}
+                                  layout={false}
                                   className={`flex items-center justify-center relative focus:outline-none outline-none ${!isSubmitted ? '' : 'cursor-not-allowed'}`}
                                   style={{
-                                    width: '32px',
-                                    height: '32px',
-                                    minWidth: '32px',
-                                    minHeight: '32px',
+                                    width: '22px',
+                                    height: '22px',
+                                    minWidth: '22px',
+                                    minHeight: '22px',
                                     borderRadius: '50%',
-                                    flexShrink: 0
+                                    flexShrink: 0,
+                                    marginLeft: '12px' // Increased gap from Voice button
                                   }}
                                   disabled={isSubmitted}
                                   whileHover={!isSubmitted ? { 
@@ -8357,13 +13074,18 @@ export const SideChatPanel = React.forwardRef<SideChatPanelRef, SideChatPanelPro
                             return null;
                           })()}
                         </AnimatePresence>
-                      </motion.div>
+                      </div>
                     </div>
+                      );
+                    })()}
                   </div>
                   </div>
                 </div>
               </form>
-            </div>
+                </div>
+              </motion.div>
+            )}
+            </AnimatePresence>
           </div>
         </motion.div>
       )}

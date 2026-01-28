@@ -14,13 +14,14 @@ import {
   Trash2,
   ArchiveRestore,
   LibraryBig,
-  BarChart3,
+  Activity,
   ChevronDown,
   Settings,
   LogOut,
   MessageCircle,
   User,
-  Layers
+  Layers,
+  Map
 } from "lucide-react";
 import { useChatHistory } from "./ChatHistoryContext";
 import { useFilingSidebar } from "../contexts/FilingSidebarContext";
@@ -46,6 +47,7 @@ export interface SidebarProps {
   hasActiveChat?: boolean; // Whether there's an active chat query running
   onRestoreActiveChat?: () => void; // Callback to restore/re-engage with active chat
   isChatVisible?: boolean; // Whether the chat panel is currently visible
+  onMapToggle?: () => void; // Callback to toggle/open map view
 }
 
 type NavItem = {
@@ -53,7 +55,7 @@ type NavItem = {
   label: string;
   icon: React.ComponentType<any>;
   badge?: string;
-  action?: 'navigate' | 'expand' | 'toggleFiling' | 'openChat';
+  action?: 'navigate' | 'expand' | 'toggleFiling' | 'openChat' | 'openMap';
 };
 
 export const Sidebar = ({
@@ -74,7 +76,8 @@ export const Sidebar = ({
   onCreateProject,
   hasActiveChat = false,
   onRestoreActiveChat,
-  isChatVisible = false
+  isChatVisible = false,
+  onMapToggle
 }: SidebarProps) => {
   const [hoveredChat, setHoveredChat] = React.useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -185,9 +188,10 @@ export const Sidebar = ({
   const primaryNav: NavItem[] = [
     { id: 'home', label: 'Dashboard', icon: LibraryBig, action: 'navigate' },
     { id: 'projects', label: 'Projects', icon: Layers, action: 'navigate' },
+    { id: 'map', label: 'Map', icon: Map, action: 'openMap' },
     { id: 'database', label: 'Files', icon: FolderOpen, action: 'toggleFiling' },
     { id: 'chat', label: 'Chat', icon: MessageCircle, action: 'openChat' },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3, action: 'navigate' },
+    { id: 'analytics', label: 'Analytics', icon: Activity, action: 'navigate' },
   ];
 
   // Secondary navigation items
@@ -195,11 +199,11 @@ export const Sidebar = ({
     { id: 'settings', label: 'Settings', icon: Settings, action: 'navigate' },
   ];
 
-  const handleItemClick = (itemId: string) => {
+  const handleItemClick = React.useCallback((itemId: string) => {
     onItemClick?.(itemId);
-  };
+  }, [onItemClick]);
 
-  const handleNavClick = (item: NavItem) => {
+  const handleNavClick = React.useCallback((item: NavItem) => {
     // Close filing sidebar when clicking any navigation item except Files
     if (item.action !== 'toggleFiling' && isFilingSidebarOpen) {
       closeFilingSidebar();
@@ -219,6 +223,14 @@ export const Sidebar = ({
       }
       // Explicitly return to prevent any fallback navigation
       return;
+    } else if (item.action === 'openMap') {
+      // Open map view
+      if (onMapToggle) {
+        onMapToggle();
+      } else {
+        console.warn('onMapToggle not available - map button cannot open map');
+      }
+      return;
     } else if (item.id === 'home') {
       handleItemClick('home');
     } else if (item.id === 'settings') {
@@ -226,7 +238,7 @@ export const Sidebar = ({
     } else {
       handleItemClick(item.id);
     }
-  };
+  }, [isFilingSidebarOpen, closeFilingSidebar, onExpand, toggleFilingSidebar, onRestoreActiveChat, onMapToggle, onNavigate, handleItemClick]);
 
   const isItemActive = (item: NavItem) => {
     // Mutually exclusive selection: Filing sidebar takes priority, then chat, then check activeItem
@@ -237,9 +249,18 @@ export const Sidebar = ({
     if (item.action === 'openChat') {
       return isChatVisible;
     }
+    // Map is active ONLY when in search/map view AND map is visible AND chat is NOT visible
+    // Just having isMapVisible true (background state) shouldn't make Map active
+    if (item.action === 'openMap') {
+      return activeItem === 'search' && isMapVisible && !isChatVisible;
+    }
+    // Dashboard is active when in search view without map visible
     if (item.id === 'home') {
       return activeItem === 'search' && !isMapVisible && !isChatVisible;
     }
+    // For all other navigation items (projects, analytics, etc.),
+    // check activeItem directly - don't exclude based on isMapVisible
+    // since the map might be rendered in the background
     return activeItem === item.id && !isChatVisible;
   };
 
@@ -312,17 +333,20 @@ export const Sidebar = ({
       <button
         key={item.id}
         onClick={() => handleNavClick(item)}
-        className={`w-full flex items-center gap-3 px-3 py-1.5 rounded transition-colors duration-75 group relative border ${
+        className={`w-full flex items-center gap-3 px-3 py-1.5 rounded group relative border ${
           active && !isSettings
             ? 'bg-white text-gray-900 border-gray-300' 
             : active && isSettings
             ? 'text-gray-900 border-transparent'
-            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent'
+            : 'text-gray-600 hover:bg-white/60 hover:text-gray-900 border-transparent active:bg-white active:text-gray-900'
         }`}
         style={{
           boxShadow: active && !isSettings ? '0 1px 2px rgba(0, 0, 0, 0.04)' : 'none',
-          transition: 'background-color 75ms, color 75ms, border-color 75ms',
-          boxSizing: 'border-box'
+          transition: 'none',
+          boxSizing: 'border-box',
+          willChange: 'background-color, color, border-color',
+          transform: 'translateZ(0)',
+          WebkitTapHighlightColor: 'transparent'
         }}
         aria-label={item.label}
       >
@@ -498,7 +522,7 @@ export const Sidebar = ({
             <div className="px-4 mt-4 mb-2">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-normal text-gray-400 uppercase tracking-wider">Quick actions</span>
-                <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘D</span>
+                <span className="text-[10px] text-gray-400 font-normal px-1.5 py-0.5 rounded bg-white/80">⌘E</span>
               </div>
             </div>
 
@@ -531,10 +555,9 @@ export const Sidebar = ({
               <div className="flex items-center justify-between mb-4">
                 <button
                   onClick={() => {
+                    // CRITICAL: This button should ONLY close the expanded sidebar view
+                    // It should NEVER affect the agent sidebar (chat panel) - they are independent
                     onExpand?.();
-                    if (isChatPanelOpen) {
-                      onChatToggle?.();
-                    }
                   }}
                   className="p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-white/60 transition-colors"
                   aria-label="Close"
@@ -626,32 +649,35 @@ export const Sidebar = ({
                         {/* Context Menu */}
                         {openMenuId === chat.id && (
                           <motion.div
-                            initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            className="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg py-1 z-50"
-                            style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)' }}
+                            initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                            transition={{ duration: 0.12 }}
+                            className="absolute right-0 top-full mt-1 w-36 rounded-lg py-1 z-[9999]"
+                            style={{ 
+                              backgroundColor: '#2D2D2D',
+                              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                              isolation: 'isolate'
+                            }}
                             onClick={(e) => e.stopPropagation()}
                           >
                             <button
                               onClick={(e) => handleRename(e, chat.id, chat.title)}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-gray-700 hover:bg-gray-50"
+                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                             >
-                              <Edit className="w-3.5 h-3.5" />
                               Rename
                             </button>
                             <button
                               onClick={(e) => chat.archived ? handleUnarchiveChat(e, chat.id) : handleArchiveChat(e, chat.id)}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-gray-700 hover:bg-gray-50"
+                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                             >
-                              {chat.archived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
                               {chat.archived ? 'Unarchive' : 'Archive'}
                             </button>
-                            <div className="h-px bg-gray-100 my-1" />
+                            <div className="h-px bg-white/10 my-1" />
                             <button
                               onClick={(e) => handleDeleteChat(e, chat.id)}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-red-600 hover:bg-red-50"
+                              className="w-full px-3 py-1.5 text-left text-[13px] text-white/90 hover:bg-white/10 transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
                               Delete
                             </button>
                           </motion.div>

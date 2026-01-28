@@ -56,31 +56,48 @@ interface PreviewContextType {
   getCachedRenderedPage: (fileId: string, pageNumber: number) => ImageData | null; // NEW: Get cached rendered page
   setCachedRenderedPage: (fileId: string, pageNumber: number, imageData: ImageData | null) => void; // NEW: Cache rendered page
   preloadPdfPage: (fileId: string, pageNumber: number, pdf: PDFDocumentProxy, scale: number) => Promise<void>; // NEW: Pre-render page
-  // NEW: Standalone ExpandedCardView support
+  
+  // ========== DEPRECATED: Document Preview State ==========
+  // These are being replaced by ChatStateStore which provides per-chat isolation.
+  // Document previews are now stored per-chat to prevent cross-contamination.
+  // These remain for backward compatibility during migration.
+  // Use ChatStateStore.openDocumentForChat() and ChatStateStore.closeDocumentForChat() instead.
+  // =========================================================
+  /** @deprecated Use ChatStateStore.getChatState(chatId).documentPreview instead */
   expandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
+  /** @deprecated Use ChatStateStore directly */
   setExpandedCardViewDoc: React.Dispatch<React.SetStateAction<{ docId: string; filename: string; highlight?: CitationHighlight } | null>>;
+  /** @deprecated Use ChatStateStore.openDocumentForChat() instead */
   openExpandedCardView: (docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => void;
+  /** @deprecated Use ChatStateStore.closeDocumentForChat() instead */
   closeExpandedCardView: () => void;
-  // NEW: Agent opening state for glowing border effect
+  
+  // Agent UI state (still valid - not chat-specific)
   isAgentOpening: boolean;
   setIsAgentOpening: React.Dispatch<React.SetStateAction<boolean>>;
-  // NEW: Agent task overlay state (for navigation tasks)
   isAgentTaskActive: boolean;
   agentTaskMessage: string;
   setAgentTaskActive: (active: boolean, message?: string) => void;
   stopAgentTask: () => void;
-  // NEW: Map navigation glow effect state
   isMapNavigating: boolean;
   setMapNavigating: (active: boolean) => void;
-  // NEW: Chat panel visibility tracking for document preview gating
+  
+  // Chat panel visibility (still valid - used for UI gating)
   isChatPanelVisible: boolean;
   setIsChatPanelVisible: React.Dispatch<React.SetStateAction<boolean>>;
-  // NEW: Pending document preview (queued when chat is hidden)
+  
+  // ========== DEPRECATED: Pending Document State ==========
+  // No longer needed - ChatStateStore maintains per-chat document preview state.
+  // =========================================================
+  /** @deprecated No longer needed with ChatStateStore */
   pendingExpandedCardViewDoc: { docId: string; filename: string; highlight?: CitationHighlight } | null;
+  /** @deprecated No longer needed with ChatStateStore */
   clearPendingExpandedCardView: () => void;
-  // NEW: Pending preview files (queued when chat is hidden, opened when chat becomes visible)
+  /** @deprecated No longer needed with ChatStateStore */
   pendingPreviewFiles: FileAttachmentData[];
+  /** @deprecated No longer needed with ChatStateStore */
   pendingPreviewHighlight: CitationHighlight | null;
+  
   MAX_PREVIEW_TABS: number;
 }
 
@@ -92,16 +109,19 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activePreviewTabIndex, setActivePreviewTabIndex] = React.useState(0);
   const [isPreviewOpen, setIsPreviewOpen] = React.useState(false);
   const [highlightCitation, setHighlightCitation] = React.useState<CitationHighlight | null>(null);
-  // NEW: Standalone ExpandedCardView state
+  
+  // DEPRECATED: Document preview state - being replaced by ChatStateStore
+  // This global state causes cross-contamination between chats.
+  // ChatStateStore provides per-chat document preview isolation.
   const [expandedCardViewDoc, setExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
-  // NEW: Agent opening state for glowing border effect
+  
+  // Agent UI state (not chat-specific)
   const [isAgentOpening, setIsAgentOpening] = React.useState<boolean>(false);
-  // NEW: Agent task overlay state (for navigation tasks)
   const [isAgentTaskActive, setIsAgentTaskActiveState] = React.useState<boolean>(false);
   const [agentTaskMessage, setAgentTaskMessage] = React.useState<string>('');
-  // NEW: Map navigation glow effect state
   const [isMapNavigating, setIsMapNavigatingState] = React.useState<boolean>(false);
-  // NEW: Chat panel visibility tracking for document preview gating
+  
+  // Chat panel visibility tracking for document preview gating
   const [isChatPanelVisible, setIsChatPanelVisible] = React.useState<boolean>(false);
   // NEW: Pending document preview (queued when chat is hidden, opened when chat becomes visible)
   const [pendingExpandedCardViewDoc, setPendingExpandedCardViewDoc] = React.useState<{ docId: string; filename: string; highlight?: CitationHighlight } | null>(null);
@@ -122,6 +142,31 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // NEW: Open standalone ExpandedCardView
   // Modified to gate document preview based on chat panel visibility
   const openExpandedCardView = React.useCallback((docId: string, filename: string, highlight?: CitationHighlight, isAgentTriggered?: boolean) => {
+    // Helper to check if the same document with same highlight is already open
+    // This prevents unnecessary re-renders when clicking the same citation twice
+    const isSameDocument = () => {
+      if (!expandedCardViewDoc) return false;
+      if (expandedCardViewDoc.docId !== docId) return false;
+      if (expandedCardViewDoc.filename !== filename) return false;
+      
+      // Compare highlights - both undefined is same, both defined need deep comparison
+      const currentHighlight = expandedCardViewDoc.highlight;
+      if (!currentHighlight && !highlight) return true;
+      if (!currentHighlight || !highlight) return false;
+      
+      // Compare highlight bbox (the key differentiator)
+      if (currentHighlight.fileId !== highlight.fileId) return false;
+      if (!currentHighlight.bbox || !highlight.bbox) return currentHighlight.bbox === highlight.bbox;
+      
+      return (
+        currentHighlight.bbox.page === highlight.bbox.page &&
+        currentHighlight.bbox.left === highlight.bbox.left &&
+        currentHighlight.bbox.top === highlight.bbox.top &&
+        currentHighlight.bbox.width === highlight.bbox.width &&
+        currentHighlight.bbox.height === highlight.bbox.height
+      );
+    };
+    
     // CRITICAL: For agent-triggered opens, always set expandedCardViewDoc immediately (silent background opening)
     // This ensures the document is "opened" in state even when chat is hidden
     // The document won't be visible because isChatPanelVisible is false, but it will be ready when chat becomes visible
@@ -141,21 +186,24 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return;
     }
     
-    // For user-triggered opens, check chat visibility
-    // If chat is hidden, queue the document (user clicks when in dashboard)
-    if (!isChatPanelVisible) {
-      console.log('📋 [PREVIEW] User-triggered document open - chat hidden, queueing for later:', { 
-        docId, 
-        filename 
-      });
-      setPendingExpandedCardViewDoc({ docId, filename, highlight });
+    // Skip state update if the same document with same highlight is already open
+    // This prevents the button animation glitch when clicking the same citation twice
+    if (isSameDocument()) {
+      console.log('📂 [PREVIEW] Same document already open - skipping state update:', { docId, filename });
       return;
     }
     
-    // Chat panel is visible - open immediately for user actions
-    console.log('📂 [PREVIEW] User-triggered document open - chat visible, opening immediately:', { docId, filename });
+    // For user-triggered opens, always set the document directly (don't queue)
+    // The document preview will render regardless of chat panel visibility
+    // This allows users to click documents from the dashboard and see them immediately
+    // The StandaloneExpandedCardView handles positioning for both cases (chat open and closed)
+    console.log('📂 [PREVIEW] User-triggered document open - setting directly:', { 
+      docId, 
+      filename,
+      chatVisible: isChatPanelVisible
+    });
     setExpandedCardViewDoc({ docId, filename, highlight });
-  }, [isChatPanelVisible]);
+  }, [isChatPanelVisible, expandedCardViewDoc]);
 
   // NEW: Close standalone ExpandedCardView
   const closeExpandedCardView = React.useCallback(() => {
@@ -252,24 +300,20 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [isChatPanelVisible, pendingPreviewFiles, pendingPreviewHighlight, MAX_PREVIEW_TABS]);
 
-  // NEW: Effect to close preview when chat panel becomes hidden
+  // CRITICAL: When chat becomes hidden, keep expandedCardViewDoc in state (don't queue it)
+  // This allows silent background opening - document is already "opened" but not visible
+  // When chat becomes visible again, document is already there and appears immediately
+  // Only reset agent opening state, but keep the document in state
+  // NOTE: We removed the auto-close logic for DocumentPreviewModal because it's rendered
+  // in MainContent and can work independently of chat panel visibility
   React.useEffect(() => {
-    if (!isChatPanelVisible && isPreviewOpen) {
-      console.log('📋 [PREVIEW] Chat panel hidden - closing preview modal');
-      setIsPreviewOpen(false);
-    }
-    
-    // CRITICAL: When chat becomes hidden, keep expandedCardViewDoc in state (don't queue it)
-    // This allows silent background opening - document is already "opened" but not visible
-    // When chat becomes visible again, document is already there and appears immediately
-    // Only reset agent opening state, but keep the document in state
     if (!isChatPanelVisible && expandedCardViewDoc) {
       console.log('📋 [PREVIEW] Chat panel hidden - keeping document in state (silent background, will appear when chat visible):', expandedCardViewDoc);
       setIsAgentOpening(false); // Reset glow state when chat is hidden
       // DON'T clear expandedCardViewDoc - keep it in state for silent background opening
       // DON'T queue it - it's already set, just not visible
     }
-  }, [isChatPanelVisible, isPreviewOpen, expandedCardViewDoc]);
+  }, [isChatPanelVisible, expandedCardViewDoc]);
 
   // NEW: Set agent task active (for navigation overlay)
   const setAgentTaskActive = React.useCallback((active: boolean, message?: string) => {
@@ -470,23 +514,8 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [getCachedRenderedPage, setCachedRenderedPage]);
 
   const addPreviewFile = React.useCallback((file: FileAttachmentData, highlight?: CitationHighlight) => {
-    // If chat panel is not visible, queue the file for later (silent background opening)
-    if (!isChatPanelVisible) {
-      console.log('📋 [PREVIEW] Chat panel hidden - queueing preview file for later:', file.name || file.id);
-      setPendingPreviewFiles(prev => {
-        // Check if file is already in pending queue
-        if (prev.some(f => f.id === file.id)) {
-          return prev; // Already queued
-        }
-        return [...prev, file];
-      });
-      if (highlight) {
-        setPendingPreviewHighlight(highlight);
-      }
-      return;
-    }
-    
-    // Chat panel is visible - open normally
+    // Always open the preview modal, regardless of chat panel visibility
+    // The DocumentPreviewModal in MainContent can be displayed independently
     setPreviewFiles(prev => {
       // Check if file is already in preview tabs
       const existingTabIndex = prev.findIndex(f => f.id === file.id);
@@ -550,17 +579,16 @@ export const PreviewProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return newFiles;
       }
     });
-  }, [isChatPanelVisible]);
+  }, [setPreviewFiles, setActivePreviewTabIndex, setIsPreviewOpen, setHighlightCitation, setPdfDocumentCache, MAX_PREVIEW_TABS]);
 
-  // NEW: Gated setIsPreviewOpen - only opens if chat is visible, but always allows closing
+  // Gated setIsPreviewOpen - allows opening/closing regardless of chat visibility
+  // DocumentPreviewModal is rendered in MainContent and works independently
+  // This was previously gated to prevent reasoning steps from opening previews,
+  // but that should be handled at the source (don't call addPreviewFile from reasoning steps)
   const gatedSetIsPreviewOpen = React.useCallback((open: boolean) => {
-    if (open && !isChatPanelVisible) {
-      console.log('📋 [PREVIEW] Attempted to open preview but chat panel is hidden - ignoring');
-      return;
-    }
-    // Always allow closing, even if chat is not visible
+    // Always allow opening/closing - DocumentPreviewModal can work independently of chat panel
     setIsPreviewOpen(open);
-  }, [isChatPanelVisible]);
+  }, []);
 
   const value = React.useMemo(() => ({
     previewFiles,

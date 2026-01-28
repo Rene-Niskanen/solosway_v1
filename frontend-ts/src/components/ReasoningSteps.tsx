@@ -1,10 +1,13 @@
 import React, { useMemo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DocumentPreviewCard, StackedDocumentPreviews } from './DocumentPreviewCard';
+import { LLMContextViewer } from './LLMContextViewer';
 import { generateAnimatePresenceKey, generateUniqueKey } from '../utils/keyGenerator';
-import { Search, SearchCheck, FileText, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, WandSparkles, Highlighter, Infinity } from 'lucide-react';
+import { Search, SearchCheck, TextSearch, ScanText, BookOpenCheck, FileQuestion, Sparkle, TextSelect, Play, FolderOpen, MapPin, Highlighter, Infinity } from 'lucide-react';
 import { FileChoiceStep, ResponseModeChoice } from './FileChoiceStep';
 import { FileAttachmentData } from './FileAttachment';
+import { ThinkingBlock } from './ThinkingBlock';
+import { useModel } from '../contexts/ModelContext';
 import * as pdfjs from 'pdfjs-dist';
 
 // Import worker for PDF.js (same as DocumentPreviewCard)
@@ -16,7 +19,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // Types for reasoning steps
 export interface ReasoningStep {
   step: string;
-  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
+  action_type: 'planning' | 'exploring' | 'searching' | 'reading' | 'analysing' | 'summarising' | 'thinking' | 'complete' | 'context' | 'file_choice' | 'executing' | 'opening' | 'navigating' | 'highlighting' | 'opening_map' | 'selecting_pin';
   message: string;
   count?: number;
   target?: string;
@@ -47,6 +50,19 @@ export interface ReasoningStep {
     // File choice step specific fields
     attachedFiles?: FileAttachmentData[];
     onFileChoice?: (choice: ResponseModeChoice) => void;
+    // LLM context blocks for visualization (Cursor-style reading UI)
+    llm_context?: Array<{
+      content: string;
+      page: number;
+      type: string;
+      retrieval_method?: string;  // "bm25", "vector", "hybrid", "structured_query", etc.
+      similarity_score?: number;   // 0.0 to 1.0
+      chunk_index?: number;
+      chunk_number?: number;       // 1-indexed position (1, 2, 3...)
+      total_chunks?: number;       // Total chunk count
+    }>;
+    // Thinking step content (streamed from LLM reasoning)
+    thinking_content?: string;
     [key: string]: any;
   };
   timestamp?: number;
@@ -215,6 +231,7 @@ interface ReasoningStepsProps {
   onDocumentClick?: (metadata: DocumentMetadata) => void;
   hasResponseText?: boolean; // Stop animations when response text has started
   isAgentMode?: boolean; // Show agent-specific steps only in Agent mode
+  skipAnimations?: boolean; // Skip animations when restoring a chat (instant display)
 }
 
 // True 3D Globe component using CSS 3D transforms (scaled for reasoning steps) - Blue version
@@ -319,6 +336,7 @@ const LIGHT_DETAIL_COLOR = '#6B7280'; // Medium gray for secondary details
 const ReadingStepWithTransition: React.FC<{
   filename: string;
   docMetadata: any;
+  llmContext?: Array<{ content: string; page: number; type: string }>; // LLM context blocks for visualization
   isLoading?: boolean;
   readingIndex: number; // Which reading step this is (0, 1, 2...)
   onDocumentClick?: (metadata: DocumentMetadata) => void;
@@ -327,18 +345,37 @@ const ReadingStepWithTransition: React.FC<{
   hasNextStep?: boolean; // Is there a step after this reading step?
   keepAnimating?: boolean; // Keep the green animation going until planning indicator appears
   hasResponseText?: boolean; // Stop all animations when response text appears
-}> = ({ filename, docMetadata, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false }) => {
+  hasSummarisingStep?: boolean; // Close viewer when summarising step appears
+}> = ({ filename, docMetadata, llmContext, readingIndex, isLoading, onDocumentClick, showPreview = true, isLastReadingStep = false, hasNextStep = false, keepAnimating = false, hasResponseText = false, hasSummarisingStep = false }) => {
   const [phase, setPhase] = useState<'reading' | 'read'>('reading');
   const [showReadAnimation, setShowReadAnimation] = useState(false); // Track if "Read" should show animation
+  
+  // Calculate line range from llmContext for Cursor-style "Read [filename] L1-[totalLines]" format
+  const lineRange = useMemo(() => {
+    if (!llmContext || llmContext.length === 0) return '';
+    let totalLines = 0;
+    llmContext.forEach(block => {
+      totalLines += block.content.split('\n').length;
+    });
+    return totalLines > 0 ? `L1-${totalLines}` : '';
+  }, [llmContext]);
   
   // ALWAYS show "Reading" animation first, then transition to "Read"
   // Check step details.status to see if backend has marked it as "read"
   // This happens 100% of the time for natural feel
   // If keepAnimating is true, stay in reading phase with animation
   // BUT: Don't block response - if response text has started, immediately transition to "read" and stop ALL animations
+  // Also transition when summarising step appears - reading viewers close first, then summarising viewer opens
   useEffect(() => {
     // If response text has appeared, immediately stop all animations and show "read"
     if (hasResponseText) {
+      setPhase('read');
+      setShowReadAnimation(false);
+      return;
+    }
+    
+    // If summarising step has appeared, close the reading viewer so summarising can show its viewer
+    if (hasSummarisingStep) {
       setPhase('read');
       setShowReadAnimation(false);
       return;
@@ -374,7 +411,7 @@ const ReadingStepWithTransition: React.FC<{
     return () => {
       if (readTimer) clearTimeout(readTimer);
     };
-  }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText]); // Re-run if docMetadata changes (backend updates status) or response text appears
+  }, [docMetadata, onDocumentClick, keepAnimating, hasResponseText, hasSummarisingStep]); // Re-run if docMetadata changes (backend updates status) or response text appears or summarising starts
   
   const actionStyle: React.CSSProperties = {
     color: ACTION_COLOR,
@@ -389,7 +426,7 @@ const ReadingStepWithTransition: React.FC<{
                 initial={{ opacity: 0, y: 2, scale: 0.98 }}
                 animate={hasResponseText ? { opacity: 1, y: 0, scale: 1 } : { opacity: 1, y: 0, scale: 1 }}
                 transition={hasResponseText ? { duration: 0 } : { duration: 0.15, ease: [0.16, 1, 0.3, 1] }} // Instant when response text appears, otherwise faster animation
-      style={{ marginBottom: '4px' }}
+      style={{ marginBottom: '2px' }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
         {/* Show spinning wheel when actively reading, FileText when reading (not animating), BookOpenCheck when read */}
@@ -408,7 +445,7 @@ const ReadingStepWithTransition: React.FC<{
             }}
           />
         ) : phase === 'reading' ? (
-          <FileText style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
+          <img src="/PDF.png" alt="PDF" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
         ) : (
           <BookOpenCheck style={{ width: '14px', height: '14px', color: ACTION_COLOR, flexShrink: 0 }} />
         )}
@@ -423,21 +460,59 @@ const ReadingStepWithTransition: React.FC<{
             )}
           </span>
         ) : (
-          // Show "Read 1 document" - the collapsible card below shows the filename
-          <span>
-            <span style={actionStyle}>Read</span>
-            <span style={{ color: DETAIL_COLOR }}> 1 document</span>
+          // Cursor-style: "Read [filename] L1-[totalLines]" in unified light gray
+          <span style={{ color: '#9CA3AF' }}>
+            Read {filename}{lineRange ? ` ${lineRange}` : ''}
           </span>
         )}
       </span>
-      {/* Collapsible document preview card - positioned with left padding to avoid vertical line */}
-      {showPreview && docMetadata && docMetadata.doc_id && (
+      
+      {/* LLM Context Viewer - show during reading phase with line-by-line animation */}
+      <AnimatePresence mode="wait">
+        {llmContext && llmContext.length > 0 && phase === 'reading' && (
+          <motion.div
+            key="reading-viewer"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            style={{ marginTop: 4, marginLeft: 0 }}
+          >
+            <LLMContextViewer
+              blocks={llmContext}
+              filename={filename}
+              isAnimating={keepAnimating && !hasResponseText}
+            />
+          </motion.div>
+        )}
+        {/* Collapsed LLM Context Viewer - show when read phase (terminal output in closed state) */}
+        {llmContext && llmContext.length > 0 && phase === 'read' && (
+          <motion.div
+            key="read-viewer-collapsed"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            style={{ marginTop: 4, marginLeft: 0 }}
+          >
+            <LLMContextViewer
+              blocks={llmContext}
+              filename={filename}
+              isAnimating={false}
+              collapsed={true}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {/* Document preview card - only show if no llm_context available */}
+      {showPreview && docMetadata && docMetadata.doc_id && (!llmContext || llmContext.length === 0) && (
         <div
               style={{
-            marginTop: 4,
-            marginLeft: 20, // Offset to avoid vertical line
+            marginTop: 2,
+            marginLeft: 0,
                 position: 'relative',
-                zIndex: 2, // Above the vertical line
+                zIndex: 2,
             isolation: 'isolate' // Create stacking context
               }}
             >
@@ -497,7 +572,8 @@ const StepRenderer: React.FC<{
   shownDocumentsRef?: React.MutableRefObject<Set<string>>; // Track which documents have been shown
   allReadingComplete?: boolean; // All reading steps have completed
   hasResponseText?: boolean; // Stop animations when response text has started
-}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false }) => {
+  model?: 'gpt-4o-mini' | 'gpt-4o' | 'claude-sonnet' | 'claude-opus';
+}> = ({ step, allSteps, stepIndex, isLoading, readingStepIndex = 0, isLastReadingStep = false, totalReadingSteps = 0, onDocumentClick, shownDocumentsRef, allReadingComplete = false, hasResponseText = false, model = 'gpt-4o-mini' }) => {
   const actionStyle: React.CSSProperties = {
     color: ACTION_COLOR, // Light gray for main actions (the circled parts)
     fontWeight: 500
@@ -574,12 +650,12 @@ const StepRenderer: React.FC<{
           {/* Document cards using collapsible DocumentPreviewCard */}
           {docPreviews.length > 0 ? (
             <div style={{ 
-              margin: '4px 0 0 0', 
-              paddingLeft: '20px',
+              margin: '2px 0 0 0', 
+              paddingLeft: '0',
               position: 'relative',
               display: 'flex',
               flexDirection: 'column',
-              gap: '4px'
+              gap: '2px'
             }}>
               {docPreviews.map((doc: any, i: number) => (
                 <DocumentPreviewCard
@@ -593,8 +669,8 @@ const StepRenderer: React.FC<{
           ) : (
             // If no document previews found, show a placeholder
             <div style={{ 
-              marginTop: '4px',
-              paddingLeft: '20px',
+              marginTop: '2px',
+              paddingLeft: '0',
               color: DETAIL_COLOR,
               fontStyle: 'italic',
               fontSize: '12px'
@@ -669,18 +745,26 @@ const StepRenderer: React.FC<{
       // Check if there's a step after this reading step
       const hasNextStepAfterReading = stepIndex < allSteps.length - 1;
       
+      // Check if a summarising step has appeared - if so, close reading viewers
+      const hasSummarisingStep = allSteps.some(s => s.action_type === 'summarising');
+      
       // Keep the green animation going on ALL reading steps until response is complete
       // Not just the last one - all documents should animate while loading
       // Stop animating immediately when response text has started (don't block response)
-      const shouldKeepAnimating = isLoading && !hasResponseText && !allReadingComplete;
+      // Also stop when summarising step appears - reading viewers should close first
+      const shouldKeepAnimating = isLoading && !hasResponseText && !allReadingComplete && !hasSummarisingStep;
       
-      // If response text has started, don't keep animating - show read immediately
-      const finalKeepAnimating = hasResponseText ? false : shouldKeepAnimating;
+      // If response text has started OR summarising has started, don't keep animating - show read immediately
+      const finalKeepAnimating = (hasResponseText || hasSummarisingStep) ? false : shouldKeepAnimating;
+      
+      // Extract LLM context blocks for visualization
+      const llmContext = step.details?.llm_context;
       
       return (
         <ReadingStepWithTransition 
           filename={truncatedFilename}
           docMetadata={docMetadataWithStatus}
+          llmContext={llmContext}
           isLoading={isLoading}
           readingIndex={readingStepIndex}
           onDocumentClick={onDocumentClick}
@@ -689,6 +773,7 @@ const StepRenderer: React.FC<{
           hasNextStep={hasNextStepAfterReading}
           keepAnimating={finalKeepAnimating}
           hasResponseText={hasResponseText}
+          hasSummarisingStep={hasSummarisingStep}
         />
       );
     
@@ -722,28 +807,38 @@ const StepRenderer: React.FC<{
       );
     
     case 'summarising':
-      // "Summarising content" - with magic wand icon (mirrored to face left)
-      // This step appears after reading documents, before the response
+      // During streaming: "Planning next moves" 
+      // After completion: "Summarising content"
       const nextStepAfterSummarizing = stepIndex < allSteps.length - 1 ? allSteps[stepIndex + 1] : null;
       const isSummarizingActive = isLoading && !hasResponseText && (!nextStepAfterSummarizing || nextStepAfterSummarizing.action_type === 'summarising');
       
       return (
-        <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '6px' }}>
-          <WandSparkles style={{ 
-            width: '14px', 
-            height: '14px', 
-            color: ACTION_COLOR, 
-            flexShrink: 0, 
-            marginTop: '2px',
-            transform: 'scaleX(-1)' // Mirror horizontally to face the other way
-          }} />
-          {/* "Summarising content" text with flowing gradient animation (only if active) */}
+        <span style={{ display: 'inline-flex', alignItems: 'flex-start' }}>
           {isSummarizingActive ? (
-            <span className="ranking-shimmer-active">{step.message || 'Summarising content'}</span>
+            <span className="ranking-shimmer-active">Planning next moves</span>
           ) : (
-            <span style={actionStyle}>{step.message || 'Summarising content'}</span>
+            <span style={actionStyle}>Summarised content</span>
           )}
         </span>
+      );
+    
+    case 'thinking':
+      // Cursor-style collapsible thinking block with streaming animation
+      const isThinkingStreaming = isLoading && !hasResponseText;
+      
+      // Extract search term from the searching step to prioritize relevant key facts
+      const searchingStep = allSteps.find(s => s.action_type === 'searching');
+      const searchTermMatch = searchingStep?.message?.match(/Searching for\s+(.+)/i);
+      const extractedSearchTerm = searchTermMatch ? searchTermMatch[1].trim() : undefined;
+      
+      return (
+        <ThinkingBlock
+          content={step.details?.thinking_content || ''}
+          isStreaming={isThinkingStreaming}
+          startTime={step.timestamp}
+          model={model}
+          searchTerm={extractedSearchTerm}
+        />
       );
     
     case 'complete':
@@ -816,26 +911,26 @@ const StepRenderer: React.FC<{
         <span style={{
           display: 'inline-flex',
           alignItems: 'center',
-          gap: '6px',
-          padding: '3px 8px 3px 6px',
+          gap: '8px',
+          padding: '4px 10px 4px 8px',
           borderRadius: '6px',
-          border: '1px solid rgba(251, 191, 36, 0.4)',
-          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          border: '1px solid rgba(0, 0, 0, 0.08)',
+          backgroundColor: 'transparent',
           marginLeft: '-2px', // Align with vertical line
           position: 'relative',
           zIndex: 2, // Above the vertical line
         }}>
           <Infinity style={{ 
-            width: '14px', 
-            height: '14px', 
-            color: '#F59E0B', 
+            width: '16px', 
+            height: '16px', 
+            color: '#9CA3AF', 
             flexShrink: 0,
             strokeWidth: 2.5 
           }} />
           {isOpeningActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Opening citation view'}</span>
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '13px' }}>{step.message || 'Opening citation view'}</span>
           ) : (
-            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Opening citation view'}</span>
+            <span style={{ color: '#374151', fontWeight: 500, fontSize: '13px' }}>{step.message || 'Opening citation view'}</span>
           )}
         </span>
       );
@@ -847,26 +942,26 @@ const StepRenderer: React.FC<{
         <span style={{
           display: 'inline-flex',
           alignItems: 'center',
-          gap: '6px',
-          padding: '3px 8px 3px 6px',
+          gap: '8px',
+          padding: '4px 10px 4px 8px',
           borderRadius: '6px',
-          border: '1px solid rgba(251, 191, 36, 0.4)',
-          backgroundColor: 'rgba(251, 191, 36, 0.08)',
+          border: '1px solid rgba(0, 0, 0, 0.08)',
+          backgroundColor: 'transparent',
           marginLeft: '-2px', // Align with vertical line
           position: 'relative',
           zIndex: 2, // Above the vertical line
         }}>
           <Infinity style={{ 
-            width: '14px', 
-            height: '14px', 
-            color: '#F59E0B', 
+            width: '16px', 
+            height: '16px', 
+            color: '#9CA3AF', 
             flexShrink: 0,
             strokeWidth: 2.5 
           }} />
           {isHighlightingActive ? (
-            <span className="agent-opening-shimmer-active" style={{ fontSize: '12px' }}>{step.message || 'Highlighting content'}</span>
+            <span className="agent-opening-shimmer-active" style={{ fontSize: '13px' }}>{step.message || 'Highlighting content'}</span>
           ) : (
-            <span style={{ color: '#D97706', fontWeight: 500, fontSize: '12px' }}>{step.message || 'Highlighting content'}</span>
+            <span style={{ color: '#374151', fontWeight: 500, fontSize: '13px' }}>{step.message || 'Highlighting content'}</span>
           )}
         </span>
       );
@@ -976,7 +1071,10 @@ const StepRenderer: React.FC<{
  * Cursor-style compact stacked list of reasoning steps.
  * Always visible (no dropdown), subtle design, fits seamlessly into chat UI.
  */
-export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true }) => {
+export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading, onDocumentClick, hasResponseText = false, isAgentMode = true, skipAnimations = false }) => {
+  // Get current model from context
+  const { model } = useModel();
+  
   // Track which documents we've already started preloading
   const preloadedDocsRef = useRef<Set<string>>(new Set());
   
@@ -1187,8 +1285,8 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
         );
         
         // Sequential flow: each step appears after the previous one completes
-        // More pronounced sequential reveal for better flow
-        let stepDelay = idx * 0.15; // 150ms stagger - each step waits for previous to appear
+        // Fast stagger for responsive feel
+        let stepDelay = idx * 0.08; // 80ms stagger - quick sequential reveal
         if (step.action_type === 'reading') {
           // If reading step comes right after exploring/found_documents, make it appear almost instantly
           if (isAfterExploring) {
@@ -1238,7 +1336,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             }
             
             .reasoning-loading-spinner {
-              animation: spin 0.8s linear infinite;
+              animation: spin 0.5s linear infinite;
             }
             
             .planning-shimmer-full {
@@ -1247,7 +1345,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: shimmer-full 1.2s ease-in-out infinite;
+              animation: shimmer-full 0.8s ease-in-out infinite;
               font-weight: 500;
             }
             
@@ -1280,7 +1378,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 1.2s ease infinite;
+              animation: reading-glow 0.8s ease infinite;
               filter: drop-shadow(0 0 1px rgba(100, 116, 139, 0.2));
             }
             
@@ -1301,7 +1399,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: searching-glow 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+              animation: searching-glow 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
             }
             
             @keyframes searching-glow {
@@ -1326,7 +1424,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: shimmer-full 2s ease-in-out infinite;
+              animation: shimmer-full 0.8s ease-in-out infinite;
             }
             
             /* Agent opening/highlighting - orange flowing gradient animation */
@@ -1346,7 +1444,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: agent-shimmer 1.5s ease-in-out infinite;
+              animation: agent-shimmer 0.8s ease-in-out infinite;
             }
             
             @keyframes agent-shimmer {
@@ -1371,6 +1469,11 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             @keyframes shimmer-full {
               0% { background-position: 100% 0; }
               100% { background-position: -100% 0; }
+            }
+            
+            /* Override for searching shimmer to use faster animation */
+            .searching-shimmer-active {
+              animation: shimmer-full 0.8s ease-in-out infinite !important;
             }
             
             @keyframes reveal-step {
@@ -1454,18 +1557,16 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             const nextStep = idx < animatedSteps.length - 1 ? animatedSteps[idx + 1]?.step : null;
             const nextIsSummarising = nextStep?.action_type === 'summarising';
             
-            // Reduce spacing around summarising step
-            let marginBottom = '4px';
+            // Cursor-style compact spacing
+            let marginBottom = '2px';
             if (isLastStep) {
               marginBottom = '0';
-            } else if (isSummarising || nextIsSummarising) {
-              marginBottom = '2px'; // Reduced spacing for summarising
             }
             
             return (
               <motion.div
                 key={finalStepKey}
-                initial={{ opacity: 0, y: 2, scale: 0.98 }}
+                initial={skipAnimations ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 2, scale: 0.98 }}
                 animate={{ 
                   opacity: 1, 
                   y: 0,
@@ -1476,36 +1577,22 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   y: 0, // No vertical movement to prevent layout shift
                   scale: 1 // Keep scale constant to prevent visual jump
                 }}
-                transition={hasResponseText ? { duration: 0 } : { 
-                  duration: 0.15, // Very fast fade
+                transition={(hasResponseText || skipAnimations) ? { duration: 0 } : { 
+                  duration: 0.08, // Ultra-fast fade for instant appearance
                   delay: stepDelay,
                   ease: [0.16, 1, 0.3, 1] // Smooth ease-out (Cursor-style)
                 }}
                 style={{
                   fontSize: '12px',
                   color: DETAIL_COLOR,
-                  padding: '6px 0 6px 0',
-                  paddingLeft: '0',
-                  lineHeight: 1.5,
+                  padding: '2px 0',
+                  lineHeight: 1.4,
                   overflow: 'visible',
                   position: 'relative',
-                  marginLeft: '0',
                   marginBottom: marginBottom,
                   contain: 'layout style' // Prevent layout shifts
                 }}
               >
-              {/* Vertical line going DOWN from this step to the next (only if not last step) */}
-              {!isLastStep && (
-                <div style={{
-                  position: 'absolute',
-                  left: '8px',
-                  top: '20px',
-                  width: '2px',
-                  height: 'calc(100% - 14px)',
-                  backgroundColor: '#E5E7EB',
-                  zIndex: 0 // Behind preview cards
-                }} />
-              )}
               <StepRenderer 
                 step={step} 
                 allSteps={filteredSteps} 
@@ -1518,6 +1605,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 onDocumentClick={onDocumentClick}
                 shownDocumentsRef={shownDocumentsRef}
                 allReadingComplete={allReadingComplete}
+                model={model}
               />
               </motion.div>
             );
@@ -1552,17 +1640,10 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
             const allReadingSteps = filteredSteps.filter(s => s.action_type === 'reading');
             const isLastReadingStep = isReadingStep && readingStepIndex === allReadingSteps.length - 1;
             
-            // Check if current or next step is 'summarising' to reduce spacing
-            const isSummarising = step.action_type === 'summarising';
-            const nextStep = idx < filteredSteps.length - 1 ? filteredSteps[idx + 1] : null;
-            const nextIsSummarising = nextStep?.action_type === 'summarising';
-            
-            // Reduce spacing around summarising step
-            let marginBottom = '4px';
+            // Cursor-style compact spacing
+            let marginBottom = '2px';
             if (isLastStep) {
               marginBottom = '0';
-            } else if (isSummarising || nextIsSummarising) {
-              marginBottom = '2px'; // Reduced spacing for summarising
             }
             
             return (
@@ -1571,26 +1652,12 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                 style={{
                   fontSize: '12px',
                   color: DETAIL_COLOR,
-                  padding: '6px 0 6px 0',
-                  paddingLeft: '0',
-                  lineHeight: 1.5,
+                  padding: '2px 0',
+                  lineHeight: 1.4,
                   position: 'relative',
-                  marginLeft: '0',
                   marginBottom: marginBottom
                 }}
               >
-                {/* Vertical line going DOWN from this step to the next (only if not last step) */}
-                {!isLastStep && (
-                  <div style={{
-                    position: 'absolute',
-                    left: '8px',
-                    top: '20px',
-                    width: '2px',
-                    height: 'calc(100% - 14px)',
-                    backgroundColor: '#E5E7EB',
-                    zIndex: 0 // Behind preview cards
-                  }} />
-                )}
                 <StepRenderer 
                   step={step} 
                   allSteps={filteredSteps} 
@@ -1603,6 +1670,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
                   onDocumentClick={onDocumentClick}
                   shownDocumentsRef={shownDocumentsRef}
                   allReadingComplete={allReadingComplete}
+                  model={model}
                 />
               </div>
             );
@@ -1649,7 +1717,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
-          animation: shimmer-full 2s ease-in-out infinite;
+          animation: shimmer-full 0.8s ease-in-out infinite;
           font-weight: 500;
         }
         
@@ -1661,7 +1729,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
-          animation: shimmer-full 2s ease-in-out infinite;
+          animation: shimmer-full 0.8s ease-in-out infinite;
         }
         
         /* Ranking - flowing gradient animation (same as planning) */
@@ -1672,7 +1740,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
-          animation: shimmer-full 2s ease-in-out infinite;
+          animation: shimmer-full 0.8s ease-in-out infinite;
         }
         
         /* Agent opening/highlighting - orange flowing gradient animation */
@@ -1692,7 +1760,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
-          animation: agent-shimmer 1.5s ease-in-out infinite;
+          animation: agent-shimmer 0.8s ease-in-out infinite;
         }
         
         @keyframes agent-shimmer {
@@ -1729,7 +1797,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: reading-glow 1.2s ease infinite;
+              animation: reading-glow 0.8s ease infinite;
               filter: drop-shadow(0 0 1px rgba(100, 116, 139, 0.2));
             }
             
@@ -1750,7 +1818,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: shimmer-full 2s ease-in-out infinite;
+              animation: shimmer-full 0.8s ease-in-out infinite;
             }
             
             /* Ranking - flowing gradient animation (same as planning) */
@@ -1761,7 +1829,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
               -webkit-background-clip: text;
               -webkit-text-fill-color: transparent;
               background-clip: text;
-              animation: shimmer-full 2s ease-in-out infinite;
+              animation: shimmer-full 0.8s ease-in-out infinite;
             }
             
             @keyframes reading-glow {
@@ -1847,7 +1915,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-mask-repeat: no-repeat;
           mask-position: 0% 0;
           -webkit-mask-position: 0% 0;
-          animation: reading-reveal-text 1.2s ease-in-out infinite;
+          animation: reading-reveal-text 0.8s ease-in-out infinite;
           pointer-events: none;
           z-index: 1;
         }
@@ -1889,7 +1957,7 @@ export const ReasoningSteps: React.FC<ReasoningStepsProps> = ({ steps, isLoading
           -webkit-mask-repeat: no-repeat;
           mask-position: 0% 0;
           -webkit-mask-position: 0% 0;
-          animation: found-reveal-text 1.5s ease-out forwards;
+          animation: found-reveal-text 0.8s ease-out forwards;
           pointer-events: none;
           z-index: 1;
         }

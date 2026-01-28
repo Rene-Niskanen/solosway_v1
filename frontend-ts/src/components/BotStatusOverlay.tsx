@@ -99,6 +99,10 @@ export const BotStatusOverlay: React.FC<BotStatusOverlayProps> = ({
   isPaused,
   onPauseToggle
 }) => {
+  // UI temporarily disabled - remove this early return to re-enable
+  return null;
+  
+  // eslint-disable-next-line no-unreachable
   return (
     <AnimatePresence>
       {isActive && (
@@ -113,7 +117,7 @@ export const BotStatusOverlay: React.FC<BotStatusOverlayProps> = ({
             left: '0',
             right: '0',
             marginBottom: '-8px', // Small overlap to create connected look
-            zIndex: 0, // Below the chat bar which has zIndex: 1
+            zIndex: 0, // Behind the chat bar which has zIndex: 2
             pointerEvents: 'none',
           }}
         >

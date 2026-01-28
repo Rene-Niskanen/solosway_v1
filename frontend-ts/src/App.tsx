@@ -7,8 +7,10 @@ import { DashboardLayout } from "./components/DashboardLayout";
 import { ChatHistoryProvider } from "./components/ChatHistoryContext";
 import { SystemProvider } from "./contexts/SystemContext";
 import { ModeProvider } from "./contexts/ModeContext";
+import { ModelProvider } from "./contexts/ModelContext";
 import { BackendApiProvider } from "./components/BackendApi";
 import { PreviewProvider } from "./contexts/PreviewContext";
+import { ChatStateStoreProvider } from "./contexts/ChatStateStore";
 import { PropertySelectionProvider } from "./contexts/PropertySelectionContext";
 import { DocumentSelectionProvider } from "./contexts/DocumentSelectionContext";
 import { AuthGuard } from "./components/AuthGuard";
@@ -47,9 +49,13 @@ const App = () => (
               <Route path="/dashboard" element={
                 <AuthGuard>
                   <ModeProvider>
-                    <ChatHistoryProvider>
-                      <DashboardLayout />
-                    </ChatHistoryProvider>
+                    <ModelProvider>
+                      <ChatHistoryProvider>
+                        <ChatStateStoreProvider>
+                          <DashboardLayout />
+                        </ChatStateStoreProvider>
+                      </ChatHistoryProvider>
+                    </ModelProvider>
                   </ModeProvider>
                 </AuthGuard>
               } />

@@ -3,7 +3,7 @@
 
 -- Create enum type for project status
 DO $$ BEGIN
-    CREATE TYPE project_status AS ENUM ('active', 'negotiating', 'archived');
+    CREATE TYPE project_status AS ENUM ('ACTIVE', 'NEGOTIATING', 'ARCHIVED');
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
     -- Project details
     title VARCHAR(500) NOT NULL,
     description TEXT,
-    status project_status NOT NULL DEFAULT 'active',
+    status project_status NOT NULL DEFAULT 'ACTIVE',
     tags JSONB DEFAULT '[]'::jsonb,
     tool VARCHAR(100),
     

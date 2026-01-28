@@ -19,6 +19,12 @@ class LLMConfig(BaseSettings):
     openai_model: str = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
     # Using text-embedding-3-small for speed + HNSW compatibility (1536 dimensions)
     openai_embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    
+    # Anthropic (Claude) - for extended thinking
+    anthropic_api_key: str = os.environ.get('ANTHROPIC_API_KEY', '')
+    anthropic_model: str = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')
+    anthropic_thinking_budget: int = int(os.getenv('ANTHROPIC_THINKING_BUDGET', '5000'))  # Max thinking tokens
+    use_extended_thinking: bool = os.getenv('USE_EXTENDED_THINKING', 'false').lower() == 'true'
 
     # Voyage AI embeddings
     voyage_api_key: str = os.getenv("VOYAGE_API_KEY", "")

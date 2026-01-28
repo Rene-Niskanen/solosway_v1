@@ -162,13 +162,13 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
     
     return (
       <div style={{ width: '100%' }}>
-        <div style={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: '8px', width: '100%', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: '10px', width: '100%', flexWrap: 'wrap' }}>
           {icon && (
-            <div style={{ marginTop: multiline ? '8px' : '0', flexShrink: 0 }}>
+            <div style={{ marginTop: multiline ? '10px' : '0', flexShrink: 0, color: '#6b7280' }}>
               {icon}
             </div>
           )}
-          <div style={{ flex: 1, minWidth: '200px' }}>
+          <div style={{ flex: 1, minWidth: '180px' }}>
             {multiline ? (
               <textarea
                 ref={inputRef as React.RefObject<HTMLTextAreaElement>}
@@ -181,19 +181,19 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
                 placeholder={placeholder}
                 style={{
                   width: '100%',
-                  padding: '12px 14px',
-                  border: error ? '2px solid #EA4335' : '1px solid #DADCE0',
+                  padding: '10px 12px',
+                  border: error ? '2px solid #ef4444' : '1px solid #e5e7eb',
                   borderRadius: '8px',
-                  backgroundColor: '#FFFFFF',
-                  fontSize: '14px',
-                  color: '#202124',
+                  backgroundColor: '#ffffff',
+                  fontSize: '13px',
+                  color: '#1a1a1a',
                   outline: 'none',
-                  minHeight: '80px',
+                  minHeight: '72px',
                   resize: 'vertical',
                   fontFamily: 'inherit',
                   lineHeight: '1.5',
-                  boxShadow: error ? '0 0 0 3px rgba(234, 67, 53, 0.1)' : '0 1px 3px rgba(0, 0, 0, 0.08)',
-                  transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                  boxShadow: error ? '0 0 0 3px rgba(239, 68, 68, 0.1)' : '0 1px 2px rgba(0, 0, 0, 0.05)',
+                  transition: 'all 150ms ease',
                 }}
               />
             ) : (
@@ -209,73 +209,71 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
                 placeholder={placeholder}
                 style={{
                   width: '100%',
-                  padding: '12px 14px',
-                  border: error ? '2px solid #EA4335' : '1px solid #DADCE0',
+                  padding: '10px 12px',
+                  border: error ? '2px solid #ef4444' : '1px solid #e5e7eb',
                   borderRadius: '8px',
-                  backgroundColor: '#FFFFFF',
-                  fontSize: '14px',
-                  color: '#202124',
+                  backgroundColor: '#ffffff',
+                  fontSize: '13px',
+                  color: '#1a1a1a',
                   outline: 'none',
                   fontFamily: 'inherit',
                   lineHeight: '1.5',
-                  boxShadow: error ? '0 0 0 3px rgba(234, 67, 53, 0.1)' : '0 1px 3px rgba(0, 0, 0, 0.08)',
-                  transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                  boxShadow: error ? '0 0 0 3px rgba(239, 68, 68, 0.1)' : '0 1px 2px rgba(0, 0, 0, 0.05)',
+                  transition: 'all 150ms ease',
                 }}
               />
             )}
             {error && (
               <div style={{
-                fontSize: '11px',
-                color: '#EA4335',
+                fontSize: '12px',
+                color: '#ef4444',
                 marginTop: '6px',
                 paddingLeft: '0',
                 lineHeight: '1.4',
+                fontWeight: 500,
               }}>
                 {error}
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '4px', flexShrink: 0, marginTop: multiline ? '8px' : '0', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginTop: multiline ? '8px' : '0', alignItems: 'center' }}>
             <button
               onClick={handleSave}
               disabled={isSaving}
               style={{
-                padding: '10px 24px',
-                height: '36px',
-                backgroundColor: isSaving ? '#DADCE0' : '#1A73E8',
-                color: '#FFFFFF',
+                padding: '8px 16px',
+                height: '34px',
+                backgroundColor: isSaving ? '#d1d5db' : '#3b82f6',
+                color: '#ffffff',
                 border: 'none',
-                borderRadius: '20px',
-                fontSize: '14px',
+                borderRadius: '8px',
+                fontSize: '13px',
                 fontWeight: 500,
                 cursor: isSaving ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px',
-                opacity: isSaving ? 0.6 : 1,
-                boxShadow: isSaving ? 'none' : '0 1px 2px rgba(26, 115, 232, 0.15)',
-                transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                gap: '6px',
+                opacity: isSaving ? 0.7 : 1,
+                transition: 'all 150ms ease',
               }}
               onMouseEnter={(e) => {
                 if (!isSaving) {
-                  e.currentTarget.style.backgroundColor = '#1765CC';
-                  e.currentTarget.style.boxShadow = '0 2px 4px rgba(26, 115, 232, 0.2)';
+                  e.currentTarget.style.backgroundColor = '#2563eb';
                 }
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = isSaving ? '#DADCE0' : '#1A73E8';
-                e.currentTarget.style.boxShadow = isSaving ? 'none' : '0 1px 2px rgba(26, 115, 232, 0.15)';
+                e.currentTarget.style.backgroundColor = isSaving ? '#d1d5db' : '#3b82f6';
               }}
               title="Save"
             >
               {isSaving ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Saving</span>
                 </>
               ) : (
                 <>
-                  <Save className="w-4 h-4" />
+                  <Check className="w-3.5 h-3.5" />
                   <span>Save</span>
                 </>
               )}
@@ -284,30 +282,30 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
               onClick={handleCancel}
               disabled={isSaving}
               style={{
-                padding: '10px 24px',
-                height: '36px',
+                padding: '8px 12px',
+                height: '34px',
                 backgroundColor: 'transparent',
-                color: '#5F6368',
-                border: '1px solid #DADCE0',
-                borderRadius: '20px',
-                fontSize: '14px',
+                color: '#6b7280',
+                border: '1px solid #e5e7eb',
+                borderRadius: '8px',
+                fontSize: '13px',
                 fontWeight: 500,
                 cursor: isSaving ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px',
+                justifyContent: 'center',
                 opacity: isSaving ? 0.5 : 1,
-                transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                transition: 'all 150ms ease',
               }}
               onMouseEnter={(e) => {
                 if (!isSaving) {
-                  e.currentTarget.style.backgroundColor = '#F1F3F4';
-                  e.currentTarget.style.borderColor = '#BDC1C6';
+                  e.currentTarget.style.backgroundColor = '#f3f4f6';
+                  e.currentTarget.style.borderColor = '#d1d5db';
                 }
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.backgroundColor = 'transparent';
-                e.currentTarget.style.borderColor = '#DADCE0';
+                e.currentTarget.style.borderColor = '#e5e7eb';
               }}
               title="Cancel"
             >
@@ -329,34 +327,33 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: '14px',
-        padding: '12px 14px',
+        gap: '12px',
+        padding: '10px 12px',
         cursor: 'pointer',
         borderRadius: '8px',
         border: '1px solid transparent',
-        backgroundColor: isHovered ? '#F1F3F4' : 'transparent',
-        transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-        boxShadow: isHovered ? '0 1px 3px rgba(0, 0, 0, 0.08)' : 'none',
+        backgroundColor: isHovered ? '#f9fafb' : 'transparent',
+        transition: 'all 150ms ease',
       }}
     >
       {icon && (
-        <div style={{ flexShrink: 0, color: '#5F6368' }}>
+        <div style={{ flexShrink: 0, color: '#9ca3af' }}>
           {icon}
         </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         {label && (
-          <div style={{ fontSize: '11px', color: '#5F6368', marginBottom: '4px', fontWeight: 500, lineHeight: '1.4' }}>
+          <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '2px', fontWeight: 500, lineHeight: '1.4' }}>
             {label}
           </div>
         )}
         <div style={{
-          fontSize: '14px',
-          color: (value && value.trim()) ? '#202124' : '#9AA0A6',
+          fontSize: '13px',
+          color: (value && value.trim()) ? '#1a1a1a' : '#9ca3af',
           whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
           overflow: multiline ? 'visible' : 'hidden',
           textOverflow: multiline ? 'clip' : 'ellipsis',
-          fontWeight: 400,
+          fontWeight: 450,
           lineHeight: '1.5',
           minHeight: '20px',
         }}>
@@ -366,14 +363,14 @@ export const EnhancedEditableField: React.FC<EnhancedEditableFieldProps> = ({
       <div
         style={{
           opacity: isHovered || showSuccess ? 1 : 0,
-          transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+          transition: 'opacity 150ms ease',
           flexShrink: 0,
         }}
       >
         {showSuccess ? (
-          <Check className="w-4 h-4" style={{ color: '#34A853' }} />
+          <Check className="w-4 h-4" style={{ color: '#22c55e' }} />
         ) : (
-          <Edit2 className="w-4 h-4" style={{ color: isHovered ? '#202124' : '#5F6368' }} />
+          <Edit2 className="w-3.5 h-3.5" style={{ color: '#9ca3af' }} />
         )}
       </div>
     </div>

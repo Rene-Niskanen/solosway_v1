@@ -215,11 +215,11 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
   };
 
   const getContributionColor = (count: number): string => {
-    if (count === 0) return '#EBEDF0';
-    if (count <= 2) return '#9BE9A8';
-    if (count <= 5) return '#40C463';
-    if (count <= 10) return '#30A14E';
-    return '#216E39';
+    if (count === 0) return '#ebedf0';
+    if (count <= 2) return '#9be9a8';
+    if (count <= 5) return '#40c463';
+    if (count <= 10) return '#30a14e';
+    return '#216e39';
   };
 
   const formatTimeAgo = (timestamp: string): string => {
@@ -239,13 +239,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
   const getActivityIcon = (type: ContributionActivity['type']) => {
     switch (type) {
       case 'project':
-        return <FolderOpen className="w-3.5 h-3.5" style={{ color: '#6C7180' }} />;
+        return <FolderOpen className="w-4 h-4" style={{ color: '#d97706' }} />;
       case 'property':
-        return <Home className="w-3.5 h-3.5" style={{ color: '#6C7180' }} />;
+        return <Home className="w-4 h-4" style={{ color: '#16a34a' }} />;
       case 'document':
-        return <FileText className="w-3.5 h-3.5" style={{ color: '#6C7180' }} />;
+        return <FileText className="w-4 h-4" style={{ color: '#4f46e5' }} />;
       default:
-        return <Plus className="w-3.5 h-3.5" style={{ color: '#6C7180' }} />;
+        return <Plus className="w-4 h-4" style={{ color: '#6b7280' }} />;
     }
   };
 
@@ -313,7 +313,7 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#F9F9F9' }}>
+      <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: '#f9fafb' }}>
         <style>{`
           @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -322,72 +322,75 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
         `}</style>
         <div className="text-center">
           <div className="inline-block h-8 w-8 border-2 border-solid" style={{ 
-            borderColor: '#63748A',
+            borderColor: '#3b82f6',
             borderRightColor: 'transparent',
             borderRadius: '50%',
-            animation: 'spin 0.5s linear infinite'
+            animation: 'spin 0.6s linear infinite'
           }}></div>
-          <p style={{ fontSize: '12px', color: '#63748A', marginTop: '12px' }}>Loading profile...</p>
+          <p style={{ fontSize: '13px', color: '#6b7280', marginTop: '16px', fontWeight: 500 }}>Loading profile...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen w-full" style={{ backgroundColor: '#F8F9FA', padding: '32px 16px' }}>
+    <div className="min-h-screen w-full" style={{ backgroundColor: '#f9fafb', padding: '40px 24px' }}>
       <div style={{ maxWidth: '1200px', margin: '0 auto', width: '100%' }}>
         <div 
-          className="rounded-xl transition-all duration-200"
+          className="transition-all duration-200"
           style={{ 
-            backgroundColor: '#FFFFFF',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.1)',
             transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
             boxSizing: 'border-box',
-            borderRadius: '12px',
-            border: 'none',
+            borderRadius: '16px',
+            border: '1px solid #e5e7eb',
+            overflow: 'hidden',
           }}
         >
           <div className="flex flex-col lg:flex-row">
             {/* Left Sidebar */}
             <div style={{ 
               width: '100%',
-              maxWidth: '300px',
-              backgroundColor: '#F8F9FA',
-              borderRight: '1px solid #DADCE0',
-              padding: '32px 24px',
-              borderRadius: '12px 0 0 12px',
+              maxWidth: '320px',
+              backgroundColor: '#ffffff',
+              borderRight: '1px solid #e5e7eb',
+              padding: '32px 28px',
             }}>
               {/* Profile Picture */}
-              <div style={{ marginBottom: '24px', textAlign: 'center' }}>
+              <div style={{ marginBottom: '28px', textAlign: 'center' }}>
                 <div 
-                  style={{ position: 'relative', display: 'inline-block', marginBottom: '16px' }}
+                  style={{ position: 'relative', display: 'inline-block', marginBottom: '20px' }}
                   className="group"
                 >
                   <div 
-                    className="border border-transparent hover:border-gray-200 rounded-full transition-all duration-200"
+                    className="transition-all duration-200"
                     style={{
                       transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
                       boxSizing: 'border-box',
                       display: 'inline-block',
                       borderRadius: '50%',
-                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
-                      padding: '4px',
-                      backgroundColor: '#FFFFFF',
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+                      padding: '3px',
+                      backgroundColor: '#ffffff',
+                      border: '1px solid #e5e7eb',
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.12)';
+                      e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.12)';
+                      e.currentTarget.style.borderColor = '#3b82f6';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08)';
+                      e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.08)';
+                      e.currentTarget.style.borderColor = '#e5e7eb';
                     }}
                   >
-                    <Avatar style={{ width: '120px', height: '120px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer', border: '4px solid #FFFFFF' }}>
+                    <Avatar style={{ width: '96px', height: '96px', margin: '0 auto', borderRadius: '50%', cursor: 'pointer' }}>
                       <AvatarImage 
                         src={userData?.profile_image || userData?.avatar_url || "/default profile icon.png"} 
                         alt={getUserName()}
                         style={{ objectFit: 'cover', borderRadius: '50%' }}
                       />
-                      <AvatarFallback style={{ backgroundColor: '#DADCE0', color: '#5F6368', fontSize: '36px', fontWeight: 500, borderRadius: '50%' }}>
+                      <AvatarFallback style={{ backgroundColor: '#f3f4f6', color: '#6b7280', fontSize: '28px', fontWeight: 600, borderRadius: '50%' }}>
                         {getUserInitials()}
                       </AvatarFallback>
                     </Avatar>
@@ -396,11 +399,11 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   <div
                     style={{
                       position: 'absolute',
-                      top: '4px',
-                      left: '4px',
-                      right: '4px',
-                      bottom: '4px',
-                      backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                      top: '3px',
+                      left: '3px',
+                      right: '3px',
+                      bottom: '3px',
+                      backgroundColor: 'rgba(0, 0, 0, 0.5)',
                       borderRadius: '50%',
                       display: 'flex',
                       alignItems: 'center',
@@ -417,12 +420,12 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     }}
                     onClick={() => setIsProfileImageModalOpen(true)}
                   >
-                    <span style={{ color: '#FFFFFF', fontSize: '13px', fontWeight: 500, letterSpacing: '0.5px' }}>Change photo</span>
+                    <span style={{ color: '#ffffff', fontSize: '12px', fontWeight: 500 }}>Edit</span>
                   </div>
                 </div>
                 
                 {/* Name - Editable */}
-                <div style={{ marginBottom: '16px' }}>
+                <div style={{ marginBottom: '8px' }}>
                   <EnhancedEditableField
                     value={
                       userData?.first_name || userData?.last_name
@@ -466,13 +469,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                       return { isValid: true };
                     }}
                     placeholder="Enter your name"
-                    icon={<User className="w-4.5 h-4.5" />}
+                    icon={<User className="w-4 h-4" />}
                     required
                   />
                 </div>
 
                 {/* Title - Editable */}
-                <div style={{ marginBottom: '16px' }}>
+                <div style={{ marginBottom: '4px' }}>
                   <EnhancedEditableField
                     value={userData?.title || 'Property Manager'}
                     onSave={async (value) => {
@@ -489,9 +492,15 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     required
                   />
                 </div>
+              </div>
 
+              {/* Divider */}
+              <div style={{ height: '1px', backgroundColor: '#e5e7eb', margin: '0 -28px 24px -28px' }} />
+
+              {/* Contact Information */}
+              <div style={{ marginBottom: '24px' }}>
                 {/* Address - Editable */}
-                <div style={{ marginBottom: '16px' }}>
+                <div style={{ marginBottom: '4px' }}>
                   <EnhancedEditableField
                     value={userData?.address || userData?.location || ''}
                     onSave={async (value) => {
@@ -505,13 +514,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     }}
                     validate={validateAddress}
                     placeholder="Enter your address"
-                    icon={<MapPin className="w-4.5 h-4.5" />}
+                    icon={<MapPin className="w-4 h-4" />}
                     multiline
                   />
                 </div>
 
                 {/* Email - Editable */}
-                <div style={{ marginBottom: '16px' }}>
+                <div style={{ marginBottom: '4px' }}>
                   <EnhancedEditableField
                     value={userData?.email || ''}
                     onSave={async (value) => {
@@ -526,13 +535,13 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     validate={validateEmail}
                     type="email"
                     placeholder="Enter your email"
-                    icon={<Mail className="w-4.5 h-4.5" />}
+                    icon={<Mail className="w-4 h-4" />}
                     required
                   />
                 </div>
 
                 {/* Phone - Editable */}
-                <div style={{ marginBottom: '16px' }}>
+                <div>
                   <EnhancedEditableField
                     value={userData?.phone || ''}
                     onSave={async (value) => {
@@ -541,27 +550,32 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                         setUserData(prev => prev ? { ...prev, phone: value || undefined } : null);
                       } catch (error) {
                         console.error('Failed to save phone:', error);
-                        throw error; // Re-throw to let EnhancedEditableField handle the error display
+                        throw error;
                       }
                     }}
                     validate={validatePhone}
                     type="tel"
                     placeholder="Enter your phone number"
-                    icon={<Phone className="w-4.5 h-4.5" />}
+                    icon={<Phone className="w-4 h-4" />}
                   />
                 </div>
               </div>
 
+              {/* Divider */}
+              <div style={{ height: '1px', backgroundColor: '#e5e7eb', margin: '0 -28px 24px -28px' }} />
+
               {/* Organization */}
-              <div style={{ 
-                padding: '20px',
-                backgroundColor: '#FFFFFF',
-                border: '1px solid #DADCE0',
-                borderRadius: '12px',
-                marginBottom: '24px',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-              }}>
-                <div style={{ fontSize: '11px', color: '#5F6368', marginBottom: '16px', fontWeight: 500, letterSpacing: '0.5px', textTransform: 'uppercase', lineHeight: '1.4' }}>Organization</div>
+              <div style={{ marginBottom: '8px' }}>
+                <div style={{ 
+                  fontSize: '11px', 
+                  color: '#9ca3af', 
+                  marginBottom: '12px', 
+                  fontWeight: 600, 
+                  letterSpacing: '0.05em', 
+                  textTransform: 'uppercase',
+                }}>
+                  Organization
+                </div>
                 <EnhancedEditableField
                   value={userData?.organization || 'Solosway'}
                   onSave={async (value) => {
@@ -570,102 +584,137 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   }}
                   validate={validateOrganization}
                   placeholder="Enter organization name"
-                  icon={<Building2 className="w-4.5 h-4.5" />}
+                  icon={<Building2 className="w-4 h-4" />}
                   required
                 />
-                {/* Logo upload area */}
-                <div
-                  style={{
-                    width: '64px',
-                    height: '64px',
-                    border: '2px dashed #DADCE0',
-                    backgroundColor: userData?.company_logo_url ? 'transparent' : '#F8F9FA',
-                    borderRadius: '8px',
-                    marginTop: '16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    position: 'relative',
-                    transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = '#1A73E8';
-                    e.currentTarget.style.backgroundColor = '#F1F3F4';
-                    e.currentTarget.style.boxShadow = '0 2px 6px rgba(0, 0, 0, 0.1)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = '#DADCE0';
-                    e.currentTarget.style.backgroundColor = userData?.company_logo_url ? 'transparent' : '#F8F9FA';
-                    e.currentTarget.style.boxShadow = 'none';
-                  }}
-                  onClick={() => setIsCompanyLogoModalOpen(true)}
-                >
+                
+                {/* Logo section */}
+                <div style={{ marginTop: '16px' }}>
                   {userData?.company_logo_url ? (
-                    <>
-                      <img
-                        src={userData.company_logo_url}
-                        alt="Company logo"
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'contain',
-                          borderRadius: '6px',
-                        }}
-                      />
-                      {/* Remove button overlay - appears on hover */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <div
                         style={{
-                          position: 'absolute',
-                          top: '-8px',
-                          right: '-8px',
-                          width: '20px',
-                          height: '20px',
-                          backgroundColor: '#EA4335',
-                          borderRadius: '50%',
+                          width: '48px',
+                          height: '48px',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          border: '1px solid #e5e7eb',
+                          backgroundColor: '#ffffff',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          cursor: 'pointer',
-                          opacity: 0,
-                          transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                          boxShadow: '0 2px 4px rgba(234, 67, 53, 0.3)',
                         }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.opacity = '1';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.opacity = '0';
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (window.confirm('Remove company logo?')) {
-                            removeCompanyLogo().then(() => {
-                              setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null);
-                            }).catch(console.error);
-                          }
-                        }}
-                        title="Remove logo"
                       >
-                        <X className="w-3 h-3" style={{ color: '#FFFFFF' }} />
+                        <img
+                          src={userData.company_logo_url}
+                          alt="Company logo"
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'contain',
+                          }}
+                        />
                       </div>
-                    </>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => setIsCompanyLogoModalOpen(true)}
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                            color: '#3b82f6',
+                            backgroundColor: '#eff6ff',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            transition: 'all 150ms ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = '#dbeafe';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = '#eff6ff';
+                          }}
+                        >
+                          Change
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (window.confirm('Remove company logo?')) {
+                              removeCompanyLogo().then(() => {
+                                setUserData(prev => prev ? { ...prev, company_logo_url: undefined } : null);
+                              }).catch(console.error);
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                            color: '#ef4444',
+                            backgroundColor: '#fef2f2',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            transition: 'all 150ms ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor = '#fee2e2';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor = '#fef2f2';
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
                   ) : (
-                    <Upload className="w-5 h-5" style={{ color: '#5F6368' }} />
+                    <button
+                      onClick={() => setIsCompanyLogoModalOpen(true)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '10px 16px',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                        color: '#6b7280',
+                        backgroundColor: '#f9fafb',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        transition: 'all 150ms ease',
+                        width: '100%',
+                        justifyContent: 'center',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f3f4f6';
+                        e.currentTarget.style.borderColor = '#d1d5db';
+                        e.currentTarget.style.color = '#374151';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f9fafb';
+                        e.currentTarget.style.borderColor = '#e5e7eb';
+                        e.currentTarget.style.color = '#6b7280';
+                      }}
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>Upload company logo</span>
+                    </button>
                   )}
                 </div>
               </div>
             </div>
 
             {/* Right Main Content */}
-            <div style={{ flex: 1, padding: '24px' }}>
+            <div style={{ flex: 1, padding: '32px' }}>
               {/* Contributions Heatmap Section */}
               <div style={{ marginBottom: '32px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#415C85' }}>
-                    {totalContributions} contributions in {selectedYear}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>
+                    {totalContributions} contribution{totalContributions !== 1 ? 's' : ''} in {selectedYear}
                   </h2>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     {/* Left arrow - navigate to previous year */}
                     <button
                       onClick={() => {
@@ -676,68 +725,69 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                       }}
                       disabled={selectedYear <= 2020}
                       style={{
-                        padding: '4px 6px',
-                        fontSize: '11px',
-                        color: selectedYear <= 2020 ? '#9CA3AF' : '#63748A',
+                        padding: '6px',
+                        color: selectedYear <= 2020 ? '#d1d5db' : '#6b7280',
                         backgroundColor: 'transparent',
-                        border: '1px solid #E9E9EB',
-                        borderRadius: '2px',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '6px',
                         cursor: selectedYear <= 2020 ? 'not-allowed' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        opacity: selectedYear <= 2020 ? 0.5 : 1,
+                        justifyContent: 'center',
+                        transition: 'all 150ms ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedYear > 2020) {
+                          e.currentTarget.style.backgroundColor = '#f3f4f6';
+                          e.currentTarget.style.borderColor = '#d1d5db';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                        e.currentTarget.style.borderColor = '#e5e7eb';
                       }}
                       title="Previous year"
                     >
-                      <ChevronLeft className="w-3.5 h-3.5" />
+                      <ChevronLeft className="w-4 h-4" />
                     </button>
 
                     {/* Year buttons */}
                     {yearButtons.map((year) => {
-                      const isCurrentYear = year === currentYear;
                       const isSelected = year === selectedYear;
                       return (
                         <button
                           key={year}
                           onClick={() => setSelectedYear(year)}
                           style={{
-                            padding: '4px 8px',
-                            fontSize: '11px',
+                            padding: '6px 14px',
+                            fontSize: '12px',
                             fontWeight: 500,
-                            color: isSelected ? '#FFFFFF' : (isCurrentYear ? '#F59E0B' : '#63748A'),
-                            backgroundColor: isSelected 
-                              ? (isCurrentYear ? '#F59E0B' : '#415C85')
-                              : 'transparent',
-                            border: `1px solid ${isSelected || isCurrentYear ? (isCurrentYear ? '#F59E0B' : '#415C85') : '#E9E9EB'}`,
-                            borderRadius: '2px',
+                            color: isSelected ? '#ffffff' : '#6b7280',
+                            backgroundColor: isSelected ? '#3b82f6' : 'transparent',
+                            border: `1px solid ${isSelected ? '#3b82f6' : '#e5e7eb'}`,
+                            borderRadius: '9999px',
                             cursor: 'pointer',
+                            transition: 'all 150ms ease',
                           }}
-                          title={isCurrentYear ? 'Current year' : undefined}
+                          onMouseEnter={(e) => {
+                            if (!isSelected) {
+                              e.currentTarget.style.backgroundColor = '#f3f4f6';
+                              e.currentTarget.style.borderColor = '#d1d5db';
+                              e.currentTarget.style.color = '#374151';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!isSelected) {
+                              e.currentTarget.style.backgroundColor = 'transparent';
+                              e.currentTarget.style.borderColor = '#e5e7eb';
+                              e.currentTarget.style.color = '#6b7280';
+                            }
+                          }}
                         >
                           {year}
                         </button>
                       );
                     })}
-
-                    {/* Current year button - always visible */}
-                    {!yearButtons.includes(currentYear) && (
-                      <button
-                        onClick={() => setSelectedYear(currentYear)}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: '11px',
-                          fontWeight: 500,
-                          color: selectedYear === currentYear ? '#FFFFFF' : '#F59E0B',
-                          backgroundColor: selectedYear === currentYear ? '#F59E0B' : 'transparent',
-                          border: `1px solid ${selectedYear === currentYear ? '#F59E0B' : '#E9E9EB'}`,
-                          borderRadius: '2px',
-                          cursor: 'pointer',
-                        }}
-                        title="Jump to current year"
-                      >
-                        Current
-                      </button>
-                    )}
 
                     {/* Right arrow - navigate to next year */}
                     <button
@@ -749,46 +799,57 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                       }}
                       disabled={selectedYear >= currentYear}
                       style={{
-                        padding: '4px 6px',
-                        fontSize: '11px',
-                        color: selectedYear >= currentYear ? '#9CA3AF' : '#63748A',
+                        padding: '6px',
+                        color: selectedYear >= currentYear ? '#d1d5db' : '#6b7280',
                         backgroundColor: 'transparent',
-                        border: '1px solid #E9E9EB',
-                        borderRadius: '2px',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '6px',
                         cursor: selectedYear >= currentYear ? 'not-allowed' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        opacity: selectedYear >= currentYear ? 0.5 : 1,
+                        justifyContent: 'center',
+                        transition: 'all 150ms ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedYear < currentYear) {
+                          e.currentTarget.style.backgroundColor = '#f3f4f6';
+                          e.currentTarget.style.borderColor = '#d1d5db';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'transparent';
+                        e.currentTarget.style.borderColor = '#e5e7eb';
                       }}
                       title="Next year"
                     >
-                      <ChevronRight className="w-3.5 h-3.5" />
+                      <ChevronRight className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
 
                 {/* Heatmap Grid */}
                 <div style={{ 
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid #E9E9EB',
-                  borderRadius: 0,
-                  padding: '16px',
-                  marginBottom: '12px',
-                  overflow: 'hidden', // Prevent any content from leaking outside
+                  backgroundColor: '#ffffff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '12px',
+                  padding: '20px',
+                  marginBottom: '16px',
+                  overflow: 'hidden',
                 }}>
                   <div style={{ 
                     display: 'flex', 
                     gap: '4px', 
                     marginBottom: '8px',
-                    overflow: 'hidden', // Prevent overflow
+                    overflow: 'hidden',
                   }}>
                     {/* Day labels */}
                     <div style={{ 
-                      width: '20px', 
+                      width: '24px', 
                       fontSize: '10px', 
-                      color: '#6C7180', 
-                      paddingTop: '12px',
-                      flexShrink: 0, // Prevent shrinking
+                      color: '#9ca3af', 
+                      paddingTop: '14px',
+                      flexShrink: 0,
+                      fontWeight: 500,
                     }}>
                       <div style={{ height: '11px', lineHeight: '11px' }}>S</div>
                       <div style={{ height: '11px', lineHeight: '11px' }}>M</div>
@@ -804,18 +865,19 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                       flex: 1, 
                       position: 'relative',
                       overflow: 'hidden',
-                      minWidth: 0, // Prevent flex item from overflowing
-                      maxWidth: '100%', // Ensure it doesn't exceed container
+                      minWidth: 0,
+                      maxWidth: '100%',
                     }}>
                       {/* Month labels - calculate positions based on weeks */}
                       <div style={{ 
                         display: 'flex', 
-                        marginBottom: '4px', 
+                        marginBottom: '6px', 
                         fontSize: '10px', 
-                        color: '#6C7180', 
+                        color: '#9ca3af', 
                         position: 'relative', 
-                        height: '12px',
+                        height: '14px',
                         overflow: 'hidden',
+                        fontWeight: 500,
                       }}>
                         {(() => {
                           const monthLabels: { month: string; week: number }[] = [];
@@ -827,7 +889,6 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                             const month = date.getMonth();
                             const week = Math.floor(idx / 7);
                             
-                            // Only show label at the start of each month
                             if (month !== lastMonth && date.getDate() <= 7) {
                               monthLabels.push({ month: months[month], week });
                               lastMonth = month;
@@ -858,10 +919,9 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                         width: '100%',
                         maxWidth: '100%',
                         position: 'relative',
-                        height: '77px', // Fixed height: 7 rows × 11px = 77px
+                        height: '77px',
                       }}>
                         {Array.from({ length: Math.min(53, Math.ceil(heatmapData.length / 7)) }, (_, weekIdx) => {
-                          // Only render if we have data for this week
                           const weekStartIdx = weekIdx * 7;
                           if (weekStartIdx >= heatmapData.length) return null;
                           
@@ -873,23 +933,22 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                                 flexDirection: 'column', 
                                 gap: '3px',
                                 flexShrink: 0,
-                                width: '11px', // Fixed width per week column
-                                height: '77px', // Fixed height to match container
-                                overflow: 'hidden', // Prevent any overflow
+                                width: '11px',
+                                height: '77px',
+                                overflow: 'hidden',
                               }}
                             >
                               {Array.from({ length: 7 }, (_, dayIdx) => {
                                 const dayIdxInData = weekStartIdx + dayIdx;
                                 const day = heatmapData[dayIdxInData];
                                 if (!day) {
-                                  // Render empty square if no data (shouldn't happen, but be safe)
                                   return (
                                     <div
                                       key={`empty-${weekIdx}-${dayIdx}`}
                                       style={{
                                         width: '11px',
                                         height: '11px',
-                                        backgroundColor: '#EBEDF0',
+                                        backgroundColor: '#ebedf0',
                                         borderRadius: '2px',
                                         flexShrink: 0,
                                       }}
@@ -906,14 +965,16 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                                     style={{
                                       width: '11px',
                                       height: '11px',
-                                      backgroundColor: isCurrentYear ? getContributionColor(day.count) : '#EBEDF0',
+                                      backgroundColor: isCurrentYear ? getContributionColor(day.count) : '#ebedf0',
                                       borderRadius: '2px',
                                       cursor: isCurrentYear ? 'pointer' : 'default',
                                       position: 'relative',
                                       flexShrink: 0,
+                                      transition: 'transform 100ms ease',
                                     }}
                                     onMouseEnter={(e) => {
                                       if (isCurrentYear) {
+                                        e.currentTarget.style.transform = 'scale(1.2)';
                                         const rect = e.currentTarget.getBoundingClientRect();
                                         setHoveredDay({
                                           date: day.date,
@@ -923,7 +984,10 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                                         });
                                       }
                                     }}
-                                    onMouseLeave={() => setHoveredDay(null)}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.transform = 'scale(1)';
+                                      setHoveredDay(null);
+                                    }}
                                   />
                                 );
                               })}
@@ -935,10 +999,10 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                   </div>
 
                   {/* Legend */}
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '4px', marginTop: '12px', fontSize: '10px', color: '#6C7180' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '6px', marginTop: '16px', fontSize: '11px', color: '#9ca3af', fontWeight: 500 }}>
                     <span>Less</span>
-                    <div style={{ display: 'flex', gap: '2px' }}>
-                      <div style={{ width: '11px', height: '11px', backgroundColor: '#EBEDF0', borderRadius: '2px' }}></div>
+                    <div style={{ display: 'flex', gap: '3px' }}>
+                      <div style={{ width: '11px', height: '11px', backgroundColor: '#ebedf0', borderRadius: '2px' }}></div>
                       <div style={{ width: '11px', height: '11px', backgroundColor: '#9BE9A8', borderRadius: '2px' }}></div>
                       <div style={{ width: '11px', height: '11px', backgroundColor: '#40C463', borderRadius: '2px' }}></div>
                       <div style={{ width: '11px', height: '11px', backgroundColor: '#30A14E', borderRadius: '2px' }}></div>
@@ -954,15 +1018,17 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
                     style={{
                       position: 'fixed',
                       left: `${hoveredDay.x}px`,
-                      top: `${hoveredDay.y - 40}px`,
-                      backgroundColor: '#212121',
-                      color: '#FFFFFF',
-                      padding: '6px 8px',
-                      borderRadius: '2px',
-                      fontSize: '11px',
+                      top: `${hoveredDay.y - 44}px`,
+                      backgroundColor: '#1f2937',
+                      color: '#ffffff',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                      fontWeight: 500,
                       zIndex: 1000,
                       pointerEvents: 'none',
                       transform: 'translateX(-50%)',
+                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
                     }}
                   >
                     {hoveredDay.count} contribution{hoveredDay.count !== 1 ? 's' : ''} on {new Date(hoveredDay.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
@@ -973,50 +1039,70 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
               {/* Popular Projects Section */}
               {projects && projects.length > 0 && (
                 <div style={{ marginBottom: '32px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                    <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#415C85' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a' }}>
                       Popular projects
                     </h2>
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {projects.slice(0, 6).map((project) => (
+                  <div style={{ 
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '12px',
+                    overflow: 'hidden',
+                  }}>
+                    {projects.slice(0, 6).map((project, idx) => (
                       <div
                         key={project.id}
                         style={{
-                          backgroundColor: '#FFFFFF',
-                          border: '1px solid #E9E9EB',
-                          borderRadius: 0,
-                          padding: '12px',
+                          padding: '14px 18px',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
                           cursor: 'pointer',
+                          borderBottom: idx < Math.min(projects.length, 6) - 1 ? '1px solid #f3f4f6' : 'none',
+                          transition: 'background-color 150ms ease',
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.backgroundColor = '#F0F6FF';
+                          e.currentTarget.style.backgroundColor = '#f9fafb';
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.backgroundColor = '#FFFFFF';
+                          e.currentTarget.style.backgroundColor = 'transparent';
                         }}
                       >
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                            <FolderOpen className="w-3.5 h-3.5" style={{ color: '#6C7180' }} />
-                            <span style={{ fontSize: '12px', fontWeight: 500, color: '#415C85' }}>
-                              {project.title}
-                            </span>
-                            <span style={{
-                              fontSize: '10px',
-                              padding: '2px 6px',
-                              backgroundColor: '#F9F9F9',
-                              color: '#6C7180',
-                              borderRadius: '2px',
-                            }}>
-                              {project.status}
-                            </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
+                          <div style={{
+                            width: '32px',
+                            height: '32px',
+                            borderRadius: '8px',
+                            backgroundColor: '#eff6ff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                          }}>
+                            <FolderOpen className="w-4 h-4" style={{ color: '#3b82f6' }} />
                           </div>
-                          <div style={{ fontSize: '11px', color: '#6C7180', marginLeft: '20px' }}>
-                            {project.client_name}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <span style={{ fontSize: '13px', fontWeight: 500, color: '#1a1a1a' }}>
+                                {project.title}
+                              </span>
+                              <span style={{
+                                fontSize: '11px',
+                                padding: '2px 8px',
+                                backgroundColor: '#f3f4f6',
+                                color: '#6b7280',
+                                borderRadius: '9999px',
+                                fontWeight: 500,
+                              }}>
+                                {project.status}
+                              </span>
+                            </div>
+                            {project.client_name && (
+                              <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '2px' }}>
+                                {project.client_name}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1027,56 +1113,90 @@ const Profile: React.FC<ProfileProps> = ({ onNavigate }) => {
 
               {/* Contribution Activity List */}
               <div>
-                <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#415C85', marginBottom: '16px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#1a1a1a', marginBottom: '16px' }}>
                   Contribution activity
                 </h2>
                 
                 {Object.keys(groupedActivities).length === 0 ? (
                   <div style={{ 
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E9E9EB',
-                    borderRadius: 0,
-                    padding: '24px',
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '12px',
+                    padding: '40px 24px',
                     textAlign: 'center',
                   }}>
-                    <p style={{ fontSize: '12px', color: '#6C7180' }}>No contributions yet</p>
+                    <div style={{
+                      width: '48px',
+                      height: '48px',
+                      borderRadius: '12px',
+                      backgroundColor: '#f3f4f6',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      margin: '0 auto 16px',
+                    }}>
+                      <FileText className="w-5 h-5" style={{ color: '#9ca3af' }} />
+                    </div>
+                    <p style={{ fontSize: '14px', color: '#6b7280', fontWeight: 500 }}>No contributions yet</p>
+                    <p style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>Your activity will appear here</p>
                   </div>
                 ) : (
                   Object.entries(groupedActivities).map(([month, monthActivities]) => (
                     <div key={month} style={{ marginBottom: '24px' }}>
-                      <h3 style={{ fontSize: '12px', fontWeight: 600, color: '#415C85', marginBottom: '12px' }}>
+                      <h3 style={{ fontSize: '13px', fontWeight: 600, color: '#6b7280', marginBottom: '12px' }}>
                         {month}
                       </h3>
                       <div style={{ 
-                        backgroundColor: '#FFFFFF',
-                        border: '1px solid #E9E9EB',
-                        borderRadius: 0,
+                        backgroundColor: '#ffffff',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '12px',
+                        overflow: 'hidden',
                       }}>
                         {monthActivities.map((activity, idx) => (
                           <div
                             key={`${activity.timestamp}-${activity.type}-${idx}-${activity.id || ''}`}
                             style={{
-                              padding: '12px 16px',
-                              borderBottom: idx < monthActivities.length - 1 ? '1px solid #E9E9EB' : 'none',
+                              padding: '14px 18px',
+                              borderBottom: idx < monthActivities.length - 1 ? '1px solid #f3f4f6' : 'none',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '12px',
+                              gap: '14px',
                               cursor: 'pointer',
+                              transition: 'background-color 150ms ease',
                             }}
                             onMouseEnter={(e) => {
-                              e.currentTarget.style.backgroundColor = '#F0F6FF';
+                              e.currentTarget.style.backgroundColor = '#f9fafb';
                             }}
                             onMouseLeave={(e) => {
                               e.currentTarget.style.backgroundColor = 'transparent';
                             }}
                           >
-                            {getActivityIcon(activity.type)}
-                            <div style={{ flex: 1 }}>
-                              <p style={{ fontSize: '12px', color: '#63748A', marginBottom: '2px' }}>
+                            <div style={{
+                              width: '32px',
+                              height: '32px',
+                              borderRadius: '8px',
+                              backgroundColor: activity.type === 'project' ? '#fef3c7' : activity.type === 'property' ? '#dcfce7' : '#e0e7ff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                            }}>
+                              {activity.type === 'project' && <FolderOpen className="w-4 h-4" style={{ color: '#d97706' }} />}
+                              {activity.type === 'property' && <Home className="w-4 h-4" style={{ color: '#16a34a' }} />}
+                              {activity.type === 'document' && <FileText className="w-4 h-4" style={{ color: '#4f46e5' }} />}
+                              {activity.type !== 'project' && activity.type !== 'property' && activity.type !== 'document' && <Plus className="w-4 h-4" style={{ color: '#6b7280' }} />}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <p style={{ fontSize: '13px', color: '#374151', fontWeight: 450 }}>
                                 {activity.description}
                               </p>
                             </div>
-                            <div style={{ fontSize: '11px', color: '#6C7180' }}>
+                            <div style={{ 
+                              fontSize: '12px', 
+                              color: '#9ca3af',
+                              fontWeight: 500,
+                              flexShrink: 0,
+                            }}>
                               {formatTimeAgo(activity.timestamp)}
                             </div>
                           </div>

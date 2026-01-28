@@ -77,6 +77,7 @@ class MainWorkflowState(TypedDict, total=False):
     is_agent_mode: Optional[bool]  # AGENT MODE: Enable LLM tool-based actions for proactive document display
     agent_actions: Optional[list[dict]]  # AGENT MODE: Actions requested by LLM (open_document, navigate, etc.)
     navigation_intent: Optional[dict]  # LLM-based navigation intent detection result (is_navigation, property_name, reason)
+    model_preference: Optional[str]  # User-selected LLM model ('gpt-4o-mini', 'gpt-4o', 'claude-sonnet', 'claude-opus')
 
 class DocumentQAState(TypedDict, total=False):
     """State for per-document Q&A subgraph"""
@@ -87,6 +88,7 @@ class DocumentQAState(TypedDict, total=False):
     answer: str
     detail_level: Optional[str]  # NEW: "concise" or "detailed" - controls prompt instructions
     citation_context: Optional[dict]  # NEW: Structured citation metadata (bbox, page, text, doc_id) - hidden from user
+    model_preference: Optional[str]  # User-selected LLM model (flows from MainWorkflowState)
 
 
 

@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.utils.model_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,8 @@ async def _determine_search_strategy(
     user_query: str,
     topic: str,
     previous_summary: str,
-    valuation_pages: list[int]
+    valuation_pages: list[int],
+    model_preference: str = None
 ) -> dict:
     """
     Use LLM to determine search strategy for follow-up queries.
@@ -164,12 +166,8 @@ async def _determine_search_strategy(
     min_page = min(valuation_pages) if valuation_pages else 1
     max_page = max(valuation_pages) if valuation_pages else 1
     
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-        streaming=False
-    )
+    # Use user-selected model (passed through from state)
+    llm = get_llm(model_preference, temperature=0)
     
     strategy_prompt = f"""You are analyzing a follow-up query to determine how to search a document.
 
@@ -234,7 +232,8 @@ async def _search_around_blocks(
     topic: str,
     user_query: str,
     previous_summary: str,
-    doc_ids: list[str]
+    doc_ids: list[str],
+    model_preference: str = None
 ) -> list[dict]:
     """
     Search around retrieved chunks for related information using LLM-determined strategy.
@@ -262,7 +261,8 @@ async def _search_around_blocks(
         user_query=user_query,
         topic=topic,
         previous_summary=previous_summary,
-        valuation_pages=list(pages)
+        valuation_pages=list(pages),
+        model_preference=model_preference
     )
     
     # Determine page range based on LLM strategy
@@ -378,7 +378,8 @@ async def _generate_detailed_response(
     topic: str,
     chunks: list[dict],
     conversation_history: list,
-    previous_entry: dict
+    previous_entry: dict,
+    model_preference: str = None
 ) -> str:
     """
     Generate detailed response using retrieved chunks and LLM understanding.
@@ -409,12 +410,8 @@ async def _generate_detailed_response(
             history_context = "CONVERSATION HISTORY:\n" + "\n".join(history_lines) + "\n\n"
     
     # Use LLM to understand what the user wants and generate appropriate instructions
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-        streaming=False
-    )
+    # Use user-selected model (passed through from state)
+    llm = get_llm(model_preference, temperature=0)
     
     instruction_prompt = f"""Analyze the user's follow-up query and determine what they are asking for.
 
@@ -470,13 +467,8 @@ The user is asking for more detailed information on: {topic}
 
 **Answer:**"""
     
-    # Call LLM
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-        streaming=False
-    )
+    # Call LLM - use user-selected model (passed through from state)
+    llm = get_llm(model_preference, temperature=0)
     
     response = await llm.ainvoke([system_msg, HumanMessage(content=human_prompt)])
     return response.content.strip()
@@ -601,12 +593,9 @@ async def handle_follow_up_query_fast(state: MainWorkflowState) -> MainWorkflowS
     
     conversation_context = "\n\n---\n\n".join(context_parts) if context_parts else f"Q: {previous_query}\nA: {previous_summary}"
     
-    # Single fast LLM call
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Single fast LLM call - use user-selected model from state
+    model_preference = state.get('model_preference')
+    llm = get_llm(model_preference, temperature=0)
     
     prompt = f"""You are answering a follow-up question based on a previous conversation about documents.
 
@@ -673,6 +662,7 @@ async def handle_follow_up_query_full(state: MainWorkflowState) -> MainWorkflowS
     """
     user_query = state.get("user_query", "")
     conversation_history = state.get("conversation_history", [])
+    model_preference = state.get('model_preference')  # Get user-selected model for LLM calls
     
     # Get previous document search entry
     logger.info(f"[FOLLOW_UP] Checking conversation history (length: {len(conversation_history)})")
@@ -755,7 +745,7 @@ async def handle_follow_up_query_full(state: MainWorkflowState) -> MainWorkflowS
         # Search around those blocks for related information using LLM strategy
         previous_summary = previous_entry.get('summary', '')
         expanded_chunks = await _search_around_blocks(
-            relevant_chunks, topic, user_query, previous_summary, doc_ids
+            relevant_chunks, topic, user_query, previous_summary, doc_ids, model_preference
         )
         
         if not expanded_chunks:
@@ -764,7 +754,7 @@ async def handle_follow_up_query_full(state: MainWorkflowState) -> MainWorkflowS
         
         # Generate detailed response
         detailed_response = await _generate_detailed_response(
-            user_query, topic, expanded_chunks, conversation_history, previous_entry
+            user_query, topic, expanded_chunks, conversation_history, previous_entry, model_preference
         )
         
         # Update conversation history

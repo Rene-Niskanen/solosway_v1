@@ -1,9 +1,10 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app, Response
 from flask_login import login_required, current_user, login_user, logout_user
-from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, Project, ProjectStatus, db
+from .models import Document, DocumentStatus, Property, PropertyDetails, DocumentRelationship, User, UserRole, UserStatus, PropertyCardCache, Project, ProjectStatus, ProjectAccess, db
 from .services.property_enrichment_service import PropertyEnrichmentService
 from .services.supabase_document_service import SupabaseDocumentService
 from .services.supabase_client_factory import get_supabase_client
+from .services.extended_thinking_service import get_thinking_service
 from datetime import datetime
 import os
 import uuid
@@ -463,6 +464,7 @@ def query_documents_stream():
         response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
         attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
         is_agent_mode = data.get('isAgentMode', False)  # AGENT MODE: Enable LLM tool-based actions
+        model_preference = data.get('model', 'gpt-4o-mini')  # MODEL SELECTION: User-selected LLM model
         
         # CRITICAL: Normalize undefined/null/empty values to None for Python
         # Frontend sends undefined which becomes null in JSON, but we want None in Python
@@ -499,6 +501,7 @@ def query_documents_stream():
             f"Document IDs: {document_ids} (count: {len(document_ids)}), "
             f"Session: {session_id}, "
             f"Response Mode: {response_mode or 'None'}, "
+            f"Model: {model_preference}, "
             f"Attachment Context: {attachment_info}"
         )
         
@@ -569,6 +572,7 @@ def query_documents_stream():
                     "response_mode": response_mode if response_mode else None,  # NEW: Response mode for file attachments (fast/detailed/full) - ensure None not empty string
                     "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
                     "is_agent_mode": is_agent_mode,  # AGENT MODE: Enable LLM tool-based actions for proactive document display
+                    "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM model
                     # conversation_history will be loaded from checkpointer or passed via messageHistory workaround
                 }
                 # #region agent log
@@ -1090,8 +1094,24 @@ def query_documents_stream():
                                             if reading_timestamp is None:
                                                 reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
                                             
-                                            # Get relevant_documents from state to match doc_ids
+                                            # Get relevant_documents from state to match doc_ids (contains raw chunk content)
                                             relevant_docs = state_data.get("relevant_documents", [])
+                                            # Build a map of doc_id -> list of raw chunk contents with retrieval metadata
+                                            relevant_docs_by_id = {}
+                                            for rel_doc in relevant_docs:
+                                                doc_id = rel_doc.get('doc_id')
+                                                if doc_id:
+                                                    if doc_id not in relevant_docs_by_id:
+                                                        relevant_docs_by_id[doc_id] = []
+                                                    chunk_content = rel_doc.get('content', '').strip()
+                                                    if chunk_content:
+                                                        relevant_docs_by_id[doc_id].append({
+                                                            'content': chunk_content,
+                                                            'page': rel_doc.get('page_number', 0),
+                                                            'source': rel_doc.get('source', 'unknown'),  # "bm25", "vector", "hybrid", etc.
+                                                            'similarity_score': rel_doc.get('similarity_score', 0.0),
+                                                            'chunk_index': rel_doc.get('chunk_index', 0)
+                                                        })
                                             
                                             # For follow-ups, show a single "Analyzing documents" step
                                             # For first queries, show individual "Read [filename]" steps with preview cards
@@ -1138,16 +1158,109 @@ def query_documents_stream():
                                                     # Increment slightly for each document to maintain order
                                                     reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
                                                     
+                                                    # Extract individual chunks from source_chunks_metadata (PRIORITY)
+                                                    # This has the ACTUAL chunks the LLM reads, not merged content
+                                                    source_chunks = doc_output.get('source_chunks_metadata', [])
+                                                    search_source = doc_output.get('search_source', doc_output.get('source', 'unknown'))
+                                                    llm_context_blocks = []
+                                                    
+                                                    # PRIORITY: Use source_chunks_metadata - these are the ACTUAL individual chunks
+                                                    if source_chunks:
+                                                        total_chunks = len(source_chunks)
+                                                        for idx, chunk in enumerate(source_chunks):
+                                                            chunk_content = chunk.get('content', '').strip()
+                                                            if chunk_content:
+                                                                llm_context_blocks.append({
+                                                                    'content': chunk_content,
+                                                                    'page': chunk.get('page_number', 0),
+                                                                    'type': 'selected_chunk',
+                                                                    'retrieval_method': chunk.get('source', search_source),
+                                                                    'similarity_score': chunk.get('similarity', chunk.get('similarity_score', 0.0)),
+                                                                    'chunk_index': chunk.get('chunk_index', idx),
+                                                                    'chunk_number': idx + 1,      # 1-indexed for display
+                                                                    'total_chunks': total_chunks   # Total chunk count
+                                                                })
+                                                    
+                                                    # Fallback: Use relevant_docs_by_id only if source_chunks is empty
+                                                    if not llm_context_blocks:
+                                                        doc_id_for_content = doc_output.get('doc_id', '')
+                                                        relevant_chunks = relevant_docs_by_id.get(doc_id_for_content, [])
+                                                        if relevant_chunks:
+                                                            sorted_chunks = sorted(relevant_chunks, key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+                                                            total_chunks = len(sorted_chunks)
+                                                            for idx, chunk in enumerate(sorted_chunks):
+                                                                content = chunk.get('content', '').strip()
+                                                                if content:
+                                                                    llm_context_blocks.append({
+                                                                        'content': content,
+                                                                        'page': chunk.get('page', 0),
+                                                                        'type': 'retrieved_chunk',
+                                                                        'retrieval_method': chunk.get('source', 'unknown'),
+                                                                        'similarity_score': chunk.get('similarity_score', 0.0),
+                                                                        'chunk_index': chunk.get('chunk_index', idx),
+                                                                        'chunk_number': idx + 1,
+                                                                        'total_chunks': total_chunks
+                                                                    })
+                                                    
+                                                    # Final fallback: try output or legacy source_chunks
+                                                    if not llm_context_blocks:
+                                                        output_content = doc_output.get('output', '')
+                                                        source_chunks_legacy = doc_output.get('source_chunks', [])
+                                                        
+                                                        if output_content and len(output_content) > 100:
+                                                            llm_context_blocks.append({
+                                                                'content': output_content,
+                                                                'page': 0,
+                                                                'type': 'output',
+                                                                'retrieval_method': search_source,
+                                                                'similarity_score': 0.0,
+                                                                'chunk_number': 1,
+                                                                'total_chunks': 1
+                                                            })
+                                                        elif source_chunks_legacy:
+                                                            combined = '\n'.join([str(c) for c in source_chunks_legacy if c])
+                                                            if combined:
+                                                                llm_context_blocks.append({
+                                                                    'content': combined,
+                                                                    'page': 0,
+                                                                    'type': 'legacy_chunk',
+                                                                    'retrieval_method': search_source,
+                                                                    'similarity_score': 0.0,
+                                                                    'chunk_number': 1,
+                                                                    'total_chunks': 1
+                                                                })
+                                                    
+                                                    # Build accurate message with chunk count and page info
+                                                    chunk_count = len(llm_context_blocks)
+                                                    # Update chunk_number for all blocks
+                                                    for idx, block in enumerate(llm_context_blocks):
+                                                        block['chunk_number'] = idx + 1
+                                                        block['total_chunks'] = chunk_count
+                                                    
+                                                    # Safely extract page numbers, handling None values
+                                                    pages = sorted(set(
+                                                        p for b in llm_context_blocks 
+                                                        for p in [b.get('page')] 
+                                                        if p is not None and isinstance(p, (int, float)) and p > 0
+                                                    ))
+                                                    if len(pages) > 1:
+                                                        page_info = f" (pages {min(pages)}-{max(pages)})"
+                                                    elif len(pages) == 1:
+                                                        page_info = f" (page {pages[0]})"
+                                                    else:
+                                                        page_info = ""
+                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
-                                                        'message': f'Read {display_filename}',
+                                                        'message': f'Analyzing {chunk_count} chunk{"s" if chunk_count != 1 else ""} from {display_filename}{page_info}',
                                                         'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
-                                                            'doc_metadata': doc_metadata
+                                                            'doc_metadata': doc_metadata,
+                                                            'llm_context': llm_context_blocks  # Document blocks for visualization
                                                         }
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
@@ -1211,6 +1324,14 @@ def query_documents_stream():
                                                 # Format citations for frontend (convert List[Citation] to Dict[str, CitationData])
                                                 processed_citations = {}
                                                 
+                                                # Build doc_id -> original_filename lookup from document_outputs
+                                                doc_filename_map = {}
+                                                for doc_output in doc_outputs_from_state:
+                                                    doc_id = doc_output.get('doc_id')
+                                                    filename = doc_output.get('original_filename')
+                                                    if doc_id and filename:
+                                                        doc_filename_map[doc_id] = filename
+                                                
                                                 # Stream citation events immediately
                                                 for citation in citations_from_state:
                                                     citation_num_str = str(citation['citation_number'])
@@ -1226,13 +1347,18 @@ def query_documents_stream():
                                                         citation_bbox = citation_bbox.copy()  # Don't modify original
                                                         citation_bbox['page'] = citation_page  # Update bbox page to match citation page
                                                     
+                                                    # Look up filename from document outputs
+                                                    citation_doc_id = citation.get('doc_id')
+                                                    citation_filename = doc_filename_map.get(citation_doc_id, '')
+                                                    
                                                     citation_data = {
-                                                        'doc_id': citation.get('doc_id'),
+                                                        'doc_id': citation_doc_id,
                                                         'page': citation_page,
                                                         'bbox': citation_bbox,  # Bbox now has correct page number
                                                         'method': citation.get('method', 'block-id-lookup'),
                                                         'block_id': citation.get('block_id'),  # Include block_id for debugging
-                                                        'cited_text': citation.get('cited_text', '')  # Include cited_text for debugging
+                                                        'cited_text': citation.get('cited_text', ''),  # Include cited_text for debugging
+                                                        'original_filename': citation_filename  # Include filename for frontend display
                                                     }
                                                     
                                                     block_id = citation.get('block_id', 'UNKNOWN')
@@ -1313,20 +1439,173 @@ def query_documents_stream():
                                             # Emit "Summarizing content" reasoning step (like Cursor's wand sparkles)
                                             # Use timestamp to ensure it comes after all reading steps
                                             summarize_timestamp = time.time()
+                                            
+                                            # Build summarization context from document_outputs
+                                            # This shows what the LLM sees when creating the final answer
+                                            summarization_context = []
+                                            for doc in doc_outputs_from_state:
+                                                doc_type = (doc.get('classification_type') or 'Document').replace('_', ' ').title()
+                                                filename = doc.get('original_filename', f"Document {doc.get('doc_id', '')[:8]}")
+                                                address = doc.get('property_address', '')
+                                                page_info = doc.get('page_range', 'unknown')
+                                                search_source = doc.get('search_source', 'unknown')
+                                                similarity = doc.get('similarity_score', 0.0)
+                                                output_text = doc.get('output', '')  # The QA output from stage 3
+                                                
+                                                if output_text:  # Only include docs with actual output
+                                                    summarization_context.append({
+                                                        'content': output_text,
+                                                        'doc_type': doc_type,
+                                                        'filename': filename,
+                                                        'address': address,
+                                                        'page_info': page_info,
+                                                        'retrieval_method': search_source,
+                                                        'similarity_score': similarity if isinstance(similarity, (int, float)) else 0.0,
+                                                        'doc_index': len(summarization_context) + 1,
+                                                        'total_docs': doc_count
+                                                    })
+                                            
                                             summarizing_data = {
                                                 'type': 'reasoning_step',
                                                 'step': 'summarizing_content',
                                                 'action_type': 'summarising',
-                                                'message': 'Summarising content',
+                                                'message': 'Planning next moves',
                                                 'timestamp': summarize_timestamp,  # After reading steps
-                                                'details': {'documents_processed': doc_count}
+                                                'details': {
+                                                    'documents_processed': doc_count,
+                                                    'llm_context': summarization_context  # Document QA outputs for visualization
+                                                }
                                             }
                                             yield f"data: {json.dumps(summarizing_data)}\n\n"
-                                            logger.info("✨ [STREAM] Emitted 'Summarizing content' reasoning step")
+                                            logger.info(f"✨ [STREAM] Emitted 'Summarizing content' reasoning step with {len(summarization_context)} document contexts")
                                             
                                             # AGENT-NATIVE: Agent actions are now emitted from frontend when they actually happen
                                             # This ensures "Opening citation view" appears when document actually opens, not before
                                             # (Reasoning steps for agent actions removed - they'll be added by frontend on actual execution)
+                                            
+                                            # Emit "Thinking..." step - Cursor-style LLM reasoning before response
+                                            # Extract key facts from document outputs for synthetic thinking
+                                            thinking_points = []
+                                            seen_facts = set()  # Deduplicate similar facts
+                                            doc_outputs_for_thinking = final_result.get('document_outputs', []) if final_result else []
+                                            
+                                            logger.info(f"🧠 [THINKING] Extracting facts from {len(doc_outputs_for_thinking)} document outputs")
+                                            
+                                            for doc_output in doc_outputs_for_thinking[:5]:  # Check up to 5 docs
+                                                doc_type = doc_output.get('classification_type', 'Document')
+                                                output_text = doc_output.get('output', '')
+                                                
+                                                # Extract meaningful content lines (skip headers, formatting, short lines)
+                                                content_lines = []
+                                                for line in output_text.split('\n'):
+                                                    stripped = line.strip()
+                                                    # Skip empty, short, header, or formatting lines
+                                                    if not stripped or len(stripped) < 20:
+                                                        continue
+                                                    if stripped.startswith('#'):  # Markdown headers
+                                                        continue
+                                                    if stripped.startswith(('---', '***', '===', '```')):  # Dividers/code
+                                                        continue
+                                                    if stripped.startswith(('|', '>', '-', '*', '+')):  # Tables, quotes, lists
+                                                        # Allow list items if they have substantial content
+                                                        if stripped.startswith(('-', '*', '+')) and len(stripped) > 30:
+                                                            content_lines.append(stripped[1:].strip())  # Remove bullet
+                                                        continue
+                                                    content_lines.append(stripped)
+                                                
+                                                if content_lines:
+                                                    # For non-Claude models, show more detail - collect multiple lines and don't truncate
+                                                    # Take up to 3 meaningful content lines (or first 500 chars total)
+                                                    collected_lines = []
+                                                    total_chars = 0
+                                                    max_chars_per_fact = 500  # Increased from 100 to show more detail
+                                                    
+                                                    for line in content_lines[:3]:  # Take up to 3 lines
+                                                        if total_chars + len(line) > max_chars_per_fact:
+                                                            # Add partial line if we have room
+                                                            remaining = max_chars_per_fact - total_chars
+                                                            if remaining > 20:  # Only if meaningful space left
+                                                                collected_lines.append(line[:remaining] + '...')
+                                                            break
+                                                        collected_lines.append(line)
+                                                        total_chars += len(line)
+                                                    
+                                                    # Join lines with newlines for better readability
+                                                    fact = '\n'.join(collected_lines)
+                                                    
+                                                    # Deduplicate: check if we've seen similar content
+                                                    fact_key = fact[:100].lower()  # Use first 100 chars as dedup key (increased from 50)
+                                                    if fact_key not in seen_facts:
+                                                        seen_facts.add(fact_key)
+                                                        thinking_points.append(f"Found in {doc_type}: {fact}")
+                                                        
+                                                        # Stop after 5 unique points (increased from 3 for more detail)
+                                                        if len(thinking_points) >= 5:
+                                                            break
+                                            
+                                            # Check if using Claude model with extended thinking
+                                            is_claude_model = model_preference and model_preference.startswith('claude')
+                                            thinking_service = get_thinking_service()
+                                            use_extended_thinking = is_claude_model and thinking_service.is_available()
+                                            
+                                            if use_extended_thinking:
+                                                # Use Claude's native extended thinking for real-time reasoning
+                                                logger.info(f"🧠 [STREAM] Using Claude extended thinking for model: {model_preference}")
+                                                
+                                                # Emit initial thinking step (will be updated with streaming content)
+                                                thinking_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'thinking',
+                                                    'action_type': 'thinking',
+                                                    'message': 'Thinking...',
+                                                    'timestamp': time.time(),
+                                                    'details': {
+                                                        'thinking_content': '',
+                                                        'is_streaming': True
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(thinking_data)}\n\n"
+                                                
+                                                # Stream extended thinking from Claude
+                                                thinking_chunks = []
+                                                doc_outputs_for_extended = final_result.get('document_outputs', []) if final_result else []
+                                                
+                                                async for event in thinking_service.stream_thinking_analysis(
+                                                    query=query,
+                                                    document_context="",  # Not needed when using document_outputs
+                                                    document_outputs=doc_outputs_for_extended
+                                                ):
+                                                    if event['type'] == 'thinking_delta':
+                                                        thinking_chunk = event.get('content', '')
+                                                        thinking_chunks.append(thinking_chunk)
+                                                        # Stream each thinking chunk to frontend
+                                                        yield f"data: {json.dumps({'type': 'thinking_chunk', 'content': thinking_chunk})}\n\n"
+                                                    elif event['type'] == 'thinking_end':
+                                                        # Signal thinking is complete
+                                                        full_thinking = ''.join(thinking_chunks)
+                                                        yield f"data: {json.dumps({'type': 'thinking_complete', 'content': full_thinking})}\n\n"
+                                                        logger.info(f"🧠 [STREAM] Extended thinking complete ({len(full_thinking)} chars)")
+                                                
+                                            else:
+                                                # Build synthetic thinking content string
+                                                if thinking_points:
+                                                    thinking_content = '\n'.join([f"- {point}" for point in thinking_points])
+                                                else:
+                                                    # Fallback if no document outputs available
+                                                    thinking_content = "- Analyzing retrieved documents...\n- Synthesizing findings..."
+                                                
+                                                thinking_data = {
+                                                    'type': 'reasoning_step',
+                                                    'step': 'thinking',
+                                                    'action_type': 'thinking',
+                                                    'message': 'Thinking...',
+                                                    'timestamp': time.time(),
+                                                    'details': {
+                                                        'thinking_content': thinking_content
+                                                    }
+                                                }
+                                                yield f"data: {json.dumps(thinking_data)}\n\n"
+                                                logger.info(f"🧠 [STREAM] Emitted synthetic 'Thinking...' step with {len(thinking_points)} points")
                                             
                                             # Stream status
                                             yield f"data: {json.dumps({'type': 'status', 'message': 'Streaming response...'})}\n\n"
@@ -1338,11 +1617,17 @@ def query_documents_stream():
                                             
                                             # Stream in chunks to maintain formatting while still providing smooth streaming
                                             chunk_size = 10  # Stream 10 characters at a time for smooth UX
+                                            streaming_start_time = time.time()
                                             for i in range(0, len(final_summary_from_state), chunk_size):
                                                 if i == 0:
                                                     logger.info("🚀 [STREAM] First chunk streamed IMMEDIATELY from summarize_results")
                                                 chunk = final_summary_from_state[i:i + chunk_size]
                                                 yield f"data: {json.dumps({'type': 'token', 'token': chunk})}\n\n"
+                                            
+                                            # Calculate elapsed time for summarization (for adaptive animation in frontend)
+                                            summarization_elapsed_ms = int((time.time() - summarize_timestamp) * 1000)
+                                            yield f"data: {json.dumps({'type': 'summarization_complete', 'elapsed_ms': summarization_elapsed_ms})}\n\n"
+                                            logger.info(f"⏱️ [STREAM] Summarization complete signal emitted (elapsed: {summarization_elapsed_ms}ms)")
                                             
                                             summary_already_streamed = True
                                             logger.info(f"🚀 [STREAM] Summary fully streamed ({len(final_summary_from_state)} chars) - continuing event loop for cleanup")
@@ -1473,6 +1758,25 @@ def query_documents_stream():
                                                 if reading_timestamp is None:
                                                     reading_timestamp = time.time() - 2.0  # Fallback: 2 seconds before current time
                                                 
+                                                # Get relevant_documents from state (contains raw chunk content)
+                                                relevant_docs_second = state_data.get("relevant_documents", [])
+                                                # Build a map of doc_id -> list of raw chunk contents with retrieval metadata
+                                                relevant_docs_by_id_second = {}
+                                                for rel_doc in relevant_docs_second:
+                                                    doc_id = rel_doc.get('doc_id')
+                                                    if doc_id:
+                                                        if doc_id not in relevant_docs_by_id_second:
+                                                            relevant_docs_by_id_second[doc_id] = []
+                                                        chunk_content = rel_doc.get('content', '').strip()
+                                                        if chunk_content:
+                                                            relevant_docs_by_id_second[doc_id].append({
+                                                                'content': chunk_content,
+                                                                'page': rel_doc.get('page_number', 0),
+                                                                'source': rel_doc.get('source', 'unknown'),  # "bm25", "vector", "hybrid", etc.
+                                                                'similarity_score': rel_doc.get('similarity_score', 0.0),
+                                                                'chunk_index': rel_doc.get('chunk_index', 0)
+                                                            })
+                                                
                                                 # Create individual reading steps for each document (for preview cards)
                                                 for i, doc_output in enumerate(doc_outputs):
                                                     filename = doc_output.get('original_filename', '') or ''
@@ -1504,16 +1808,109 @@ def query_documents_stream():
                                                     # Increment slightly for each document to maintain order
                                                     reading_step_timestamp = reading_timestamp + (i * 0.01) if reading_timestamp else time.time()
                                                     
+                                                    # Extract individual chunks from source_chunks_metadata (PRIORITY)
+                                                    # This has the ACTUAL chunks the LLM reads, not merged content
+                                                    source_chunks = doc_output.get('source_chunks_metadata', [])
+                                                    search_source = doc_output.get('search_source', doc_output.get('source', 'unknown'))
+                                                    llm_context_blocks = []
+                                                    
+                                                    # PRIORITY: Use source_chunks_metadata - these are the ACTUAL individual chunks
+                                                    if source_chunks:
+                                                        total_chunks = len(source_chunks)
+                                                        for idx, chunk in enumerate(source_chunks):
+                                                            chunk_content = chunk.get('content', '').strip()
+                                                            if chunk_content:
+                                                                llm_context_blocks.append({
+                                                                    'content': chunk_content,
+                                                                    'page': chunk.get('page_number', 0),
+                                                                    'type': 'selected_chunk',
+                                                                    'retrieval_method': chunk.get('source', search_source),
+                                                                    'similarity_score': chunk.get('similarity', chunk.get('similarity_score', 0.0)),
+                                                                    'chunk_index': chunk.get('chunk_index', idx),
+                                                                    'chunk_number': idx + 1,      # 1-indexed for display
+                                                                    'total_chunks': total_chunks   # Total chunk count
+                                                                })
+                                                    
+                                                    # Fallback: Use relevant_docs_by_id_second only if source_chunks is empty
+                                                    if not llm_context_blocks:
+                                                        doc_id_for_content = doc_output.get('doc_id', '')
+                                                        relevant_chunks = relevant_docs_by_id_second.get(doc_id_for_content, [])
+                                                        if relevant_chunks:
+                                                            sorted_chunks = sorted(relevant_chunks, key=lambda x: x.get('similarity_score', 0.0), reverse=True)
+                                                            total_chunks = len(sorted_chunks)
+                                                            for idx, chunk in enumerate(sorted_chunks):
+                                                                content = chunk.get('content', '').strip()
+                                                                if content:
+                                                                    llm_context_blocks.append({
+                                                                        'content': content,
+                                                                        'page': chunk.get('page', 0),
+                                                                        'type': 'retrieved_chunk',
+                                                                        'retrieval_method': chunk.get('source', 'unknown'),
+                                                                        'similarity_score': chunk.get('similarity_score', 0.0),
+                                                                        'chunk_index': chunk.get('chunk_index', idx),
+                                                                        'chunk_number': idx + 1,
+                                                                        'total_chunks': total_chunks
+                                                                    })
+                                                    
+                                                    # Final fallback: try output or legacy source_chunks
+                                                    if not llm_context_blocks:
+                                                        output_content = doc_output.get('output', '')
+                                                        source_chunks_legacy = doc_output.get('source_chunks', [])
+                                                        
+                                                        if output_content and len(output_content) > 100:
+                                                            llm_context_blocks.append({
+                                                                'content': output_content,
+                                                                'page': 0,
+                                                                'type': 'output',
+                                                                'retrieval_method': search_source,
+                                                                'similarity_score': 0.0,
+                                                                'chunk_number': 1,
+                                                                'total_chunks': 1
+                                                            })
+                                                        elif source_chunks_legacy:
+                                                            combined = '\n'.join([str(c) for c in source_chunks_legacy if c])
+                                                            if combined:
+                                                                llm_context_blocks.append({
+                                                                    'content': combined,
+                                                                    'page': 0,
+                                                                    'type': 'legacy_chunk',
+                                                                    'retrieval_method': search_source,
+                                                                    'similarity_score': 0.0,
+                                                                    'chunk_number': 1,
+                                                                    'total_chunks': 1
+                                                                })
+                                                    
+                                                    # Build accurate message with chunk count and page info
+                                                    chunk_count = len(llm_context_blocks)
+                                                    # Update chunk_number for all blocks
+                                                    for idx, block in enumerate(llm_context_blocks):
+                                                        block['chunk_number'] = idx + 1
+                                                        block['total_chunks'] = chunk_count
+                                                    
+                                                    # Safely extract page numbers, handling None values
+                                                    pages = sorted(set(
+                                                        p for b in llm_context_blocks 
+                                                        for p in [b.get('page')] 
+                                                        if p is not None and isinstance(p, (int, float)) and p > 0
+                                                    ))
+                                                    if len(pages) > 1:
+                                                        page_info = f" (pages {min(pages)}-{max(pages)})"
+                                                    elif len(pages) == 1:
+                                                        page_info = f" (page {pages[0]})"
+                                                    else:
+                                                        page_info = ""
+                                                    
                                                     reasoning_data = {
                                                         'type': 'reasoning_step',
                                                         'step': f'read_doc_{i}',
                                                         'action_type': 'reading',
-                                                        'message': f'Read {display_filename}',
+                                                        'message': f'Analyzing {chunk_count} chunk{"s" if chunk_count != 1 else ""} from {display_filename}{page_info}',
                                                         'timestamp': reading_step_timestamp,  # Use tracked reading timestamp
                                                         'details': {
                                                             'document_index': i, 
                                                             'filename': filename if filename else None,
-                                                            'doc_metadata': doc_metadata
+                                                            'doc_metadata': doc_metadata,
+                                                            'llm_context': llm_context_blocks  # Document blocks for visualization
                                                         }
                                                     }
                                                     yield f"data: {json.dumps(reasoning_data)}\n\n"
@@ -2277,6 +2674,7 @@ def query_documents():
     citation_context = data.get('citationContext')  # Get structured citation metadata (hidden from user)
     response_mode = data.get('responseMode')  # NEW: Response mode for file attachments (fast/detailed/full)
     attachment_context = data.get('attachmentContext')  # NEW: Extracted text from attached files
+    model_preference = data.get('model', 'gpt-4o-mini')  # MODEL SELECTION: User-selected LLM model
     
     # Handle documentIds as comma-separated string, array, or single value
     if isinstance(document_ids, str):
@@ -2337,7 +2735,8 @@ def query_documents():
             "document_ids": document_ids if document_ids else None,  # NEW: Pass document IDs for fast path
             "citation_context": citation_context,  # NEW: Pass structured citation metadata (bbox, page, text)
             "response_mode": response_mode if response_mode else None,  # NEW: Response mode for attachments (fast/detailed/full) - ensure None not empty string
-            "attachment_context": attachment_context if attachment_context else None  # NEW: Extracted text from attached files - ensure None not empty dict
+            "attachment_context": attachment_context if attachment_context else None,  # NEW: Extracted text from attached files - ensure None not empty dict
+            "model_preference": model_preference,  # MODEL SELECTION: User-selected LLM model
         }
         
         async def run_query():
@@ -3975,12 +4374,12 @@ def delete_folder(folder_id):
             'message': 'Folder deletion attempted (may have been localStorage only)'
         }), 200
 
-@views.route('/api/documents/<uuid:document_id>', methods=['DELETE', 'OPTIONS'])
-def delete_document_standard(document_id):
+@views.route('/api/documents/<uuid:document_id>', methods=['GET', 'DELETE', 'OPTIONS'])
+@login_required
+def get_or_delete_document(document_id):
     """
-    Standardized deletion endpoint for documents.
-    Matches RESTful pattern: /api/documents/<id> (DELETE)
-    Deletes a document from S3, Supabase stores, and its metadata record from the database.
+    Get document metadata (GET) or delete document (DELETE).
+    Matches RESTful pattern: /api/documents/<id>
     """
     # Handle CORS preflight - MUST be first, before authentication check
     if request.method == 'OPTIONS':
@@ -3988,38 +4387,75 @@ def delete_document_standard(document_id):
         response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, DELETE, OPTIONS')
         response.headers.add('Access-Control-Max-Age', '3600')
         return response, 200
     
-    # Require login for actual DELETE request
-    if not current_user.is_authenticated:
-        response = jsonify({
-            'success': False,
-            'error': 'Authentication required'
-        })
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'DELETE, OPTIONS')
-        return response, 401
+    # GET request - return document metadata
+    if request.method == 'GET':
+        try:
+            from .services.supabase_document_service import SupabaseDocumentService
+            doc_service = SupabaseDocumentService()
+            document = doc_service.get_document_by_id(str(document_id))
+            
+            if not document:
+                response = jsonify({'error': 'Document not found'})
+                response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+                response.headers.add('Access-Control-Allow-Credentials', 'true')
+                return response, 404
+            
+            # Check authorization - document can have business_id (varchar) or business_uuid (uuid)
+            # Compare against both current_user.business_id and company_name
+            doc_business_id = document.get('business_id')
+            doc_business_uuid = document.get('business_uuid')
+            user_business_id = str(current_user.business_id) if current_user.business_id else None
+            user_company_name = current_user.company_name
+            
+            # Allow access if any of these match
+            is_authorized = (
+                (doc_business_id and user_company_name and str(doc_business_id) == str(user_company_name)) or
+                (doc_business_uuid and user_business_id and str(doc_business_uuid) == user_business_id) or
+                (doc_business_id and user_business_id and str(doc_business_id) == user_business_id)
+            )
+            
+            if not is_authorized:
+                logger.warning(f"Unauthorized access to document {document_id}: doc_business_id={doc_business_id}, doc_business_uuid={doc_business_uuid}, user_business_id={user_business_id}, user_company_name={user_company_name}")
+                response = jsonify({'error': 'Unauthorized'})
+                response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+                response.headers.add('Access-Control-Allow-Credentials', 'true')
+                return response, 403
+            
+            # Return document metadata
+            response = jsonify(document)
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 200
+            
+        except Exception as e:
+            logger.error(f"Error fetching document {document_id}: {e}", exc_info=True)
+            response = jsonify({'error': 'Internal server error'})
+            response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response, 500
     
-    logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
-    result = _perform_document_deletion(document_id)
-    
-    # Ensure CORS headers are present in the response
-    if isinstance(result, tuple):
-        response_obj, status_code = result
-    else:
-        response_obj = result
-        status_code = 200
-    
-    if hasattr(response_obj, 'headers'):
-        response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
-        response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-    
-    return result
+    # DELETE request - delete document
+    if request.method == 'DELETE':
+        logger.info(f"🗑️ DELETE /api/documents/{document_id} called by {current_user.email}")
+        result = _perform_document_deletion(document_id)
+        
+        # Ensure CORS headers are present in the response
+        if isinstance(result, tuple):
+            response_obj, status_code = result
+        else:
+            response_obj = result
+            status_code = 200
+        
+        if hasattr(response_obj, 'headers'):
+            response_obj.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+            response_obj.headers.add('Access-Control-Allow-Credentials', 'true')
+            response_obj.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        
+        return result
 
 @views.route('/api/documents/<uuid:document_id>/processing-history', methods=['GET'])
 @login_required
@@ -6342,6 +6778,42 @@ def link_document_to_property(document_id):
         except Exception as rel_error:
             logger.warning(f"Failed to create Supabase relationship (non-fatal): {rel_error}")
         
+        # Trigger fast processing if document hasn't been processed yet
+        # This handles documents uploaded with skip_processing=true
+        if document.status == DocumentStatus.UPLOADED:
+            try:
+                # Get file content from S3 to trigger processing
+                aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+                aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+                aws_region = os.environ.get('AWS_REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
+                invoke_url = os.environ.get('API_GATEWAY_INVOKE_URL')
+                bucket_name = os.environ.get('S3_UPLOAD_BUCKET')
+                
+                if aws_access_key and aws_secret_key and invoke_url and bucket_name:
+                    # Download file from S3
+                    final_url = f"{invoke_url.rstrip('/')}/{bucket_name}/{document.s3_path}"
+                    auth = AWS4Auth(aws_access_key, aws_secret_key, aws_region, 's3')
+                    file_response = requests.get(final_url, auth=auth, timeout=30)
+                    file_response.raise_for_status()
+                    file_content = file_response.content
+                    
+                    # Queue fast processing task
+                    business_uuid_str = _ensure_business_uuid()
+                    if business_uuid_str:
+                        task = process_document_fast_task.delay(
+                            document_id=str(document_id),
+                            file_content=file_content,
+                            original_filename=document.original_filename,
+                            business_id=business_uuid_str,
+                            property_id=property_id
+                        )
+                        logger.info(f"⚡ [LINK-PROPERTY] Queued fast processing task {task.id} for document {document_id} (property {property_id})")
+                else:
+                    logger.warning("⚠️ [LINK-PROPERTY] Missing AWS credentials - cannot trigger document processing")
+            except Exception as process_error:
+                logger.warning(f"⚠️ [LINK-PROPERTY] Failed to trigger processing (non-fatal): {process_error}")
+                # Don't fail the link operation if processing fails
+        
         return jsonify({
             'success': True,
             'message': 'Document linked to property'
@@ -7076,8 +7548,20 @@ def create_project():
         status = ProjectStatus.ACTIVE
         if data.get('status'):
             try:
-                status = ProjectStatus(data['status'])
-            except ValueError:
+                # Convert string to enum - handle both 'active' and 'ACTIVE' formats (converts to uppercase)
+                status_str = data['status'].upper()
+                if status_str == 'ACTIVE':
+                    status = ProjectStatus.ACTIVE
+                elif status_str == 'NEGOTIATING':
+                    status = ProjectStatus.NEGOTIATING
+                elif status_str == 'ARCHIVED':
+                    status = ProjectStatus.ARCHIVED
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid status: {data["status"]}. Must be one of: ACTIVE, NEGOTIATING, ARCHIVED'
+                    }), 400
+            except (ValueError, AttributeError):
                 return jsonify({
                     'success': False,
                     'error': f'Invalid status: {data["status"]}'
@@ -7242,6 +7726,99 @@ def delete_project(project_id):
     except Exception as e:
         db.session.rollback()
         logger.error(f"❌ [DELETE-PROJECT] Error: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@views.route('/api/projects/<uuid:project_id>/access', methods=['POST', 'OPTIONS'])
+@login_required
+def add_project_access(project_id):
+    """Add team member access to a project"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Max-Age', '3600')
+        return response, 200
+    
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        access_level = data.get('access_level', 'viewer')
+        
+        if not email:
+            return jsonify({
+                'success': False,
+                'error': 'Email is required'
+            }), 400
+        
+        # Validate access level
+        if access_level not in ['viewer', 'editor']:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid access level. Must be "viewer" or "editor"'
+            }), 400
+        
+        # Get project and verify ownership
+        project = Project.query.get_or_404(project_id)
+        
+        if project.user_id != current_user.id:
+            return jsonify({
+                'success': False,
+                'error': 'Unauthorized - you can only add access to your own projects'
+            }), 403
+        
+        # Check if access already exists
+        existing_access = ProjectAccess.query.filter_by(
+            project_id=project_id,
+            user_email=email.lower()
+        ).first()
+        
+        if existing_access:
+            # Update existing access
+            existing_access.access_level = access_level
+            existing_access.status = 'pending'  # Reset to pending if updating
+            db.session.commit()
+            
+            logger.info(f"✅ [PROJECT-ACCESS] Updated access for {email} to project {project.title}")
+            
+            return jsonify({
+                'success': True,
+                'data': existing_access.serialize(),
+                'message': 'Access updated successfully'
+            }), 200
+        
+        # Create new access record
+        import secrets
+        invitation_token = secrets.token_urlsafe(32)
+        
+        project_access = ProjectAccess(
+            project_id=project_id,
+            user_email=email.lower(),
+            invited_by_user_id=current_user.id,
+            access_level=access_level,
+            status='pending',
+            invitation_token=invitation_token
+        )
+        
+        db.session.add(project_access)
+        db.session.commit()
+        
+        logger.info(f"✅ [PROJECT-ACCESS] Added access for {email} to project {project.title}")
+        
+        return jsonify({
+            'success': True,
+            'data': project_access.serialize()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"❌ [PROJECT-ACCESS] Error: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

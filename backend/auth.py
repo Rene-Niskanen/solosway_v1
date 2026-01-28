@@ -29,38 +29,89 @@ def test_db():
 
 @auth.route('/login', methods=['GET', 'POST'])
 def login():
+    """Legacy login route - redirects to frontend or returns JSON for API clients"""
+    # For GET requests (browser navigation, favicon requests, etc.)
+    if request.method == 'GET':
+        # Check if this is an API client (wants JSON) or browser (wants redirect)
+        if request.headers.get('Accept', '').startswith('application/json'):
+            return jsonify({
+                'success': False,
+                'message': 'Please use /api/login endpoint for authentication',
+                'endpoint': '/api/login'
+            }), 400
+        # For browsers, redirect to frontend login page
+        frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+        return redirect(f"{frontend_url}/login", code=302)
+    
+    # For POST requests (legacy form-based login)
     if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        
-        # Use Supabase for authentication
-        auth_service = SupabaseAuthService()
-        user_data = auth_service.get_user_by_email(email)
-        
-        if user_data and auth_service.verify_password(user_data, password):
-            business_uuid = user_data.get('business_uuid')
-            if not business_uuid:
-                legacy_business = user_data.get('business_id') or user_data.get('company_name')
-                business_uuid = auth_service.ensure_business_uuid(legacy_business)
-                auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
+        try:
+            email = request.form.get('email')
+            password = request.form.get('password')
+            
+            if not email or not password:
+                return jsonify({
+                    'success': False,
+                    'message': 'Email and password required. Please use /api/login endpoint.'
+                }), 400
+            
+            # Use Supabase for authentication
+            auth_service = SupabaseAuthService()
+            try:
+                user_data = auth_service.get_user_by_email(email)
+            except Exception as db_error:
+                error_msg = str(db_error)
+                if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
+                    logger.error(f"Database timeout during login for {email}: {db_error}")
+                    return jsonify({
+                        'success': False, 
+                        'message': 'Database connection timeout. Please try again in a moment.'
+                    }), 503
+                else:
+                    logger.error(f"Database error during login for {email}: {db_error}")
+                    return jsonify({
+                        'success': False, 
+                        'message': 'Database error. Please try again.'
+                    }), 503
+            
+            if user_data and auth_service.verify_password(user_data, password):
+                business_uuid = user_data.get('business_uuid')
+                if not business_uuid:
+                    legacy_business = user_data.get('business_id') or user_data.get('company_name')
+                    business_uuid = auth_service.ensure_business_uuid(legacy_business)
+                    auth_service.update_user(user_data['id'], {'business_uuid': business_uuid})
 
-            user = User()
-            user.id = user_data['id']
-            user.email = user_data['email']
-            user.first_name = user_data['first_name']
-            user.company_name = user_data['company_name']
-            user.company_website = user_data['company_website']
-            user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
-            user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
-            user.business_id = UUID(business_uuid) if business_uuid else None
-            
-            flash('Logged in successfully!', category='success')
-            login_user(user, remember=True)
-            return redirect(url_for('views.home'))
-        else:
-            flash('Invalid email or password.', category='error')
-            
-    return render_template("login.html", user=current_user)
+                user = User()
+                user.id = user_data['id']
+                user.email = user_data['email']
+                user.first_name = user_data['first_name']
+                user.company_name = user_data['company_name']
+                user.company_website = user_data['company_website']
+                user.role = UserRole.ADMIN if user_data['role'] == 'admin' else UserRole.USER
+                user.status = UserStatus.ACTIVE if user_data['status'] == 'active' else UserStatus.INVITED
+                user.business_id = UUID(business_uuid) if business_uuid else None
+                
+                login_user(user, remember=True)
+                # Redirect to frontend dashboard
+                frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+                return redirect(f"{frontend_url}/dashboard", code=302)
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Invalid email or password.'
+                }), 401
+        except Exception as e:
+            logger.error(f"Login error: {str(e)}")
+            return jsonify({
+                'success': False,
+                'message': 'Server error. Please try again.'
+            }), 500
+    
+    # Fallback (shouldn't reach here)
+    return jsonify({
+        'success': False,
+        'message': 'Invalid request method'
+    }), 405
 
 # API endpoint for React login
 @auth.route('/api/login', methods=['POST'])
@@ -85,10 +136,35 @@ def api_login():
             return jsonify({'success': False, 'message': 'Email and password required.'}), 400
         
         # Use Supabase for authentication
+        # #region agent log
+        import json, time
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:138","message":"api_login before auth_service init","data":{"email":email},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
         auth_service = SupabaseAuthService()
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:141","message":"api_login before get_user_by_email","data":{},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
         try:
             user_data = auth_service.get_user_by_email(email)
+            # #region agent log
+            try:
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:144","message":"api_login after get_user_by_email success","data":{"has_user_data":user_data is not None},"timestamp":int(time.time()*1000)}) + '\n')
+            except: pass
+            # #endregion
         except Exception as db_error:
+            # #region agent log
+            try:
+                with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B,C,D,E","location":"auth.py:149","message":"api_login get_user_by_email exception","data":{"error_type":type(db_error).__name__,"error_msg":str(db_error)[:200]},"timestamp":int(time.time()*1000)}) + '\n')
+            except: pass
+            # #endregion
             error_msg = str(db_error)
             if 'timeout' in error_msg.lower() or 'timed out' in error_msg.lower():
                 logger.error(f"Database timeout during login for {email}: {db_error}")

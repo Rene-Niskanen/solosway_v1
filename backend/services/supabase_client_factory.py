@@ -12,11 +12,12 @@ logger = logging.getLogger(__name__)
 
 # Configure timeout to prevent long hangs (default httpx timeout is 5s connect, but can hang longer on errors)
 # These timeouts prevent the 55s hangs mentioned in the codebase
+# Increased read timeout to 15s to handle slow Supabase queries, with retry logic for reliability
 SUPABASE_TIMEOUT = httpx.Timeout(
-    connect=5.0,   # Time to establish connection
-    read=10.0,      # Time to read response
-    write=10.0,     # Time to send request
-    pool=5.0        # Time to get connection from pool
+    connect=10.0,  # Time to establish connection (increased for slow networks)
+    read=20.0,     # Time to read response (increased for slow Supabase queries)
+    write=10.0,    # Time to send request
+    pool=10.0      # Time to get connection from pool (increased)
 )
 
 
@@ -32,8 +33,32 @@ def get_supabase_client() -> Client:
     Returns:
         Supabase Client instance configured with service role credentials and timeouts.
     """
-    supabase_url = os.environ["SUPABASE_URL"]
-    supabase_key = os.environ["SUPABASE_SERVICE_KEY"]
+    # #region agent log
+    import json, time
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"supabase_client_factory.py:24","message":"get_supabase_client entry","data":{"has_url":"SUPABASE_URL" in os.environ,"has_key":"SUPABASE_SERVICE_KEY" in os.environ},"timestamp":int(time.time()*1000)}) + '\n')
+    except: pass
+    # #endregion
+    
+    try:
+        supabase_url = os.environ["SUPABASE_URL"]
+        supabase_key = os.environ["SUPABASE_SERVICE_KEY"]
+    except KeyError as e:
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"supabase_client_factory.py:35","message":"Missing env var","data":{"missing":str(e)},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
+        raise
+
+    # #region agent log
+    try:
+        with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+            f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"supabase_client_factory.py:40","message":"Creating httpx client","data":{"timeout_connect":SUPABASE_TIMEOUT.connect,"timeout_read":SUPABASE_TIMEOUT.read,"timeout_write":SUPABASE_TIMEOUT.write,"timeout_pool":SUPABASE_TIMEOUT.pool},"timestamp":int(time.time()*1000)}) + '\n')
+    except: pass
+    # #endregion
 
     # Create httpx client with timeout configuration
     # The supabase-py library accepts a custom httpx client via SyncClientOptions
@@ -43,23 +68,57 @@ def get_supabase_client() -> Client:
         # Import SyncClientOptions to properly configure the client
         from supabase.lib.client_options import SyncClientOptions
         
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"supabase_client_factory.py:50","message":"Using SyncClientOptions path","data":{},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
+        
         # Create client with custom httpx client and timeout settings
         # This prevents the 55s hangs on connection errors
         options = SyncClientOptions(
             httpx_client=http_client,
             # Additional timeout settings for specific clients
-            postgrest_client_timeout=10.0,  # PostgREST API timeout
+            postgrest_client_timeout=20.0,  # PostgREST API timeout (increased for slow queries)
             storage_client_timeout=10.0,    # Storage API timeout
             function_client_timeout=10.0    # Functions API timeout
         )
         
-        return create_client(supabase_url, supabase_key, options=options)
+        client = create_client(supabase_url, supabase_key, options=options)
+        # #region agent log
+        import socket
+        url_host = supabase_url.split('//')[1].split('/')[0] if '//' in supabase_url else "unknown"
+        dns_ok = False
+        try:
+            socket.gethostbyname(url_host)
+            dns_ok = True
+        except: pass
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"supabase_client_factory.py:62","message":"Client created with SyncClientOptions","data":{"url_host":url_host,"dns_resolves":dns_ok},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
+        return client
     except (ImportError, TypeError, ValueError) as e:
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"supabase_client_factory.py:65","message":"SyncClientOptions failed, using fallback","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
         # Fallback if SyncClientOptions import fails or doesn't work
         logger.warning(f"Could not configure custom httpx client: {e}. Using default client with limited timeout control.")
         # Fallback: create client without custom http_client
         # Note: This may still experience long hangs on connection errors
-    return create_client(supabase_url, supabase_key)
+        client = create_client(supabase_url, supabase_key)
+        # #region agent log
+        try:
+            with open('/Users/thomashorner/solosway_v1/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"supabase_client_factory.py:72","message":"Client created with fallback (no timeout config)","data":{},"timestamp":int(time.time()*1000)}) + '\n')
+        except: pass
+        # #endregion
+        return client
 
 
 def get_supabase_db_url() -> str:

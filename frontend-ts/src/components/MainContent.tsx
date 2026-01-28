@@ -18,23 +18,28 @@ import { useSystem } from '@/contexts/SystemContext';
 import { backendApi } from '@/services/backendApi';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogOverlay } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight } from 'lucide-react';
+import { MapPin, Palette, Bell, Shield, Globe, Monitor, LibraryBig, Upload, BarChart3, Database, Settings, User, CloudUpload, Image, Map, Fullscreen, Minimize2, Plus, ArrowUp, Folder, Layers, Check, Focus, Contrast, Search, Loader2, ArrowRight, ArrowLeft } from 'lucide-react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
 import { FileAttachmentData } from './FileAttachment';
 import { usePreview } from '../contexts/PreviewContext';
+import { useChatStateStore, useActiveChatDocumentPreview } from '../contexts/ChatStateStore';
 import { StandaloneExpandedCardView } from './StandaloneExpandedCardView';
 import { AgentTaskOverlay } from './AgentTaskOverlay';
 import { RecentProjectsSection } from './RecentProjectsSection';
 import { NewPropertyPinWorkflow } from './NewPropertyPinWorkflow';
-import { SideChatPanel } from './SideChatPanel';
+import { SideChatPanel, SideChatPanelRef } from './SideChatPanel';
 import { FloatingChatBubble } from './FloatingChatBubble';
 import { QuickStartBar } from './QuickStartBar';
 import { FilingSidebarProvider, useFilingSidebar } from '../contexts/FilingSidebarContext';
+import { useChatPanel } from '../contexts/ChatPanelContext';
 import { FilingSidebar } from './FilingSidebar';
 import { UploadProgressBar } from './UploadProgressBar';
 import { ProjectsPage } from './ProjectsPage';
+import { PropertyDetailsPanel } from './PropertyDetailsPanel';
+import { useChatHistory } from './ChatHistoryContext';
+import { useBrowserFullscreen } from '../contexts/BrowserFullscreenContext';
 
 export const DEFAULT_MAP_LOCATION_KEY = 'defaultMapLocation';
 
@@ -1208,11 +1213,11 @@ const LocationPickerModal: React.FC<{
                       disabled={isGeocoding}
                       className="flex-shrink-0 disabled:opacity-50 ml-2"
                       style={{
-                        padding: '6px',
+                        padding: '0',
                         backgroundColor: 'transparent',
                         color: '#63748A',
-                        borderRadius: '50%',
-                        width: '32px',
+                        borderRadius: '16px',
+                        width: '36px',
                         height: '32px',
                         display: 'flex',
                         alignItems: 'center',
@@ -1244,7 +1249,7 @@ const LocationPickerModal: React.FC<{
                       border: '1px solid #E9E9EB',
                       borderTop: 'none',
                       borderRadius: '0 0 2px 2px',
-                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                      boxShadow: 'none',
                       maxHeight: '400px',
                       overflowY: 'auto',
                       marginTop: '1px',
@@ -1875,6 +1880,116 @@ const SettingsView: React.FC<{
     </div>
   );
 };
+
+// Fullscreen Property View Component - manages its own chat width state for proper resize tracking
+interface FullscreenPropertyViewProps {
+  isVisible: boolean;
+  property: any;
+  isSidebarCollapsed?: boolean;
+  isSidebarExpanded?: boolean;
+  onClose: () => void;
+  onMessagesUpdate?: (messages: any[]) => void;
+  onNewChat?: () => void;
+  onSidebarToggle?: () => void;
+  onActiveChatChange?: (isActive: boolean) => void;
+  onOpenChatHistory?: () => void;
+}
+
+const FullscreenPropertyView: React.FC<FullscreenPropertyViewProps> = ({
+  isVisible,
+  property,
+  isSidebarCollapsed,
+  isSidebarExpanded,
+  onClose,
+  onMessagesUpdate,
+  onNewChat,
+  onSidebarToggle,
+  onActiveChatChange,
+  onOpenChatHistory
+}) => {
+  // Track the dynamic chat panel width for proper resize behavior
+  const [dynamicChatWidth, setDynamicChatWidth] = React.useState<number>(0);
+  
+  // Calculate sidebar width for positioning
+  const TOGGLE_RAIL_WIDTH = 12;
+  let fullscreenSidebarWidth = 0;
+  if (isSidebarCollapsed) {
+    fullscreenSidebarWidth = TOGGLE_RAIL_WIDTH;
+  } else if (isSidebarExpanded) {
+    fullscreenSidebarWidth = 320 + TOGGLE_RAIL_WIDTH;
+  } else {
+    fullscreenSidebarWidth = 224 + TOGGLE_RAIL_WIDTH;
+  }
+  
+  // Calculate initial 50% width
+  const initialChatWidth = React.useMemo(() => {
+    const availableWidth = typeof window !== 'undefined' 
+      ? window.innerWidth - fullscreenSidebarWidth 
+      : 800;
+    return availableWidth / 2;
+  }, [fullscreenSidebarWidth]);
+  
+  // Use dynamic width if set, otherwise use initial 50%
+  const effectiveChatWidth = dynamicChatWidth > 0 ? dynamicChatWidth : initialChatWidth;
+  
+  if (!isVisible || !property) return null;
+  
+  return (
+    <>
+      {/* Back button - positioned above everything */}
+      <button
+        onClick={onClose}
+        className="fixed top-4 z-[10000] flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 transition-colors"
+        style={{ left: fullscreenSidebarWidth + 16 }}
+      >
+        <ArrowLeft className="w-4 h-4 text-gray-600" strokeWidth={1.5} />
+        <span className="text-sm text-gray-600">Back to Projects</span>
+      </button>
+
+      {/* Chat Panel - SideChatPanel handles its own positioning */}
+      <SideChatPanel
+        isVisible={true}
+        query=""
+        citationContext={null}
+        isSidebarCollapsed={isSidebarCollapsed}
+        sidebarWidth={fullscreenSidebarWidth}
+        isFilingSidebarClosing={false}
+        isSidebarCollapsing={false}
+        restoreChatId={null}
+        newAgentTrigger={0}
+        isPropertyDetailsOpen={true}
+        shouldExpand={true}
+        isMapVisible={false}
+        onQuerySubmit={(newQuery) => {
+          console.log('Query from fullscreen property view:', newQuery);
+        }}
+        onMinimize={onClose}
+        onMessagesUpdate={onMessagesUpdate}
+        onMapToggle={onClose}
+        onNewChat={onNewChat}
+        onSidebarToggle={onSidebarToggle}
+        onChatWidthChange={(width) => {
+          // Update dynamic width when chat is resized
+          setDynamicChatWidth(width);
+        }}
+        onActiveChatChange={onActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
+      />
+
+      {/* Property Details Panel - positioned after chat panel */}
+      <PropertyDetailsPanel
+        property={property}
+        isVisible={true}
+        onClose={onClose}
+        isLargeCardMode={false}
+        isInChatMode={true}
+        chatPanelWidth={effectiveChatWidth}
+        sidebarWidth={fullscreenSidebarWidth}
+      />
+    </>
+  );
+};
+
 export interface MainContentProps {
   className?: string;
   currentView?: string;
@@ -1901,8 +2016,12 @@ export interface MainContentProps {
   onMapVisibilityChange?: (isVisible: boolean) => void; // Callback to notify parent of map visibility changes
   onActiveChatChange?: (isActive: boolean) => void; // Callback when active chat state changes
   shouldRestoreActiveChat?: boolean; // Signal from sidebar to restore active chat
+  shouldRestoreSelectedChat?: string | null; // Chat ID to restore immediately from agent sidebar
   onChatVisibilityChange?: (isVisible: boolean) => void; // Callback when chat panel visibility changes
   onOpenChatHistory?: () => void; // Callback to open chat history panel
+  externalIsMapVisible?: boolean; // External control of map visibility (from parent)
+  onNavigateToDashboard?: () => void; // Callback to navigate to dashboard (direct synchronous navigation)
+  onNewChat?: (handler: () => void) => (() => void) | void; // Callback pattern: MainContent provides its handler, DashboardLayout returns its handler
 }
 export const MainContent = ({
   className,
@@ -1925,11 +2044,17 @@ export const MainContent = ({
   onMapVisibilityChange,
   onActiveChatChange,
   shouldRestoreActiveChat = false,
+  shouldRestoreSelectedChat = null,
   onChatVisibilityChange,
-  onOpenChatHistory
+  onOpenChatHistory,
+  externalIsMapVisible,
+  onNavigateToDashboard,
+  onNewChat: onNewChatFromParent
 }: MainContentProps) => {
   const { addActivity } = useSystem();
   const { isOpen: isFilingSidebarOpen, width: filingSidebarWidth, isResizing: isFilingSidebarResizing, closeSidebar } = useFilingSidebar();
+  const { isOpen: isChatHistoryPanelOpen, width: chatHistoryPanelWidth, isResizing: isChatHistoryPanelResizing, closePanel: closeChatPanel } = useChatPanel();
+  const { getChatById } = useChatHistory();
   // Track previous states to detect closing transitions for instant updates
   const prevFilingSidebarOpenRef = React.useRef(isFilingSidebarOpen);
   const prevSidebarCollapsedRef = React.useRef(isSidebarCollapsed);
@@ -1966,9 +2091,16 @@ export const MainContent = ({
   const [chatMessages, setChatMessages] = React.useState<any[]>([]);
   const [resetTrigger, setResetTrigger] = React.useState<number>(0);
   const [currentLocation, setCurrentLocation] = React.useState<string>("");
+  // Internal map visibility for SearchBar Map button
+  const [isMapVisibleFromSearchBar, setIsMapVisibleFromSearchBar] = React.useState<boolean>(false);
+  // Track the previous view before entering map (for "back" button in SearchBar)
+  const [previousViewBeforeMap, setPreviousViewBeforeMap] = React.useState<'dashboard' | 'chat'>('dashboard');
+  // Final computed map visibility (will be computed from all sources)
   const [isMapVisible, setIsMapVisible] = React.useState<boolean>(false);
   // Ref to track map visibility synchronously for consistent render checks
   const isMapVisibleRef = React.useRef<boolean>(false);
+  // Ref to track if we're explicitly hiding the map (prevents effect from overriding)
+  const isExplicitlyHidingRef = React.useRef<boolean>(false);
   const [mapSearchQuery, setMapSearchQuery] = React.useState<string>("");
   const [hasPerformedSearch, setHasPerformedSearch] = React.useState<boolean>(false);
   
@@ -1976,6 +2108,27 @@ export const MainContent = ({
   React.useEffect(() => {
     isMapVisibleRef.current = isMapVisible;
   }, [isMapVisible]);
+
+  // Compute final map visibility from all sources
+  React.useEffect(() => {
+    // If we're explicitly hiding, don't override until externalIsMapVisible confirms
+    if (isExplicitlyHidingRef.current && externalIsMapVisible === false) {
+      // External state has confirmed the hide - clear the flag
+      isExplicitlyHidingRef.current = false;
+    }
+    
+    // Don't override if we're explicitly hiding and external hasn't confirmed yet
+    if (isExplicitlyHidingRef.current && externalIsMapVisible !== false) {
+      return;
+    }
+    
+    const finalVisibility = (externalIsMapVisible ?? false) || isMapVisibleFromSearchBar;
+    if (finalVisibility !== isMapVisible) {
+      // Update ref immediately for synchronous access
+      isMapVisibleRef.current = finalVisibility;
+      setIsMapVisible(finalVisibility);
+    }
+  }, [externalIsMapVisible, isMapVisibleFromSearchBar, isMapVisible]);
   const [chatPanelWidth, setChatPanelWidth] = React.useState<number>(0); // Track chat panel width for property pin centering
   const [isPropertyDetailsOpen, setIsPropertyDetailsOpen] = React.useState<boolean>(false); // Track PropertyDetailsPanel visibility
   const [isChatBubbleVisible, setIsChatBubbleVisible] = React.useState<boolean>(false); // Track bubble visibility
@@ -1983,13 +2136,53 @@ export const MainContent = ({
   const [shouldExpandChat, setShouldExpandChat] = React.useState<boolean>(false); // Track if chat should be expanded (for Analyse mode)
   const [isQuickStartBarVisible, setIsQuickStartBarVisible] = React.useState<boolean>(false); // Track QuickStartBar visibility as island
   const [isRecentProjectsVisible, setIsRecentProjectsVisible] = React.useState<boolean>(false); // Track Recent Projects visibility
+  // Fullscreen property view state (25/75 chat/property split from ProjectsPage)
+  const [fullscreenPropertyView, setFullscreenPropertyView] = React.useState<boolean>(false);
+  const [selectedPropertyFromProjects, setSelectedPropertyFromProjects] = React.useState<any>(null);
   const [hasActiveChat, setHasActiveChat] = React.useState<boolean>(false); // Track if there's an active chat query running
+  
+  // Browser Fullscreen API - shared state so all fullscreen buttons show "Exit" when active
+  const { isBrowserFullscreen, toggleBrowserFullscreen } = useBrowserFullscreen();
+
+  // Keyboard shortcut handler (Cmd/Ctrl + Shift + F) to toggle fullscreen
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd/Ctrl + Shift + F to toggle fullscreen
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'f') {
+        const target = e.target as HTMLElement;
+        
+        // Check if we're in an editable element (input, textarea, or contenteditable)
+        const isEditable = 
+          target.tagName === 'INPUT' || 
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable ||
+          (target.closest && target.closest('[contenteditable="true"]'));
+        
+        // Only prevent default if we're not in an editable element
+        if (!isEditable) {
+          e.preventDefault();
+          e.stopPropagation();
+          
+          // Only toggle fullscreen when on dashboard view
+          if ((currentView === 'search' || currentView === 'home') && !isMapVisible && !inChatMode) {
+            toggleBrowserFullscreen();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [currentView, isMapVisible, inChatMode, toggleBrowserFullscreen]);
+  
   // Track if we're transitioning from chat to disable animations
   const [isTransitioningFromChat, setIsTransitioningFromChat] = React.useState<boolean>(false);
   // Use a ref to track transition state synchronously (before React re-renders)
   const isTransitioningFromChatRef = React.useRef<boolean>(false);
   // Track if we're transitioning TO chat (to prevent dashboard flash)
   const isTransitioningToChatRef = React.useRef<boolean>(false);
+  // Track when chat was opened to prevent premature closing
+  const chatOpenedTimestampRef = React.useRef<number | null>(null);
   // Preserve chat state when navigating away so it can be restored when returning
   const preservedChatStateRef = React.useRef<{
     messages: any[];
@@ -2056,10 +2249,8 @@ export const MainContent = ({
         setCitationContext(context);
       }
       
-      // Open chat panel if not already open
-      if (!isMapVisible) {
-        setIsMapVisible(true);
-      }
+      // Map visibility is controlled by external state or SearchBar toggle
+      // The computed effect will ensure map is visible if needed
       setHasPerformedSearch(true);
       
       // If property details is open, expand chat
@@ -2132,34 +2323,31 @@ export const MainContent = ({
       setMinimizedChatMessages([]);
     }
   }, [isMapVisible, currentView, isChatBubbleVisible]);
-  
+
   // Reset shouldExpandChat flag after chat has been opened and expanded
-  // Increased delay to 500ms to ensure SideChatPanel has time to process shouldExpand=true
+  // CRITICAL: Only reset if chat was opened from dashboard/SideChatPanel, NOT from sidebar Chat button
+  // When opening from sidebar, shouldExpandChat should stay true longer to ensure fullscreen mode is set
   React.useEffect(() => {
+    // CRITICAL: Don't reset if we're currently opening chat from sidebar (shouldRestoreActiveChat is true)
+    // This prevents the reset from interfering with sidebar chat opening
+    if (shouldRestoreActiveChat) {
+      return;
+    }
+    
     if (shouldExpandChat && hasPerformedSearch && isMapVisible) {
-      // Chat is now open, reset the flag after a delay to allow expansion
+      // Chat is now open and map is visible, reset the flag after a delay to allow expansion
       // SideChatPanel will persist fullscreen mode even after shouldExpand becomes false
       const timer = setTimeout(() => {
         setShouldExpandChat(false);
-      }, 500); // Increased from 100ms to 500ms to ensure fullscreen mode is set
+      }, 600); // Increased from 500ms to 600ms to ensure fullscreen mode is fully set
       return () => clearTimeout(timer);
     }
-  }, [shouldExpandChat, hasPerformedSearch, isMapVisible]);
+  }, [shouldExpandChat, hasPerformedSearch, isMapVisible, shouldRestoreActiveChat]);
   
   // Calculate sidebar width for property pin centering
   // Sidebar widths: w-0 (collapsed) = 0px, w-56 (normal) = 224px, toggle rail w-3 = 12px
   const sidebarWidthValue = isSidebarCollapsed ? 12 : 236; // 0 + 12 = 12 when collapsed, 224 + 12 = 236 when normal
   
-  // Notify parent of map visibility changes
-  // CRITICAL: Don't propagate changes during transitions to prevent overriding parent state
-  React.useEffect(() => {
-    // Skip propagation when transitioning from chat to dashboard (homeClicked) to prevent
-    // MainContent's stale isMapVisible(true) from overriding DashboardLayout's isMapVisible(false)
-    if (homeClicked || isTransitioningFromChatRef.current || isTransitioningFromChat) {
-      return;
-    }
-    onMapVisibilityChange?.(isMapVisible);
-  }, [isMapVisible, onMapVisibilityChange, homeClicked, isTransitioningFromChat]);
   const [pendingMapQuery, setPendingMapQuery] = React.useState<string>(""); // Store query when switching to map view
   const pendingMapQueryRef = React.useRef<string>(""); // Ref to store query synchronously for immediate access
   const [pendingDashboardQuery, setPendingDashboardQuery] = React.useState<string>(""); // Store query when switching from map to dashboard
@@ -2173,10 +2361,12 @@ export const MainContent = ({
   // Store SideChatPanel attachments separately
   const [pendingSideChatAttachments, setPendingSideChatAttachments] = React.useState<FileAttachmentData[]>([]);
   const pendingSideChatAttachmentsRef = React.useRef<FileAttachmentData[]>([]);
-  const sideChatPanelRef = React.useRef<{ getAttachments: () => FileAttachmentData[] } | null>(null);
+  const sideChatPanelRef = React.useRef<SideChatPanelRef | null>(null);
   const [restoreChatId, setRestoreChatId] = React.useState<string | null>(null);
+  const [newAgentTrigger, setNewAgentTrigger] = React.useState<number>(0); // Counter that increments when "New Agent" is clicked
   const [userData, setUserData] = React.useState<any>(null);
   const [showNewPropertyWorkflow, setShowNewPropertyWorkflow] = React.useState<boolean>(false);
+  const [initialMapState, setInitialMapState] = React.useState<{ center: [number, number]; zoom: number } | null>(null);
   const mapRef = React.useRef<SquareMapRef>(null);
   
   // Track viewport size for responsive layout (like ChatGPT's minimum size)
@@ -2263,8 +2453,8 @@ export const MainContent = ({
     setIsPreviewOpen,
     addPreviewFile,
     MAX_PREVIEW_TABS,
-    expandedCardViewDoc,
-    closeExpandedCardView,
+    expandedCardViewDoc: legacyExpandedCardViewDoc, // Legacy - will be removed
+    closeExpandedCardView: legacyCloseExpandedCardView, // Legacy - will be removed
     isAgentTaskActive,
     agentTaskMessage,
     stopAgentTask,
@@ -2273,6 +2463,32 @@ export const MainContent = ({
     isChatPanelVisible,
     clearPendingExpandedCardView
   } = usePreview();
+  
+  // NEW: Use ChatStateStore for per-chat document preview isolation
+  const { 
+    activeChatId, 
+    getActiveDocumentPreview, 
+    closeDocumentForChat,
+    setActiveChatId 
+  } = useChatStateStore();
+  
+  // Get document preview from active chat's state (NEW per-chat isolation)
+  const chatStateDocumentPreview = useActiveChatDocumentPreview();
+  
+  // Use ChatStateStore document preview if available, fall back to legacy PreviewContext during migration
+  // Priority: ChatStateStore > PreviewContext (legacy)
+  const expandedCardViewDoc = chatStateDocumentPreview || legacyExpandedCardViewDoc;
+  
+  // Close document for the active chat AND legacy state (both must be cleared)
+  const closeExpandedCardView = React.useCallback(() => {
+    if (activeChatId && chatStateDocumentPreview) {
+      // Close in ChatStateStore (per-chat isolation)
+      closeDocumentForChat(activeChatId);
+    }
+    // ALWAYS clear legacy state to ensure complete cleanup
+    // (documents are opened in both states, so both must be cleared)
+    legacyCloseExpandedCardView();
+  }, [activeChatId, chatStateDocumentPreview, closeDocumentForChat, legacyCloseExpandedCardView]);
   
   // Sync chat panel visibility to PreviewContext for document preview gating
   // Document preview will only open when chat panel is visible; otherwise it queues silently
@@ -2285,12 +2501,14 @@ export const MainContent = ({
       hasPerformedSearch, 
       chatPanelIsVisible,
       hasExpandedDoc: !!expandedCardViewDoc,
-      expandedDocId: expandedCardViewDoc?.docId
+      expandedDocId: expandedCardViewDoc?.docId,
+      activeChatId,
+      usingChatStateStore: !!chatStateDocumentPreview
     });
     setIsChatPanelVisible(chatPanelIsVisible);
     // Also notify parent (DashboardLayout) so Sidebar can show active state
     onChatVisibilityChange?.(chatPanelIsVisible);
-  }, [isMapVisible, hasPerformedSearch, setIsChatPanelVisible, onChatVisibilityChange, expandedCardViewDoc]);
+  }, [isMapVisible, hasPerformedSearch, setIsChatPanelVisible, onChatVisibilityChange, expandedCardViewDoc, activeChatId, chatStateDocumentPreview]);
   
   // Callback from SideChatPanel to track active chat state
   const handleActiveChatChange = React.useCallback((isActive: boolean) => {
@@ -2299,17 +2517,61 @@ export const MainContent = ({
     onActiveChatChange?.(isActive);
   }, [onActiveChatChange]);
   
+  // Handler for new chat - can be called from both SideChatPanel and ChatPanel
+  const handleNewChatInternal = React.useCallback(() => {
+    // Clear the query input for new query (UI state only)
+    setMapSearchQuery("");
+    
+    // CRITICAL: Always clear restoreChatId to allow new chat creation
+    // The running query will continue updating its history entry using its captured chatId
+    // restoreChatId is only needed for restoring a chat when navigating back to it
+    // When clicking "New Agent", we want a fresh chat, not a restored one
+    setRestoreChatId(null);
+    
+    // Increment trigger to signal SideChatPanel to clear currentChatId
+    setNewAgentTrigger(prev => prev + 1);
+    
+    // Keep hasPerformedSearch true so chat panel stays visible
+    // This allows user to type and submit a new query while the other is running
+    setHasPerformedSearch(true);
+    
+    console.log('🔄 MainContent: New agent requested - cleared restoreChatId and triggered newAgentTrigger');
+  }, []);
+  
+  // Expose handler to parent via callback pattern
+  // When MainContent mounts/updates, call onNewChatFromParent with our handler
+  // DashboardLayout will store it and call it when handleNewChat is triggered
+  React.useEffect(() => {
+    if (onNewChatFromParent && typeof onNewChatFromParent === 'function') {
+      // Call parent's callback with our handler
+      // Parent will store it in a ref and call it when needed
+      onNewChatFromParent(handleNewChatInternal);
+    }
+  }, [onNewChatFromParent, handleNewChatInternal]);
+  
   // Effect to handle restore active chat signal from sidebar
   React.useEffect(() => {
     if (shouldRestoreActiveChat) {
       console.log('🔄 MainContent: Restoring active chat from sidebar signal - opening in fullscreen');
-      // Mark that we're transitioning to chat (prevents dashboard flash)
+      // Mark that we're transitioning to chat (prevents dashboard flash and chat closing)
       // Set this IMMEDIATELY before any state updates to prevent render race conditions
       isTransitioningToChatRef.current = true;
-      // Ensure map is visible
-      if (!isMapVisible) {
+      
+      // CRITICAL: Ensure map is visible immediately for fullscreen chat
+      // The computed effect should have already updated isMapVisible from externalIsMapVisible,
+      // but we need to ensure it's true before setting shouldExpandChat
+      // Update ref immediately for synchronous access
+      if (externalIsMapVisible && !isMapVisible) {
+        // External wants map visible but computed effect hasn't run yet - update immediately
+        isMapVisibleRef.current = true;
         setIsMapVisible(true);
       }
+      
+      // CRITICAL: Set shouldExpandChat IMMEDIATELY (synchronously) to prevent flash
+      // This ensures the chat panel renders at fullscreen width from the start
+      setShouldExpandChat(true);
+      // Track when chat was opened to prevent premature closing
+      chatOpenedTimestampRef.current = Date.now();
       
       // RESTORE preserved chat state if it exists
       if (preservedChatStateRef.current) {
@@ -2323,13 +2585,10 @@ export const MainContent = ({
         setChatQuery(preservedChatStateRef.current.query);
         // Restore search state - this will make the panel visible
         setHasPerformedSearch(preservedChatStateRef.current.hasPerformedSearch);
-        // Restore query last - this will trigger query processing in SideChatPanel when it becomes visible
-        // Use a small delay to ensure SideChatPanel is visible first
-        setTimeout(() => {
-          setMapSearchQuery(preservedChatStateRef.current!.mapSearchQuery);
-          // Clear preserved state after restoring
-          preservedChatStateRef.current = null;
-        }, 50);
+        // Restore query immediately - SideChatPanel will handle it when visible
+        setMapSearchQuery(preservedChatStateRef.current.mapSearchQuery);
+        // Clear preserved state after restoring
+        preservedChatStateRef.current = null;
       } else {
         // Show the chat panel (SideChatPanel becomes visible when hasPerformedSearch is true)
         setHasPerformedSearch(true);
@@ -2337,15 +2596,158 @@ export const MainContent = ({
       
       // Clear the bubble since we're restoring the full chat
       setIsChatBubbleVisible(false);
-      // Open chat in fullscreen mode (same as when opening from dashboard)
-      setShouldExpandChat(true);
-      // Clear the transition flag after state updates are processed and chat is visible
-      // Increased timeout to ensure all state updates have propagated and chat is rendered
-      setTimeout(() => {
-        isTransitioningToChatRef.current = false;
-      }, 200);
+      
+      // Keep transition flag true longer to prevent chat closing effect from interfering
+      // Use requestAnimationFrame to clear after render completes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isTransitioningToChatRef.current = false;
+        });
+      });
     }
-  }, [shouldRestoreActiveChat, isMapVisible]);
+  }, [shouldRestoreActiveChat, externalIsMapVisible, isMapVisible]);
+  
+  // Track last processed chat to prevent duplicate processing
+  const lastProcessedRestoreChatRef = React.useRef<string | null>(null);
+  
+  // Effect to handle selected chat restoration from agent sidebar
+  React.useEffect(() => {
+    if (shouldRestoreSelectedChat && 
+        shouldRestoreSelectedChat !== lastProcessedRestoreChatRef.current) {
+      const chatId = shouldRestoreSelectedChat;
+      console.log('🔄 MainContent: Restoring selected chat from agent sidebar - opening immediately', chatId);
+      
+      // Track that this chat has been processed
+      lastProcessedRestoreChatRef.current = chatId;
+      
+      // Mark that we're transitioning to chat (prevents dashboard flash)
+      isTransitioningToChatRef.current = true;
+      
+      // CRITICAL: Ensure map is visible immediately for fullscreen chat
+      if (!isMapVisible) {
+        isMapVisibleRef.current = true;
+        setIsMapVisible(true);
+      }
+      
+      // CRITICAL: Set shouldExpandChat IMMEDIATELY (synchronously) to prevent flash
+      setShouldExpandChat(true);
+      chatOpenedTimestampRef.current = Date.now();
+      
+      // Get chat from history
+      const chat = getChatById?.(chatId);
+      if (chat) {
+        // Set restoreChatId immediately
+        setRestoreChatId(chatId);
+        
+        // CRITICAL: Clear mapSearchQuery to prevent query prop from re-sending the previous chat's query
+        // Without this, the query prop would contain the PREVIOUS chat's query text, which would
+        // be sent to the RESTORED chat's backend session, causing query leakage between chats
+        setMapSearchQuery("");
+        
+        // Show chat panel immediately
+        setHasPerformedSearch(true);
+        
+        // If chat has a running query (status === 'loading'), preserve bot status
+        // The SideChatPanel will restore the chat and handle the running state
+      }
+      
+      // Clear signal after processing to prevent duplicate processing
+      // Use setTimeout with 0 to clear after current execution completes
+      setTimeout(() => {
+        if (shouldRestoreSelectedChat === chatId) {
+          // Only clear if it's still the same chat (prevents clearing if user clicked another chat)
+          // The parent will clear it, but this is a safety net
+        }
+      }, 0);
+      
+      // Clear transition flag after render completes
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isTransitioningToChatRef.current = false;
+        });
+      });
+    }
+  }, [shouldRestoreSelectedChat, isMapVisible, getChatById]);
+  
+  // Track previous externalIsMapVisible and shouldRestoreActiveChat to detect Map button clicks
+  const prevExternalIsMapVisibleRef = React.useRef<boolean | undefined>(externalIsMapVisible);
+  const prevShouldRestoreActiveChatRef = React.useRef<boolean>(shouldRestoreActiveChat);
+  
+  // Clear chat transition state and chat panel when map is explicitly opened
+  React.useEffect(() => {
+    // CRITICAL: Never close chat when shouldRestoreActiveChat is true (Chat button was just clicked)
+    // OR when we're transitioning to chat (prevents race condition)
+    // OR when chat is currently active (hasPerformedSearch is true) - map visibility change might be from chat opening
+    // OR when a document is open (prevents chat from closing when document opens from agent action)
+    if (shouldRestoreActiveChat || isTransitioningToChatRef.current || expandedCardViewDoc) {
+      // Update refs but don't close chat
+      prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+      prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+      return;
+    }
+    
+    // CRITICAL: If chat was just opened (within last 700ms), don't close it
+    // This prevents the chat closing effect from running when shouldRestoreActiveChat is cleared after 500ms
+    const chatWasJustOpened = chatOpenedTimestampRef.current && (Date.now() - chatOpenedTimestampRef.current) < 700;
+    if (chatWasJustOpened) {
+      // Update refs but don't close chat - chat opening is still in progress
+      prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+      prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+      return;
+    }
+    
+    // Clear timestamp if chat opening period has passed
+    if (chatOpenedTimestampRef.current && (Date.now() - chatOpenedTimestampRef.current) >= 700) {
+      chatOpenedTimestampRef.current = null;
+    }
+    
+    // Check if shouldRestoreActiveChat was just cleared (Map button clicked from chat)
+    // This happens when Map button is clicked while in fullscreen chat mode
+    // CRITICAL: Only close chat if:
+    // 1. shouldRestoreActiveChat was true AND is now false (Map button was clicked)
+    // 2. hasPerformedSearch is true (chat is currently open)
+    // 3. We're not transitioning to chat
+    // 4. externalIsMapVisible is true (map should be visible)
+    // This ensures we only close when Map button was explicitly clicked from chat, not when chat was just opened
+    const mapButtonClickedFromChat = 
+      !shouldRestoreActiveChat && 
+      prevShouldRestoreActiveChatRef.current && 
+      hasPerformedSearch && 
+      !isTransitioningToChatRef.current &&
+      externalIsMapVisible;
+    
+    // Only close chat if Map button was explicitly clicked from chat, not if map became visible as part of chat opening
+    if (mapButtonClickedFromChat) {
+      // Use setTimeout to ensure chat opening effect completes first
+      const timeoutId = setTimeout(() => {
+        if (isTransitioningToChatRef.current) {
+          // Chat is still opening, don't close it
+          return;
+        }
+        
+        console.log('🗺️ MainContent: Map button clicked from chat - closing chat panel', {
+          mapButtonClickedFromChat,
+          externalIsMapVisible,
+          hasPerformedSearch,
+          shouldRestoreActiveChat,
+          prevShouldRestoreActiveChat: prevShouldRestoreActiveChatRef.current
+        });
+        
+        if (hasPerformedSearch) {
+          setHasPerformedSearch(false);
+          setShouldExpandChat(false);
+          // Clear chat query to reset chat state
+          setMapSearchQuery("");
+        }
+      }, 200); // Increased delay to ensure chat opening effect completes
+      
+      return () => clearTimeout(timeoutId);
+    }
+    
+    // Update refs for next comparison
+    prevExternalIsMapVisibleRef.current = externalIsMapVisible;
+    prevShouldRestoreActiveChatRef.current = shouldRestoreActiveChat;
+  }, [externalIsMapVisible, hasPerformedSearch, shouldRestoreActiveChat, expandedCardViewDoc]);
   
   // Clear pending document preview when starting a new chat
   React.useEffect(() => {
@@ -2358,9 +2760,38 @@ export const MainContent = ({
   // Use the prop value for chat mode
   const isInChatMode = inChatMode;
   
+  // Close fullscreen chat and hide chat panel when navigating away from chat mode (e.g., clicking Map button)
+  // This ensures that when clicking Map button from fullscreen chat, the chat closes and map becomes visible
+  const prevIsInChatModeRef = React.useRef<boolean>(isInChatMode);
+  React.useEffect(() => {
+    const wasInChatMode = prevIsInChatModeRef.current;
+    const justExitedChatMode = wasInChatMode && !isInChatMode;
+    prevIsInChatModeRef.current = isInChatMode;
+    
+    // If we just exited chat mode (e.g., clicked Map button from fullscreen chat), close chat
+    if (justExitedChatMode) {
+      // Always close fullscreen chat when exiting chat mode
+      if (shouldExpandChat) {
+        setShouldExpandChat(false);
+      }
+      // Also clear hasPerformedSearch to hide the chat panel entirely when navigating to map
+      // This ensures the chat panel doesn't stay visible when clicking Map button
+      if (hasPerformedSearch && externalIsMapVisible) {
+        setHasPerformedSearch(false);
+      }
+      // Close agent sidebar when leaving chat section
+      closeChatPanel();
+    }
+  }, [isInChatMode, shouldExpandChat, hasPerformedSearch, externalIsMapVisible, closeChatPanel]);
+  
   // Handle chat selection - always open in SideChatPanel (not old ChatInterface)
   // This ensures the new design is used when selecting chats from history
   React.useEffect(() => {
+    // Skip if we're restoring via shouldRestoreSelectedChat (handled by separate effect)
+    if (shouldRestoreSelectedChat) {
+      return;
+    }
+    
     if (isInChatMode && currentChatData && currentChatId) {
       console.log('📋 MainContent: Chat selected, opening in SideChatPanel', {
         chatId: currentChatId,
@@ -2378,7 +2809,7 @@ export const MainContent = ({
         setIsMapVisible(true);
       }
     }
-  }, [isInChatMode, currentChatData, currentChatId]);
+  }, [isInChatMode, currentChatData, currentChatId, shouldRestoreSelectedChat]);
 
   // CRITICAL: Preload property pins IMMEDIATELY on mount (before anything else)
   // This ensures property pins are ready instantly when map loads
@@ -2580,8 +3011,9 @@ export const MainContent = ({
   }, []);
 
   const handleMapToggle = () => {
+    // Toggle only SearchBar map visibility
     // If switching to map view, capture the current SearchBar value BEFORE state change
-    if (!isMapVisible) {
+    if (!isMapVisibleFromSearchBar) {
       // Capture value synchronously before any state updates
       let currentQuery = '';
       
@@ -2711,8 +3143,17 @@ export const MainContent = ({
         }
       }
       
-      // Now toggle map visibility - attachments are already stored in ref
-      setIsMapVisible(true);
+      // Track what view we're coming from (for "back" button in map view)
+      // If chat is active (hasPerformedSearch or isInChatMode), we're coming from chat
+      // Otherwise, we're coming from dashboard
+      if (hasPerformedSearch || isInChatMode) {
+        setPreviousViewBeforeMap('chat');
+      } else {
+        setPreviousViewBeforeMap('dashboard');
+      }
+      
+      // Toggle SearchBar map visibility - the computed effect will update final isMapVisible
+      setIsMapVisibleFromSearchBar(true);
     } else {
       // Switching back to dashboard - capture map view SearchBar value BEFORE state change
       let currentMapQuery = '';
@@ -2808,9 +3249,17 @@ export const MainContent = ({
       // - A search is submitted (handleSearch)
       // - Entering chat mode
       // - Parent reset trigger fires
-      setIsMapVisible(false);
+      // Toggle SearchBar map visibility - the computed effect will update final isMapVisible
+      setIsMapVisibleFromSearchBar(false);
       // Reset hasPerformedSearch when leaving map view
       setHasPerformedSearch(false);
+      // Notify parent to clear external map visibility
+      onMapVisibilityChange?.(false);
+      // CRITICAL: Set flag to prevent effect from overriding the hide
+      // This ensures map hides on first click even if externalIsMapVisible hasn't updated yet
+      isExplicitlyHidingRef.current = true;
+      isMapVisibleRef.current = false;
+      setIsMapVisible(false);
     }
   };
 
@@ -2956,8 +3405,14 @@ export const MainContent = ({
     
     // Dashboard view: Route query to SideChatPanel
     // Open map view and show SideChatPanel
+    // CRITICAL: Set isMapVisibleFromSearchBar to true to ensure map stays visible
+    // even if externalIsMapVisible becomes false (prevents chat from closing when document opens)
+    setIsMapVisibleFromSearchBar(true);
     setIsMapVisible(true);
     setHasPerformedSearch(true);
+    
+    // Track when chat was opened to prevent premature closing
+    chatOpenedTimestampRef.current = Date.now();
     
     // Query from dashboard - expand to fullscreen view
     setShouldExpandChat(true);
@@ -3055,12 +3510,65 @@ export const MainContent = ({
   // Track previous view to detect actual navigation changes
   const prevViewRef = React.useRef<string>(currentView);
 
+  // Handler to create project - captures current map state before opening workflow
+  const handleCreateProject = React.useCallback(() => {
+    // Capture current map state if map is visible and initialized
+    if (isMapVisible && mapRef.current) {
+      const mapState = mapRef.current.getMapState();
+      if (mapState) {
+        setInitialMapState(mapState);
+      }
+    }
+    // Navigate away from projects page instantly (no animation) and show map
+    // This ensures ProjectsPage disappears immediately when workflow opens
+    setIsMapVisible(true);
+    setIsMapVisibleFromSearchBar(true);
+    onNavigate?.('search', { showMap: true });
+    setShowNewPropertyWorkflow(true);
+  }, [isMapVisible, onNavigate]);
+
+  // Handler for property selection from ProjectsPage - opens fullscreen 25/75 split view
+  const handleProjectPropertySelect = React.useCallback((property: any) => {
+    console.log('📋 Opening fullscreen property view for:', property.id, property.address);
+    console.log('📋 HANDLER CALLED - setting fullscreenPropertyView to true');
+    
+    // Set the selected property
+    setSelectedPropertyFromProjects(property);
+    
+    // Enable fullscreen property view mode
+    setFullscreenPropertyView(true);
+    
+    // Set property details as open (for proper chat panel sizing)
+    setIsPropertyDetailsOpen(true);
+    
+    // DON'T set hasPerformedSearch - that's for the map chat panel, not fullscreen view
+  }, []);
+
+  // Handler to close fullscreen property view and return to projects page
+  const handleCloseFullscreenPropertyView = React.useCallback(() => {
+    console.log('📋 Closing fullscreen property view');
+    setFullscreenPropertyView(false);
+    setSelectedPropertyFromProjects(null);
+    setIsPropertyDetailsOpen(false);
+    setHasPerformedSearch(false);
+  }, []);
+
   // Close project workflow when navigating away from projects view
+  // BUT allow it to stay open when in map view (search view with map visible)
   React.useEffect(() => {
-    if (currentView !== 'projects' && showNewPropertyWorkflow) {
+    if (currentView !== 'projects' && showNewPropertyWorkflow && !isMapVisible) {
       setShowNewPropertyWorkflow(false);
     }
-  }, [currentView, showNewPropertyWorkflow]);
+  }, [currentView, showNewPropertyWorkflow, isMapVisible]);
+
+  // Reset fullscreen property view when navigating to projects page without a selected project
+  // This ensures the chat panel doesn't show when just viewing the projects list
+  React.useEffect(() => {
+    if (currentView === 'projects' && !selectedPropertyFromProjects) {
+      setFullscreenPropertyView(false);
+      setIsPropertyDetailsOpen(false);
+    }
+  }, [currentView, selectedPropertyFromProjects]);
 
   // Reset chat mode and map visibility when currentView changes (sidebar navigation)
   // IMPORTANT: This should ONLY trigger on actual navigation, NOT on sidebar toggle
@@ -3114,6 +3622,14 @@ export const MainContent = ({
         setChatQuery("");
         setChatMessages([]);
       }
+      
+      // Close fullscreen property view when navigating away (always, regardless of chat state)
+      if (fullscreenPropertyView) {
+        setFullscreenPropertyView(false);
+        setSelectedPropertyFromProjects(null);
+        setIsPropertyDetailsOpen(false);
+      }
+      
       // If wasInChat is true, we've already preserved the state above, so don't clear
       // Let the parent handle chat mode changes
       onChatModeChange?.(false);
@@ -3123,7 +3639,8 @@ export const MainContent = ({
     // Don't hide map if we're already on search view (e.g., just toggling sidebar)
     // This prevents the map from being hidden when just toggling the sidebar
     // CRITICAL: NEVER reset map visibility when shouldRestoreActiveChat is true (chat button clicked)
-    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat) {
+    // CRITICAL: NEVER reset map visibility when externalIsMapVisible is true (map button clicked from sidebar)
+    if ((currentView === 'search' || currentView === 'home') && isActualNavigation && prevView !== 'search' && prevView !== 'home' && !shouldRestoreActiveChat && !externalIsMapVisible) {
       // Only hide map if we're actually navigating FROM a different view TO search/home
       // This prevents hiding the map when just toggling sidebar on map view
       // BUT: Skip this if we're restoring active chat (chat button was clicked)
@@ -3158,8 +3675,15 @@ export const MainContent = ({
       setIsMapVisible(false);
       setMapSearchQuery("");
       setHasPerformedSearch(false);
+      
+      // Close fullscreen property view when navigating to search/home (always, regardless of chat state)
+      if (fullscreenPropertyView) {
+        setFullscreenPropertyView(false);
+        setSelectedPropertyFromProjects(null);
+        setIsPropertyDetailsOpen(false);
+      }
     }
-  }, [currentView, onChatModeChange, hasPerformedSearch, shouldRestoreActiveChat, chatMessages, chatQuery, mapSearchQuery]);
+  }, [currentView, onChatModeChange, hasPerformedSearch, shouldRestoreActiveChat, chatMessages, chatQuery, mapSearchQuery, externalIsMapVisible, fullscreenPropertyView]);
 
   // Track previous hasPerformedSearch to detect transitions
   const prevHasPerformedSearchForHomeRef = React.useRef<boolean>(hasPerformedSearch);
@@ -3167,6 +3691,13 @@ export const MainContent = ({
   // Special handling for home view - reset everything to default state
   React.useEffect(() => {
     if (homeClicked) {
+      // CRITICAL: Don't reset if map is explicitly being opened from external control
+      // This prevents the home reset from interfering when Map button is clicked
+      if (externalIsMapVisible === true) {
+        console.log('🏠 Home clicked but map is explicitly visible - skipping reset');
+        return;
+      }
+      
       console.log('🏠 Home clicked - resetting map and state');
       // Check if we WERE in chat mode before the state change (hasPerformedSearch might already be false)
       const wasInChat = prevHasPerformedSearchForHomeRef.current;
@@ -3175,6 +3706,10 @@ export const MainContent = ({
       // This prevents MainContent's stale isMapVisible(true) from propagating back to parent
       isMapVisibleRef.current = false;
       setIsMapVisible(false);
+      // CRITICAL: Also reset isMapVisibleFromSearchBar - without this, the computed effect
+      // will see externalIsMapVisible=false but isMapVisibleFromSearchBar=true and set
+      // isMapVisible back to true, causing the map to stay visible instead of showing dashboard
+      setIsMapVisibleFromSearchBar(false);
       
       // Freeze layout state BEFORE any state changes to prevent layout recalculation
       // This ensures layout calculations remain stable during the transition
@@ -3217,16 +3752,18 @@ export const MainContent = ({
       // Mark that home transition just completed to prevent immediate layout shifts
       homeTransitionJustCompletedRef.current = true;
       // Clear the flag after a delay to allow auto-collapse effect to run normally
+      // CRITICAL: Also delay onHomeResetComplete to ensure isMapVisible state update is committed
+      // before homeClicked is reset. Otherwise, propagation effect runs with stale isMapVisible=true
+      // and homeClicked=false, setting parent's isMapVisible back to true.
       setTimeout(() => {
         homeTransitionJustCompletedRef.current = false;
-      }, 500); // 500ms delay to ensure layout is stable
-      
-      onHomeResetComplete?.(); // Notify parent that reset is complete
+        onHomeResetComplete?.(); // Notify parent that reset is complete AFTER state is committed
+      }, 100); // Short delay to ensure state is committed before homeClicked resets
       
       // Update ref for next time
       prevHasPerformedSearchForHomeRef.current = false;
     }
-  }, [homeClicked, onChatModeChange, onHomeResetComplete, closeExpandedCardView, shouldHideProjectsForSearchBar, isVerySmall, isSidebarCollapsed]);
+  }, [homeClicked, externalIsMapVisible, onChatModeChange, onHomeResetComplete, closeExpandedCardView, shouldHideProjectsForSearchBar, isVerySmall, isSidebarCollapsed]);
   
   // Update ref when hasPerformedSearch changes (outside of homeClicked effect)
   React.useEffect(() => {
@@ -3282,7 +3819,8 @@ export const MainContent = ({
         // We should NEVER render dashboard in this case - always show fullscreen chat view
         // The map and SideChatPanel are rendered separately and will show when isMapVisible && hasPerformedSearch
         // This prevents any possibility of dashboard appearing when chat is clicked
-        if (shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && isMapVisible)) {
+        // BUT: If externalIsMapVisible is true (Map button clicked), always show map regardless of chat state
+        if ((shouldRestoreActiveChat || isTransitioningToChatRef.current || (isInChatMode && isMapVisible)) && !externalIsMapVisible) {
           // Don't render dashboard - map/chat interface will be rendered instead
           return null;
         }
@@ -3312,7 +3850,10 @@ export const MainContent = ({
                 {(() => {
                   // During transitions, use ref for immediate value; otherwise use state
                   const mapVisible = isTransitioning ? isMapVisibleRef.current : isMapVisible;
-                  return !mapVisible;
+                  // CRITICAL: Hide dashboard when map is visible OR when externalIsMapVisible is true (Map button clicked)
+                  // Show dashboard when map is NOT visible AND externalIsMapVisible is false
+                  const shouldHideDashboard = mapVisible || externalIsMapVisible;
+                  return !shouldHideDashboard;
                 })() ? (() => {
                   // Use frozen layout state during transitions to prevent recalculation
                   const frozenState = frozenLayoutStateRef.current;
@@ -3396,7 +3937,7 @@ export const MainContent = ({
                       }}>
                         {/* VELORA Logo - Enlarged to match reference image proportions */}
                         <img 
-                          src="/%28DASH%20VELORA%29%20Logo%20-%20NB.png" 
+                          src="/NB..VELORA..LOGO.png" 
                     alt="VELORA" 
                           className="h-auto"
                           style={{ 
@@ -3442,9 +3983,18 @@ export const MainContent = ({
                         const MAX_PADDING = 32; // 2rem maximum padding
                         const SEARCH_BAR_MIN = 350; // Minimum search bar width for placeholder text (reduced since placeholder is shorter: "Search for anything")
                         
-                        // Calculate available width (account for sidebar)
+                        // Calculate actual sidebar width based on state (same as dashboard) - DO THIS FIRST
+                        // Collapsed: 12px (toggle rail only)
+                        // Normal: 236px (224px sidebar + 12px toggle rail)
+                        // Expanded: 332px (320px sidebar + 12px toggle rail)
+                        const TOGGLE_RAIL_WIDTH = 12;
+                        const actualSidebarWidth = isSidebarCollapsed 
+                          ? TOGGLE_RAIL_WIDTH 
+                          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+                        
+                        // Calculate available width (account for sidebar) - SAME AS DASHBOARD
                         const availableWidth = isMapVisible 
-                          ? effectiveViewportSizeForSearch.width 
+                          ? effectiveViewportSizeForSearch.width - (isSidebarCollapsed ? 0 : actualSidebarWidth)
                           : effectiveViewportSizeForSearch.width - (effectiveSidebarCollapsed ? 0 : SIDEBAR_WIDTH);
                         
                         // Calculate padding: ensure search bar fits with at least minimum padding
@@ -3473,38 +4023,84 @@ export const MainContent = ({
                         // When very small, position at bottom like ChatGPT
                         const shouldPositionAtBottom = isVerySmallViewport && !isMapVisible;
                         
+                        // For map view: Calculate center point of available space (same logic as dashboard padding)
+                        // Center = sidebar right edge + (available width / 2)
+                        // = actualSidebarWidth + (availableWidth / 2)
+                        // = actualSidebarWidth + ((viewportWidth - actualSidebarWidth) / 2)
+                        // = actualSidebarWidth + viewportWidth/2 - actualSidebarWidth/2
+                        // = viewportWidth/2 + actualSidebarWidth/2
+                        // = 50vw + actualSidebarWidth/2
+                        const sidebarHalfWidth = actualSidebarWidth / 2;
+                        const mapViewLeft = isMapVisible 
+                          ? (isSidebarCollapsed 
+                              ? '50%' 
+                              : `calc(50vw + ${sidebarHalfWidth}px)`)
+                          : (shouldPositionAtBottom ? '0' : 'auto');
+                        
+                        // Transform: translateX(-50%) centers the search bar at the left position
+                        const mapViewTransform = isMapVisible ? 'translateX(-50%)' : 'none';
+                        
+                        // Debug logging to verify calculation
+                        if (isMapVisible) {
+                          console.log('🔍 Search bar positioning:', {
+                            isSidebarCollapsed,
+                            isSidebarExpanded,
+                            actualSidebarWidth,
+                            sidebarHalfWidth,
+                            availableWidth,
+                            viewportWidth: effectiveViewportSizeForSearch.width,
+                            mapViewLeft,
+                            transform: mapViewTransform,
+                            calculatedCenter: `50vw + ${sidebarHalfWidth}px = ${effectiveViewportSizeForSearch.width / 2 + sidebarHalfWidth}px`
+                          });
+                        }
+                        
+                        // Determine if transition should be enabled
+                        // Enable transition for sidebar state changes, but disable during chat transitions
+                        // Component will automatically re-render when isSidebarCollapsed prop changes
+                        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
+                        const transitionValue = shouldEnableTransition 
+                          ? (isMapVisible ? 'left 0.3s ease-out' : 'all 0.3s ease-out')
+                          : 'none';
+                        
                         return (
-                          <div className="w-full flex justify-center items-center" style={{ 
-                            marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
-                            marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
-                            paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
-                            paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
-                            paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
-                            paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
-                            overflow: 'visible', // Ensure content is never clipped
-                            position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
-                            bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            left: isMapVisible ? '50%' : (shouldPositionAtBottom ? '0' : 'auto'),
-                            right: shouldPositionAtBottom ? '0' : 'auto',
-                            transform: isMapVisible ? 'translateX(-50%)' : 'none',
-                            zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
-                            width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
-                            maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
-                            boxSizing: 'border-box', // Include padding in width calculation
-                            backgroundColor: 'transparent', // Fully transparent - background shows through
-                            background: 'transparent', // Fully transparent - background shows through
-                            backdropFilter: 'none', // No backdrop filter to ensure full transparency
-                            transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out', // Smooth transitions, but disable during navigation
-                            WebkitTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
-                            MozTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
-                            msTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out',
-                            OTransition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'all 0.3s ease-out'
-                          }}>
-                <SearchBar 
+                          <div 
+                            className={isMapVisible ? "" : "w-full flex justify-center items-center"} 
+                            style={{ 
+                              // Explicit display to override any className interference
+                              display: (isMapVisible || showNewPropertyWorkflow) ? 'block' : 'flex',
+                              alignItems: isMapVisible ? 'center' : 'center', // Center content vertically
+                              marginTop: shouldPositionAtBottom ? 'auto' : (isVerySmall ? 'auto' : '0'),
+                              marginBottom: shouldPositionAtBottom ? '0' : (isVerySmall ? 'auto' : '0'),
+                              paddingLeft: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on left
+                              paddingRight: isMapVisible ? '0' : `${finalPadding}px`, // Equal padding on right
+                              paddingBottom: shouldPositionAtBottom ? '20px' : '0', // Bottom padding when fixed at bottom
+                              paddingTop: shouldPositionAtBottom ? '16px' : '0', // Top padding when fixed at bottom (ChatGPT-style)
+                              overflow: 'visible', // Ensure content is never clipped
+                              position: isMapVisible ? 'fixed' : (shouldPositionAtBottom ? 'fixed' : 'relative'),
+                              bottom: isMapVisible ? '24px' : (shouldPositionAtBottom ? '0' : 'auto'),
+                              left: mapViewLeft,
+                              transform: mapViewTransform,
+                              zIndex: isMapVisible ? 50 : (shouldPositionAtBottom ? 100 : 10), // Higher z-index when fixed at bottom
+                              width: isMapVisible ? 'clamp(400px, 85vw, 650px)' : '100%', // Full width in dashboard, constrained in map view
+                              maxWidth: isMapVisible ? 'clamp(400px, 85vw, 650px)' : 'none', // No max width constraint in dashboard (handled by padding)
+                              boxSizing: 'border-box', // Include padding in width calculation
+                              backgroundColor: 'transparent', // Fully transparent - background shows through
+                              background: 'transparent', // Fully transparent - background shows through
+                              backdropFilter: 'none', // No backdrop filter to ensure full transparency
+                              transition: transitionValue, // Smooth transitions for sidebar state changes, but disable during navigation
+                              WebkitTransition: transitionValue,
+                              MozTransition: transitionValue,
+                              msTransition: transitionValue,
+                              OTransition: transitionValue,
+                              visibility: showNewPropertyWorkflow ? 'hidden' : 'visible' // Hide SearchBar when workflow is visible
+                            }}>
+                {!showNewPropertyWorkflow && <SearchBar 
                   ref={searchBarRefCallback}
                   onSearch={handleSearch} 
                   onQueryStart={handleQueryStart} 
                   onMapToggle={handleMapToggle}
+                  onDashboardClick={onNavigateToDashboard}
                   resetTrigger={resetTrigger}
                   isMapVisible={isMapVisible}
                   isInChatMode={isInChatMode}
@@ -3533,6 +4129,7 @@ export const MainContent = ({
                   hasPreviousSession={isMapVisible && !hasPerformedSearch ? !!previousSessionQuery : false}
                   onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
                   isQuickStartBarVisible={isQuickStartBarVisible}
+                  onCreateProject={handleCreateProject}
                   // REMOVED initialValue - using simple local state like SideChatPanel
                   // This prevents the typing reset issue completely
                   initialAttachedFiles={(() => {
@@ -3543,19 +4140,19 @@ export const MainContent = ({
                       : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
                     return attachments;
                   })()}
-                />
+                />}
                           </div>
                         );
                       })()}
                       
-                      {/* Upload and Recent Projects Buttons - positioned below search bar */}
-                      {!isMapVisible && !isInChatMode && (
+                      {/* Upload and Recent Projects Buttons - disabled for now */}
+                      {false && !isMapVisible && !isInChatMode && (
                         <div className="w-full" style={{ 
-                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)', // Reduced from 1rem-1.5rem to move closer
-                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)', // Reduced padding
+                          marginTop: 'clamp(0.5rem, 1vh, 0.75rem)',
+                          paddingTop: 'clamp(0.25rem, 0.5vh, 0.5rem)',
                           paddingLeft: 'clamp(16px, 4vw, 32px)',
                           paddingRight: 'clamp(16px, 4vw, 32px)',
-                          position: 'relative', // Keep relative so absolute children position relative to this
+                          position: 'relative',
                           zIndex: 100,
                           width: '100%',
                           maxWidth: 'clamp(400px, 85vw, 650px)',
@@ -3572,10 +4169,10 @@ export const MainContent = ({
                                 backgroundColor: '#FFFFFF',
                                 color: '#374151',
                                 border: '1px solid rgba(229, 231, 235, 0.6)',
-                                fontSize: '12px', // Reduced from 14px
+                                fontSize: '12px',
                                 fontWeight: 500,
                                 cursor: 'pointer',
-                                height: '32px', // Reduced from 40px
+                                height: '32px',
                                 transition: 'all 0.15s ease',
                               }}
                               onMouseEnter={(e) => {
@@ -3587,12 +4184,11 @@ export const MainContent = ({
                                 e.currentTarget.style.borderColor = 'rgba(229, 231, 235, 0.6)';
                               }}
                             >
-                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} /> {/* Reduced from w-4 h-4 */}
+                              <Folder className="w-3.5 h-3.5" strokeWidth={1.5} />
                               <span>Recent Projects</span>
                             </button>
                           </div>
                           
-                          {/* Recent Projects Section - appears below button when expanded, doesn't affect other elements */}
                           {isRecentProjectsVisible && (
                             <motion.div
                               initial={{ opacity: 0, y: -10 }}
@@ -3603,8 +4199,8 @@ export const MainContent = ({
                               style={{ 
                                 marginTop: 'clamp(1rem, 2vh, 1.5rem)',
                                 marginBottom: 'clamp(2rem, 5vh, 3rem)',
-                                position: 'absolute', // Use absolute positioning to not affect layout
-                                top: '100%', // Position below the button
+                                position: 'absolute',
+                                top: '100%',
                                 left: 0,
                                 right: 0,
                                 zIndex: 99,
@@ -3622,11 +4218,7 @@ export const MainContent = ({
                                   setShowNewPropertyWorkflow(true);
                                 }}
                                 onOpenProperty={(address, coordinates, propertyId) => {
-                                  console.log('🖱️ Project card clicked:', { address, coordinates, propertyId });
-                                  // CRITICAL: Use property pin location coordinates (user-set) to center map on pin location
-                                  // These are the final coordinates selected when user clicked Create Property Card, NOT document-extracted coordinates
-                                  
-                                  // OPTIMIZATION: Check cache FIRST for instant display (<1s)
+                                  console.log('Project card clicked:', { address, coordinates, propertyId });
                                   let instantDisplay = false;
                                   if (propertyId) {
                                     try {
@@ -3634,21 +4226,14 @@ export const MainContent = ({
                                       const cached = localStorage.getItem(cacheKey);
                                       if (cached) {
                                         const cacheData = JSON.parse(cached);
-                                        const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+                                        const CACHE_MAX_AGE = 30 * 60 * 1000;
                                         const cacheAge = Date.now() - cacheData.timestamp;
                                         
                                         if (cacheAge < CACHE_MAX_AGE && cacheData.data) {
-                                          // We have cached data - show card INSTANTLY
-                                          console.log('🚀 INSTANT: Using cached property data - showing card immediately');
+                                          console.log('INSTANT: Using cached property data');
                                           instantDisplay = true;
-                                          
-                                          // Open map and select property immediately
                                           setIsMapVisible(true);
-                                          
-                                          // Store selection for map with property pin location coordinates
                                           (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                          
-                                          // Select property immediately if map is ready, using property pin location coordinates
                                           if (mapRef.current) {
                                             mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                           }
@@ -3659,32 +4244,23 @@ export const MainContent = ({
                                     }
                                   }
                                   
-                                  // If we didn't show instantly from cache, use normal flow
                                   if (!instantDisplay) {
-                                    // Open map mode
                                     setIsMapVisible(true);
-                                    
-                                    // Skip address search when we have a propertyId to avoid geocoding conflicts
                                     if (!propertyId) {
                                       setMapSearchQuery(address);
                                       setHasPerformedSearch(true);
                                     }
-                                    
-                                    // Store selection for when map is ready, with property pin location coordinates
                                     (window as any).__pendingPropertySelection = { address, coordinates, propertyId };
-                                    
-                                    // Try to select immediately (no delay - map should be ready or will retry) - use property pin location coordinates
                                     if (mapRef.current) {
-                                      console.log('✅ Selecting property immediately with pin location coordinates:', coordinates);
+                                      console.log('Selecting property immediately:', coordinates);
                                       mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                     } else {
-                                      // Map not ready - try again very soon
                                       setTimeout(() => {
                                         if (mapRef.current) {
-                                          console.log('✅ Selecting property after map initialization with pin location coordinates:', coordinates);
+                                          console.log('Selecting property after map initialization:', coordinates);
                                           mapRef.current.selectPropertyByAddress(address, coordinates, propertyId);
                                         }
-                                      }, 10); // Minimal delay - check every 10ms
+                                      }, 10);
                                     }
                                   }
                                 }}
@@ -3760,7 +4336,8 @@ export const MainContent = ({
         return (
           <div className="w-full h-full overflow-auto">
             <ProjectsPage 
-              onCreateProject={() => setShowNewPropertyWorkflow(true)}
+              onCreateProject={handleCreateProject}
+              onPropertySelect={handleProjectPropertySelect}
               sidebarWidth={(() => {
                 // Calculate sidebar width based on state (matching NewPropertyPinWorkflow logic)
                 const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
@@ -3805,11 +4382,12 @@ export const MainContent = ({
             
             
             {/* Unified Search Bar - adapts based on context */}
-            <SearchBar 
+            {!showNewPropertyWorkflow && <SearchBar 
               ref={searchBarRefCallback}
               onSearch={handleSearch} 
               onQueryStart={handleQueryStart} 
               onMapToggle={handleMapToggle}
+              onDashboardClick={onNavigateToDashboard}
               resetTrigger={resetTrigger}
               isMapVisible={isMapVisible}
               isInChatMode={isInChatMode}
@@ -3826,6 +4404,7 @@ export const MainContent = ({
               } : undefined}
               onQuickStartToggle={() => setIsQuickStartBarVisible(!isQuickStartBarVisible)}
               isQuickStartBarVisible={isQuickStartBarVisible}
+              onCreateProject={handleCreateProject}
               onPanelToggle={isMapVisible && !hasPerformedSearch ? () => {
                 if (previousSessionQuery) {
                   setMapSearchQuery(previousSessionQuery);
@@ -3845,7 +4424,7 @@ export const MainContent = ({
                   : (isMapVisible && !hasPerformedSearch ? (pendingMapAttachmentsRef.current.length > 0 ? pendingMapAttachmentsRef.current : (pendingMapAttachments.length > 0 ? pendingMapAttachments : undefined)) : undefined);
                 return attachments;
               })()}
-            />
+            />}
           </div>;
     }
   };
@@ -3959,8 +4538,37 @@ export const MainContent = ({
       return; // Don't interfere with FilingSidebar's drag handling
     }
     
-    // Only process file drags
-    if (!e.dataTransfer.types.includes('Files')) {
+    // Check if dragging over SideChatPanel - let it handle its own drag events
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      return; // Don't interfere with SideChatPanel's drag handling
+    }
+    
+    // Check if dragging over SearchBar - let it handle its own drag events
+    // But we still want to track drag state for visual feedback
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // Still process to show visual feedback, but SearchBar will handle the actual drop
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        e.preventDefault();
+        setDragCounter(prev => {
+          const newCount = prev + 1;
+          if (newCount === 1) {
+            setIsDragging(true);
+          }
+          return newCount;
+        });
+      }
+      return; // Let SearchBar handle its own events
+    }
+    
+    // Only process file drags (Files type) or FilingSidebar documents (application/json type)
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    const hasJsonData = e.dataTransfer.types.includes('application/json');
+    
+    if (!hasFiles && !hasJsonData) {
       return;
     }
     
@@ -3978,6 +4586,18 @@ export const MainContent = ({
   }, []);
 
   const handleDragLeave = React.useCallback((e: React.DragEvent) => {
+    // Check if leaving from SideChatPanel - let it handle its own drag leave logic
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      return; // Don't interfere with SideChatPanel's drag handling
+    }
+    
+    // Check if leaving from FilingSidebar - let it handle its own drag leave logic
+    const filingSidebar = (e.target as HTMLElement).closest('[data-filing-sidebar]');
+    if (filingSidebar) {
+      return; // Don't interfere with FilingSidebar's drag handling
+    }
+    
     e.preventDefault();
     e.stopPropagation();
     
@@ -4014,11 +4634,50 @@ export const MainContent = ({
       return;
     }
     
+    // Check if dragging over SideChatPanel - allow events to propagate
+    const sideChatPanel = (e.target as HTMLElement).closest('[data-side-chat-panel]');
+    if (sideChatPanel) {
+      // CRITICAL: Call preventDefault() to prevent browser default behavior
+      // even when delegating to SideChatPanel, otherwise browser may interfere
+      // This matches the pattern used for SearchBar
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDragging(true);
+      }
+      // Don't call stopPropagation() here - let SideChatPanel's handler process it
+      return; // Let SideChatPanel handle the actual drop
+    }
+    
+    // Check if dragging over SearchBar - let it handle its own events
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // This is the SearchBar - let it handle the event
+      // But we still want to show visual feedback on MainContent
+      const hasFiles = e.dataTransfer.types.includes('Files');
+      const hasJsonData = e.dataTransfer.types.includes('application/json');
+      if (hasFiles || hasJsonData) {
+        // CRITICAL: Call preventDefault() to prevent browser default behavior
+        // even when delegating to SearchBar, otherwise browser may interfere
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDragging(true);
+      }
+      // Don't call stopPropagation() here - let SearchBar's handler process it
+      return; // Let SearchBar handle the actual drop
+    }
+    
     e.preventDefault();
     e.stopPropagation();
     
     // Ensure dragging state is maintained while dragging over
-    if (e.dataTransfer.types.includes('Files')) {
+    // Check for both Files type (regular file drags) and application/json (FilingSidebar documents)
+    const hasFiles = e.dataTransfer.types.includes('Files');
+    const hasJsonData = e.dataTransfer.types.includes('application/json');
+    
+    if (hasFiles || hasJsonData) {
       e.dataTransfer.dropEffect = 'copy';
       // Keep dragging state active while over the area
       setIsDragging(true);
@@ -4040,6 +4699,13 @@ export const MainContent = ({
     const propertyPanel = (e.target as HTMLElement).closest('[data-property-panel]');
     if (propertyPanel) {
       return; // Let property card handle the drop
+    }
+    
+    // Check if drop is on SearchBar - let it handle the drop
+    const searchBar = (e.target as HTMLElement).closest('[data-search-bar]');
+    if (searchBar) {
+      // This is the SearchBar - let it handle the drop
+      return;
     }
     
     e.preventDefault();
@@ -4095,38 +4761,66 @@ export const MainContent = ({
     if (files.length > 0) {
       // Only handle the first file for now
       const file = files[0];
-      console.log('📁 File dropped:', file.name);
-      console.log('📊 Drop context:', {
+      console.log('📁 [MainContent] File dropped on empty space:', file.name, {
+        size: file.size,
+        type: file.type,
         currentView,
-        hasSearchRef: !!searchBarRef.current
+        hasSearchRef: !!searchBarRef.current,
+        searchRefMethods: searchBarRef.current ? Object.keys(searchBarRef.current) : []
       });
       
-      // Pass file to SearchBar
-      if (searchBarRef.current) {
-        console.log('📤 Passing file to SearchBar (via ref)');
-        searchBarRef.current.handleFileDrop(file);
-      } else {
-        // Fallback: Try to trigger file upload via the file input element
-        console.warn('⚠️ SearchBar ref not found, trying direct file input approach');
+      try {
+        // Pass file to SearchBar via ref (preferred method)
+        if (searchBarRef.current && searchBarRef.current.handleFileDrop) {
+          console.log('📤 [MainContent] Passing file to SearchBar via ref');
+          try {
+            searchBarRef.current.handleFileDrop(file);
+            console.log('✅ [MainContent] File successfully passed to SearchBar via ref');
+            return; // Success - exit early
+          } catch (refError) {
+            console.error('❌ [MainContent] Error calling searchBarRef.handleFileDrop:', refError);
+            // Fall through to fallback mechanisms
+          }
+        } else {
+          console.warn('⚠️ [MainContent] SearchBar ref not available or missing handleFileDrop method', {
+            refExists: !!searchBarRef.current,
+            hasHandleFileDrop: searchBarRef.current?.handleFileDrop ? true : false
+          });
+        }
         
-        // Find the file input in the SearchBar
+        // Fallback 1: Try to trigger file upload via the file input element
+        console.log('🔄 [MainContent] Attempting fallback: direct file input approach');
         const fileInputs = document.querySelectorAll('input[type="file"]');
         let targetInput: HTMLInputElement | null = null;
         
-        // Look for input in SearchBar
-        const searchContainer = document.querySelector('[class*="SearchBar"]') ||
-                                document.querySelector('form');
-        if (searchContainer) {
-          targetInput = searchContainer.querySelector('input[type="file"]') as HTMLInputElement;
+        // Look for input in SearchBar using data attribute
+        const searchBarForm = document.querySelector('[data-search-bar]');
+        if (searchBarForm) {
+          targetInput = searchBarForm.querySelector('input[type="file"]') as HTMLInputElement;
+          console.log('🔍 [MainContent] Found SearchBar form, checking for file input:', !!targetInput);
         }
         
-        // Fallback to first available file input
+        // Fallback: Look for any form with file input
+        if (!targetInput) {
+          const forms = document.querySelectorAll('form');
+          for (const form of forms) {
+            const input = form.querySelector('input[type="file"]') as HTMLInputElement;
+            if (input) {
+              targetInput = input;
+              console.log('🔍 [MainContent] Found file input in form');
+              break;
+            }
+          }
+        }
+        
+        // Last resort: use first available file input
         if (!targetInput && fileInputs.length > 0) {
           targetInput = fileInputs[0] as HTMLInputElement;
+          console.log('🔍 [MainContent] Using first available file input as last resort');
         }
         
         if (targetInput) {
-          console.log('📤 Found file input, triggering upload via DataTransfer');
+          console.log('📤 [MainContent] Found file input, triggering upload via DataTransfer');
           try {
             // Create a new FileList with the dropped file using DataTransfer
             const dataTransfer = new DataTransfer();
@@ -4136,19 +4830,30 @@ export const MainContent = ({
             // Trigger change event to notify the component
             const changeEvent = new Event('change', { bubbles: true });
             targetInput.dispatchEvent(changeEvent);
-            console.log('✅ File input change event dispatched');
-          } catch (error) {
-            console.error('❌ Error triggering file input:', error);
-            // Store as pending if direct approach fails
-            pendingFileDropRef.current = file;
-            setHasPendingFile(true);
+            console.log('✅ [MainContent] File input change event dispatched');
+            return; // Success - exit early
+          } catch (inputError) {
+            console.error('❌ [MainContent] Error triggering file input:', inputError);
+            // Fall through to pending file mechanism
           }
         } else {
-          console.warn('⚠️ No file input found, storing as pending');
-          pendingFileDropRef.current = file;
-          setHasPendingFile(true);
+          console.warn('⚠️ [MainContent] No file input found in DOM');
         }
+        
+        // Fallback 2: Store as pending for later processing
+        console.log('📦 [MainContent] Storing file as pending for later processing');
+        pendingFileDropRef.current = file;
+        setHasPendingFile(true);
+        console.log('✅ [MainContent] File stored as pending, polling mechanism will process it');
+        
+      } catch (error) {
+        console.error('❌ [MainContent] Unexpected error in handleDrop:', error);
+        // Still try to store as pending as last resort
+        pendingFileDropRef.current = file;
+        setHasPendingFile(true);
       }
+    } else {
+      console.warn('⚠️ [MainContent] No files found in dataTransfer.files');
     }
   }, [currentView]);
 
@@ -4159,69 +4864,88 @@ export const MainContent = ({
   React.useEffect(() => {
     if (pendingFileDropRef.current && searchBarRef.current) {
       const pendingFile = pendingFileDropRef.current;
-      console.log('🔄 Processing pending file drop:', pendingFile.name, { 
+      console.log('🔄 [MainContent] Processing pending file drop:', pendingFile.name, { 
         refsReady, 
         hasSearchRef: !!searchBarRef.current,
+        hasHandleFileDrop: !!searchBarRef.current?.handleFileDrop,
         currentView
       });
       
-      console.log('📤 Processing pending file in SearchBar');
-      try {
-        searchBarRef.current.handleFileDrop(pendingFile);
-        pendingFileDropRef.current = null;
-        setHasPendingFile(false);
-        console.log('✅ Pending file successfully processed in SearchBar');
-      } catch (err) {
-        console.error('❌ Error processing pending file in SearchBar:', err);
+      // Defensive check: ensure handleFileDrop method exists
+      if (searchBarRef.current.handleFileDrop) {
+        console.log('📤 [MainContent] Processing pending file in SearchBar');
+        try {
+          searchBarRef.current.handleFileDrop(pendingFile);
+          pendingFileDropRef.current = null;
+          setHasPendingFile(false);
+          console.log('✅ [MainContent] Pending file successfully processed in SearchBar');
+        } catch (err) {
+          console.error('❌ [MainContent] Error processing pending file in SearchBar:', err);
+          // Keep file as pending for retry
+        }
+      } else {
+        console.warn('⚠️ [MainContent] SearchBar ref exists but handleFileDrop method is missing');
+        // Keep file as pending - polling mechanism will retry
       }
     }
   }, [refsReady, currentView, hasPendingFile]);
   
   React.useEffect(() => {
     if (hasPendingFile && pendingFileDropRef.current) {
-      console.log('🔄 Starting polling for pending file:', pendingFileDropRef.current.name);
+      const pendingFileName = pendingFileDropRef.current.name;
+      console.log('🔄 [MainContent] Starting polling for pending file:', pendingFileName);
+      
+      let pollCount = 0;
+      const maxPolls = 50; // 50 polls * 100ms = 5 seconds max
       
       const interval = setInterval(() => {
+        pollCount++;
         const pendingFile = pendingFileDropRef.current;
+        
         if (!pendingFile) {
-          console.log('✅ Pending file cleared, stopping polling');
+          console.log('✅ [MainContent] Pending file cleared, stopping polling');
           setHasPendingFile(false);
           clearInterval(interval);
           return;
         }
         
-        console.log('🔄 Polling for refs:', { 
-          hasSearchRef: !!searchBarRef.current,
-          currentView
-        });
-        
-        if (searchBarRef.current) {
-          console.log('📤 Processing pending file in SearchBar (fallback)');
+        // Defensive check: verify ref exists and has the method
+        if (searchBarRef.current && searchBarRef.current.handleFileDrop) {
+          console.log(`📤 [MainContent] Processing pending file in SearchBar (poll attempt ${pollCount})`);
           try {
             searchBarRef.current.handleFileDrop(pendingFile);
             pendingFileDropRef.current = null;
             setHasPendingFile(false);
             clearInterval(interval);
-            console.log('✅ Pending file successfully processed in SearchBar (fallback)');
+            console.log('✅ [MainContent] Pending file successfully processed in SearchBar (polling)');
           } catch (err) {
-            console.error('❌ Error processing pending file in SearchBar (fallback):', err);
+            console.error(`❌ [MainContent] Error processing pending file in SearchBar (poll ${pollCount}):`, err);
+            // Continue polling - might be a transient error
+          }
+        } else {
+          // Only log every 10 polls to reduce console spam
+          if (pollCount % 10 === 0) {
+            console.log(`🔄 [MainContent] Polling for refs (attempt ${pollCount}):`, { 
+              hasSearchRef: !!searchBarRef.current,
+              hasHandleFileDrop: searchBarRef.current?.handleFileDrop ? true : false,
+              currentView
+            });
+          }
+        }
+        
+        // Stop polling after max attempts
+        if (pollCount >= maxPolls) {
+          console.warn(`⚠️ [MainContent] Pending file drop timed out after ${maxPolls} attempts (5 seconds):`, pendingFileName);
+          clearInterval(interval);
+          if (pendingFileDropRef.current) {
+            pendingFileDropRef.current = null;
+            setHasPendingFile(false);
           }
         }
       }, 100); // Check every 100ms
       
-      // Clear interval after 5 seconds to avoid infinite polling
-      const timeout = setTimeout(() => {
-        clearInterval(interval);
-        if (pendingFileDropRef.current) {
-          console.warn('⚠️ Pending file drop timed out after 5 seconds:', pendingFileDropRef.current.name);
-          pendingFileDropRef.current = null;
-          setHasPendingFile(false);
-        }
-      }, 5000);
-      
       return () => {
         clearInterval(interval);
-        clearTimeout(timeout);
       };
     }
   }, [hasPendingFile, currentView]);
@@ -4248,7 +4972,7 @@ export const MainContent = ({
       <UploadProgressBar />
       
       {/* Background Map - Always rendered but only visible/interactive when map view is active */}
-      {(currentView === 'search' || currentView === 'home') && (
+        {((currentView === 'search' || currentView === 'home') && (isMapVisible || externalIsMapVisible)) && (
         <div 
           className="fixed" 
           style={{ 
@@ -4258,8 +4982,8 @@ export const MainContent = ({
             bottom: 0,
             width: '100vw',
             height: '100vh',
-            zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
-            opacity: isMapVisible ? 1 : 0, // Hide visually when not in map view
+            zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
+            opacity: (isMapVisible || externalIsMapVisible) ? 1 : 0, // Hide visually when not in map view
             pointerEvents: 'none', // Disable pointer events on wrapper - let SquareMap handle it
             overflow: 'hidden', // Clip any overflow
             transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : 'opacity 0.2s ease-out', // Disable transition when transitioning from chat
@@ -4270,8 +4994,8 @@ export const MainContent = ({
         >
           <SquareMap
             ref={mapRef}
-            isVisible={isMapVisible}
-            isInteractive={isMapVisible}
+            isVisible={isMapVisible || externalIsMapVisible}
+            isInteractive={isMapVisible || externalIsMapVisible}
             searchQuery={mapSearchQuery}
             hasPerformedSearch={hasPerformedSearch}
             isInChatMode={isInChatMode}
@@ -4280,19 +5004,23 @@ export const MainContent = ({
             }}
             onPropertyDetailsVisibilityChange={(isOpen) => {
               setIsPropertyDetailsOpen(isOpen);
-              // Reset shouldExpandChat when property details panel closes to prevent chat from expanding more
-              if (!isOpen) {
+              if (isOpen && hasPerformedSearch) {
+                // Chat is already open and property details is opening - expand chat for 50/50 split
+                setShouldExpandChat(true);
+              } else if (!isOpen) {
+                // Reset shouldExpandChat when property details panel closes to prevent chat from expanding more
                 setShouldExpandChat(false);
               }
             }}
+            onCreateProject={handleCreateProject}
             containerStyle={{
               position: 'fixed',
               top: 0,
               left: 0, // Always at left edge - map stays full width
               width: '100vw', // Always full width - never resizes, no animations
               height: '100vh',
-              zIndex: isMapVisible ? 2 : -1, // Above content container when visible, below when hidden
-              pointerEvents: isMapVisible ? 'auto' : 'none', // Enable clicks when map is visible
+              zIndex: (isMapVisible || externalIsMapVisible) ? 2 : -1, // Above content container when visible, below when hidden
+              pointerEvents: (isMapVisible || externalIsMapVisible) ? 'auto' : 'none', // Enable clicks when map is visible
               backgroundColor: '#f5f5f5', // Match map background
               background: '#f5f5f5' // Ensure background is set
             }}
@@ -4337,79 +5065,114 @@ export const MainContent = ({
       {/* MapChatBar removed - using unified SearchBar instead */}
       
       {/* Search Bar for Map View - Rendered at top level to ensure visibility */}
-      {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && (
-        <div 
-          ref={(el) => {
-            if (el) {
-              // Use requestAnimationFrame to check after layout
-              requestAnimationFrame(() => {
-                const rect = el.getBoundingClientRect();
-                const computedStyle = window.getComputedStyle(el);
-                
-                // Check parent containers
-                let parent = el.parentElement;
-                const parentInfo: any[] = [];
-                let depth = 0;
-                while (parent && depth < 5) {
-                  const parentStyle = window.getComputedStyle(parent);
-                  parentInfo.push({
-                    tagName: parent.tagName,
-                    className: parent.className,
-                    display: parentStyle.display,
-                    visibility: parentStyle.visibility,
-                    opacity: parentStyle.opacity,
-                    position: parentStyle.position,
-                    zIndex: parentStyle.zIndex,
-                    overflow: parentStyle.overflow,
-                    overflowX: parentStyle.overflowX,
-                    overflowY: parentStyle.overflowY,
-                    height: parentStyle.height,
-                    width: parentStyle.width
-                  });
-                  parent = parent.parentElement;
-                  depth++;
-                }
-                
-                // For fixed elements, offsetParent is null by design, so check visibility differently
-                const isActuallyVisible = computedStyle.display !== 'none' && 
-                                        computedStyle.visibility !== 'hidden' && 
-                                        computedStyle.opacity !== '0' &&
-                                        rect.width > 0 && 
-                                        rect.height > 0;
-                
-              });
-            }
-          }}
-          className="w-full" 
-          style={{ 
-            position: 'fixed',
-            bottom: '24px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10000, // VERY HIGH z-index to ensure it's on top
-            width: 'clamp(400px, 85vw, 650px)',
-            maxWidth: 'clamp(400px, 85vw, 650px)',
-            maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
-            boxSizing: 'border-box',
-            pointerEvents: 'auto', // Ensure it's clickable
-            // Remove flex from container - let SearchBar determine its own size
-            display: 'block',
-            // Add minHeight to prevent collapse before content renders
-            minHeight: '60px',
-            // Don't clip the SearchBar shadow
-            overflow: 'visible'
-          }}>
+      {isMapVisible && !hasPerformedSearch && (currentView === 'search' || currentView === 'home') && !showNewPropertyWorkflow && (() => {
+        // Calculate actual sidebar width based on state (same as dashboard and first SearchBar)
+        // Collapsed: 12px (toggle rail only)
+        // Normal: 236px (224px sidebar + 12px toggle rail)
+        // Expanded: 332px (320px sidebar + 12px toggle rail)
+        const TOGGLE_RAIL_WIDTH = 12;
+        const actualSidebarWidth = isSidebarCollapsed 
+          ? TOGGLE_RAIL_WIDTH 
+          : (isSidebarExpanded ? 320 + TOGGLE_RAIL_WIDTH : 224 + TOGGLE_RAIL_WIDTH);
+        
+        // Calculate center point of available space (same logic as dashboard and first SearchBar)
+        // Center = sidebar right edge + (available width / 2)
+        // = actualSidebarWidth + ((viewportWidth - actualSidebarWidth) / 2)
+        // = viewportWidth/2 + actualSidebarWidth/2
+        // = 50vw + actualSidebarWidth/2
+        const sidebarHalfWidth = actualSidebarWidth / 2;
+        const mapViewLeft = isSidebarCollapsed 
+          ? '50%' 
+          : `calc(50vw + ${sidebarHalfWidth}px)`;
+        
+        // Transform: translateX(-50%) centers the search bar at the left position
+        const mapViewTransform = 'translateX(-50%)';
+        
+        // Determine if transition should be enabled (same logic as first SearchBar)
+        const shouldEnableTransition = !(isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked);
+        const transitionValue = shouldEnableTransition ? 'left 0.3s ease-out' : 'none';
+        
+        return (
+          <div 
+            ref={(el) => {
+              if (el) {
+                // Use requestAnimationFrame to check after layout
+                requestAnimationFrame(() => {
+                  const rect = el.getBoundingClientRect();
+                  const computedStyle = window.getComputedStyle(el);
+                  
+                  // Check parent containers
+                  let parent = el.parentElement;
+                  const parentInfo: any[] = [];
+                  let depth = 0;
+                  while (parent && depth < 5) {
+                    const parentStyle = window.getComputedStyle(parent);
+                    parentInfo.push({
+                      tagName: parent.tagName,
+                      className: parent.className,
+                      display: parentStyle.display,
+                      visibility: parentStyle.visibility,
+                      opacity: parentStyle.opacity,
+                      position: parentStyle.position,
+                      zIndex: parentStyle.zIndex,
+                      overflow: parentStyle.overflow,
+                      overflowX: parentStyle.overflowX,
+                      overflowY: parentStyle.overflowY,
+                      height: parentStyle.height,
+                      width: parentStyle.width
+                    });
+                    parent = parent.parentElement;
+                    depth++;
+                  }
+                  
+                  // For fixed elements, offsetParent is null by design, so check visibility differently
+                  const isActuallyVisible = computedStyle.display !== 'none' && 
+                                          computedStyle.visibility !== 'hidden' && 
+                                          computedStyle.opacity !== '0' &&
+                                          rect.width > 0 && 
+                                          rect.height > 0;
+                  
+                });
+              }
+            }}
+            className="" 
+            style={{ 
+              position: 'fixed',
+              bottom: '24px',
+              left: mapViewLeft,
+              transform: mapViewTransform,
+              zIndex: 10000, // VERY HIGH z-index to ensure it's on top
+              width: 'clamp(400px, 85vw, 650px)',
+              maxWidth: 'clamp(400px, 85vw, 650px)',
+              maxHeight: 'calc(100vh - 48px)', // Constrain to viewport: 24px bottom + 24px top padding
+              boxSizing: 'border-box',
+              pointerEvents: 'auto', // Ensure it's clickable
+              // Remove flex from container - let SearchBar determine its own size
+              display: 'block',
+              // Add minHeight to prevent collapse before content renders
+              minHeight: '60px',
+              // Don't clip the SearchBar shadow
+              overflow: 'visible',
+              // Add transition for smooth movement when sidebar opens/closes
+              transition: transitionValue,
+              WebkitTransition: transitionValue,
+              MozTransition: transitionValue,
+              msTransition: transitionValue,
+              OTransition: transitionValue
+            }}>
           <SearchBar 
             ref={mapSearchBarRefCallback}
             onSearch={handleSearch} 
             onQueryStart={handleQueryStart} 
             onMapToggle={handleMapToggle}
+            onDashboardClick={onNavigateToDashboard}
             resetTrigger={resetTrigger}
             isMapVisible={isMapVisible}
             isInChatMode={isInChatMode}
             currentView={currentView}
             hasPerformedSearch={hasPerformedSearch}
             isSidebarCollapsed={isSidebarCollapsed}
+            previousViewBeforeMap={previousViewBeforeMap}
             onAttachmentsChange={isMapVisible && !hasPerformedSearch ? (attachments) => {
               // Proactively store map attachments when they change
               pendingMapAttachmentsRef.current = attachments;
@@ -4470,172 +5233,160 @@ export const MainContent = ({
               return attachments;
             })()}
           />
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
-      {/* SideChatPanel - Render outside content container to ensure visibility */}
-      {/* CRITICAL: Always render SideChatPanel (even when not visible) to allow queries to continue processing in background */}
-      {/* Only hide it visually when not in search/home view or when not visible */}
+      {/* SideChatPanel - Always rendered to allow background processing */}
       <SideChatPanel
         ref={sideChatPanelRef}
-        isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch}
+        isVisible={(currentView === 'search' || currentView === 'home') && isMapVisible && hasPerformedSearch && !showNewPropertyWorkflow}
         query={mapSearchQuery}
-          citationContext={citationContext}
-          isSidebarCollapsed={isSidebarCollapsed}
-          sidebarWidth={(() => {
-            // Sidebar widths match Tailwind classes:
-            // - w-0 when collapsed = 0px
-            // - w-56 when normal = 224px (14rem)
-            // Toggle rail is w-3 = 12px
-            const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
-            const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
-            
-            // Update immediately when closing - no delays to prevent map showing through
-            // Only include FilingSidebar width when it's actually open (not when closing)
-            if (isFilingSidebarOpen) {
-              // FilingSidebar starts at:
-              // - 224px when sidebar not collapsed (covering toggle rail)
-              // - 12px when sidebar collapsed (after toggle rail)
-              const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
-              return filingSidebarStart + filingSidebarWidth;
-            } else {
-              // FilingSidebar closed: use sidebar + toggle rail width
-              // Update immediately - no transition delay
-              const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
-              return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
-            }
-          })()}
-          isFilingSidebarClosing={isFilingSidebarClosing}
-          isSidebarCollapsing={isSidebarCollapsing}
-          restoreChatId={restoreChatId}
-          initialAttachedFiles={(() => {
-            const attachments = pendingSideChatAttachmentsRef.current.length > 0 
-              ? pendingSideChatAttachmentsRef.current 
-              : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined);
-            if (attachments && attachments.length > 0) {
-              console.log('📎 MainContent: Passing attachments to SideChatPanel:', attachments.length, attachments.map(a => a.name));
-            }
-            return attachments;
-          })()}
-          isPropertyDetailsOpen={isPropertyDetailsOpen}
-          shouldExpand={shouldExpandChat}
-          isMapVisible={isMapVisible}
-          onQuickStartToggle={() => {
-            setIsQuickStartBarVisible(!isQuickStartBarVisible);
-          }}
-          isQuickStartBarVisible={isQuickStartBarVisible}
-          onQuerySubmit={(newQuery) => {
-            // Handle new query from panel
-            setMapSearchQuery(newQuery);
-            // Keep hasPerformedSearch true
-            // Query from within SideChatPanel - don't expand (keep current state or collapse)
-            setShouldExpandChat(false);
-          }}
-          onMinimize={(chatMessages) => {
-            // Disable animations when closing chat
-            isTransitioningFromChatRef.current = true;
-            setIsTransitioningFromChat(true);
-            // Show bubble and hide full panel
-            setMinimizedChatMessages(chatMessages);
-            // Only show bubble in map flow (never on dashboard/other views)
-            if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
+        citationContext={citationContext}
+        isSidebarCollapsed={isSidebarCollapsed}
+        sidebarWidth={(() => {
+          // Sidebar widths match Tailwind classes:
+          // - w-0 when collapsed = 0px
+          // - w-56 when normal = 224px (14rem)
+          // Toggle rail is w-3 = 12px
+          const SIDEBAR_NORMAL_WIDTH = 224; // w-56 = 14rem = 224px
+          const TOGGLE_RAIL_WIDTH = 12; // w-3 = 12px
+          
+          // Update immediately when closing - no delays to prevent map showing through
+          // Only include FilingSidebar width when it's actually open (not when closing)
+          if (isFilingSidebarOpen) {
+            // FilingSidebar starts at:
+            // - 224px when sidebar not collapsed (covering toggle rail)
+            // - 12px when sidebar collapsed (after toggle rail)
+            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            return filingSidebarStart + filingSidebarWidth;
+          } else {
+            // FilingSidebar closed: use sidebar + toggle rail width
+            // Update immediately - no transition delay
+            const baseSidebarWidth = isSidebarCollapsed ? 0 : SIDEBAR_NORMAL_WIDTH;
+            return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
+          }
+        })()}
+        isFilingSidebarClosing={isFilingSidebarClosing}
+        isSidebarCollapsing={isSidebarCollapsing}
+        restoreChatId={restoreChatId}
+        newAgentTrigger={newAgentTrigger}
+        initialAttachedFiles={
+          pendingSideChatAttachmentsRef.current.length > 0 
+            ? pendingSideChatAttachmentsRef.current 
+            : (pendingSideChatAttachments.length > 0 ? pendingSideChatAttachments : undefined)
+        }
+        isPropertyDetailsOpen={isPropertyDetailsOpen}
+        shouldExpand={shouldExpandChat}
+        isMapVisible={isMapVisible}
+        onQuickStartToggle={() => {
+          setIsQuickStartBarVisible(!isQuickStartBarVisible);
+        }}
+        isQuickStartBarVisible={isQuickStartBarVisible}
+        onQuerySubmit={(newQuery) => {
+          // Handle new query from panel
+          setMapSearchQuery(newQuery);
+          // Keep hasPerformedSearch true
+          // Query from within SideChatPanel - don't expand (keep current state or collapse)
+          setShouldExpandChat(false);
+        }}
+        onMinimize={(chatMessages) => {
+          // Disable animations when closing chat
+          isTransitioningFromChatRef.current = true;
+          setIsTransitioningFromChat(true);
+          // Show bubble and hide full panel
+          setMinimizedChatMessages(chatMessages);
+          // Only show bubble in map flow (never on dashboard/other views)
+          if (isMapVisible && (currentView === 'search' || currentView === 'home')) {
             setIsChatBubbleVisible(true);
-            } else {
-              setIsChatBubbleVisible(false);
-            }
-            setHasPerformedSearch(false);
-            // Reset the flag after the longest animation duration
-            setTimeout(() => {
-              setIsTransitioningFromChat(false);
-            }, 700);
-            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-          }}
-          onMessagesUpdate={(chatMessages) => {
-            // Update main chat messages to preserve state even when navigating away
-            // This ensures queries can continue processing and update messages in the background
-            setChatMessages(chatMessages);
-            
-            // Also update preserved state if we have it, so it stays current
-            if (preservedChatStateRef.current) {
-              preservedChatStateRef.current.messages = [...chatMessages];
-            }
-            
-            // Update bubble messages in real-time when chat is minimized
-            if (isChatBubbleVisible) {
-              setMinimizedChatMessages(chatMessages);
-            }
-          }}
-          onMapToggle={() => {
-            // Disable animations when closing chat
-            isTransitioningFromChatRef.current = true;
-            setIsTransitioningFromChat(true);
-            // Close panel and show MapChatBar by resetting hasPerformedSearch
-            setMapSearchQuery("");
-            setHasPerformedSearch(false);
-            setRestoreChatId(null);
+          } else {
             setIsChatBubbleVisible(false);
-            setMinimizedChatMessages([]);
-            // Reset the flag after the longest animation duration
+          }
+          setHasPerformedSearch(false);
+          // Reset the flag after the longest animation duration
+          setTimeout(() => {
+            setIsTransitioningFromChat(false);
+          }, 700);
+          // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+          // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+        }}
+        onMessagesUpdate={(chatMessages) => {
+          // Update main chat messages to preserve state even when navigating away
+          // This ensures queries can continue processing and update messages in the background
+          setChatMessages(chatMessages);
+          
+          // Also update preserved state if we have it, so it stays current
+          if (preservedChatStateRef.current) {
+            preservedChatStateRef.current.messages = [...chatMessages];
+          }
+          
+          // Update bubble messages in real-time when chat is minimized
+          if (isChatBubbleVisible) {
+            setMinimizedChatMessages(chatMessages);
+          }
+        }}
+        onMapToggle={() => {
+          // Disable animations when closing chat
+          isTransitioningFromChatRef.current = true;
+          setIsTransitioningFromChat(true);
+          // Close panel and show MapChatBar by resetting hasPerformedSearch
+          setMapSearchQuery("");
+          setHasPerformedSearch(false);
+          setRestoreChatId(null);
+          setIsChatBubbleVisible(false);
+          setMinimizedChatMessages([]);
+          // Reset the flag after the longest animation duration
+          setTimeout(() => {
+            setIsTransitioningFromChat(false);
+          }, 700);
+          // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
+          // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
+        }}
+        onNewChat={handleNewChatInternal}
+        onSidebarToggle={onSidebarToggle}
+        onChatWidthChange={(width) => {
+          // Update chat panel width for map resizing
+          setChatPanelWidth(width);
+        }}
+        onActiveChatChange={handleActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
+        onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
+          console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
+          
+          // Ensure map is visible
+          if (!isMapVisible) {
+            setIsMapVisible(true);
+          }
+          
+          // Convert propertyId to string if needed
+          const propertyIdStr = propertyId ? String(propertyId) : undefined;
+          
+          // Select property on map
+          // Pass navigationOnly to control whether to show full panel or just title card
+          if (mapRef.current && coordinates) {
+            mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
+          } else if (mapRef.current) {
+            // Try to select even without coordinates
+            mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
+          } else {
+            // Map not ready - store for later
+            (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
+            // Try again soon
             setTimeout(() => {
-              setIsTransitioningFromChat(false);
-            }, 700);
-            // This will hide SideChatPanel (isVisible = isMapVisible && hasPerformedSearch)
-            // and show MapChatBar (isVisible = isMapVisible && !hasPerformedSearch)
-          }}
-          onNewChat={() => {
-            // Clear the query to ensure a fresh start, but keep panel visible
-            // We'll use an empty string to signal a new chat, but the panel visibility
-            // is controlled by hasPerformedSearch, so we keep that true
-            setMapSearchQuery("");
-            setRestoreChatId(null);
-            // Note: We keep hasPerformedSearch true so the panel stays visible
-            // The SideChatPanel will handle showing an empty state
-          }}
-          onSidebarToggle={onSidebarToggle}
-          onChatWidthChange={(width) => {
-            // Update chat panel width for map resizing
-            setChatPanelWidth(width);
-          }}
-          onActiveChatChange={handleActiveChatChange}
-          onOpenChatHistory={onOpenChatHistory}
-          onOpenProperty={(address, coordinates, propertyId, navigationOnly = false) => {
-            console.log('🏠 Property attachment clicked in SideChatPanel:', { address, coordinates, propertyId, navigationOnly });
-            
-            // Ensure map is visible
-            if (!isMapVisible) {
-              setIsMapVisible(true);
-            }
-            
-            // Convert propertyId to string if needed
-            const propertyIdStr = propertyId ? String(propertyId) : undefined;
-            
-            // Select property on map
-            // Pass navigationOnly to control whether to show full panel or just title card
-            if (mapRef.current && coordinates) {
-              mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
-            } else if (mapRef.current) {
-              // Try to select even without coordinates
-              mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
-            } else {
-              // Map not ready - store for later
-              (window as any).__pendingPropertySelection = { address, propertyId: propertyIdStr, navigationOnly };
-              // Try again soon
-              setTimeout(() => {
-                if (mapRef.current) {
-                  if (coordinates) {
-                    mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
-                  } else {
-                    mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
-                  }
+              if (mapRef.current) {
+                if (coordinates) {
+                  mapRef.current.selectPropertyByAddress(address || '', coordinates, propertyIdStr, navigationOnly);
+                } else {
+                  mapRef.current.selectPropertyByAddress(address || '', undefined, propertyIdStr, navigationOnly);
                 }
-              }, 100);
-            }
-          }}
-        />
+              }
+            }, 100);
+          }
+        }}
+      />
 
-      {/* Floating Chat Bubble */}
-      {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
+      {/* Floating Chat Bubble - COMMENTED OUT FOR NOW */}
+      {/* {isMapVisible && (currentView === 'search' || currentView === 'home') && isChatBubbleVisible && (
         <FloatingChatBubble
           chatMessages={minimizedChatMessages}
           onOpenChat={() => {
@@ -4658,7 +5409,7 @@ export const MainContent = ({
             }, 700);
           }}
         />
-      )}
+      )} */}
 
       {/* QuickStartBar beside Search Bar - only show when chat panel is NOT open */}
       {isQuickStartBarVisible && !hasPerformedSearch && !isMapVisible && (
@@ -4704,11 +5455,59 @@ export const MainContent = ({
       } ${isInChatMode ? 'p-0' : currentView === 'upload' ? 'p-8' : currentView === 'analytics' ? 'p-4' : currentView === 'profile' ? 'p-0' : currentView === 'notifications' ? 'p-0 m-0' : 'p-8 lg:p-16'}`} style={{ 
         backgroundColor: (currentView === 'search' || currentView === 'home') ? 'transparent' : '#ffffff', 
         background: (currentView === 'search' || currentView === 'home') ? 'transparent' : undefined,
-        pointerEvents: isMapVisible ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
-        zIndex: isMapVisible ? 0 : 1, // Below map when map is visible, above background when not
+        pointerEvents: (isMapVisible || externalIsMapVisible) ? 'none' : 'auto', // Block pointer events when map is visible so clicks pass through to map
+        zIndex: (isMapVisible || externalIsMapVisible) ? 0 : 1, // Below map when map is visible, above background when not
         transition: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'none' : undefined, // Disable all transitions when transitioning from chat
         willChange: (isTransitioningFromChat || isTransitioningFromChatRef.current || homeClicked) ? 'auto' : undefined // Prevent layout shifts during transitions
       }}>
+        {/* Browser Fullscreen Button - Top Right Corner of Dashboard */}
+        {(currentView === 'search' || currentView === 'home') && !isMapVisible && !isInChatMode && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '16px',
+              right: '16px',
+              zIndex: 100,
+              pointerEvents: 'auto'
+            }}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                toggleBrowserFullscreen();
+              }}
+              className="flex items-center gap-2 rounded-md hover:bg-[#f5f5f5] active:bg-[#ebebeb] transition-all duration-150"
+              title={isBrowserFullscreen ? "Exit fullscreen (⌘⇧F)" : "Fullscreen (⌘⇧F)"}
+              type="button"
+              style={{
+                padding: '6px 10px 6px 8px',
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: isBrowserFullscreen ? 'rgba(0, 0, 0, 0.04)' : 'transparent'
+              }}
+            >
+              {isBrowserFullscreen ? (
+                <Minimize2 className="w-4 h-4 text-[#6B7280]" strokeWidth={2} />
+              ) : (
+                <Fullscreen className="w-4 h-4 text-[#6B7280]" strokeWidth={2} />
+              )}
+              <span className="text-[13px] font-medium text-[#374151] leading-none">
+                {isBrowserFullscreen ? "Exit" : "Fullscreen"}
+              </span>
+              <span 
+                className="text-[10px] text-[#9CA3AF] font-medium px-1.5 py-0.5 rounded bg-[#F3F4F6] leading-none"
+                style={{
+                  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  letterSpacing: '0.01em'
+                }}
+              >
+                ⌘⇧F
+              </span>
+            </button>
+          </div>
+        )}
+        
         <div className={`relative w-full ${
           isInChatMode 
             ? 'h-full w-full' 
@@ -4732,9 +5531,12 @@ export const MainContent = ({
       
       {/* MapChatBar removed - using unified SearchBar instead */}
       
-      {/* Standalone ExpandedCardView - for citations */}
-      {/* CRITICAL: Only render when chat is visible, but expandedCardViewDoc can be set silently in background */}
-      {expandedCardViewDoc && isChatPanelVisible && (
+      {/* Standalone ExpandedCardView - for document preview */}
+      {/* Renders when a document is open, regardless of chat panel visibility */}
+      {/* For user-triggered opens (dashboard clicks), renders immediately */}
+      {/* For agent-triggered opens (silently set), will show when document is set */}
+      {/* StandaloneExpandedCardView handles positioning for both cases (chat open vs closed) */}
+      {expandedCardViewDoc && (
         <StandaloneExpandedCardView
           docId={expandedCardViewDoc.docId}
           filename={expandedCardViewDoc.filename}
@@ -4760,6 +5562,13 @@ export const MainContent = ({
               return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
             }
           })()}
+          // Pass resize handlers from SideChatPanel for left-edge resize
+          // Only enabled when chat panel is visible (side-by-side mode)
+          // Use callback to access ref at call time, not render time
+          onResizeStart={chatPanelWidth > 0 ? (e: React.MouseEvent) => {
+            sideChatPanelRef.current?.handleResizeStart(e);
+          } : undefined}
+          isResizing={sideChatPanelRef.current?.isResizing ?? false}
         />
       )}
       
@@ -4828,61 +5637,15 @@ export const MainContent = ({
           const SIDEBAR_NORMAL_WIDTH = 224;
           const TOGGLE_RAIL_WIDTH = 12;
           const baseSidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_NORMAL_WIDTH;
+          // Include filing sidebar width when open
+          if (isFilingSidebarOpen || isFilingSidebarClosing) {
+            const filingSidebarStart = isSidebarCollapsed ? TOGGLE_RAIL_WIDTH : SIDEBAR_NORMAL_WIDTH;
+            return filingSidebarStart + filingSidebarWidth;
+          }
           return baseSidebarWidth + TOGGLE_RAIL_WIDTH;
         })()}
+        filingSidebarWidth={filingSidebarWidth} // Pass separately for instant recalculation tracking
       />
-      
-      {/* Drag and Drop Overlay - Full Screen */}
-      <AnimatePresence>
-        {isDragging && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] flex items-center justify-center bg-white"
-            style={{ 
-              pointerEvents: 'none',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              width: '100vw',
-              height: '100vh'
-            }}
-          >
-            {/* Large container for upload icon */}
-            <motion.div
-              initial={{ scale: 0.96, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.96, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-              className="relative"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-            >
-              {/* Upload Icon - CloudUpload from Lucide */}
-              <div className="flex flex-col items-center justify-center">
-                <motion.div
-                  initial={{ y: -6, opacity: 0, scale: 0.9 }}
-                  animate={{ y: 0, opacity: 1, scale: 1 }}
-                  exit={{ y: -6, opacity: 0, scale: 0.9 }}
-                  transition={{ delay: 0.1, duration: 0.4, ease: [0.4, 0, 0.2, 1] }}
-                  className="relative"
-                >
-                  <CloudUpload
-                    size={72}
-                    strokeWidth={2}
-                    className="text-gray-500 drop-shadow-sm"
-                  />
-                </motion.div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       
       {/* New Property Pin Workflow */}
       <NewPropertyPinWorkflow
@@ -4903,15 +5666,18 @@ export const MainContent = ({
           
           return sidebarWidth + TOGGLE_RAIL_WIDTH;
         })()}
+        initialCenter={initialMapState?.center}
+        initialZoom={initialMapState?.zoom}
         onClose={() => {
           setShowNewPropertyWorkflow(false);
+          setInitialMapState(null); // Clear map state when workflow closes
         }}
         onPropertyCreated={(propertyId, propertyData) => {
           // Navigate to map view with new property selected
           setShowNewPropertyWorkflow(false);
           setIsMapVisible(true);
           
-          // Set pending selection for map
+          // Set pending selection for map with full property data (including propertyHub with documents)
           const property = (propertyData as any).property || propertyData;
           (window as any).__pendingPropertySelection = {
             address: property.formatted_address || property.address,
@@ -4919,7 +5685,8 @@ export const MainContent = ({
               lat: property.latitude, 
               lng: property.longitude 
             },
-            propertyId: propertyId
+            propertyId: propertyId,
+            propertyData: propertyData // Include full property data with propertyHub
           };
           
           // Select property immediately if map is ready
@@ -4932,6 +5699,56 @@ export const MainContent = ({
           }
         }}
       />
+      
+      {/* Back Button - Show when workflow IS visible */}
+      {/* Rendered in MainContent to ensure it stays visible even if map is hidden */}
+      {showNewPropertyWorkflow && (
+        <div
+          className="fixed"
+          style={{
+            right: '80px', // Same position as Create Project button (48px map toggle + 8px gap + 24px spacing)
+            top: '20px',
+            zIndex: 1000, // Much higher z-index to ensure it's above the workflow (which is z-50)
+            pointerEvents: 'auto', // Ensure clicks are captured
+          }}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setShowNewPropertyWorkflow(false);
+              setInitialMapState(null);
+            }}
+            className="flex items-center gap-1.5 rounded-none transition-all duration-200 group focus:outline-none outline-none"
+            style={{
+              padding: '4px 8px',
+              height: '24px',
+              minHeight: '24px',
+              backgroundColor: '#FFFFFF',
+              border: '1px solid rgba(82, 101, 128, 0.35)',
+              borderRadius: '8px',
+              boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+              opacity: 1,
+              backdropFilter: 'none',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#F9FAFB';
+              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 2px 4px rgba(0, 0, 0, 0.12)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = '#FFFFFF';
+              e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)';
+            }}
+            title="Back"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-700" strokeWidth={1.5} />
+            <span className="text-slate-600 text-xs">
+              Back
+            </span>
+          </button>
+        </div>
+      )}
       
       {/* FilingSidebar - Global popout sidebar for document management */}
       <FilingSidebar 
@@ -4953,6 +5770,20 @@ export const MainContent = ({
           }
         })()}
         isSmallSidebarMode={!isSidebarCollapsed}
+      />
+
+      {/* Fullscreen Property View - Chat + Property Details split */}
+      <FullscreenPropertyView
+        isVisible={fullscreenPropertyView && !!selectedPropertyFromProjects}
+        property={selectedPropertyFromProjects}
+        isSidebarCollapsed={isSidebarCollapsed}
+        isSidebarExpanded={isSidebarExpanded}
+        onClose={handleCloseFullscreenPropertyView}
+        onMessagesUpdate={setChatMessages}
+        onNewChat={handleNewChatInternal}
+        onSidebarToggle={onSidebarToggle}
+        onActiveChatChange={handleActiveChatChange}
+        onOpenChatHistory={onOpenChatHistory}
       />
     </div>
   );

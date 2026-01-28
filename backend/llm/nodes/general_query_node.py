@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.prompts import get_general_query_prompt
 
 logger = logging.getLogger(__name__)
@@ -122,13 +123,9 @@ TONE & STYLE:
             current_time=current_time
         )
         
-        # Call LLM (use correct config)
-        llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-            streaming=False
-        )
+        # Call LLM (use user-selected model from state)
+        model_preference = state.get('model_preference')
+        llm = get_llm(model_preference, temperature=0)
         
         response = await llm.ainvoke([system_msg, HumanMessage(content=human_prompt)])
         summary = response.content.strip()

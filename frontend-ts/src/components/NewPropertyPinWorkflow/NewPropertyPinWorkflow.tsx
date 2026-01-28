@@ -33,13 +33,17 @@ interface NewPropertyPinWorkflowProps {
   onClose: () => void;
   onPropertyCreated?: (propertyId: string, propertyData: any) => void;
   sidebarWidth?: number; // Width of the sidebar (including toggle rail) in pixels
+  initialCenter?: [number, number]; // Initial map center [lng, lat]
+  initialZoom?: number; // Initial map zoom level
 }
 
 export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   isVisible,
   onClose,
   onPropertyCreated,
-  sidebarWidth = 0
+  sidebarWidth = 0,
+  initialCenter,
+  initialZoom
 }) => {
   // State
   const [propertyTitle, setPropertyTitle] = useState<string>('');
@@ -63,6 +67,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   const [suggestions, setSuggestions] = useState<Array<{ place_name: string; center: [number, number] }>>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [spinSpeed, setSpinSpeed] = useState(1); // Animation duration in seconds (lower = faster)
+  const [showSpinner, setShowSpinner] = useState(false);
   const [isColorfulMap, setIsColorfulMap] = useState(false);
   const [isChangingStyle, setIsChangingStyle] = useState(false);
   const [defaultPreviewUrl, setDefaultPreviewUrl] = useState<string | null>(null);
@@ -79,7 +85,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   const popupZoomListenerRef = useRef<(() => void) | null>(null);
   const referenceZoomRef = useRef<number | null>(null);
 
-  // Animated placeholder names
+  // Animated placeholder names - diverse UK locations
   const placeholderNames = [
     '42 Victoria Street',
     'Riverside Development',
@@ -87,6 +93,20 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     'Kings Cross Site',
     'Battersea Power Station',
     'Canary Wharf Tower',
+    'Bristol Harbour Development',
+    'Clifton Heights',
+    'Temple Quarter',
+    'Bristol City Centre',
+    'Manchester Northern Quarter',
+    'Birmingham Bullring',
+    'Leeds City Square',
+    'Edinburgh Old Town',
+    'Glasgow Merchant City',
+    'Cardiff Bay',
+    'Liverpool Waterfront',
+    'Newcastle Quayside',
+    'Cambridge Science Park',
+    'Oxford High Street',
   ];
 
   // Refs
@@ -115,6 +135,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       setTeamMemberEmailInput('');
       setIsSuccess(false);
       setPopupScale(1); // Reset scale to default
+      setShowSpinner(false);
+      setSpinSpeed(1);
       referenceZoomRef.current = null;
       
       // Clean up zoom listener when popup closes
@@ -193,8 +215,8 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       map.current = new mapboxgl.Map({
         container: mapContainer.current!,
         style: isColorfulMap ? 'mapbox://styles/mapbox/outdoors-v12' : 'mapbox://styles/mapbox/light-v11',
-        center: [-0.1276, 51.5074],
-        zoom: 11,
+        center: initialCenter || [-0.1276, 51.5074],
+        zoom: initialZoom || 11,
         attributionControl: false
       });
 
@@ -240,7 +262,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
         map.current = null;
       }
     };
-  }, [isVisible, mapboxToken]);
+  }, [isVisible, mapboxToken, initialCenter, initialZoom]);
 
   // Helper function to update popup scale based on zoom (same logic as PropertyTitleCard)
   const updatePopupScale = useCallback((referenceZoom: number) => {
@@ -769,11 +791,37 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // Update spin speed and visibility as suggestions arrive
+  useEffect(() => {
+    if (isLoadingSuggestions) {
+      // Start at normal speed when loading begins
+      setSpinSpeed(1);
+      setShowSpinner(true);
+    } else if (suggestions.length > 0) {
+      // Speed up as suggestions arrive - more suggestions = faster spin
+      // Speed ranges from 0.25s (very fast) to 0.6s (faster than normal)
+      const speed = Math.max(0.25, 0.6 - (suggestions.length * 0.07));
+      setSpinSpeed(speed);
+      setShowSpinner(true);
+      // Keep spinner visible briefly after suggestions arrive for interactive feel
+      const timer = setTimeout(() => {
+        setShowSpinner(false);
+      }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      // Reset when no suggestions
+      setSpinSpeed(1);
+      setShowSpinner(false);
+    }
+  }, [isLoadingSuggestions, suggestions.length]);
+
   // Fetch autocomplete suggestions
   useEffect(() => {
     if (!searchQuery.trim() || searchQuery.length < 2) {
       setSuggestions([]);
       setShowSuggestions(false);
+      setSpinSpeed(1);
+      setShowSpinner(false);
       return;
     }
 
@@ -784,6 +832,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
     const fetchSuggestions = async () => {
       setIsLoadingSuggestions(true);
+      setSpinSpeed(1); // Start at normal speed
       try {
         const geocodingUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(searchQuery)}.json?access_token=${mapboxToken}&limit=5&autocomplete=true&country=gb&proximity=-0.1276,51.5074`;
         const response = await fetch(geocodingUrl);
@@ -870,6 +919,19 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     }
   };
 
+  // Clear search input
+  const handleClear = useCallback(() => {
+    setSearchQuery('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setShowSpinner(false);
+    setSpinSpeed(1);
+    // Focus the input after clearing
+    if (searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, []);
+
   // Create property
   const handleCreate = useCallback(async () => {
     if (!selectedLocation) {
@@ -881,9 +943,40 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
     setError(null);
 
     try {
+      // Step 1: Fetch current user to get name for client_name
+      const authResult = await backendApi.checkAuth();
+      if (!authResult.success || !authResult.data?.user) {
+        throw new Error('Failed to get user information');
+      }
+
+      const user = authResult.data.user;
+      // Extract user's name: prefer first_name + last_name, fallback to email prefix
+      let clientName = 'User';
+      if (user.first_name) {
+        clientName = user.first_name + (user.last_name ? ` ${user.last_name}` : '');
+      } else if (user.email) {
+        const emailPrefix = user.email.split('@')[0];
+        clientName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+      }
+
+      // Step 2: Create Project record first
+      const projectResponse = await backendApi.createProject({
+        title: propertyTitle,
+        client_name: clientName,
+        status: 'active'
+      });
+
+      if (!projectResponse.success || !projectResponse.data) {
+        throw new Error(projectResponse.error || 'Failed to create project');
+      }
+
+      const newProjectId = projectResponse.data.id;
+
+      // Step 3: Create Property with project name as formatted_address
       const createResponse = await backendApi.createProperty(
         selectedLocation.address,
-        { lat: selectedLocation.lat, lng: selectedLocation.lng }
+        { lat: selectedLocation.lat, lng: selectedLocation.lng },
+        propertyTitle  // Use project name as formatted_address
       );
 
       if (!createResponse.success || !createResponse.data) {
@@ -892,43 +985,132 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
 
       const newPropertyId = (createResponse.data as any).property_id;
 
-      // Link uploaded files
+      // Step 4: Transform uploaded files into document format for instant display
+      // This allows documents to render immediately while processing happens in background
+      const instantDocuments = uploadedFiles
+        .filter(f => f.documentId)
+        .map(file => ({
+          id: file.documentId!,
+          original_filename: file.file.name,
+          classification_type: 'OTHER_DOCUMENTS', // Default classification
+          classification_confidence: 0.5,
+          created_at: new Date().toISOString(),
+          status: 'uploaded', // Will be updated to 'processing' then 'completed'
+          parsed_text: undefined,
+          extracted_json: undefined,
+          thumbnail_url: file.thumbnailUrl, // Include thumbnail if available
+          // Add processing indicator
+          is_processing: true,
+          processing_status: 'queued'
+        }));
+
+      // Step 4.5: Link uploaded files to property (happens in parallel)
       const linkPromises = uploadedFiles
         .filter(f => f.documentId)
         .map(file => backendApi.linkDocumentToProperty(file.documentId!, newPropertyId));
       await Promise.all(linkPromises);
 
-      // Add team member access
+      // Step 4.6: Fetch updated property hub data to include linked documents
+      // Wait a brief moment for relationships to be created in database
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      let propertyHubData = null;
+      try {
+        const hubResponse = await backendApi.getPropertyHub(newPropertyId);
+        if (hubResponse.success && hubResponse.data) {
+          propertyHubData = hubResponse.data;
+          console.log(`✅ Fetched property hub with ${propertyHubData.documents?.length || 0} documents`);
+          
+          // Merge instant documents with fetched documents (avoid duplicates)
+          const existingDocIds = new Set((propertyHubData.documents || []).map((d: any) => d.id));
+          const newDocs = instantDocuments.filter(doc => !existingDocIds.has(doc.id));
+          if (newDocs.length > 0) {
+            propertyHubData.documents = [...(propertyHubData.documents || []), ...newDocs];
+            console.log(`✅ Added ${newDocs.length} instant documents to property hub`);
+          }
+        } else {
+          // If fetch fails, use instant documents only
+          propertyHubData = {
+            documents: instantDocuments,
+            property: createResponse.data?.property || {},
+            property_details: {}
+          };
+          console.log(`✅ Using instant documents only (${instantDocuments.length} documents)`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Failed to fetch property hub data, using instant documents:', error);
+        // Use instant documents as fallback
+        propertyHubData = {
+          documents: instantDocuments,
+          property: createResponse.data?.property || {},
+          property_details: {}
+        };
+      }
+
+      // Step 5: Add team member access to property (existing logic)
       if (teamMemberEmails.length > 0) {
-        const accessPromises = teamMemberEmails.map(async (member) => {
+        const propertyAccessPromises = teamMemberEmails.map(async (member) => {
           try {
             await backendApi.addPropertyAccess(newPropertyId, member.email, member.accessLevel);
           } catch (error) {
-            console.error(`Failed to add access for ${member.email}:`, error);
+            console.error(`Failed to add property access for ${member.email}:`, error);
             // Continue even if some emails fail
           }
         });
-        await Promise.all(accessPromises);
+        await Promise.all(propertyAccessPromises);
+
+        // Step 6: Add team member access to project (new)
+        const projectAccessPromises = teamMemberEmails.map(async (member) => {
+          try {
+            await backendApi.addProjectAccess(newProjectId, member.email, member.accessLevel);
+          } catch (error) {
+            console.error(`Failed to add project access for ${member.email}:`, error);
+            // Continue even if some emails fail
+          }
+        });
+        await Promise.all(projectAccessPromises);
       }
 
       // Show success animation first
       setIsCreating(false);
       setIsSuccess(true);
 
+      // Step 7: Cache documents for instant rendering in PropertyDetailsPanel
+      if (propertyHubData?.documents && propertyHubData.documents.length > 0) {
+        if (!(window as any).__preloadedPropertyFiles) {
+          (window as any).__preloadedPropertyFiles = {};
+        }
+        (window as any).__preloadedPropertyFiles[newPropertyId] = propertyHubData.documents;
+        console.log(`✅ Cached ${propertyHubData.documents.length} documents for instant rendering`);
+      }
+
       // Wait for animation to complete before closing
       setTimeout(() => {
         if (onPropertyCreated) {
-          onPropertyCreated(newPropertyId, {
+          // Include property hub data with documents if available
+          const propertyData: any = {
             ...createResponse.data,
+            project_id: newProjectId,
+            project_title: propertyTitle,
             title: propertyTitle,
             property_title: propertyTitle
-          });
+          };
+          
+          // Add property hub data if we fetched it
+          if (propertyHubData) {
+            propertyData.propertyHub = propertyHubData;
+            // Also set document count for immediate display
+            propertyData.documentCount = propertyHubData.documents?.length || 0;
+            propertyData.document_count = propertyHubData.documents?.length || 0;
+          }
+          
+          onPropertyCreated(newPropertyId, propertyData);
         }
         onClose();
       }, 1200); // Animation duration + slight pause
 
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to create property');
+      setError(error instanceof Error ? error.message : 'Failed to create project and property');
       setIsCreating(false);
     }
   }, [selectedLocation, uploadedFiles, propertyTitle, teamMemberEmails, onPropertyCreated, onClose]);
@@ -992,8 +1174,37 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
   const contentWidth = `calc(100vw - ${leftOffset}px)`;
 
   return (
-    <AnimatePresence>
-      <motion.div
+    <>
+      <style>{`
+        @keyframes spin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        /* Remove blue outline from map container and canvas */
+        .mapboxgl-canvas,
+        .mapboxgl-canvas-container,
+        .mapboxgl-map {
+          outline: none !important;
+          border: none !important;
+        }
+        .mapboxgl-canvas:focus,
+        .mapboxgl-canvas-container:focus,
+        .mapboxgl-map:focus {
+          outline: none !important;
+          border: none !important;
+        }
+        /* Style select dropdown options */
+        select option {
+          padding-left: 12px !important;
+          padding-right: 8px !important;
+        }
+      `}</style>
+      <AnimatePresence>
+        <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -1009,40 +1220,12 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
       >
         {/* Content */}
         <div className="absolute inset-0" style={{ top: 0 }}>
-          {/* Close Button - Top Right Corner */}
-          <button
-            onClick={handleCancel}
-            className="absolute transition-all duration-200 flex items-center justify-center z-50"
-            style={{
-              top: '20px',
-              right: '20px',
-              width: '36px',
-              height: '36px',
-              borderRadius: '0',
-              backgroundColor: '#FFFFFF',
-              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-              border: 'none',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#F7F7F8';
-              e.currentTarget.style.transform = 'scale(1.05)';
-              e.currentTarget.style.boxShadow = '0 1px 3px rgba(0, 0, 0, 0.08)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = '#FFFFFF';
-              e.currentTarget.style.transform = 'scale(1)';
-              e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.04)';
-            }}
-          >
-            <X className="w-4 h-4 text-[#6B6B6B]" strokeWidth={2} />
-          </button>
-          
           {/* Location Selection - Full Width Map */}
-          <div className="w-full h-full relative" style={{ backgroundColor: '#F1F1F1' }}>
+          <div className="w-full h-full relative" style={{ backgroundColor: '#F1F1F1', outline: 'none', border: 'none' }}>
               {/* Map Container - Full Width */}
-              <div className="relative" style={{ width: '100%', height: '100%' }}>
+              <div className="relative" style={{ width: '100%', height: '100%', outline: 'none', border: 'none' }}>
                 {/* Map Container */}
-                <div ref={mapContainer} className="absolute inset-0" style={{ width: '100%', height: '100%' }}>
+                <div ref={mapContainer} className="absolute inset-0" style={{ width: '100%', height: '100%', outline: 'none', border: 'none' }}>
                   {!mapboxToken && (
                     <div className="absolute inset-0 flex items-center justify-center" style={{ backgroundColor: '#f5f5f5' }}>
                       <p style={{ fontSize: '14px', color: '#a1a1a1' }}>Map not configured</p>
@@ -1088,71 +1271,74 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                   />
                   
                   {/* Map Style Toggle Button - Google Maps Style */}
-                  <div
-                    className="absolute"
-                    style={{
-                      right: '20px',
-                      top: '20px',
-                      zIndex: 60,
-                    }}
-                  >
-                    <motion.button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        // Clicking toggles the map style
-                        toggleMapStyle();
-                      }}
-                      disabled={isChangingStyle}
-                      className="flex flex-col overflow-hidden transition-all duration-200"
+                  {/* Only show button when at least one preview is ready */}
+                  {(defaultPreviewUrl || lightPreviewUrl) && (
+                    <div
+                      className="absolute"
                       style={{
-                        width: '40px',
-                        height: '40px',
-                        backgroundColor: '#FFFFFF',
-                        border: 'none',
-                        borderRadius: '8px',
-                        boxShadow: '0 1px 4px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04)',
-                        cursor: isChangingStyle ? 'not-allowed' : 'pointer',
-                        padding: 0,
-                        pointerEvents: 'auto',
+                        right: '20px',
+                        top: '20px',
+                        zIndex: 60,
                       }}
-                      whileHover={!isChangingStyle ? {
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.06)',
-                      } : {}}
-                      title={isChangingStyle ? "Changing style..." : "Map type"}
                     >
-                      {/* Map preview button */}
-                      <div
-                        className="w-full h-full relative"
-                        style={{ borderRadius: '8px', overflow: 'hidden' }}
+                      <motion.button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          // Clicking toggles the map style
+                          toggleMapStyle();
+                        }}
+                        disabled={isChangingStyle}
+                        className="flex flex-col overflow-hidden transition-all duration-200"
+                        style={{
+                          width: '48px',
+                          height: '48px',
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid rgba(82, 101, 128, 0.35)',
+                          borderRadius: '6px',
+                          boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.08)',
+                          cursor: isChangingStyle ? 'not-allowed' : 'pointer',
+                          padding: 0,
+                          pointerEvents: 'auto',
+                        }}
+                        whileHover={!isChangingStyle ? {
+                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.06)',
+                        } : {}}
+                        title={isChangingStyle ? "Changing style..." : "Map type"}
                       >
-                        {isChangingStyle ? (
-                          <div className="w-full h-full flex items-center justify-center bg-gray-50">
-                            <motion.div
-                              animate={{ rotate: 360 }}
-                              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                            >
-                              <Loader2 className="w-5 h-5 text-gray-500" />
-                            </motion.div>
-                          </div>
-                        ) : (isColorfulMap ? lightPreviewUrl : defaultPreviewUrl) ? (
-                          <img
-                            src={isColorfulMap ? lightPreviewUrl! : defaultPreviewUrl!}
-                            alt="Map preview"
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              objectFit: 'cover',
-                            }}
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-gray-100">
-                            <Layers className="w-5 h-5 text-gray-400" strokeWidth={1.5} />
-                          </div>
-                        )}
-                      </div>
-                    </motion.button>
-                  </div>
+                        {/* Map preview button */}
+                        <div
+                          className="w-full h-full relative"
+                          style={{ borderRadius: '6px', overflow: 'hidden' }}
+                        >
+                          {isChangingStyle ? (
+                            <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                              <motion.div
+                                animate={{ rotate: 360 }}
+                                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                              >
+                                <Loader2 className="w-5 h-5 text-gray-500" />
+                              </motion.div>
+                            </div>
+                          ) : (isColorfulMap ? lightPreviewUrl : defaultPreviewUrl) ? (
+                            <img
+                              src={isColorfulMap ? lightPreviewUrl! : defaultPreviewUrl!}
+                              alt="Map preview"
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-gray-100">
+                              <Layers className="w-5 h-5 text-gray-400" strokeWidth={1.5} />
+                            </div>
+                          )}
+                        </div>
+                      </motion.button>
+                    </div>
+                  )}
                 </div>
                 
                 {/* Search Bar - Top Left Corner (Google Maps Style) */}
@@ -1160,7 +1346,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                   className="absolute"
                   style={{ 
                     top: '24px',
-                    left: '24px',
+                    left: '48px',
                     zIndex: 50,
                     pointerEvents: 'none',
                     width: 'clamp(300px, 40vw, 500px)',
@@ -1193,7 +1379,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                         boxShadow: showSuggestions && suggestions.length > 0
                           ? '0 0 0 rgba(0, 0, 0, 0)' // No shadow when suggestions visible
                           : '0 2px 8px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.1)',
-                        borderRadius: showSuggestions && suggestions.length > 0 ? '24px 24px 0 0' : '24px',
+                        borderRadius: showSuggestions && suggestions.length > 0 ? '6px 6px 0 0' : '6px',
                         padding: '12px 16px',
                         width: '100%',
                         height: '100%',
@@ -1261,36 +1447,45 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                           verticalAlign: 'baseline',
                         }}
                       />
-                      {isLoadingSuggestions && (
+                      {showSpinner && (
                         <div className="flex-shrink-0 ml-2">
-                          <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                          <Loader2 
+                            className="w-4 h-4 text-gray-400" 
+                            style={{
+                              animation: `spin ${spinSpeed}s linear infinite`,
+                            }}
+                          />
                         </div>
                       )}
-                      {searchQuery && !isLoadingSuggestions && (
+                      {searchQuery && !showSpinner && (
                         <button
-                          onClick={handleSearch}
-                          disabled={isSearching}
-                          className="flex-shrink-0 disabled:opacity-50 ml-2"
+                          onClick={handleClear}
+                          className="flex-shrink-0 ml-2"
                           style={{
-                            padding: '6px',
+                            padding: '4px',
                             backgroundColor: 'transparent',
-                            color: '#1a1a1a',
+                            color: '#6B6B6B',
                             borderRadius: '50%',
-                            width: '32px',
-                            height: '32px',
+                            width: '24px',
+                            height: '24px',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            transition: 'none', // Remove transition
+                            transition: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
                           }}
                           onMouseEnter={(e) => {
                             e.currentTarget.style.backgroundColor = '#f5f5f5';
+                            e.currentTarget.style.color = '#1a1a1a';
                           }}
                           onMouseLeave={(e) => {
                             e.currentTarget.style.backgroundColor = 'transparent';
+                            e.currentTarget.style.color = '#6B6B6B';
                           }}
+                          title="Clear search"
                         >
-                          {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" strokeWidth={2} />}
+                          <X className="w-3.5 h-3.5" strokeWidth={2} />
                         </button>
                       )}
                     </div>
@@ -1308,7 +1503,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                           backgroundColor: '#FCFCFC', // Ensure solid color, no transparency
                           border: '1px solid rgba(82, 101, 128, 0.35)',
                           borderTop: 'none',
-                          borderRadius: '0 0 24px 24px',
+                          borderRadius: '0 0 6px 6px',
                           boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1)',
                           maxHeight: '400px',
                           overflowY: 'auto',
@@ -1336,7 +1531,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                           }}
                           className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
                           style={{
-                            fontSize: '14px',
+                            fontSize: '13px',
                             color: '#1a1a1a',
                             lineHeight: '1.4',
                           }}
@@ -1371,16 +1566,16 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                       animate={{ opacity: 1, y: 0, scale: popupScale }}
                       exit={{ opacity: 0, y: -10 }}
                       transition={{ scale: { duration: 0 } }}
-                      className="bg-white rounded-lg shadow-lg"
+                      className="bg-white shadow-lg"
                       style={{
                         width: 'fit-content',
-                        minWidth: uploadedFiles.length > 0 ? '280px' : '250px',
-                        maxWidth: uploadedFiles.length > 0 ? '350px' : '350px',
-                        maxHeight: '70vh',
-                        overflowY: 'auto',
-                        padding: '20px',
+                        minWidth: uploadedFiles.length > 0 ? '280px' : '200px',
+                        maxWidth: uploadedFiles.length > 0 ? '350px' : '280px',
+                        padding: uploadedFiles.length > 0 ? '20px' : '10px',
                         pointerEvents: 'auto',
-                        transformOrigin: 'center bottom'
+                        transformOrigin: 'center bottom',
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: uploadedFiles.length > 0 ? '8px' : '16px'
                       }}
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -1474,40 +1669,82 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                         } ${uploadedFiles.length > 0 ? 'mb-0' : 'mb-0'}`}
                       >
                         <div
-                          className={`w-full bg-white flex flex-col items-center justify-center transition-all duration-200 ${
-                            isDragOver
-                              ? 'bg-gray-50'
-                              : 'hover:bg-gray-50/50'
-                          } ${uploadedFiles.length > 0 ? 'border border-gray-200 border-b-0 rounded-t-lg p-4' : 'p-6'}`}
-                          style={{ minHeight: uploadedFiles.length > 0 ? '100px' : '140px' }}
+                          className={`w-full flex flex-col items-center justify-center transition-all duration-200 relative ${
+                            isDragOver ? 'opacity-90' : ''
+                          } ${uploadedFiles.length > 0 ? 'bg-white p-4' : ''}`}
+                          style={{ 
+                            backgroundColor: uploadedFiles.length > 0 ? '#F7F7F9' : 'transparent',
+                            padding: uploadedFiles.length > 0 ? '8px 16px 4px 16px' : '0',
+                            borderRadius: uploadedFiles.length > 0 ? '8px 8px 0 0' : '0',
+                            border: uploadedFiles.length > 0 ? '1px solid #E5E7EB' : 'none',
+                            borderBottom: uploadedFiles.length > 0 ? 'none' : 'none'
+                          }}
                         >
                           {/* Document Icon - Matching FilingSidebar */}
-                          <div className={`flex items-center justify-center ${uploadedFiles.length > 0 ? 'mb-2' : 'mb-3'}`}>
+                          <div className={`flex items-center justify-center ${uploadedFiles.length > 0 ? 'mb-2' : ''}`} style={{ width: '100%', overflow: 'visible' }}>
                             <img 
-                              src="/FILEUPLOAD.png" 
+                              src="/DocumentUpload2.png" 
                               alt="Upload files" 
-                              className={uploadedFiles.length > 0 ? 'w-20 h-auto' : 'w-32 h-auto'}
+                              className="object-contain"
+                              style={{ 
+                                width: uploadedFiles.length > 0 ? '180px' : '556px',
+                                height: 'auto',
+                                maxWidth: uploadedFiles.length > 0 ? '180px' : '228px',
+                                borderRadius: '8px',
+                                border: 'none',
+                                boxShadow: 'none'
+                              }}
                             />
                           </div>
 
-                          {/* Instructional Text - Matching FilingSidebar */}
-                          <p className={`text-gray-600 text-center ${uploadedFiles.length > 0 ? 'text-sm mb-1' : 'text-base mb-2'}`}>
-                            Drop files here or{' '}
-                            <button
-                              type="button"
-                              className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
-                              style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                fileInputRef.current?.click();
-                              }}
-                            >
-                              browse
-                            </button>
-                          </p>
+                          {/* Text Overlay on Image - Only when no files uploaded */}
+                          {uploadedFiles.length === 0 && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none" style={{ padding: '8px 16px', transform: 'translateY(75px)' }}>
+                              <div className="flex flex-col items-center justify-center pointer-events-auto">
+                                {/* Instructional Text */}
+                                <p className="text-sm text-gray-600 text-center mb-0.5">
+                                  Drop files here or{' '}
+                                  <button
+                                    type="button"
+                                    className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
+                                    style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      fileInputRef.current?.click();
+                                    }}
+                                  >
+                                    browse
+                                  </button>
+                                </p>
 
-                          {/* Supported Formats - Matching FilingSidebar */}
-                          <p className={uploadedFiles.length > 0 ? 'text-xs text-gray-400 mt-0.5' : 'text-sm text-gray-400 mt-1'}>PDF, Word, Excel, CSV</p>
+                                {/* Supported Formats */}
+                                <p className="text-xs text-gray-400 mt-0.5">PDF, Word, Excel, CSV</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Text Overlay on Image - When files are uploaded */}
+                          {uploadedFiles.length > 0 && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-end pointer-events-none" style={{ padding: '8px 16px 4px 16px', transform: 'translateY(-25px)' }}>
+                              <div className="flex flex-col items-center justify-center pointer-events-auto">
+                                <p className="text-sm text-gray-600 text-center mb-0.5">
+                                  Drop files here or{' '}
+                                  <button
+                                    type="button"
+                                    className="text-gray-600 hover:text-gray-700 underline underline-offset-2 transition-colors"
+                                    style={{ textDecorationThickness: '0.5px', textUnderlineOffset: '2px' }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      fileInputRef.current?.click();
+                                    }}
+                                  >
+                                    browse
+                                  </button>
+                                </p>
+                                <p className="text-xs text-gray-400 mt-0">PDF, Word, Excel, CSV</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Hidden File Input */}
@@ -1541,7 +1778,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                               overflowX: 'hidden'
                             }}
                           >
-                            {uploadedFiles.map((uploadedFile) => {
+                            {uploadedFiles.map((uploadedFile, index) => {
                                 // Get file icon based on extension
                                 const getFileIcon = () => {
                                   const filename = uploadedFile.file.name.toLowerCase();
@@ -1556,8 +1793,16 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                 };
                                 
                                 return (
-                                  <div
+                                  <motion.div
                                     key={uploadedFile.id}
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0, transition: { duration: 0 } }}
+                                    transition={{ 
+                                      duration: 0.4,
+                                      delay: index * 0.04,
+                                      ease: [0.25, 0.46, 0.45, 0.94]
+                                    }}
                                     className="flex items-center gap-2.5 px-3 py-2 bg-white border border-gray-200/60 hover:border-gray-300/80 rounded-lg transition-all duration-200 group"
                                   >
                                     <div className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
@@ -1584,7 +1829,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                     >
                                       <X className="w-3 h-3 text-gray-400" strokeWidth={1.5} />
                                     </button>
-                                  </div>
+                                  </motion.div>
                                 );
                               })}
                           </div>
@@ -1615,7 +1860,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                             }}
                             className="w-full transition-all duration-150 focus:outline-none"
                             style={{
-                              padding: '10px 12px',
+                              padding: '8px 10px',
                               fontSize: '14px',
                               fontWeight: 400,
                               color: '#63748A',
@@ -1667,7 +1912,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                             }}
                             className="flex-1 transition-all duration-150 focus:outline-none"
                             style={{
-                              padding: '10px 12px',
+                              padding: '8px 10px',
                               fontSize: '14px',
                               fontWeight: 400,
                               color: '#63748A',
@@ -1694,7 +1939,7 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                             {teamMemberEmails.map((member) => (
                               <div
                                 key={member.email}
-                                className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#F9F9F9] hover:bg-[#F0F6FF] border border-[#E9E9EB] transition-colors duration-150 group"
+                                className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#F9F9F9] hover:bg-[#F3F4F6] border border-[#E9E9EB] transition-colors duration-150 group"
                                 style={{
                                   fontSize: '13px',
                                   color: '#63748A',
@@ -1720,17 +1965,19 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
                                   onClick={(e) => e.stopPropagation()}
                                   onFocus={(e) => e.target.style.outline = 'none'}
                                   onBlur={(e) => e.target.style.outline = 'none'}
-                                  className="flex-shrink-0 text-xs bg-white border border-[#E9E9EB] rounded px-1.5 py-0.5 text-[#63748A] transition-colors duration-150"
+                                  className="flex-shrink-0 text-xs bg-white border border-[#E9E9EB] rounded py-0.5 text-[#63748A] transition-colors duration-150"
                                   style={{
                                     fontSize: '11px',
                                     minWidth: '70px',
+                                    paddingLeft: '6px',
+                                    paddingRight: '20px',
                                     cursor: 'pointer',
                                     outline: 'none',
                                     boxShadow: 'none',
                                   }}
                                 >
-                                  <option value="viewer">Viewer</option>
-                                  <option value="editor">Editor</option>
+                                  <option value="viewer" style={{ paddingLeft: '8px', paddingRight: '8px' }}>Viewer</option>
+                                  <option value="editor" style={{ paddingLeft: '8px', paddingRight: '4px' }}>Editor</option>
                                 </select>
                                 <button
                                   onClick={() => handleRemoveTeamMember(member.email)}
@@ -1799,5 +2046,6 @@ export const NewPropertyPinWorkflow: React.FC<NewPropertyPinWorkflowProps> = ({
         </div>
       </motion.div>
     </AnimatePresence>
+    </>
   );
 };

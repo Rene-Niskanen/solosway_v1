@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage
 from backend.llm.config import config
 from backend.llm.types import MainWorkflowState
 from backend.llm.utils.system_prompts import get_system_prompt
+from backend.llm.utils.model_factory import get_llm
 from backend.llm.prompts import get_summary_human_content, get_citation_extraction_prompt, get_final_answer_prompt
 from backend.llm.utils.block_id_formatter import format_document_with_block_ids
 from backend.llm.tools.citation_mapping import create_citation_tool
@@ -1505,11 +1506,10 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
             lines.append(f"...and {len(doc_outputs) - 5} more documents.")
         return {"final_summary": "\n".join(lines)}
 
-    llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    )
+    # Use user-selected model from state (with fallback to config default)
+    model_preference = state.get('model_preference')
+    llm = get_llm(model_preference, temperature=0)
+    logger.info(f"[SUMMARIZE_RESULTS] Using model: {model_preference or 'gpt-4o-mini (default)'}")
 
     # PERFORMANCE OPTIMIZATION: Limit document outputs for summarization based on detail_level
     # Concise mode: 7 docs (fast summary)
@@ -1719,11 +1719,7 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
     phase1_start = time.time()
     
     # PHASE 1: Citation Extraction (with tools)
-    citation_llm = ChatOpenAI(
-        api_key=config.openai_api_key,
-        model=config.openai_model,
-        temperature=0,
-    ).bind_tools(
+    citation_llm = get_llm(model_preference, temperature=0).bind_tools(
         [citation_tool],
         tool_choice="auto"
     )
@@ -1747,10 +1743,102 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         if "shutdown" in error_msg or "closed" in error_msg or "cannot schedule" in error_msg:
             logger.error(f"[SUMMARIZE_RESULTS] Event loop error - {llm_error}")
             raise
+        
+        # Enhanced error logging with error type and details
+        error_type = type(llm_error).__name__
+        error_message = str(llm_error)
+        
+        # Initialize error classification variables first to avoid UnboundLocalError
+        is_timeout = False
+        is_rate_limit = False
+        is_credit_low = False
+        is_api_error = False
+        
+        # Log error attributes for debugging (wrap in try-except to avoid errors during error handling)
+        error_attrs = {}
+        try:
+            if hasattr(llm_error, 'status_code'):
+                error_attrs['status_code'] = getattr(llm_error, 'status_code')
+            if hasattr(llm_error, 'response'):
+                try:
+                    if hasattr(llm_error.response, 'status_code'):
+                        error_attrs['response_status_code'] = llm_error.response.status_code
+                except Exception:
+                    pass  # Ignore errors when accessing response attributes
+        except Exception:
+            pass  # Ignore errors when accessing error attributes
+        
+        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {error_type}: {error_message}", exc_info=True)
+        if error_attrs:
+            logger.error(f"[SUMMARIZE_RESULTS] Error attributes: {error_attrs}")
+        
+        # Check for specific error types to provide better context
+        # More specific rate limit detection - only match actual API rate limit errors
+        try:
+            is_timeout = "timeout" in error_message.lower() or "timed out" in error_message.lower()
+            # Rate limit: Check for HTTP 429 status code or specific rate limit error patterns from API providers
+            # Only match if it's clearly an API rate limit, not just any mention of "rate limit"
+            is_rate_limit = (
+                "429" in error_message or  # HTTP status code
+                (hasattr(llm_error, 'status_code') and getattr(llm_error, 'status_code') == 429) or  # Direct status code
+                (hasattr(llm_error, 'response') and hasattr(llm_error.response, 'status_code') and llm_error.response.status_code == 429) or  # Response status code
+                ("rate limit" in error_message.lower() and ("api" in error_message.lower() or "request" in error_message.lower() or "quota" in error_message.lower() or "rpm" in error_message.lower() or "tpm" in error_message.lower()))  # Only if clearly API-related
+            )
+            is_credit_low = "credit balance is too low" in error_message.lower() or "insufficient credits" in error_message.lower() or "billing" in error_message.lower()
+            is_api_error = "api" in error_type.lower() or "openai" in error_type.lower() or "anthropic" in error_type.lower()
+        except Exception as classification_error:
+            logger.error(f"[SUMMARIZE_RESULTS] Error during error classification: {classification_error}")
+            # Variables already initialized to False above
+        
+        logger.debug(f"[SUMMARIZE_RESULTS] Error classification - is_rate_limit: {is_rate_limit}, is_timeout: {is_timeout}, is_api_error: {is_api_error}")
+        
+        # Automatic fallback to OpenAI when Anthropic credits are low
+        if is_credit_low:
+            logger.warning("[SUMMARIZE_RESULTS] Anthropic API credit balance too low - automatically falling back to OpenAI")
+            try:
+                fallback_llm = get_llm('gpt-4o-mini', temperature=0)
+                # Re-bind citation tool for fallback
+                fallback_llm = fallback_llm.bind_tools([citation_tool], tool_choice="auto")
+                logger.info("[SUMMARIZE_RESULTS] Retrying Phase 1 with OpenAI fallback...")
+                citation_response = await fallback_llm.ainvoke(citation_messages)
+                logger.info("[SUMMARIZE_RESULTS] Phase 1 complete (using OpenAI fallback)")
+                # Continue processing with fallback response
+            except Exception as fallback_error:
+                logger.error(f"[SUMMARIZE_RESULTS] Fallback to OpenAI also failed: {fallback_error}")
+                user_error_msg = "Anthropic API credit balance is too low, and OpenAI fallback also failed. Please add credits to your Anthropic account or check your OpenAI API key."
+                return {
+                    "final_summary": user_error_msg,
+                    "citations": [],
+                    "document_outputs": doc_outputs,
+                    "relevant_documents": state.get('relevant_documents', [])
+                }
         else:
-            logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 1: {llm_error}", exc_info=True)
+            # Other errors - return error message
+            if is_timeout:
+                logger.error("[SUMMARIZE_RESULTS] LLM request timed out during citation extraction - may need to increase timeout or check API status")
+                user_error_msg = "The request timed out during citation extraction. Please try again with a shorter query or fewer documents."
+            elif is_rate_limit:
+                logger.error("[SUMMARIZE_RESULTS] Rate limit exceeded during citation extraction - consider implementing backoff/retry")
+                user_error_msg = "Rate limit exceeded. Please wait a moment and try again."
+            elif is_api_error:
+                logger.error(f"[SUMMARIZE_RESULTS] API error from provider during citation extraction: {error_message}")
+                # Check for common API errors
+                if "invalid_api_key" in error_message.lower() or "authentication" in error_message.lower():
+                    user_error_msg = "API authentication error. Please check your API key configuration."
+                elif "model" in error_message.lower() and ("not found" in error_message.lower() or "invalid" in error_message.lower()):
+                    user_error_msg = f"Model error: {model_preference or 'default model'} may not be available. Please try a different model."
+                else:
+                    user_error_msg = f"API error during citation extraction: {error_type}. Please try again or contact support."
+            else:
+                # Generic error - log full details but show user-friendly message
+                logger.error(f"[SUMMARIZE_RESULTS] Unexpected error during Phase 1: {error_type}: {error_message}")
+                user_error_msg = "I encountered an error while processing your query. Please try again."
+            
+            # Log model preference for debugging
+            logger.error(f"[SUMMARIZE_RESULTS] Error occurred with model_preference: {model_preference}")
+            
             return {
-                "final_summary": "I encountered an error while processing your query. Please try again.",
+                "final_summary": user_error_msg,
                 "citations": [],
                 "document_outputs": doc_outputs,
                 "relevant_documents": state.get('relevant_documents', [])
@@ -1791,18 +1879,10 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         # Create agent action tools for proactive document display
         agent_tools, agent_action_instance = create_agent_action_tools()
         logger.info(f"[SUMMARIZE_RESULTS] Agent mode enabled - binding {len(agent_tools)} agent tools")
-        answer_llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        ).bind_tools(agent_tools, tool_choice="auto")
+        answer_llm = get_llm(model_preference, temperature=0).bind_tools(agent_tools, tool_choice="auto")
     else:
         # Reader mode: No agent tools
-        answer_llm = ChatOpenAI(
-            api_key=config.openai_api_key,
-            model=config.openai_model,
-            temperature=0,
-        )
+        answer_llm = get_llm(model_preference, temperature=0)
     
     # Check if this is a citation query (user clicked on a citation)
     citation_context = state.get("citation_context")
@@ -1824,13 +1904,108 @@ async def summarize_results(state: MainWorkflowState) -> MainWorkflowState:
         answer_response = await answer_llm.ainvoke(answer_messages)
         logger.info("[SUMMARIZE_RESULTS] Phase 2 complete")
     except Exception as llm_error:
-        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {llm_error}", exc_info=True)
-        return {
-            "final_summary": "I encountered an error generating the response. Please try again.",
-            "citations": citations_from_state,
-            "document_outputs": doc_outputs,
-            "relevant_documents": state.get('relevant_documents', [])
-        }
+        # Enhanced error logging with error type and details
+        error_type = type(llm_error).__name__
+        error_message = str(llm_error)
+        
+        # Initialize error classification variables first to avoid UnboundLocalError
+        is_timeout = False
+        is_rate_limit = False
+        is_credit_low = False
+        is_api_error = False
+        
+        # Log error attributes for debugging (wrap in try-except to avoid errors during error handling)
+        error_attrs = {}
+        try:
+            if hasattr(llm_error, 'status_code'):
+                error_attrs['status_code'] = getattr(llm_error, 'status_code')
+            if hasattr(llm_error, 'response'):
+                try:
+                    if hasattr(llm_error.response, 'status_code'):
+                        error_attrs['response_status_code'] = llm_error.response.status_code
+                except Exception:
+                    pass  # Ignore errors when accessing response attributes
+        except Exception:
+            pass  # Ignore errors when accessing error attributes
+        
+        logger.error(f"[SUMMARIZE_RESULTS] Error during Phase 2: {error_type}: {error_message}", exc_info=True)
+        if error_attrs:
+            logger.error(f"[SUMMARIZE_RESULTS] Error attributes: {error_attrs}")
+        
+        # Check for specific error types to provide better context
+        # More specific rate limit detection - only match actual API rate limit errors
+        try:
+            is_timeout = "timeout" in error_message.lower() or "timed out" in error_message.lower()
+            # Rate limit: Check for HTTP 429 status code or specific rate limit error patterns from API providers
+            # Only match if it's clearly an API rate limit, not just any mention of "rate limit"
+            is_rate_limit = (
+                "429" in error_message or  # HTTP status code
+                (hasattr(llm_error, 'status_code') and getattr(llm_error, 'status_code') == 429) or  # Direct status code
+                (hasattr(llm_error, 'response') and hasattr(llm_error.response, 'status_code') and llm_error.response.status_code == 429) or  # Response status code
+                ("rate limit" in error_message.lower() and ("api" in error_message.lower() or "request" in error_message.lower() or "quota" in error_message.lower() or "rpm" in error_message.lower() or "tpm" in error_message.lower()))  # Only if clearly API-related
+            )
+            is_credit_low = "credit balance is too low" in error_message.lower() or "insufficient credits" in error_message.lower() or "billing" in error_message.lower()
+            is_api_error = "api" in error_type.lower() or "openai" in error_type.lower() or "anthropic" in error_type.lower()
+        except Exception as classification_error:
+            logger.error(f"[SUMMARIZE_RESULTS] Error during error classification: {classification_error}")
+            # Variables already initialized to False above
+        
+        logger.debug(f"[SUMMARIZE_RESULTS] Error classification - is_rate_limit: {is_rate_limit}, is_timeout: {is_timeout}, is_api_error: {is_api_error}")
+        
+        # Automatic fallback to OpenAI when Anthropic credits are low
+        if is_credit_low:
+            logger.warning("[SUMMARIZE_RESULTS] Anthropic API credit balance too low - automatically falling back to OpenAI")
+            try:
+                fallback_llm = get_llm('gpt-4o-mini', temperature=0)
+                if is_agent_mode:
+                    # Recreate agent tools for fallback
+                    agent_tools, _ = create_agent_action_tools()
+                    fallback_llm = fallback_llm.bind_tools(agent_tools, tool_choice="auto")
+                logger.info("[SUMMARIZE_RESULTS] Retrying Phase 2 with OpenAI fallback...")
+                answer_response = await fallback_llm.ainvoke(answer_messages)
+                logger.info("[SUMMARIZE_RESULTS] Phase 2 complete (using OpenAI fallback)")
+                # Continue processing with fallback response
+            except Exception as fallback_error:
+                logger.error(f"[SUMMARIZE_RESULTS] Fallback to OpenAI also failed: {fallback_error}")
+                user_error_msg = "Anthropic API credit balance is too low, and OpenAI fallback also failed. Please add credits to your Anthropic account or check your OpenAI API key."
+                return {
+                    "final_summary": user_error_msg,
+                    "citations": citations_from_state,
+                    "document_outputs": doc_outputs,
+                    "relevant_documents": state.get('relevant_documents', [])
+                }
+        else:
+            # Other errors - return error message
+            if is_timeout:
+                logger.error("[SUMMARIZE_RESULTS] LLM request timed out - may need to increase timeout or check API status")
+                user_error_msg = "The request timed out. Please try again with a shorter query or fewer documents."
+            elif is_rate_limit:
+                logger.error("[SUMMARIZE_RESULTS] Rate limit exceeded - consider implementing backoff/retry")
+                user_error_msg = "Rate limit exceeded. Please wait a moment and try again."
+            elif is_api_error:
+                logger.error(f"[SUMMARIZE_RESULTS] API error from provider: {error_message}")
+                # Check for common API errors
+                if "invalid_api_key" in error_message.lower() or "authentication" in error_message.lower():
+                    user_error_msg = "API authentication error. Please check your API key configuration."
+                elif "model" in error_message.lower() and ("not found" in error_message.lower() or "invalid" in error_message.lower()):
+                    user_error_msg = f"Model error: {model_preference or 'default model'} may not be available. Please try a different model."
+                else:
+                    user_error_msg = f"API error: {error_type}. Please try again or contact support."
+            else:
+                # Generic error - log full details but show user-friendly message
+                logger.error(f"[SUMMARIZE_RESULTS] Unexpected error: {error_type}: {error_message}")
+                user_error_msg = "I encountered an error generating the response. Please try again."
+            
+            # Log model preference for debugging
+            logger.error(f"[SUMMARIZE_RESULTS] Error occurred with model_preference: {model_preference}, agent_mode: {is_agent_mode}")
+            
+            # Return error response - user will see this in UI
+            return {
+                "final_summary": user_error_msg,
+                "citations": citations_from_state,
+                "document_outputs": doc_outputs,
+                "relevant_documents": state.get('relevant_documents', [])
+            }
     
     # Extract answer text
     summary = ''
